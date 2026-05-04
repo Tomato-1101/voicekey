@@ -54,6 +54,13 @@ class AudioRecorder:
         # start/stop/_cleanup_stream の競合を防ぐための再入可能ロック
         # （stop 中に start が割り込むと OS マイクが解放されない問題への対策）
         self._lock = threading.RLock()
+        # 録音セッション毎に callback の初回受信を1度だけログするためのフラグ
+        self._callback_received = False
+        # 録音セッション識別子。start() のたびにインクリメントし、
+        # 古い PortAudio ストリームのゾンビ callback を弾くために使う。
+        # macOS で stream.close() がハング中だと callback は呼ばれ続け、
+        # 共通の self._queue に音声が混入して新セッションを汚染するため。
+        self._session_id = 0
         self.set_input_device(input_device)
 
     @staticmethod
@@ -148,40 +155,56 @@ class AudioRecorder:
         """録音中かどうかを返す。"""
         return self._recording
 
-    def _audio_callback(
-        self,
-        indata: np.ndarray,
-        frames: int,
-        time_info: Any,
-        status: sd.CallbackFlags
-    ) -> None:
-        """
-        sounddeviceからのコールバック関数。
-        
-        音声データを受け取るたびに呼び出され、キューに追加する。
-        音声レベルを計算してコールバックに通知する。
-        
+    def _make_audio_callback(self, my_session: int) -> "callable":
+        """セッション識別子付きの audio callback を生成する。
+
+        各 InputStream に固有のクロージャを渡すことで、
+        macOS で stream.close() がハング中でも古い stream の callback を
+        セッション ID 不一致で即 return させ、新セッションの queue を汚染させない。
+
         Args:
-            indata: 受信した音声データ
-            frames: フレーム数
-            time_info: タイミング情報
-            status: ステータスフラグ（エラー時に設定される）
+            my_session: この callback が属するセッション ID
+
+        Returns:
+            sounddevice.InputStream に渡す callback 関数
         """
-        if status:
-            logger.warning(f"音声コールバック ステータス: {status}")
-        
-        # データをコピーしてキューに追加（元データは再利用されるため）
-        self._queue.put(indata.copy())
-        
-        # 音声レベルを計算してコールバックに通知
-        if self._level_callback:
-            # RMSで音声レベルを計算
-            level = float(np.sqrt(np.mean(indata ** 2)))
-            # 正規化（0.0-1.0）- 最大値を0.3程度と仮定
-            normalized_level = min(1.0, level / 0.3)
-            # しきい値を超えたら音声ありと判定
-            has_voice = level > self._level_threshold
-            self._level_callback(normalized_level, has_voice)
+
+        def _callback(
+            indata: np.ndarray,
+            frames: int,
+            time_info: Any,
+            status: sd.CallbackFlags,
+        ) -> None:
+            # 旧 stream のゾンビ callback はここで弾く。
+            # _session_id は start() で必ずインクリメントされる。
+            if self._session_id != my_session:
+                return
+
+            if status:
+                logger.warning(f"音声コールバック ステータス: {status}")
+
+            # 各セッション最初の callback を 1 度だけログ（実際に I/O が動いている確認）
+            if not self._callback_received:
+                self._callback_received = True
+                logger.info(
+                    f"音声 callback 初回受信 "
+                    f"(frames={frames}, shape={indata.shape}, dtype={indata.dtype}, session={my_session})"
+                )
+
+            # データをコピーしてキューに追加（元データは再利用されるため）
+            self._queue.put(indata.copy())
+
+            # 音声レベルを計算してコールバックに通知
+            if self._level_callback:
+                # RMSで音声レベルを計算
+                level = float(np.sqrt(np.mean(indata ** 2)))
+                # 正規化（0.0-1.0）- 最大値を0.3程度と仮定
+                normalized_level = min(1.0, level / 0.3)
+                # しきい値を超えたら音声ありと判定
+                has_voice = level > self._level_threshold
+                self._level_callback(normalized_level, has_voice)
+
+        return _callback
 
     def start(self) -> bool:
         """
@@ -200,14 +223,20 @@ class AudioRecorder:
                 self._cleanup_stream()
 
             try:
-                # キューをクリア
+                # キューをクリア & callback 受信フラグをリセット
                 self._clear_queue()
+                self._callback_received = False
+
+                # セッション ID をインクリメントし、ゾンビ callback を無効化する。
+                # 新ストリームには「自分のセッション ID を持った callback」を渡す。
+                self._session_id += 1
+                callback = self._make_audio_callback(self._session_id)
 
                 stream_kwargs = {
                     "samplerate": self.sample_rate,
                     "channels": AUDIO_CHANNELS,
                     "dtype": AUDIO_DTYPE,
-                    "callback": self._audio_callback,
+                    "callback": callback,
                 }
                 if self._input_device is not None:
                     stream_kwargs["device"] = self._input_device
@@ -229,7 +258,9 @@ class AudioRecorder:
                 self._stream.start()
                 self._recording = True
                 device_label = "default" if self._input_device is None else str(self._input_device)
-                logger.info(f"録音開始... (input_device={device_label})")
+                logger.info(
+                    f"録音開始... (input_device={device_label}, stream_id={id(self._stream)})"
+                )
                 return True
 
             except Exception as e:
@@ -253,37 +284,62 @@ class AudioRecorder:
             # （ストリーム close の前にコールバック側で何か処理する場合に備える）
             self._recording = False
             self._cleanup_stream()
-            logger.info("録音停止。")
+            queue_items = self._queue.qsize()
+            audio_data = self._collect_audio_data()
+            duration = len(audio_data) / self.sample_rate if self.sample_rate else 0.0
+            logger.info(
+                f"録音停止。 (queue_items={queue_items}, samples={len(audio_data)}, duration={duration:.2f}s, callback_received={self._callback_received})"
+            )
 
-            return self._collect_audio_data()
+            return audio_data
 
     def _clear_queue(self) -> None:
         """キューをクリアする。"""
         with self._queue.mutex:
             self._queue.queue.clear()
 
+    # PortAudio (CoreAudio) の close が macOS で固まることがあるため、
+    # ここで指定した時間を超えたら諦めてバックグラウンドに任せる。
+    _CLEANUP_TIMEOUT_SEC: float = 2.0
+
     def _cleanup_stream(self) -> None:
         """音声ストリームをクリーンアップする。
 
-        stream.stop() と stream.close() を独立した try/except で囲み、
-        片方が例外を投げても他方は必ず実行する。最終的に self._stream は
-        必ず None に戻し、OS マイクハンドルが残らないようにする。
+        macOS の PortAudio で stream.stop()/close() が稀にハングし、
+        呼び出し元のロックを巻き込んで全体フリーズに至るため、
+        実体の close は別スレッドへ逃がし最大 _CLEANUP_TIMEOUT_SEC まで待つ。
+        タイムアウト時は self._stream を None に切り替えて先に進める
+        （バックグラウンドの close は継続。OS マイクが短時間残る場合あり）。
         """
         with self._lock:
             stream = self._stream
             if stream is None:
                 return
+            # 参照を先に切る。以後の start()/stop() は新しいストリーム前提で進む。
+            self._stream = None
+
+        def _close_in_background() -> None:
             try:
-                try:
-                    stream.stop()
-                except Exception as e:
-                    logger.error(f"ストリーム stop() エラー: {e}")
-                try:
-                    stream.close()
-                except Exception as e:
-                    logger.error(f"ストリーム close() エラー: {e}")
-            finally:
-                self._stream = None
+                stream.stop()
+            except Exception as e:
+                logger.error(f"ストリーム stop() エラー: {e}")
+            try:
+                stream.close()
+            except Exception as e:
+                logger.error(f"ストリーム close() エラー: {e}")
+
+        cleanup_thread = threading.Thread(
+            target=_close_in_background,
+            daemon=True,
+            name="AudioStreamCleanup",
+        )
+        cleanup_thread.start()
+        cleanup_thread.join(timeout=self._CLEANUP_TIMEOUT_SEC)
+        if cleanup_thread.is_alive():
+            logger.warning(
+                f"ストリームの close が {self._CLEANUP_TIMEOUT_SEC}s 以内に完了しませんでした。"
+                "バックグラウンドで継続します（OS マイクが一時的に残る場合あり）。"
+            )
 
     def _collect_audio_data(self) -> npt.NDArray[np.float32]:
         """

@@ -2,6 +2,38 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
+## [Unreleased] - 2026-05-05
+
+### Fixed
+- **macOS PortAudio 由来のフリーズ問題に対処**
+  - `_recorder.stop()` が `_recording_lock` を握ったまま PortAudio (CoreAudio) の `stream.stop()` / `close()` を呼ぶと、CoreAudio がハングした際にロックを巻き込んでアプリ全体が停止する問題があった
+  - `src/core/audio_recorder.py:_cleanup_stream`: `stream.stop()` / `close()` を別スレッドへ逃がし、最大 2 秒のタイムアウトで諦めて呼出元へ復帰。`self._stream` は即 `None` に切替えるため後続の start/stop は新ストリーム前提で進める。タイムアウトしても `_collect_audio_data()` でキューから音声を回収するので発話内容はロストしない（ユーザーは 2 秒余分に待つだけで結果が得られる）
+  - `src/app.py:stop_and_transcribe`: `_recording_lock` を解放してから `_recorder.stop()` を呼ぶよう修正。lock を巻き込まないためアプリ全体のフリーズを防止
+- **PortAudio ゾンビ callback による録音バッファ汚染を解消**
+  - 古い stream は `_cleanup_stream` で `_stream = None` にしても、PortAudio の I/O スレッドが close 完了まで callback を呼び続け、共通の `self._queue` に古い音声を流し込み続けるため 2 回目以降の録音が無音判定 (`has_speech=False`) になっていた
+  - `src/core/audio_recorder.py`: 録音セッション識別子 `_session_id` を導入。`start()` のたびにインクリメントし、`_make_audio_callback(session_id)` でセッション ID を埋め込んだクロージャを各 `InputStream` に渡す。callback は `if self._session_id != my_session: return` で旧 stream のゾンビ呼出を即弾く
+  - これにより `stream.close()` がハング中でも、新セッションの queue は旧 stream の音声で汚染されない
+- **ダブルタップ Auto-Enter 検出が PortAudio ハング時に失われる問題**
+  - `stop_and_transcribe` が keyboard listener スレッド内で `_recorder.stop()`（最大 2 秒ブロック）まで実行していたため、キーを離した直後の次の press イベントが listener で待たされ、ダブルタップ判定ウィンドウ (400ms) を超えてしまっていた
+  - `src/app.py`: `stop_and_transcribe` はフラグ更新のみ同期で行い、`_finalize_recording_async` を別 daemon スレッドで起動して `_recorder.stop()` 以降を実行。listener スレッドは即時に次のキーイベントを処理可能に
+
+### Added
+- **Force Reset (Unfreeze) メニューを再導入**
+  - 過去に削除されたが、PortAudio ハング時の最終手段として復活。ただし用途が変わり、内部状態リセットではなく **プロセスごとの再起動** で OS のマイクハンドル / 「マイク使用中」オレンジドット / メニューバーアイコンを完全にリセットする
+  - `src/app.py:force_reset_recording`: `subprocess.Popen([sys.executable] + sys.argv, start_new_session=True)` で同じコマンドラインの新プロセスを独立起動し、自分は `os._exit(0)` で即時終了。execv 方式だと macOS で NSStatusItem が再登録されない事象があったため subprocess + 新セッション方式に統一
+  - `src/ui/system_tray.py`: メニューに `Force Reset (Unfreeze)` 項目と `force_reset` Signal を追加
+- **フリーズ再現用デバッグスクリプト** (`scripts/simulate_freeze.py`)
+  - `sounddevice.InputStream.stop` / `close` を「指定秒数だけ眠るだけ」のメソッドに monkeypatch してから voicekey 本体を起動。`FREEZE_SEC` 環境変数で待ち時間を制御（既定 30 秒）
+  - 上記フリーズ系修正の動作検証を確実に再現できるようにするため
+- **録音状態のデバッグログ拡充**
+  - `src/core/audio_recorder.py`: `start()` でストリーム ID、`_audio_callback` で各セッション初回の callback 受信、`stop()` で取得した `queue_items` / `samples` / `duration` / `callback_received` をログ出力。フリーズや録音欠損の切り分けに使用
+
+### Technical Details
+- **編集**: `src/app.py`（import に `os` / `subprocess` / `sys` を追加、`stop_and_transcribe` の非同期化、`_finalize_recording_async` 新設、`force_reset_recording` を再起動方式へ書き換え、`_tray.force_reset` の signal 接続）
+- **編集**: `src/core/audio_recorder.py`（`_session_id` / `_callback_received` 追加、`_make_audio_callback` クロージャ生成、`_cleanup_stream` のタイムアウト化、`stop()` のログ拡充）
+- **編集**: `src/ui/system_tray.py`（`force_reset` Signal、Force Reset メニュー項目）
+- **新規**: `scripts/simulate_freeze.py`
+
 ## [Unreleased] - 2026-05-01
 
 ### Added

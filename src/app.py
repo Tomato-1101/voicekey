@@ -5,7 +5,10 @@
 すべてのコンポーネントを統合するメインコントローラー。
 """
 
+import os
 import queue
+import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -223,6 +226,7 @@ class SuperWhisperApp(QObject):
     def _setup_signals(self) -> None:
         """シグナルをスロットに接続する。"""
         self._tray.open_settings.connect(self._open_settings)
+        self._tray.force_reset.connect(self.force_reset_recording)
         self._tray.quit_app.connect(self._quit_app)
         self.status_changed.connect(self._update_ui_status)
         self.text_ready.connect(self._handle_transcription_result)
@@ -490,8 +494,61 @@ class SuperWhisperApp(QObject):
             threading.Thread(target=transcriber.load_model, daemon=True).start()
             self._recorder.start()
 
+    def force_reset_recording(self) -> None:
+        """強制リセット: 新プロセスを起動して自分は終了する。
+
+        PortAudio / CoreAudio のマイクハンドルや「マイク使用中」のオレンジドットは
+        プロセスが死ぬまで OS から解放されない。execv だと macOS では同 PID のまま
+        NSApplication を作り直すことになり、メニューバー (NSStatusItem) が
+        AppKit に再登録されず表示されない事象がある。そのため subprocess.Popen で
+        独立した新プロセスを spawn し、自分は os._exit(0) で即時終了する方式に
+        統一する。これで:
+        - 新プロセスは新規 NSApplication として起動 → メニューバー正常
+        - 旧プロセスは即時終了 → OS がマイクハンドル回収 → オレンジドット消失
+
+        ユーザーがメニューから明示的に押した時のみ呼ばれる（自動発動はしない）。
+        """
+        logger.warning("強制リセット: 新プロセス起動 → 自分は終了します")
+
+        # キーボードリスナーを止めて pynput が握っているリソースを早期解放。
+        # 子プロセス側で同じキーをグローバルフックすると競合する可能性があるため。
+        try:
+            listener = self._listener
+            if listener is not None:
+                listener.stop()
+        except Exception as e:
+            logger.warning(f"リスナー停止失敗（無視して再起動）: {e}")
+
+        # ログを確実にディスクへ流す（os._exit は flush しないため）。
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:
+            pass
+
+        # 同じコマンドラインで子プロセスを独立起動。
+        # start_new_session=True で新セッション化し、親終了後も生き残る。
+        python = sys.executable
+        args = [python] + sys.argv
+        logger.info(f"新プロセス起動: {python} {sys.argv}")
+        try:
+            subprocess.Popen(args, start_new_session=True, cwd=os.getcwd())
+        except Exception as e:
+            logger.error(f"新プロセス起動失敗、再起動を中止: {e}")
+            return
+
+        # 旧プロセスは即時終了。Qt/PortAudio のクリーンアップは飛ばすが、
+        # OS がプロセス終了時にハンドルを回収するのでマイクは解放される。
+        os._exit(0)
+
     def stop_and_transcribe(self) -> None:
-        """録音を停止して文字起こしタスクをキューに追加する。"""
+        """録音を停止して文字起こしタスクをキューに追加する。
+
+        keyboard listener スレッドから呼ばれることを前提に、フラグ更新だけを
+        同期で済ませ、recorder.stop()（最大 2 秒のタイムアウト）以降は
+        別スレッドに逃がす。これによりキーを離した直後の次のキー押下イベントが
+        listener で詰まらず、ダブルタップ検出が正常に動作する。
+        """
         with self._recording_lock:
             if not self._is_recording or self._active_slot is None:
                 return
@@ -503,8 +560,23 @@ class SuperWhisperApp(QObject):
             auto_enter = self._auto_enter_active
             self._auto_enter_active = False
 
-            audio_data = self._recorder.stop()
             active_slot_id = self._active_slot
+
+        # 重い処理（recorder.stop の 2 秒タイムアウト含む）は別スレッドへ。
+        threading.Thread(
+            target=self._finalize_recording_async,
+            args=(active_slot_id, auto_enter),
+            daemon=True,
+            name="FinalizeRecording",
+        ).start()
+
+    def _finalize_recording_async(self, active_slot_id: int, auto_enter: bool) -> None:
+        """録音停止と文字起こしキューへの投入を listener スレッド外で実行する。
+
+        recorder.stop() が PortAudio の close 待ちで最大 2 秒ブロックするため、
+        listener スレッドを巻き込まないようここで完結させる。
+        """
+        audio_data = self._recorder.stop()
 
         # 音声データが空の場合
         if len(audio_data) == 0:
