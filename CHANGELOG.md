@@ -16,6 +16,9 @@ voicekeyの変更履歴を記録するファイルです。
 - **ダブルタップ Auto-Enter 検出が PortAudio ハング時に失われる問題**
   - `stop_and_transcribe` が keyboard listener スレッド内で `_recorder.stop()`（最大 2 秒ブロック）まで実行していたため、キーを離した直後の次の press イベントが listener で待たされ、ダブルタップ判定ウィンドウ (400ms) を超えてしまっていた
   - `src/app.py`: `stop_and_transcribe` はフラグ更新のみ同期で行い、`_finalize_recording_async` を別 daemon スレッドで起動して `_recorder.stop()` 以降を実行。listener スレッドは即時に次のキーイベントを処理可能に
+- **ダブルタップ時にメニューバーアイコンの紫が一瞬で消える問題**
+  - 1 回目の録音終了処理 `_finalize_recording_async` が後追いで `status_changed.emit("transcribing")` または `emit("idle")` を発火し、既に立ち上がった 2 回目録音の紫 (`recording_auto_enter`) を上書きしていた
+  - `src/app.py:_finalize_recording_async`: `transcribing` / `idle` の emit に `not self._is_recording` ガードを追加し、新しい録音が始まっていれば status を触らないように
 
 ### Added
 - **Force Reset (Unfreeze) メニューを再導入**

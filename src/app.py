@@ -580,7 +580,10 @@ class SuperWhisperApp(QObject):
 
         # 音声データが空の場合
         if len(audio_data) == 0:
-            if not self._queue_worker_running:
+            # 後続の録音や文字起こしが走っていなければ idle に戻す。
+            # ダブルタップ等で新しい録音が既に始まっている場合は、その status
+            # (recording / recording_auto_enter) を上書きしないよう触らない。
+            if not self._queue_worker_running and not self._is_recording:
                 self.status_changed.emit("idle")
             return
 
@@ -609,8 +612,10 @@ class SuperWhisperApp(QObject):
         )
         self._transcription_queue.put(task)
 
-        # 処理中状態を表示（キーを離してもオーバーレイは表示続行）
-        self.status_changed.emit("transcribing")
+        # 処理中状態を表示。ただしダブルタップ等で既に次の録音が走っている場合は
+        # その状態（recording / recording_auto_enter）を維持する。
+        if not self._is_recording:
+            self.status_changed.emit("transcribing")
 
         # ワーカーが動いていなければ開始（check-and-set はロックで排他化）
         with self._queue_worker_lock:
