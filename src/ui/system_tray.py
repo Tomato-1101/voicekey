@@ -24,11 +24,13 @@ class SystemTray(QSystemTrayIcon):
     
     Signals:
         open_settings: 設定を開く要求
+        force_reset: 録音状態の強制リセット要求（フリーズ復帰用）
         quit_app: アプリケーション終了要求
     """
-    
+
     # メニューアクション用シグナル
     open_settings = Signal()
+    force_reset = Signal()
     quit_app = Signal()
     
     # 状態別アイコンカラー
@@ -70,6 +72,12 @@ class SystemTray(QSystemTrayIcon):
         # 設定メニュー項目
         settings_action = self._menu.addAction("Settings")
         settings_action.triggered.connect(self.open_settings.emit)
+
+        self._menu.addSeparator()
+
+        # 録音/マイクが詰まったときに再起動なしで内部状態を作り直す脱出口
+        reset_action = self._menu.addAction("Force Reset (Unfreeze)")
+        reset_action.triggered.connect(self.force_reset.emit)
 
         self._menu.addSeparator()
 
