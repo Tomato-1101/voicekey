@@ -562,6 +562,11 @@ class SuperWhisperApp(QObject):
 
             active_slot_id = self._active_slot
 
+        # 「文字起こし中」をキーを離した瞬間に即時反映する。
+        # recorder.stop() の close 待ち（普段数十ms〜数百ms）に表示変化が
+        # 引きずられないようにするため、listener スレッド内で先に emit する。
+        self.status_changed.emit("transcribing")
+
         # 重い処理（recorder.stop の 2 秒タイムアウト含む）は別スレッドへ。
         threading.Thread(
             target=self._finalize_recording_async,
@@ -612,10 +617,9 @@ class SuperWhisperApp(QObject):
         )
         self._transcription_queue.put(task)
 
-        # 処理中状態を表示。ただしダブルタップ等で既に次の録音が走っている場合は
-        # その状態（recording / recording_auto_enter）を維持する。
-        if not self._is_recording:
-            self.status_changed.emit("transcribing")
+        # transcribing 表示は stop_and_transcribe 内で既に emit 済み。
+        # ここで再度 emit すると、ダブルタップで割り込んだ recording_auto_enter を
+        # 後追いで上書きしてしまうため呼ばない。
 
         # ワーカーが動いていなければ開始（check-and-set はロックで排他化）
         with self._queue_worker_lock:

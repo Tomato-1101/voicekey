@@ -183,10 +183,11 @@ class AudioRecorder:
             if status:
                 logger.warning(f"音声コールバック ステータス: {status}")
 
-            # 各セッション最初の callback を 1 度だけログ（実際に I/O が動いている確認）
+            # 各セッション最初の callback を 1 度だけログ（実際に I/O が動いている確認）。
+            # 開発時のデバッグ用なので通常は非表示。
             if not self._callback_received:
                 self._callback_received = True
-                logger.info(
+                logger.debug(
                     f"音声 callback 初回受信 "
                     f"(frames={frames}, shape={indata.shape}, dtype={indata.dtype}, session={my_session})"
                 )
@@ -258,9 +259,7 @@ class AudioRecorder:
                 self._stream.start()
                 self._recording = True
                 device_label = "default" if self._input_device is None else str(self._input_device)
-                logger.info(
-                    f"録音開始... (input_device={device_label}, stream_id={id(self._stream)})"
-                )
+                logger.info(f"録音開始... (input_device={device_label})")
                 return True
 
             except Exception as e:
@@ -284,12 +283,9 @@ class AudioRecorder:
             # （ストリーム close の前にコールバック側で何か処理する場合に備える）
             self._recording = False
             self._cleanup_stream()
-            queue_items = self._queue.qsize()
             audio_data = self._collect_audio_data()
             duration = len(audio_data) / self.sample_rate if self.sample_rate else 0.0
-            logger.info(
-                f"録音停止。 (queue_items={queue_items}, samples={len(audio_data)}, duration={duration:.2f}s, callback_received={self._callback_received})"
-            )
+            logger.info(f"録音停止。 ({duration:.2f}s)")
 
             return audio_data
 
@@ -300,7 +296,8 @@ class AudioRecorder:
 
     # PortAudio (CoreAudio) の close が macOS で固まることがあるため、
     # ここで指定した時間を超えたら諦めてバックグラウンドに任せる。
-    _CLEANUP_TIMEOUT_SEC: float = 2.0
+    # 通常時は数十ms 以内に終わるので、フリーズ時の最大待ち時間として 1 秒に設定。
+    _CLEANUP_TIMEOUT_SEC: float = 1.0
 
     def _cleanup_stream(self) -> None:
         """音声ストリームをクリーンアップする。

@@ -20,6 +20,15 @@ voicekeyの変更履歴を記録するファイルです。
   - 1 回目の録音終了処理 `_finalize_recording_async` が後追いで `status_changed.emit("transcribing")` または `emit("idle")` を発火し、既に立ち上がった 2 回目録音の紫 (`recording_auto_enter`) を上書きしていた
   - `src/app.py:_finalize_recording_async`: `transcribing` / `idle` の emit に `not self._is_recording` ガードを追加し、新しい録音が始まっていれば status を触らないように
 
+### Changed (Performance)
+- **キーを離した瞬間の status 反映を即時化**
+  - `transcribing` (オレンジ) の emit を `_finalize_recording_async` (別スレッド・recorder.stop() 後) から `stop_and_transcribe` (listener スレッド内) へ前倒し。`recorder.stop()` の close 待ち（数十ms〜数百ms）に表示変化が引きずられないように
+- **PortAudio close のタイムアウトを 2.0s → 1.0s に短縮**
+  - これは「ハング検知時の最大待ち時間」。`thread.join(timeout=N)` の挙動上、close が正常に完了する場合は完了次第（数十 ms で）即時 return するため、普段の処理速度には影響しない。今回の短縮で「フリーズが起きた時の最大体感待ち時間」だけ半減
+- **デバッグログのレベル調整**
+  - `audio_recorder.py`: callback 初回受信ログを `info` → `debug`（録音毎に出ていたノイズを削減）。`stop()` のログも `queue_items` / `samples` / `callback_received` を省き、duration のみに簡略化
+  - `start()` のログから `stream_id` を削除（開発時のみ debug 用に必要だった情報）
+
 ### Added
 - **Force Reset (Unfreeze) メニューを再導入**
   - 過去に削除されたが、PortAudio ハング時の最終手段として復活。ただし用途が変わり、内部状態リセットではなく **プロセスごとの再起動** で OS のマイクハンドル / 「マイク使用中」オレンジドット / メニューバーアイコンを完全にリセットする
