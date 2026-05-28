@@ -17,6 +17,7 @@
 ## 📖 目次
 
 - [特徴](#-特徴)
+- [AI エージェント向けセットアップ手順](#-ai-エージェント向けセットアップ手順)
 - [必要環境](#-必要環境)
 - [インストール](#-インストール)
 - [クイックスタート](#-クイックスタート)
@@ -58,6 +59,101 @@
 
 ---
 
+## 🤖 AI エージェント向けセットアップ手順
+
+> **このセクションは、Claude Code / Cursor / Codex などの AI に「voicekey をセットアップして」と頼んだときに迷わず動けるよう、必要な情報を 1 か所にまとめたものです。**
+> **AI へのプロンプト例（コピペ可）**: 「このリポジトリ（`https://github.com/Tomato-1101/voicekey`）を `~/Project` 直下にクローンして、README の『AI エージェント向けセットアップ手順』に従って起動できる状態にしてください。OS は macOS（または Windows）です。Groq の API キーは後で入力するのでスキップしてください。」
+
+### 前提条件チェックリスト（AI がまず確認すべき項目）
+
+| # | 項目 | 確認コマンド | 期待される結果 |
+|---|---|---|---|
+| 1 | OS | `uname -s` / `ver` | `Darwin`（macOS）または `Windows_NT` |
+| 2 | Python 3.10+ | `python3 --version` | `Python 3.10.x` 以上 |
+| 3 | git | `git --version` | バージョンが表示される |
+| 4 | ffmpeg | `ffmpeg -version` | バージョンが表示される（未インストールなら手順 5 で導入） |
+| 5 | ネットワーク | `curl -s https://api.groq.com` | レスポンスが返る（API 文字起こし用） |
+
+### macOS 完全セットアップ（コピペで完結）
+
+```bash
+# 1. クローン
+cd ~/Project   # 任意のディレクトリ
+git clone https://github.com/Tomato-1101/voicekey.git
+cd voicekey
+
+# 2. ffmpeg（未インストールなら）
+which ffmpeg || brew install ffmpeg
+
+# 3. venv 作成 & 依存関係インストール
+python3 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+
+# 4. 設定ファイルの雛形をコピー（API キーは後で UI から入力）
+cp -n settings.example.yaml settings.yaml
+
+# 5. 起動
+./run.sh
+# もしくは: python run.py
+```
+
+初回起動後、macOS の **システム設定 → プライバシーとセキュリティ** で voicekey（または Python）に以下 3 つの権限を付与する：
+
+- **入力監視**（グローバルホットキー）
+- **アクセシビリティ**（テキスト挿入）
+- **マイク**（音声録音）
+
+### Windows 完全セットアップ（PowerShell）
+
+```powershell
+# 1. クローン
+cd $HOME\Project   # 任意のディレクトリ
+git clone https://github.com/Tomato-1101/voicekey.git
+cd voicekey
+
+# 2. ffmpeg は https://ffmpeg.org/download.html から導入し PATH を通す
+ffmpeg -version  # 動作確認
+
+# 3. venv 作成 & 依存関係
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+
+# 4. 設定ファイル
+Copy-Item -Path settings.example.yaml -Destination settings.yaml -ErrorAction SilentlyContinue
+
+# 5. 起動
+.\run.bat
+# もしくは: python run.py
+```
+
+### API キーの設定（起動後）
+
+文字起こしは **Groq / OpenAI のどちらか（または両方）** のクラウド API で行うため、API キーが必要：
+
+| サービス | 取得先 | 無料枠 |
+|---|---|---|
+| Groq | https://console.groq.com/keys | あり（レート制限あり） |
+| OpenAI | https://platform.openai.com/api-keys | なし（事前課金） |
+
+**設定方法（推奨）**: トレイ/メニューバーのアイコン → 設定ウィンドウ → API キーフィールドに貼り付けて保存。
+キーは **macOS Keychain / Windows Credential Manager** に安全に保存される（`.env` や YAML に書く必要なし）。
+
+> **AI への補足**: API キーは取得・入力ともユーザー本人の操作が必要。AI はこの工程をスキップして「ここで API キーを入力してください」と案内すれば良い。
+
+### よくあるつまずきポイント（AI が事前に説明すべき項目）
+
+1. **macOS で初回起動時に何も反応しない** → 「入力監視」「アクセシビリティ」権限を付与した後、アプリを **完全終了 → 再起動** する必要がある（権限変更は再起動で反映）
+2. **`python` が見つからない** → macOS では `python3` を使う。`python` コマンドは旧 Python 2 を指している可能性
+3. **`pip install` が遅い／タイムアウトする** → `torch` / `torchaudio` のダウンロードが重いため。`pip install -r requirements.txt --progress-bar on` で進捗確認
+4. **GPU は不要** → 文字起こしはクラウド API。ローカル GPU を要求するセットアップ手順は古い情報（v1 系の名残）
+5. **管理者権限で動いているアプリにテキストが入らない（Windows）** → voicekey 側も管理者権限で起動する必要がある
+
+---
+
 ## 💻 必要環境
 
 | 項目 | 要件 |
@@ -74,7 +170,26 @@
 
 ## 📦 インストール
 
-### 1. リポジトリをクローン
+### 0. ポータル経由で配布物をダウンロードする場合
+
+[myprojects-portal](https://myprojects-portal.vercel.app) のカードから OS を選んで
+`voicekey-mac.dmg` / `voicekey-windows.zip` を取得できます（認証不要）。
+
+配布物は GitHub Actions が `tag v*` プッシュをトリガーに macOS / Windows でクロスビルドして
+GitHub Releases にアップロードしています（`.github/workflows/release.yml`）。
+ポータルのダウンロードボタンは Releases の `latest/download/...` URL を直リンクするだけなので、
+voicekey 側にサーバーやパスワードは存在しません。
+
+リリース手順：
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+# GitHub Actions が macos-latest / windows-latest でビルドし、
+# voicekey-mac.dmg / voicekey-windows.zip を Releases に自動アップロード
+```
+
+### 1. リポジトリをクローン（開発者向け）
 
 ```bash
 git clone https://github.com/Tomato-1101/voicekey.git
@@ -339,9 +454,14 @@ API に送る前に、録音音声を **音量正規化（Peak+RMS ハイブリ�
 
 ### API 接続エラー
 
-- `.env` の API キーが正しいか確認。
+- 設定ウィンドウの API キーが正しいか確認（Keychain / Credential Manager に保存される）。
 - ネットワーク接続を確認。
 - レート制限超過の可能性（Groq の場合）。
+
+### macOS で録音中・停止後にアプリがフリーズする
+
+- v1.x の PortAudio スレッド競合に起因する既知のフリーズは v9 (`9c50056`) で根治済み。
+- それでも刺さる場合：トレイ/メニューバーから **Force Reset** を選択すると録音セッションを強制リセットできる。
 
 ### WinError 1314 (Windows のみ)
 
