@@ -31,6 +31,26 @@ voicekeyの変更履歴を記録するファイルです。
   - API キーは環境変数 / `.env` → Keychain（アプリと共用）の順で取得（中身は非表示）。`make_audio.sh` で音声生成、原稿 `.txt` が CER 採点の正解を兼ねる
   - 初回計測（OpenAI / Groq / ElevenLabs、Deepgram はキー待ち）: ElevenLabs scribe_v1 が最高精度（CER 0.0%/0.4%）だが長文 3.5s と低速、Groq whisper-large-v3-turbo が最速（385ms/742ms）で精度も良好（2.7%/5.4%）、OpenAI gpt-4o-transcribe は中速・長文 CER 7.6%
 
+### Added (2026-06-10 追記 3)
+- **各社の実在モデルを API から取得する `benchmark/list_models.py` を追加**
+  - 推測でなく `/models` エンドポイントから最新モデルを確認。OpenAI は `gpt-4o-transcribe` / `gpt-4o-mini-transcribe` / `gpt-4o-transcribe-diarize` / `gpt-realtime-whisper` / `whisper-1`、Deepgram は `nova-2` / `nova-3` を確認。ElevenLabs STT は `scribe_v1` / `scribe_v1_experimental` のみ（`/v1/models` は TTS 用で STT v2 は存在しない）
+- **バッチ比較を全 4 社・全モデルに拡充（`run_benchmark.py`）。Deepgram 込みの確定計測**
+  - レイテンシ（最速値）/ CER（短文・長文）:
+    - Groq turbo: 330ms / 695ms、CER 2.7% / 5.4%（REST 最速）
+    - Deepgram nova-3: 1084ms / 1475ms、CER 0.0% / 4.0%（長文でもレイテンシが伸びない・精度安定）
+    - ElevenLabs scribe_v1: 1106ms / 3682ms、CER 0.0% / 0.4%（短文・長文とも最高精度だが長文は低速）
+    - OpenAI gpt-4o-mini-transcribe: 861ms / 1937ms、CER 2.7% / 8.0%
+  - 注意点: Deepgram は日本語出力に単語間スペースを挿入する（CER は空白除去後のため低いが、貼り付け時はスペース除去が必要）。`gpt-4o-transcribe-diarize` は長文で `chunking_strategy` 必須エラー（話者分離モデルはディクテーション用途では不適）
+- **リアルタイムストリーミング速度測定 `benchmark/stream_benchmark.py` を追加（WebSocket）**
+  - 同一音声を 1 倍速で WS 送信し、TTFB（喋り出して最初の字が出るまで）と確定レイテンシ（送信完了＝ホットキーを離した相当から最終確定まで）を測定
+  - OpenAI Realtime は GA 仕様に対応（`session.update` で `session.type="transcription"`、`OpenAI-Beta` ヘッダ廃止）。**入力 PCM は 24kHz 以上必須**のため 16kHz テスト音声を `audioop.ratecv` で 24kHz にアップサンプルして送信
+  - 結果（TTFB / 確定 / CER、短文・長文）:
+    - Deepgram nova-3: 1049ms / **61ms** / 0.0%（短）、1089ms / **125ms** / 1.3%（長）。真のストリーミング（発話中に逐次確定）で離した瞬間ほぼ確定。最良
+    - OpenAI gpt-realtime-whisper: 1051ms / 951ms / 0.0%（短）、1192ms / 668ms / 2.7%（長）。真のストリーミングだが確定は Deepgram より遅い
+    - OpenAI gpt-4o-transcribe / mini: TTFB が音声長と同じ（発話中は字が出ず commit 後に一括）。確定は離してから 0.4〜2.8s。ライブ字幕は不可
+  - デバッグ用 `benchmark/debug_openai_rt.py`（OpenAI Realtime の生イベント確認）も追加
+  - 結論: HUD にライブ表示するなら Deepgram nova-3 が最適（確定 60〜170ms・精度安定・多言語）。OpenAI で揃えるなら gpt-realtime-whisper。ホールド入力で離してから一括でよいなら REST の Groq turbo が最速
+
 ### Fixed (2026-06-10 追記 2)
 - **ホットキーがほとんど反応しない問題（Mac 版）**
   - 原因 1: ウィンドウを 1 つも持たないメニューバーアプリは App Nap の対象になり、イベントタップのコールバックが遅延 → OS にタイムアウト無効化されてホットキーが死ぬ。`beginActivity` と Info.plist `NSAppSleepDisabled` で App Nap を無効化し、タップ監視スレッドの QoS を `.userInteractive` に引き上げ

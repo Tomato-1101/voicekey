@@ -32,12 +32,18 @@ RUNS = 2
 LANGUAGE = "ja"
 
 # (プロバイダ, ベースURL or None, モデル)
+# モデルは list_models.py で API から取得した実在モデル。
+# 使えないモデル（バッチ非対応など）はエラー行として表に出る。
+OPENAI = "https://api.openai.com/v1"
+GROQ = "https://api.groq.com/openai/v1"
 MODELS = [
-    ("openai", "https://api.openai.com/v1", "gpt-4o-transcribe"),
-    ("openai", "https://api.openai.com/v1", "gpt-4o-mini-transcribe"),
-    ("groq", "https://api.groq.com/openai/v1", "whisper-large-v3-turbo"),
-    ("groq", "https://api.groq.com/openai/v1", "whisper-large-v3"),
+    ("openai", OPENAI, "gpt-4o-transcribe"),
+    ("openai", OPENAI, "gpt-4o-mini-transcribe"),
+    ("openai", OPENAI, "gpt-4o-transcribe-diarize"),
+    ("groq", GROQ, "whisper-large-v3-turbo"),
+    ("groq", GROQ, "whisper-large-v3"),
     ("elevenlabs", None, "scribe_v1"),
+    ("elevenlabs", None, "scribe_v1_experimental"),
     ("deepgram", None, "nova-2"),
     ("deepgram", None, "nova-3"),
 ]

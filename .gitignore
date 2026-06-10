@@ -31,6 +31,7 @@ benchmark/.env
 benchmark/audio/*.wav
 benchmark/audio/*.aiff
 benchmark/results/
+benchmark/.venv/
 
 # ------------------------------------------
 # Whisperモデル
