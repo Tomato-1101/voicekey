@@ -298,18 +298,18 @@ class AudioRecorder:
         with self._queue.mutex:
             self._queue.queue.clear()
 
-    # PortAudio (CoreAudio) の close が macOS で固まることがあるため、
-    # ここで指定した時間を超えたら諦めてバックグラウンドに任せる。
-    _CLEANUP_TIMEOUT_SEC: float = 2.0
-
     def _cleanup_stream(self) -> None:
         """音声ストリームをクリーンアップする。
 
-        macOS の PortAudio で stream.stop()/close() が稀にハングし、
-        呼び出し元のロックを巻き込んで全体フリーズに至るため、
-        実体の close は別スレッドへ逃がし最大 _CLEANUP_TIMEOUT_SEC まで待つ。
-        タイムアウト時は self._stream を None に切り替えて先に進める
-        （バックグラウンドの close は継続。OS マイクが短時間残る場合あり）。
+        macOS の PortAudio では stream.stop()/close() が稀にハングするため、
+        実体の close は daemon スレッドへ投げ、呼び出し元は一切待たない
+        （join しない）。待たないことで、一度 close がハングしても以降の
+        録音 start/stop が遅延せず、毎回の音声入力を最優先できる
+        （「一度バグると毎回 2 秒待たされる」現象の根絶）。
+
+        ハングした場合はそのストリームが OS のマイクを掴んだまま残り、
+        マイクインジケーターが消えなくなるが、録音動作自体には影響しない。
+        その状態はアプリを再起動すれば解消する（意図的なトレードオフ）。
         """
         with self._lock:
             stream = self._stream
@@ -328,18 +328,13 @@ class AudioRecorder:
             except Exception as e:
                 logger.error(f"ストリーム close() エラー: {e}")
 
-        cleanup_thread = threading.Thread(
+        # join しない: close がハングしても録音停止を呼んだスレッドを
+        # ブロックしない。投げっぱなしの daemon スレッドが 1 本残るだけ。
+        threading.Thread(
             target=_close_in_background,
             daemon=True,
             name="AudioStreamCleanup",
-        )
-        cleanup_thread.start()
-        cleanup_thread.join(timeout=self._CLEANUP_TIMEOUT_SEC)
-        if cleanup_thread.is_alive():
-            logger.warning(
-                f"ストリームの close が {self._CLEANUP_TIMEOUT_SEC}s 以内に完了しませんでした。"
-                "バックグラウンドで継続します（OS マイクが一時的に残る場合あり）。"
-            )
+        ).start()
 
     def _collect_audio_data(self) -> npt.NDArray[np.float32]:
         """

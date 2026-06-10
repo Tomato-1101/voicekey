@@ -2,6 +2,22 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
+## [Unreleased] - 2026-06-01
+
+### Fixed
+- **macOS フリーズ後に「毎回 2 秒待たされる」現象を根絶し、録音停止を完全ノンブロッキング化**
+  - `src/core/audio_recorder.py:_cleanup_stream`: PortAudio の `stream.stop()/close()` を daemon スレッドへ投げっぱなしにし、呼び出し元は **一切待たない（join しない）** よう変更。従来は `join(timeout=2.0)` で待っており、一度 close がハングするとその後の録音停止が毎回最大 2 秒ブロックしていた
+  - 未使用化した `_CLEANUP_TIMEOUT_SEC` 定数を削除
+  - トレードオフ: close がハングしたストリームは OS のマイクを掴んだまま残る（マイクインジケーターが消えない）が、録音・文字入力動作は一切遅延しない。残ったインジケーターはアプリ再起動で解消する
+- **ダブルタップ連打時に録音を取りこぼす（samples=0）レースを解消**
+  - `src/app.py:stop_and_transcribe`: `_recorder.stop()` を `_finalize_recording_async`（別スレッド）から呼んでいたため、停止完了前に次の録音 start が割り込み、状態がズレて空録音になることがあった。close を待たない設計になったため `stop()` を `_recording_lock` 内で同期実行して音声をその場で確定し、`_active_slot` も即クリアするよう変更
+  - `src/app.py:_finalize_recording_async`: シグネチャを変更し確定済み `audio_data` を引数で受け取る（内部での `_recorder.stop()` 呼び出しを削除）。担当は音量正規化とキュー投入のみ
+  - `src/app.py:start_recording`: `self._recorder.start()` の戻り値を確認し、開始に成功してから `_is_recording` を立てるよう変更。app 側と recorder 側の状態がズレて「録音中のつもりだが録れていない」ゾンビ状態になるのを防止
+
+### Technical Details
+- **編集**: `src/core/audio_recorder.py`（`_cleanup_stream` を fire-and-forget 化、`_CLEANUP_TIMEOUT_SEC` 削除）
+- **編集**: `src/app.py`（`start_recording` の start 戻り値チェック、`stop_and_transcribe` の同期 stop 化と `_active_slot` 即クリア、`_finalize_recording_async` の引数化）
+
 ## [Unreleased] - 2026-05-28
 
 ### Changed

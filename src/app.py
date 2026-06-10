@@ -484,15 +484,23 @@ class SuperWhisperApp(QObject):
                 self._show_backend_warning(f"{slot.backend}_unavailable")
                 return
 
+            # 使用するTranscriberのモデルをプリロード
+            threading.Thread(target=transcriber.load_model, daemon=True).start()
+
+            # 先にストリームを開始し、成功を確認してから録音中フラグを立てる。
+            # app 側 _is_recording と recorder 側の状態がズレて「録音中のつもりだが
+            # 実際は録れていない」ゾンビ状態になるのを防ぐ（連打レース対策）。
+            if not self._recorder.start():
+                logger.warning("録音開始に失敗（前のストリーム停止待ち）。状態をリセットします")
+                self._active_slot = None
+                self.status_changed.emit("idle")
+                return
+
             self._is_recording = True
             if self._auto_enter_active:
                 self.status_changed.emit("recording_auto_enter")
             else:
                 self.status_changed.emit("recording")
-
-            # 使用するTranscriberのモデルをプリロード
-            threading.Thread(target=transcriber.load_model, daemon=True).start()
-            self._recorder.start()
 
     def force_reset_recording(self) -> None:
         """強制リセット: 新プロセスを起動して自分は終了する。
@@ -544,10 +552,12 @@ class SuperWhisperApp(QObject):
     def stop_and_transcribe(self) -> None:
         """録音を停止して文字起こしタスクをキューに追加する。
 
-        keyboard listener スレッドから呼ばれることを前提に、フラグ更新だけを
-        同期で済ませ、recorder.stop()（最大 2 秒のタイムアウト）以降は
-        別スレッドに逃がす。これによりキーを離した直後の次のキー押下イベントが
-        listener で詰まらず、ダブルタップ検出が正常に動作する。
+        recorder.stop() は close を待たず即座に返る設計（audio_recorder の
+        _cleanup_stream が join しない）になったため、ここで同期的に呼んで
+        音声データをその場で確定させる。これにより「停止が完了する前に次の
+        録音 start が割り込む」レースをなくし、ダブルタップ連打でも録音を
+        取りこぼさない。stop は即返るので listener スレッドは詰まらない。
+        重い処理（音声前処理・API 文字起こし）だけを別スレッドへ逃がす。
         """
         with self._recording_lock:
             if not self._is_recording or self._active_slot is None:
@@ -561,23 +571,29 @@ class SuperWhisperApp(QObject):
             self._auto_enter_active = False
 
             active_slot_id = self._active_slot
+            # 次の start が確実に新規セッションになるよう、ここでクリアする。
+            self._active_slot = None
 
-        # 重い処理（recorder.stop の 2 秒タイムアウト含む）は別スレッドへ。
+            # close を待たない設計なので即座に返る。音声データをここで確定。
+            audio_data = self._recorder.stop()
+
+        # 重い処理（音声前処理 + 文字起こしキュー投入）だけ別スレッドへ。
         threading.Thread(
             target=self._finalize_recording_async,
-            args=(active_slot_id, auto_enter),
+            args=(active_slot_id, auto_enter, audio_data),
             daemon=True,
             name="FinalizeRecording",
         ).start()
 
-    def _finalize_recording_async(self, active_slot_id: int, auto_enter: bool) -> None:
-        """録音停止と文字起こしキューへの投入を listener スレッド外で実行する。
+    def _finalize_recording_async(
+        self, active_slot_id: int, auto_enter: bool, audio_data: Any
+    ) -> None:
+        """確定済みの録音データを前処理し、文字起こしキューへ投入する。
 
-        recorder.stop() が PortAudio の close 待ちで最大 2 秒ブロックするため、
-        listener スレッドを巻き込まないようここで完結させる。
+        recorder.stop() は呼び出し側（stop_and_transcribe）で同期実行済み。
+        ここでは listener スレッドを巻き込みたくない重い処理
+        （音量正規化・キュー投入）だけを担当する。
         """
-        audio_data = self._recorder.stop()
-
         # 音声データが空の場合
         if len(audio_data) == 0:
             if not self._queue_worker_running:
