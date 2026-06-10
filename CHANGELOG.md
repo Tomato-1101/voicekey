@@ -51,6 +51,23 @@ voicekeyの変更履歴を記録するファイルです。
   - デバッグ用 `benchmark/debug_openai_rt.py`（OpenAI Realtime の生イベント確認）も追加
   - 結論: HUD にライブ表示するなら Deepgram nova-3 が最適（確定 60〜170ms・精度安定・多言語）。OpenAI で揃えるなら gpt-realtime-whisper。ホールド入力で離してから一括でよいなら REST の Groq turbo が最速
 
+### Added (2026-06-10 追記 4)
+- **アプリ本体にリアルタイムストリーミング + ライブ字幕を実装（Mac 版）**
+  - 新規 `StreamingTranscriber.swift`: Deepgram WebSocket（`URLSessionWebSocketTask`、外部依存なし）。録音中の 16kHz PCM を逐次送信し、暫定（interim）/確定（is_final）を受信
+  - `AudioRecorder`: 逐次チャンク通知 `chunkHandler` を追加。全バッファ蓄積とは独立して送るため、ストリーミングが失敗しても同じ録音バッファで REST にフォールバックできる
+  - `AppController`: backend=Deepgram かつストリーミング有効のとき WS 経路。ホットキーを離した瞬間に確定テキストを貼り付け、空・失敗時は REST フォールバック。録音破棄時は `cancel()`
+  - HUD: 録音中に**ライブ字幕**を表示（発話しながら文字が伸び、最新の語尾が見えるよう頭を省略表示）。HUD 幅を 460pt に拡張（ピル自体は内容に追従）
+  - 日本語スペース除去: Deepgram は日本語に単語間スペースを挿入するため、「前後どちらかが CJK 文字」のスペースのみ除去（英単語間スペースは維持）
+  - 設定の一般タブに「リアルタイムストリーミング（Deepgram）」トグルを追加（既定 ON）
+  - 既定モデル更新: Deepgram を **nova-3** に（ストリーミング最良）、ElevenLabs に **scribe_v2** を追加
+- **ベンチに最新モデルを追加（検索＋API 実測で見落としを洗い出し）**
+  - ElevenLabs **Scribe v2**（バッチ）: 短文 CER 0.0%（1255ms）だが**長文は 5.8% と scribe_v1 の 0.4% より精度後退**。利用可能 STT は scribe_v1 / scribe_v1_experimental / scribe_v2 の 3 つ（`probe_stt_models.py` で確定）
+  - Deepgram **Flux**（`flux-general-multi`、会話向け新モデル、`/v2/listen`）: TTFB 885〜1107ms、確定 407〜546ms、CER 0.0%/2.7%。ターン検出ぶん確定が遅くホールド入力には nova-3 が上
+  - ElevenLabs **Scribe v2 Realtime**（`/v1/speech-to-text/realtime` WebSocket、`scribe_v2_realtime`）: 短文 確定 266ms/CER 0.0% だが TTFB ~2.2s と高め、長文で確定取得に失敗（要調整）。公称 150ms は本計測では未再現
+  - `debug_realtime_new.py` で Flux / ElevenLabs Realtime の生プロトコル（TurnInfo/event、partial/committed_transcript）を確定してから実装
+  - **ストリーミング最終結論**: 離して→確定が最速・最精度なのは **Deepgram nova-3（確定 94〜109ms、CER 0.0%/1.3%）**。ライブ字幕の既定として最適。OpenAI 統一なら gpt-realtime-whisper（確定 ~800ms）。Flux は会話エージェント向け、ElevenLabs Realtime は現状 nova-3 に及ばず
+  - 新規キーが要る有力候補（未計測・要サインアップ）: Soniox（日本語 WER 8.7% 主張・$0.12/h）、Speechmatics（月 40h 無料）、Mistral Voxtral Realtime（$0.006/min）
+
 ### Fixed (2026-06-10 追記 2)
 - **ホットキーがほとんど反応しない問題（Mac 版）**
   - 原因 1: ウィンドウを 1 つも持たないメニューバーアプリは App Nap の対象になり、イベントタップのコールバックが遅延 → OS にタイムアウト無効化されてホットキーが死ぬ。`beginActivity` と Info.plist `NSAppSleepDisabled` で App Nap を無効化し、タップ監視スレッドの QoS を `.userInteractive` に引き上げ

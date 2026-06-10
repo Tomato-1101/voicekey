@@ -57,6 +57,11 @@ private struct GeneralSettingsTab: View {
 
             Toggle("録音中に HUD を表示", isOn: $config.hudEnabled)
 
+            Toggle("リアルタイムストリーミング（Deepgram）", isOn: $config.streamingEnabled)
+            Text("バックエンドが Deepgram のホットキーで、話しながら HUD に文字を表示し、離した瞬間に確定します。オフにすると従来どおり録音後にまとめて変換します。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             LabeledContent("自動 Enter の遅延") {
                 HStack {
                     TextField(

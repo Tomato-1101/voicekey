@@ -25,6 +25,10 @@ final class AudioRecorder {
     /// 音声レベル通知（0.0-1.0、約 30fps、audio スレッドから呼ばれる）
     var levelHandler: ((Float) -> Void)?
 
+    /// 16kHz モノラルチャンクの逐次通知（ストリーミング送信用、audio スレッドから呼ばれる）。
+    /// ストリーミング録音時のみ設定し、終了時に nil へ戻す
+    var chunkHandler: (([Float]) -> Void)?
+
     private let engine = AVAudioEngine()
     /// エンジン操作を直列化するキュー（ブロックしてもここだけ）
     private let queue = DispatchQueue(label: "com.voicekey.audio-control")
@@ -161,6 +165,10 @@ final class AudioRecorder {
             samples.append(contentsOf: chunk)
         }
         samplesLock.unlock()
+
+        // ストリーミング送信用に逐次チャンクを渡す（全バッファ蓄積とは独立）。
+        // ストリーミングが失敗しても samples には残るため REST フォールバックが効く
+        chunkHandler?(chunk)
 
         // HUD 用レベル通知（約 30fps に間引き）
         if let handler = levelHandler {

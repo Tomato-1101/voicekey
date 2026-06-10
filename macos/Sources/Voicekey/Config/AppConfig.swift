@@ -45,14 +45,15 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    /// 既知のモデル一覧（設定 UI の候補。自由入力も可）
+    /// 既知のモデル一覧（設定 UI の候補。自由入力も可）。先頭が既定。
     var knownModels: [String] {
         switch self {
         case .openai: return ["gpt-4o-transcribe", "gpt-4o-mini-transcribe"]
         case .groq: return ["whisper-large-v3-turbo", "whisper-large-v3"]
-        case .elevenlabs: return ["scribe_v1", "scribe_v1_experimental"]
-        // nova-2 は language=ja の単言語指定に対応しているため既定にする
-        case .deepgram: return ["nova-2", "nova-3"]
+        // scribe_v2 が最新。ただし日本語長文は scribe_v1 の方が高精度なケースもある
+        case .elevenlabs: return ["scribe_v2", "scribe_v1", "scribe_v1_experimental"]
+        // nova-3 がベンチで速度・精度とも最良（ストリーミング既定）。ja は多言語モードで対応
+        case .deepgram: return ["nova-3", "nova-2"]
         }
     }
 
@@ -90,6 +91,8 @@ final class ConfigStore: ObservableObject {
     @Published var vadEnabled: Bool
     /// 録音 HUD を表示するか
     @Published var hudEnabled: Bool
+    /// Deepgram でリアルタイムストリーミング（ライブ字幕）を使うか
+    @Published var streamingEnabled: Bool
     /// ダブルタップ自動 Enter: テキスト挿入から Enter 送信までの待機（ミリ秒）
     @Published var autoEnterDelayMs: Int
 
@@ -102,6 +105,7 @@ final class ConfigStore: ObservableObject {
         static let language = "language"
         static let vadEnabled = "vadEnabled"
         static let hudEnabled = "hudEnabled"
+        static let streamingEnabled = "streamingEnabled"
         static let autoEnterDelayMs = "autoEnterDelayMs"
     }
 
@@ -119,6 +123,7 @@ final class ConfigStore: ObservableObject {
         language = defaults.string(forKey: Keys.language) ?? "ja"
         vadEnabled = defaults.object(forKey: Keys.vadEnabled) as? Bool ?? true
         hudEnabled = defaults.object(forKey: Keys.hudEnabled) as? Bool ?? true
+        streamingEnabled = defaults.object(forKey: Keys.streamingEnabled) as? Bool ?? true
         autoEnterDelayMs = defaults.object(forKey: Keys.autoEnterDelayMs) as? Int ?? 50
 
         // 変更を自動保存（起動直後の初期代入は上で完了しているため安全）
@@ -127,6 +132,7 @@ final class ConfigStore: ObservableObject {
         $language.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.language) }.store(in: &cancellables)
         $vadEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.vadEnabled) }.store(in: &cancellables)
         $hudEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.hudEnabled) }.store(in: &cancellables)
+        $streamingEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.streamingEnabled) }.store(in: &cancellables)
         $autoEnterDelayMs.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.autoEnterDelayMs) }.store(in: &cancellables)
     }
 

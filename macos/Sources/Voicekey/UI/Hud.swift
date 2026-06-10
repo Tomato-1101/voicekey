@@ -26,6 +26,8 @@ final class HudModel: ObservableObject {
     @Published var mode: Mode = .hidden
     /// 直近の音声レベル履歴（波形バー描画用）
     @Published var levels: [Float] = Array(repeating: 0, count: HudView.barCount)
+    /// ストリーミング中のライブ字幕（空なら波形バーを表示）
+    @Published var caption: String = ""
 
     func pushLevel(_ value: Float) {
         levels.removeFirst()
@@ -58,6 +60,7 @@ final class HudController {
         case .recording(let autoEnter):
             noticeTask?.cancel()
             model.resetLevels()
+            model.caption = ""  // 新しい録音のたびに字幕をリセット
             model.mode = .recording(autoEnter: autoEnter)
             show()
         case .transcribing:
@@ -86,6 +89,18 @@ final class HudController {
         if case .recording = model.mode {
             model.pushLevel(value)
         }
+    }
+
+    /// ストリーミングのライブ字幕を更新する（録音中のみ反映）
+    func setCaption(_ text: String) {
+        if case .recording = model.mode {
+            model.caption = text
+        }
+    }
+
+    /// ライブ字幕を消す（確定貼り付け後に呼ぶ）
+    func clearCaption() {
+        model.caption = ""
     }
 
     // MARK: - パネル管理
@@ -140,9 +155,12 @@ final class HudController {
 
 /// HUD の描画（SwiftUI）
 struct HudView: View {
-    static let width: CGFloat = 240
+    // 幅はライブ字幕が入る余白を確保（ピル自体は内容に応じて縮む）
+    static let width: CGFloat = 460
     static let height: CGFloat = 56
     static let barCount = 24
+    /// ライブ字幕の最大幅（これを超えると末尾を残して頭を省略表示）
+    static let captionMaxWidth: CGFloat = 360
 
     @ObservedObject var model: HudModel
 
@@ -175,7 +193,17 @@ struct HudView: View {
                 Circle()
                     .fill(autoEnter ? Color.purple : Color.red)
                     .frame(width: 8, height: 8)
-                levelBars
+                // ストリーミング字幕があればそれを、なければ波形バーを表示。
+                // 頭を省略（.head）して常に最新の語尾が見えるようにする
+                if model.caption.isEmpty {
+                    levelBars
+                } else {
+                    Text(model.caption)
+                        .font(.system(size: 13, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                        .frame(maxWidth: Self.captionMaxWidth, alignment: .trailing)
+                }
                 if autoEnter {
                     Image(systemName: "return")
                         .font(.system(size: 11, weight: .bold))

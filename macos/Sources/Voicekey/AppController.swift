@@ -39,6 +39,8 @@ final class AppController: ObservableObject {
     // --- 録音状態 ---
     private var recordingSlot: Int?
     private var autoEnter = false
+    /// ストリーミング録音中の Deepgram セッション（非ストリーミング時は nil）
+    private var streamer: StreamingTranscriber?
     /// 未完了の文字起こしタスク数
     private var outstanding = 0
     /// 録音の最大時間の保険タイマー
@@ -174,6 +176,19 @@ final class AppController: ObservableObject {
         // 録音中に TLS 接続を事前確立して、停止後の初回 API 往復を短縮
         transcribers[slotId]?.prewarm()
 
+        // Deepgram かつストリーミング有効なら WebSocket を開いてライブ字幕を出す。
+        // 開始できなければ（キー無し等）chunkHandler を張らないため REST 経路に自動フォールバック
+        if config.streamingEnabled, slot.backend == .deepgram {
+            let stream = StreamingTranscriber(model: slot.model, language: config.language)
+            stream.onInterim = { [weak self] text in
+                DispatchQueue.main.async { self?.hud.setCaption(text) }
+            }
+            if stream.start() {
+                streamer = stream
+                recorder.chunkHandler = { [weak stream] chunk in stream?.send(chunk) }
+            }
+        }
+
         recorder.start { [weak self] ok in
             guard !ok else { return }
             DispatchQueue.main.async {
@@ -198,6 +213,10 @@ final class AppController: ObservableObject {
     private func finishRecording() {
         guard let slotId = recordingSlot else { return }
         let useAutoEnter = autoEnter
+        // ストリーミング送信を打ち切り、確定待ちはパイプライン側で行う
+        let activeStreamer = streamer
+        streamer = nil
+        recorder.chunkHandler = nil
         recordingSlot = nil
         autoEnter = false
         failsafeTask?.cancel()
@@ -207,17 +226,21 @@ final class AppController: ObservableObject {
         recorder.stop { [weak self] samples in
             // audio キューから呼ばれる。メインへホップしてタスク起動
             DispatchQueue.main.async {
-                self?.processAudio(samples, slotId: slotId, autoEnter: useAutoEnter)
+                self?.processAudio(samples, slotId: slotId,
+                                   autoEnter: useAutoEnter, streamer: activeStreamer)
             }
         }
     }
 
     // MARK: - 文字起こしパイプライン
 
-    private func processAudio(_ samples: [Float], slotId: Int, autoEnter: Bool) {
+    private func processAudio(
+        _ samples: [Float], slotId: Int, autoEnter: Bool, streamer: StreamingTranscriber?
+    ) {
         let vadEnabled = config.vadEnabled
         let delayMs = config.autoEnterDelayMs
         guard let transcriber = transcribers[slotId] else {
+            streamer?.cancel()
             taskFinished()
             return
         }
@@ -228,6 +251,23 @@ final class AppController: ObservableObject {
             await previous?.value
             defer { taskFinished() }
 
+            // --- ストリーミング経路: Deepgram の確定テキストを受け取って貼り付け ---
+            if let streamer {
+                let streamed = await streamer.finish()
+                hud.clearCaption()
+                if !streamed.isEmpty {
+                    await Paster.paste(streamed)
+                    if autoEnter {
+                        try? await Task.sleep(for: .milliseconds(max(0, delayMs)))
+                        Paster.pressEnter()
+                    }
+                    return
+                }
+                // 確定が空（接続失敗・無音など）→ 取得済みバッファで REST にフォールバック
+                log.info("ストリーミング結果が空のため REST にフォールバックします")
+            }
+
+            // --- REST 経路（従来の 正規化 → VAD → API → 貼り付け）---
             let duration = Double(samples.count) / AudioRecorder.sampleRate
             guard duration >= kMinAudioSec else {
                 log.info("録音が短すぎるためスキップ (\(String(format: "%.2f", duration))s)")
