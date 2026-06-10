@@ -67,6 +67,7 @@ class AudioRecorder:
         sample_rate: int = SAMPLE_RATE,
         input_device: Optional[Union[int, str]] = "default",
         level_callback: Optional[Callable[[float], None]] = None,
+        chunk_callback: Optional[Callable[[npt.NDArray[np.float32]], None]] = None,
     ) -> None:
         """
         AudioRecorderを初期化する。
@@ -76,9 +77,14 @@ class AudioRecorder:
             input_device: 入力デバイス（"default" / デバイスID / デバイス名）
             level_callback: 録音中の音声レベル（0.0-1.0）を受け取るコールバック。
                             audio callback スレッドから throttle 付きで呼ばれる
+            chunk_callback: 録音中の生 PCM チャンク（float32 モノラル）を受け取る
+                            コールバック。Deepgram ストリーミングへ逐次送るために使う。
+                            録音ごとにアプリ側で差し替え/解除する（録音中のみ発火）
         """
         self.sample_rate = sample_rate
         self._level_callback = level_callback
+        # ストリーミング送出用フック。録音ごとにアプリ側が set/clear する公開属性
+        self.chunk_callback = chunk_callback
         self._input_device = self.normalize_device_setting(input_device)
 
         # 録音データ（audio callback → stop 時にドレイン）
@@ -470,6 +476,15 @@ class AudioRecorder:
 
             # データをコピーしてキューに追加（元バッファは PortAudio が再利用するため）
             self._audio_q.put(indata.copy())
+
+            # ストリーミング送出（Deepgram へ逐次送る。録音ごとに差し替わる）。
+            # REST 経路（audio_q）とは独立。フックが無ければ何もしない
+            chunk_cb = self.chunk_callback
+            if chunk_cb is not None:
+                try:
+                    chunk_cb(indata.reshape(-1).copy())
+                except Exception:
+                    pass  # 送出側の例外で録音を止めない
 
             # HUD 用の音声レベル通知（約 30fps に間引き）
             cb = self._level_callback

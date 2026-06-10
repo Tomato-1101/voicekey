@@ -19,6 +19,7 @@ logger = get_logger(__name__)
 SERVICE_GROQ: str = "voicekey.Groq"
 SERVICE_OPENAI: str = "voicekey.OpenAI"
 SERVICE_ELEVENLABS: str = "voicekey.ElevenLabs"
+SERVICE_DEEPGRAM: str = "voicekey.Deepgram"
 
 # ユーザー名は固定。アプリ単一ユーザー前提のため、エントリ識別はサービス名のみで足りる。
 _USERNAME: str = "default"

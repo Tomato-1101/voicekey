@@ -23,6 +23,7 @@ import numpy as np
 import numpy.typing as npt
 
 from .audio_utils import numpy_to_wav_bytes
+from .text_utils import strip_cjk_spaces
 from ..config.constants import SAMPLE_RATE
 from ..utils import secrets
 from ..utils.logger import get_logger
@@ -104,6 +105,58 @@ class ApiTranscriber:
         import os
         return secrets.get_api_key(self.keychain_service) or os.environ.get(self.env_var)
 
+    def _auth_headers(self, api_key: str) -> dict:
+        """
+        認証ヘッダーを返す（OpenAI 互換は Bearer。サブクラスで上書き可能）。
+
+        Args:
+            api_key: 解決済み API キー
+
+        Returns:
+            httpx.Client に渡すヘッダー辞書
+        """
+        return {"Authorization": f"Bearer {api_key}"}
+
+    def _raise_for_status(self, resp: httpx.Response) -> None:
+        """
+        HTTP ステータスを検査し、エラーなら日本語の TranscriptionError を送出する。
+
+        Raises:
+            TranscriptionError: 認証失敗・レート制限・その他 4xx/5xx
+        """
+        if resp.status_code == 401:
+            raise TranscriptionError(f"{self.display_name} の API キーが無効です（設定を確認してください）")
+        if resp.status_code == 429:
+            raise TranscriptionError(f"{self.display_name} API のレート制限に達しました（しばらく待って再試行してください）")
+        if resp.status_code >= 400:
+            # エラー詳細は JSON のことが多いが、先頭だけ載せれば原因特定には足りる
+            raise TranscriptionError(
+                f"{self.display_name} API エラー (HTTP {resp.status_code}): {resp.text[:200]}"
+            )
+
+    def _post(self, client: httpx.Client, path: str, **kwargs) -> httpx.Response:
+        """
+        POST を実行し、通信例外を日本語の TranscriptionError へ変換して応答を返す。
+
+        タイミング計測（last_api_time）とステータス検査もまとめて行う。
+        サブクラスの transcribe() から共通利用する。
+
+        Raises:
+            TranscriptionError: タイムアウト・接続失敗・HTTP エラー時
+        """
+        api_start = time.perf_counter()
+        try:
+            resp = client.post(path, **kwargs)
+        except httpx.TimeoutException:
+            raise TranscriptionError(
+                f"{self.display_name} API がタイムアウトしました（ネットワークを確認してください）"
+            )
+        except httpx.HTTPError as e:
+            raise TranscriptionError(f"{self.display_name} API への接続に失敗しました: {e}")
+        self.last_api_time = (time.perf_counter() - api_start) * 1000
+        self._raise_for_status(resp)
+        return resp
+
     def is_available(self) -> bool:
         """API キーが設定されており利用可能かを返す。"""
         return bool(self._resolve_api_key())
@@ -128,7 +181,7 @@ class ApiTranscriber:
                     )
                 self._client = httpx.Client(
                     base_url=self.base_url,
-                    headers={"Authorization": f"Bearer {api_key}"},
+                    headers=self._auth_headers(api_key),
                     timeout=_TIMEOUT,
                     # keepalive を長めに取り、録音中に prewarm した接続を再利用する
                     limits=httpx.Limits(
@@ -185,30 +238,12 @@ class ApiTranscriber:
         if self.prompt:
             data["prompt"] = self.prompt
 
-        api_start = time.perf_counter()
-        try:
-            resp = client.post(
-                "/audio/transcriptions",
-                data=data,
-                files={"file": ("audio.wav", wav_bytes, "audio/wav")},
-            )
-        except httpx.TimeoutException:
-            raise TranscriptionError(
-                f"{self.display_name} API がタイムアウトしました（ネットワークを確認してください）"
-            )
-        except httpx.HTTPError as e:
-            raise TranscriptionError(f"{self.display_name} API への接続に失敗しました: {e}")
-        self.last_api_time = (time.perf_counter() - api_start) * 1000
-
-        if resp.status_code == 401:
-            raise TranscriptionError(f"{self.display_name} の API キーが無効です（設定を確認してください）")
-        if resp.status_code == 429:
-            raise TranscriptionError(f"{self.display_name} API のレート制限に達しました（しばらく待って再試行してください）")
-        if resp.status_code >= 400:
-            # エラー詳細は JSON のことが多いが、先頭だけ載せれば原因特定には足りる
-            raise TranscriptionError(
-                f"{self.display_name} API エラー (HTTP {resp.status_code}): {resp.text[:200]}"
-            )
+        resp = self._post(
+            client,
+            "/audio/transcriptions",
+            data=data,
+            files={"file": ("audio.wav", wav_bytes, "audio/wav")},
+        )
 
         text = resp.text.strip()
         logger.info(
@@ -257,3 +292,136 @@ class GroqTranscriber(ApiTranscriber):
         "whisper-large-v3-turbo",  # 最速（リアルタイムの 200 倍超）
         "whisper-large-v3",        # 高精度
     )
+
+
+class ElevenLabsTranscriber(ApiTranscriber):
+    """
+    ElevenLabs Scribe の Speech-to-Text API（REST）。
+
+    OpenAI 互換ではないため transcribe() と認証ヘッダーを独自実装する:
+    - 認証は xi-api-key ヘッダー
+    - multipart のフィールド名は model_id（model ではない）/ language_code
+    - 応答は JSON で text フィールドに本文が入る
+
+    ベンチ（2026-06-10）では短文の日本語精度が最高（scribe_v1 で CER 0.0%）。
+    ただし scribe_v2 は短文0%でも長文で精度後退するため既定は scribe_v1。
+    """
+
+    display_name = "ElevenLabs"
+    base_url = "https://api.elevenlabs.io/v1"
+    keychain_service = secrets.SERVICE_ELEVENLABS
+    env_var = "ELEVENLABS_API_KEY"
+    available_models = (
+        "scribe_v1",               # 日本語短文・長文ともに高精度（既定）
+        "scribe_v1_experimental",  # 実験版
+        "scribe_v2",               # 最新。短文は0%だが日本語長文は後退する
+    )
+
+    def _auth_headers(self, api_key: str) -> dict:
+        """ElevenLabs は Bearer ではなく xi-api-key ヘッダーで認証する。"""
+        return {"xi-api-key": api_key}
+
+    def transcribe(self, audio_data: npt.NDArray[np.float32]) -> str:
+        """音声を ElevenLabs Scribe で文字起こしする。"""
+        if len(audio_data) == 0:
+            return ""
+
+        wav_bytes = numpy_to_wav_bytes(audio_data, self.sample_rate)
+        client = self._get_client()
+
+        # model ではなく model_id。言語は language_code（空なら自動判定）
+        data = {"model_id": self.model}
+        if self.language:
+            data["language_code"] = self.language
+
+        resp = self._post(
+            client,
+            "/speech-to-text",
+            data=data,
+            files={"file": ("audio.wav", wav_bytes, "audio/wav")},
+        )
+
+        try:
+            text = (resp.json().get("text") or "").strip()
+        except Exception as e:
+            raise TranscriptionError(f"{self.display_name} 応答の解析に失敗しました: {e}")
+
+        logger.info(
+            f"{self.display_name} 文字起こし完了: {self.last_api_time:.0f}ms, {len(text)} 文字"
+        )
+        return text
+
+
+class DeepgramTranscriber(ApiTranscriber):
+    """
+    Deepgram Listen の事前録音 API（REST）。
+
+    OpenAI 互換ではないため transcribe() と認証を独自実装する:
+    - 認証は Authorization: Token <key>
+    - 音声は multipart ではなく raw バイト本文として送る（Content-Type: audio/wav）
+    - モデル・言語・整形オプションはクエリパラメータで指定
+    - 応答 JSON の results.channels[0].alternatives[0].transcript が本文
+
+    日本語出力に単語間スペースが入るため strip_cjk_spaces で除去する。
+    nova-3 はストリーミング既定でもあり、REST フォールバックにも使う。
+    """
+
+    display_name = "Deepgram"
+    base_url = "https://api.deepgram.com/v1"
+    keychain_service = secrets.SERVICE_DEEPGRAM
+    env_var = "DEEPGRAM_API_KEY"
+    available_models = (
+        "nova-3",  # 多言語・最新（既定）
+        "nova-2",  # 旧世代
+    )
+
+    def _auth_headers(self, api_key: str) -> dict:
+        """Deepgram は Bearer ではなく Token スキームで認証する。"""
+        return {"Authorization": f"Token {api_key}"}
+
+    @property
+    def _dg_language(self) -> str:
+        """
+        Deepgram の言語パラメータ。
+
+        nova-3 は日本語の単言語指定に未対応のため多言語モード（multi）を使う。
+        nova-2 以前は ja 等の指定をそのまま使う。
+        """
+        if self.model.startswith("nova-3"):
+            return "multi"
+        return self.language or "ja"
+
+    def transcribe(self, audio_data: npt.NDArray[np.float32]) -> str:
+        """音声を Deepgram Listen（事前録音）で文字起こしする。"""
+        if len(audio_data) == 0:
+            return ""
+
+        wav_bytes = numpy_to_wav_bytes(audio_data, self.sample_rate)
+        client = self._get_client()
+
+        params = {
+            "model": self.model,
+            "language": self._dg_language,
+            "punctuate": "true",
+            "smart_format": "true",
+        }
+        resp = self._post(
+            client,
+            "/listen",
+            params=params,
+            content=wav_bytes,
+            headers={"Content-Type": "audio/wav"},
+        )
+
+        try:
+            alternatives = resp.json()["results"]["channels"][0]["alternatives"]
+            transcript = alternatives[0]["transcript"] if alternatives else ""
+        except Exception as e:
+            raise TranscriptionError(f"{self.display_name} 応答の解析に失敗しました: {e}")
+
+        # 日本語の単語間スペースを除去（英単語間は残す）
+        text = strip_cjk_spaces(transcript.strip())
+        logger.info(
+            f"{self.display_name} 文字起こし完了: {self.last_api_time:.0f}ms, {len(text)} 文字"
+        )
+        return text

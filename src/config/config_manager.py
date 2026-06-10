@@ -16,7 +16,8 @@ from ..utils.logger import get_logger
 from .constants import DEFAULT_CONFIG, SETTINGS_FILE_NAME
 
 logger = get_logger(__name__)
-API_BACKENDS = {"groq", "openai"}
+# 対応バックエンド（REST + ストリーミング）。これ以外は openai にフォールバック
+API_BACKENDS = {"groq", "openai", "elevenlabs", "deepgram"}
 
 
 def _deep_merge(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:

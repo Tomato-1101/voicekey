@@ -18,6 +18,10 @@ elif sys.platform.startswith("win"):
         'pynput.mouse._win32',
     ]
 
+# websockets は streaming_transcriber 内で遅延 import するため静的解析されない。
+# Deepgram ストリーミングに必須なので明示的に全サブモジュールを収集する
+hiddenimports += collect_submodules('websockets')
+
 # Collect silero_vad with all its data files
 tmp_ret = collect_all('silero_vad')
 datas += tmp_ret[0]

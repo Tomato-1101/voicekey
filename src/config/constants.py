@@ -55,11 +55,21 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "api_prompt": "",
     },
 
-    # APIモデルデフォルト値（バックエンド別）
+    # APIモデルデフォルト値（バックエンド別、ベンチ実測 2026-06-10 に基づく既定）
     "default_api_models": {
-        "groq": "whisper-large-v3-turbo",
+        "groq": "whisper-large-v3-turbo",   # REST 最速
         "openai": "gpt-4o-mini-transcribe",
+        "elevenlabs": "scribe_v1",          # 日本語 REST 最高精度（v2 は長文後退）
+        "deepgram": "nova-3",               # ストリーミング/REST とも最良
     },
+
+    # リアルタイムストリーミング（Deepgram）。バックエンドが deepgram の
+    # ホットキーで、話しながら HUD に文字を表示し離した瞬間に確定する。
+    # オフにすると従来どおり録音後に REST でまとめて変換する
+    "streaming_enabled": True,
+
+    # 録音中の HUD（画面下部中央の小型ピル）を表示するか
+    "hud_enabled": True,
 
     # 開発者モード - 出力を引用符で囲み、タイミングをファイルに記録
     "dev_mode": False,

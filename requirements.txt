@@ -28,6 +28,9 @@ openai>=1.0.0
 # HTTP client tuning for API calls
 httpx>=0.27.0
 
+# Deepgram リアルタイムストリーミング（WebSocket、同期クライアント）
+websockets>=13.0
+
 # Cerebras API (LLM post-processing - optional)
 cerebras-cloud-sdk>=1.0.0
 

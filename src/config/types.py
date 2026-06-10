@@ -39,11 +39,15 @@ class TranscriptionBackend(str, Enum):
     文字起こしバックエンドタイプ。
 
     Attributes:
-        GROQ: Groq Cloud API
-        OPENAI: OpenAI GPT-4o Transcribe API
+        GROQ: Groq Cloud API（OpenAI 互換 REST、Whisper）
+        OPENAI: OpenAI GPT-4o Transcribe API（OpenAI 互換 REST）
+        ELEVENLABS: ElevenLabs Scribe API（REST、短文高精度）
+        DEEPGRAM: Deepgram Listen API（REST + WebSocket ストリーミング、nova-3）
     """
     GROQ = "groq"
     OPENAI = "openai"
+    ELEVENLABS = "elevenlabs"
+    DEEPGRAM = "deepgram"
 
 
 @dataclass
@@ -56,11 +60,15 @@ class TranscriptionTask:
         slot_id: 使用するホットキースロットID
         timestamp: タスク作成時刻
         auto_enter: 文字起こし後にEnterキーを自動入力するか
+        streamer: ストリーミング録音時の Deepgram セッション（非ストリーミング時は None）。
+                  ワーカーが finish() を呼んで確定テキストを取得する。型は循環参照を
+                  避けるため Any（実体は core.streaming_transcriber.StreamingTranscriber）
     """
     audio_data: Any
     slot_id: int
     timestamp: float
     auto_enter: bool = False
+    streamer: Any = None
 
 
 @dataclass
