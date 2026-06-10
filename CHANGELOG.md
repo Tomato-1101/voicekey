@@ -2,6 +2,23 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
+## [Unreleased] - 2026-06-10 (voicekey for Mac)
+
+### Added
+- **macOS ネイティブ版 `macos/` を新規作成（Swift / SwiftUI）**
+  - 方針転換: 「voicekey for Mac（Swift ネイティブ）」と「voicekey for Windows（既存 Python 版がベース）」をそれぞれ最適な技術で開発する。本リポジトリはモノレポ構成とする
+  - メニューバー常駐（`MenuBarExtra`、Dock 非表示）。アイコン色で状態表示（待機=テンプレート / 録音=赤 / 自動送信録音=紫 / 変換中=オレンジ）
+  - **HotkeyMonitor**: CGEventTap（listen-only）によるグローバルキー監視。修飾キーの左右をデバイス依存ビットで厳密判定し、`tapDisabledByTimeout` 受信時は即時再有効化（pynput で起きていた「ホットキー永久無反応」を OS レベルで根治）
+  - **AudioRecorder**: AVAudioEngine 録音 + 16kHz モノラル変換。エンジン操作は専用シリアルキューで直列化
+  - **VoiceActivity**: 音量正規化（ゲイン上限 +20dB）+ Apple SoundAnalysis のオンデバイス ML 分類器による発話判定（フォールバックはエネルギーベース）+ 無音トリミング
+  - **Transcriber**: OpenAI / Groq REST（WAV multipart、URLSession）。録音開始時の TLS プリウォーム付き
+  - **Keychain**: API キー保存。サービス名は Python 版（keyring）と互換で、保存済みキーをそのまま読める
+  - **Paster**: クリップボード貼り付け + 元内容の自動復元 + ダブルタップ自動 Enter
+  - **HUD**: 録音中のみ画面下部中央に音声レベル連動の波形ピル（NSPanel、クリック透過、フルスクリーン上にも表示）。変換中スピナー / エラー・無音通知（2 秒）
+  - **設定ウィンドウ**: 一般（言語・VAD・HUD・自動 Enter 遅延・ログイン時起動）/ ホットキー 1・2（キャプチャ式レコーダー・モード・バックエンド・モデル・プロンプト）/ API キー
+  - **AppController**: 文字起こしパイプラインの直列チェーン化（録音順の挿入保証）、録音 300 秒上限の保険、起動時の権限チェック（マイク・入力監視・アクセシビリティ）とシステム設定への誘導
+  - ビルド: SwiftPM + `scripts/build_app.sh`（.app バンドル組み立て + ad-hoc 署名）。`swift build` 警告ゼロ、起動スモークテスト済み
+
 ## [Unreleased] - 2026-06-10
 
 ### Changed

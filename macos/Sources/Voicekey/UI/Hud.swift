@@ -1,0 +1,220 @@
+//
+//  Hud.swift
+//  録音中 HUD（画面下部中央の小型ピル）
+//
+//  方針: 「録音中のみ・小型・情報最小限」。
+//  - 録音中: 音声レベル連動の波形バー（auto_enter 時は ⏎ バッジ）
+//  - 変換中: スピナー
+//  - 通知: エラー・無音検出などを 2 秒だけ表示
+//  非アクティベートのフローティングパネルで、クリックは透過し
+//  フルスクリーンアプリの上にも表示される。
+//
+
+import AppKit
+import SwiftUI
+
+/// HUD の表示状態モデル
+@MainActor
+final class HudModel: ObservableObject {
+    enum Mode: Equatable {
+        case hidden
+        case recording(autoEnter: Bool)
+        case transcribing
+        case notice(String)
+    }
+
+    @Published var mode: Mode = .hidden
+    /// 直近の音声レベル履歴（波形バー描画用）
+    @Published var levels: [Float] = Array(repeating: 0, count: HudView.barCount)
+
+    func pushLevel(_ value: Float) {
+        levels.removeFirst()
+        levels.append(value)
+    }
+
+    func resetLevels() {
+        levels = Array(repeating: 0, count: HudView.barCount)
+    }
+}
+
+/// HUD パネル（NSPanel）の管理
+@MainActor
+final class HudController {
+
+    let model = HudModel()
+    private var panel: NSPanel?
+    private var noticeTask: Task<Void, Never>?
+
+    /// HUD を表示するか（設定で無効化可能）
+    var enabled = true
+
+    /// アプリ状態に応じて HUD を更新する
+    func update(for state: AppState) {
+        switch state {
+        case .idle:
+            // 通知表示中は消さない（通知は自身のタイマーで消える）
+            if case .notice = model.mode { return }
+            hide()
+        case .recording(let autoEnter):
+            noticeTask?.cancel()
+            model.resetLevels()
+            model.mode = .recording(autoEnter: autoEnter)
+            show()
+        case .transcribing:
+            noticeTask?.cancel()
+            model.mode = .transcribing
+            show()
+        }
+    }
+
+    /// 一時通知を 2 秒間表示する
+    func notice(_ text: String) {
+        noticeTask?.cancel()
+        model.mode = .notice(text)
+        show()
+        noticeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self, !Task.isCancelled else { return }
+            if case .notice = self.model.mode {
+                self.hide()
+            }
+        }
+    }
+
+    /// 音声レベルを反映する（メインスレッドから呼ぶ）
+    func pushLevel(_ value: Float) {
+        if case .recording = model.mode {
+            model.pushLevel(value)
+        }
+    }
+
+    // MARK: - パネル管理
+
+    private func show() {
+        guard enabled else { return }
+        if panel == nil {
+            panel = makePanel()
+        }
+        positionPanel()
+        panel?.orderFrontRegardless()
+    }
+
+    private func hide() {
+        model.mode = .hidden
+        panel?.orderOut(nil)
+    }
+
+    private func makePanel() -> NSPanel {
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: HudView.width, height: HudView.height),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.level = .statusBar                    // ほぼすべてのウィンドウより上
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false                     // 影は SwiftUI 側で描く
+        panel.ignoresMouseEvents = true             // クリック透過
+        panel.hidesOnDeactivate = false
+        panel.collectionBehavior = [
+            .canJoinAllSpaces,                      // 全スペースに表示
+            .fullScreenAuxiliary,                   // フルスクリーンアプリの上にも表示
+            .ignoresCycle,
+        ]
+        panel.contentView = NSHostingView(rootView: HudView(model: model))
+        return panel
+    }
+
+    private func positionPanel() {
+        guard let panel, let screen = NSScreen.main else { return }
+        let frame = screen.visibleFrame
+        let x = frame.midX - HudView.width / 2
+        let y = frame.minY + 24  // 画面下部に少し浮かせる
+        panel.setFrame(
+            NSRect(x: x, y: y, width: HudView.width, height: HudView.height),
+            display: true
+        )
+    }
+}
+
+/// HUD の描画（SwiftUI）
+struct HudView: View {
+    static let width: CGFloat = 240
+    static let height: CGFloat = 56
+    static let barCount = 24
+
+    @ObservedObject var model: HudModel
+
+    var body: some View {
+        ZStack {
+            if model.mode != .hidden {
+                content
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay(
+                        Capsule().strokeBorder(.white.opacity(0.1), lineWidth: 0.5)
+                    )
+                    .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
+                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+            }
+        }
+        .frame(width: Self.width, height: Self.height)
+        .animation(.easeOut(duration: 0.15), value: model.mode)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch model.mode {
+        case .hidden:
+            EmptyView()
+
+        case .recording(let autoEnter):
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(autoEnter ? Color.purple : Color.red)
+                    .frame(width: 8, height: 8)
+                levelBars
+                if autoEnter {
+                    Image(systemName: "return")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.purple)
+                }
+            }
+
+        case .transcribing:
+            HStack(spacing: 10) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("変換中…")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+
+        case .notice(let text):
+            Text(text)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+    }
+
+    /// 音声レベル連動の波形バー
+    private var levelBars: some View {
+        HStack(spacing: 2.5) {
+            ForEach(0..<Self.barCount, id: \.self) { i in
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(Color.primary.opacity(0.75))
+                    .frame(width: 3, height: barHeight(model.levels[i]))
+            }
+        }
+        .animation(.linear(duration: 0.05), value: model.levels)
+    }
+
+    private func barHeight(_ level: Float) -> CGFloat {
+        let minH: CGFloat = 3
+        let maxH: CGFloat = 22
+        return minH + (maxH - minH) * CGFloat(min(1, max(0, level)))
+    }
+}
