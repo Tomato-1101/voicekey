@@ -26,6 +26,10 @@ voicekeyの変更履歴を記録するファイルです。
   - `Transcriber` をバックエンド別のリクエスト構築/応答解析に再構成（`MultipartForm` ヘルパー新設）。Keychain サービス名は Python 版と互換（`voicekey.ElevenLabs` / `voicekey.Deepgram`）。設定 UI の API キータブ・バックエンド/モデル選択は全 4 バックエンド対応
 - **ログイン時自動起動（Mac 版）**
   - 初回起動時に `SMAppService.mainApp.register()` を自動実行（Mac を開けば voicekey が必ず起動する）。設定画面の「ログイン時に起動」トグルでオフにすれば再登録しない
+- **文字起こしベンチマーク基盤 `benchmark/` を新規追加**
+  - 同一の日本語音声（短文 6.8s / 長文 41.7s、`say` で合成）を 4 バックエンドの各モデルに送り、レイテンシと CER（文字誤り率）を測定する `run_benchmark.py`
+  - API キーは環境変数 / `.env` → Keychain（アプリと共用）の順で取得（中身は非表示）。`make_audio.sh` で音声生成、原稿 `.txt` が CER 採点の正解を兼ねる
+  - 初回計測（OpenAI / Groq / ElevenLabs、Deepgram はキー待ち）: ElevenLabs scribe_v1 が最高精度（CER 0.0%/0.4%）だが長文 3.5s と低速、Groq whisper-large-v3-turbo が最速（385ms/742ms）で精度も良好（2.7%/5.4%）、OpenAI gpt-4o-transcribe は中速・長文 CER 7.6%
 
 ### Fixed (2026-06-10 追記 2)
 - **ホットキーがほとんど反応しない問題（Mac 版）**
