@@ -9,6 +9,8 @@
 //
 
 import AVFoundation
+import AudioToolbox
+import CoreAudio
 import Foundation
 import os.log
 
@@ -28,6 +30,9 @@ final class AudioRecorder {
     /// 16kHz モノラルチャンクの逐次通知（ストリーミング送信用、audio スレッドから呼ばれる）。
     /// ストリーミング録音時のみ設定し、終了時に nil へ戻す
     var chunkHandler: (([Float]) -> Void)?
+
+    /// 使用する入力デバイスの UID（空ならシステム既定）。録音開始のたびに参照する
+    var inputDeviceUID: String = ""
 
     private let engine = AVAudioEngine()
     /// エンジン操作を直列化するキュー（ブロックしてもここだけ）
@@ -50,6 +55,21 @@ final class AudioRecorder {
             samplesLock.unlock()
 
             let input = engine.inputNode
+
+            // 指定があれば入力デバイスを切り替える（UID が解決できなければ既定のまま）。
+            // エンジン停止中に設定する必要があるが、start は常に stop 後に呼ばれる
+            if !inputDeviceUID.isEmpty {
+                if let deviceID = AudioDevices.deviceID(forUID: inputDeviceUID) {
+                    do {
+                        try input.auAudioUnit.setDeviceID(deviceID)
+                    } catch {
+                        log.warning("入力デバイスの切り替えに失敗（既定を使用）: \(error.localizedDescription)")
+                    }
+                } else {
+                    log.warning("指定の入力デバイスが見つかりません（既定を使用）")
+                }
+            }
+
             let hwFormat = input.inputFormat(forBus: 0)
             guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
                 log.error("入力デバイスが見つかりません")

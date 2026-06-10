@@ -98,6 +98,26 @@ voicekeyの変更履歴を記録するファイルです。
 - **app.py**: `_BACKEND_CLASSES` マップ、`interim_text` シグナル、`_active_streamer` 状態、`_insert_and_enter()` ヘルパー、ストリーミング優先＋REST フォールバックの `_process_task`
 - **検証**: 全変更ファイル `py_compile` OK、オフスクリーン結合スモーク OK、実 Deepgram/ElevenLabs API で REST・ストリーミングとも一致、ユニットテスト 38 件パス。Windows GUI/ホットキー/トレイ/マイクの実機確認はユーザー側で実施（開発は macOS のため）
 
+### Added (2026-06-11 追記 6) — 入力デバイス選択（Mac）とログイン時起動（Windows）
+両プラットフォームに「相手側が既に持っていた機能」を追加し、parity を揃えた。
+
+- **Mac 版に入力デバイス選択を追加**（Windows 版は既存）
+  - Core Audio (HAL) で入力チャンネルを持つマイクを列挙する `AudioDevices`（新規）を追加
+  - 設定の「一般」タブに入力デバイスのピッカーと更新ボタンを追加（「システム既定」+ 接続中のマイク。未接続の保存済みデバイスも選択を保持して表示）
+  - 選択は安定した UID で永続化し（`AudioDeviceID` は再接続で変わるため）、録音開始のたびに `AVAudioEngine` の inputNode へ `setDeviceID` で適用
+- **Windows 版にログイン時自動起動を追加**（Mac 版は既存 = SMAppService）
+  - レジストリ Run キー（`HKCU\...\CurrentVersion\Run`）で管理する `autostart`（新規）を追加。`sys.platform` ガードで非 Windows では安全に no-op
+  - 設定の「Advanced」に「ログイン時に起動」チェックボックスを追加（非 Windows では無効化＋注記）。状態はレジストリが真実なので settings.yaml には保存しない
+
+### Technical Details (追記 6)
+- **macos/Core/AudioDevices.swift**（新規）: `inputDevices()` / `deviceID(forUID:)`。`kAudioHardwarePropertyDevices` 列挙 + `kAudioDevicePropertyStreamConfiguration`（入力スコープ）でチャンネル判定
+- **macos/Core/AudioRecorder.swift**: `inputDeviceUID` を追加し `start()` 内で `input.auAudioUnit.setDeviceID()` を実行
+- **macos/Config/AppConfig.swift**: `@Published inputDeviceUID` を UserDefaults に永続化
+- **macos/UI/SettingsView.swift** / **AppController.swift**: ピッカー追加、録音開始前に `recorder.inputDeviceUID = config.inputDeviceUID`
+- **src/utils/autostart.py**（新規）: `is_supported()` / `is_enabled()` / `set_enabled()` / `_launch_command()`（凍結 exe か pythonw+run.py を引用符付きで組み立て）
+- **src/ui/settings_window.py**: `_autostart_check` 追加（load=レジストリ実状態、save=`set_enabled`）
+- **検証**: Mac `swift build` 成功、Windows `py_compile` OK・ユニットテスト 41 件パス（autostart 3 件追加）・オフスクリーンで設定ウィンドウ構築と非対応時の無効化を確認。Windows 実機でのレジストリ登録・自動起動はユーザー側で確認（開発は macOS のため）
+
 ### Fixed (2026-06-10 追記 2)
 - **ホットキーがほとんど反応しない問題（Mac 版）**
   - 原因 1: ウィンドウを 1 つも持たないメニューバーアプリは App Nap の対象になり、イベントタップのコールバックが遅延 → OS にタイムアウト無効化されてホットキーが死ぬ。`beginActivity` と Info.plist `NSAppSleepDisabled` で App Nap を無効化し、タップ監視スレッドの QoS を `.userInteractive` に引き上げ

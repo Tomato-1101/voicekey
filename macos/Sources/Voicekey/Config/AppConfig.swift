@@ -95,6 +95,8 @@ final class ConfigStore: ObservableObject {
     @Published var streamingEnabled: Bool
     /// ダブルタップ自動 Enter: テキスト挿入から Enter 送信までの待機（ミリ秒）
     @Published var autoEnterDelayMs: Int
+    /// 録音に使う入力デバイスの UID（空ならシステム既定マイク）
+    @Published var inputDeviceUID: String
 
     private var cancellables: Set<AnyCancellable> = []
     private let defaults: UserDefaults
@@ -107,6 +109,7 @@ final class ConfigStore: ObservableObject {
         static let hudEnabled = "hudEnabled"
         static let streamingEnabled = "streamingEnabled"
         static let autoEnterDelayMs = "autoEnterDelayMs"
+        static let inputDeviceUID = "inputDeviceUID"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -125,6 +128,7 @@ final class ConfigStore: ObservableObject {
         hudEnabled = defaults.object(forKey: Keys.hudEnabled) as? Bool ?? true
         streamingEnabled = defaults.object(forKey: Keys.streamingEnabled) as? Bool ?? true
         autoEnterDelayMs = defaults.object(forKey: Keys.autoEnterDelayMs) as? Int ?? 50
+        inputDeviceUID = defaults.string(forKey: Keys.inputDeviceUID) ?? ""
 
         // 変更を自動保存（起動直後の初期代入は上で完了しているため安全）
         $slot1.dropFirst().sink { [weak self] in self?.saveSlot($0, key: Keys.slot1) }.store(in: &cancellables)
@@ -134,6 +138,7 @@ final class ConfigStore: ObservableObject {
         $hudEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.hudEnabled) }.store(in: &cancellables)
         $streamingEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.streamingEnabled) }.store(in: &cancellables)
         $autoEnterDelayMs.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.autoEnterDelayMs) }.store(in: &cancellables)
+        $inputDeviceUID.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.inputDeviceUID) }.store(in: &cancellables)
     }
 
     /// スロット設定を ID で取得する

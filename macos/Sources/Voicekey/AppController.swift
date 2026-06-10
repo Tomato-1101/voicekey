@@ -189,6 +189,9 @@ final class AppController: ObservableObject {
             }
         }
 
+        // 設定された入力デバイスを録音開始のたびに反映（既定なら空文字）
+        recorder.inputDeviceUID = config.inputDeviceUID
+
         recorder.start { [weak self] ok in
             guard !ok else { return }
             DispatchQueue.main.async {

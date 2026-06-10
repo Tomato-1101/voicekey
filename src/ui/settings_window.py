@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 from ..config import ConfigManager, HotkeyMode, TranscriptionBackend
 from ..core.audio_recorder import AudioRecorder
 from ..platform import PlatformAdapter, get_platform_adapter
-from ..utils import secrets
+from ..utils import autostart, secrets
 from .styles import MacTheme
 
 
@@ -653,6 +653,16 @@ class SettingsWindow(QWidget):
         self._hud_check = QCheckBox("録音中の HUD を表示")
         layout.addRow("HUD:", self._hud_check)
 
+        # ログイン時に自動起動（Windows のみ。Mac ネイティブ版は SMAppService で対応）。
+        # 状態はレジストリ側が真実なので settings.yaml には保存しない
+        self._autostart_check = QCheckBox("ログイン時に起動")
+        self._autostart_check.setEnabled(autostart.is_supported())
+        layout.addRow("Startup:", self._autostart_check)
+        if not autostart.is_supported():
+            autostart_hint = QLabel("この機能は Windows でのみ利用できます")
+            autostart_hint.setStyleSheet("color: #888; font-size: 11px;")
+            layout.addRow("", autostart_hint)
+
         # VAD設定
         self._vad_check = QCheckBox("Enable VAD")
         layout.addRow("", self._vad_check)
@@ -775,6 +785,8 @@ class SettingsWindow(QWidget):
         # Advanced
         self._streaming_check.setChecked(config.get("streaming_enabled", True))
         self._hud_check.setChecked(config.get("hud_enabled", True))
+        # 自動起動はレジストリの実状態を反映（settings.yaml には持たない）
+        self._autostart_check.setChecked(autostart.is_enabled())
         self._vad_check.setChecked(config.get("vad_filter", True))
         self._vad_silence_spin.setValue(config.get("vad_min_silence_duration_ms", 500))
         self._auto_enter_delay_slider.setValue(config.get("auto_enter_delay_ms", 50))
@@ -895,6 +907,10 @@ class SettingsWindow(QWidget):
             "dev_mode": existing_dev_mode,
             "llm_postprocess": existing_llm_postprocess,
         }
+
+        # 自動起動はレジストリで管理するため settings.yaml とは別に反映する
+        if autostart.is_supported():
+            autostart.set_enabled(self._autostart_check.isChecked())
 
         if self._config_manager.save(new_config):
             self.close()

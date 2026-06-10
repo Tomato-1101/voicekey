@@ -41,6 +41,8 @@ struct SettingsView: View {
 private struct GeneralSettingsTab: View {
     @ObservedObject var config: ConfigStore
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    /// 入力デバイス一覧（開いたタイミングと更新ボタンで読み直す）
+    @State private var inputDevices: [AudioInputDevice] = AudioDevices.inputDevices()
 
     var body: some View {
         Form {
@@ -49,6 +51,33 @@ private struct GeneralSettingsTab: View {
                 Text("英語").tag("en")
                 Text("自動判定").tag("")
             }
+
+            LabeledContent("入力デバイス") {
+                HStack(spacing: 8) {
+                    Picker("", selection: $config.inputDeviceUID) {
+                        Text("システム既定").tag("")
+                        ForEach(inputDevices) { device in
+                            Text(device.name).tag(device.uid)
+                        }
+                        // 保存済みデバイスが現在見つからない場合も選択を保持して表示する
+                        if !config.inputDeviceUID.isEmpty,
+                           !inputDevices.contains(where: { $0.uid == config.inputDeviceUID }) {
+                            Text("（未接続のデバイス）").tag(config.inputDeviceUID)
+                        }
+                    }
+                    .labelsHidden()
+                    Button {
+                        inputDevices = AudioDevices.inputDevices()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .help("デバイス一覧を更新")
+                }
+            }
+            .onAppear { inputDevices = AudioDevices.inputDevices() }
+            Text("録音に使うマイク。「システム既定」は macOS の設定に従います。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             Toggle("無音を自動スキップ（VAD）", isOn: $config.vadEnabled)
             Text("発話が検出されない録音を API に送らず、幻覚と無駄なコストを防ぎます。")
