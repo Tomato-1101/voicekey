@@ -8,11 +8,11 @@ Groq/OpenAI APIを使用した高速音声認識に対応した、
 __version__ = "2.0.0"
 __author__ = "voicekey Team"
 
-from .app import SuperWhisperApp
+from .app import VoicekeyApp
 from .main import main
 
 __all__ = [
-    "SuperWhisperApp",  # メインアプリケーションクラス
-    "main",             # エントリーポイント関数
-    "__version__",      # バージョン番号
+    "VoicekeyApp",  # メインアプリケーションクラス
+    "main",         # エントリーポイント関数
+    "__version__",  # バージョン番号
 ]

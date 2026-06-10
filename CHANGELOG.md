@@ -39,6 +39,23 @@ voicekeyの変更履歴を記録するファイルです。
 - **編集**: `src/core/audio_preprocess.py`（`MAX_GAIN_DB`）、`src/utils/secrets.py`（キャッシュ）、`src/core/__init__.py`（エクスポート更新）
 - スモークテスト: コア層 import 272ms（torch 削除前は約 1.4 秒）、WAV クリップ・ゲイン上限・VAD 無音/ノイズ判定を確認済み
 
+### Changed (続き: アプリ層)
+- **`src/app.py` 全面書き換え（`SuperWhisperApp` → `VoicekeyApp`）**
+  - リスナーハンドラを完全ノンブロッキング化（キー集合更新とコマンド投函のみ）。macOS CGEventTap タイムアウトによるホットキー死亡を構造的に防止
+  - UI 状態は `_emit_state()` の単一発信点に集約（「アイコンが録音中のまま」の根治）
+  - 常駐ワーカー 1 本が 正規化 → VAD ゲート/トリム → API → テキスト挿入 を直列処理
+  - 左修飾キーのマッチング修正: macOS の pynput は左修飾キーを汎用名（cmd 等）で報告するため、`<cmd_l>` 設定が一致しなかった問題を `_acceptable_names()` で解消
+  - toggle モードも低レベル Listener に統一（GlobalHotKeys 廃止。右修飾キー対応＋エッジ検出でキーリピート誤発火を防止）
+  - ウォッチドッグ: PortAudio ハング自動復旧（recover）、録音 300 秒上限、リスナースレッド死活監視
+  - 起動時に macOS 権限（アクセシビリティ・入力監視）をチェックし、不足時はダイアログでシステム設定へ誘導
+  - ホットリロードでリスナー再起動が不要な設計に変更（ハンドラがイベント時にスロット設定を参照）。退役トランスクライバは 30 秒後に遅延 close
+  - dev_mode のタイミングファイル出力・引用符ラップを削除（ログ出力に一本化）
+- **`src/core/input_handler.py`**: 貼り付け後にユーザーの元クリップボード内容を復元（テキストのみ）
+
+### Technical Details (続き)
+- **書き換え**: `src/app.py`
+- **編集**: `src/core/input_handler.py`（クリップボード復元）、`src/platform/base.py` / `src/platform/macos/adapter.py`（`check_input_permissions` / `open_permission_settings` 追加）、`src/main.py` / `src/__init__.py`（クラス名変更追従）
+
 ## [Unreleased] - 2026-06-01
 
 ### Fixed

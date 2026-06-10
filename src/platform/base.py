@@ -6,7 +6,7 @@ OS差分（入力挿入・キー正規化・トレイ挙動・フォント）を
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence
 
 from pynput.keyboard import Key
 
@@ -76,5 +76,26 @@ class PlatformAdapter(ABC):
 
         Args:
             window: 対象ウィンドウ（QWidget 等）
+        """
+        return None
+
+    # --- 入力系権限（macOS でのみ実体を持つ。既定は「すべて許可済み」扱い） ---
+
+    def check_input_permissions(self) -> Dict[str, bool]:
+        """
+        グローバルホットキー・テキスト入力に必要な OS 権限の状態を返す。
+
+        Returns:
+            {"accessibility": bool, "input_monitoring": bool}
+            （macOS 以外は常に True。権限の概念がないため）
+        """
+        return {"accessibility": True, "input_monitoring": True}
+
+    def open_permission_settings(self, which: str) -> None:
+        """
+        OS の該当権限設定画面を開く。
+
+        Args:
+            which: "accessibility" または "input_monitoring"
         """
         return None

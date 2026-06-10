@@ -19,6 +19,10 @@ logger = get_logger(__name__)
 
 # クリップボード貼り付け前の待機時間（秒）
 PASTE_DELAY: float = 0.1
+# 貼り付け後、クリップボードを元に戻すまでの待機時間（秒）。
+# 貼り付け先アプリがクリップボードを読み終える前に復元すると
+# 古い内容が貼られてしまうため、十分なマージンを取る
+RESTORE_DELAY: float = 0.3
 
 
 class InputHandler:
@@ -37,13 +41,15 @@ class InputHandler:
     def insert_text(self, text: str) -> bool:
         """
         アクティブウィンドウにテキストを挿入する。
-        
+
         クリップボード経由でCtrl+Vを使用することで、
         マルチバイト文字を確実に入力できる。
-        
+        ユーザーが元々コピーしていたテキストは貼り付け後に復元する
+        （テキストのみ対象。画像等の非テキスト内容は復元できない）。
+
         Args:
             text: 挿入するテキスト
-            
+
         Returns:
             成功した場合True、失敗した場合False
         """
@@ -51,12 +57,19 @@ class InputHandler:
             return False
 
         try:
+            # ユーザーのクリップボード内容を退避
+            old_clipboard = ""
+            try:
+                old_clipboard = pyperclip.paste() or ""
+            except Exception:
+                pass  # 退避失敗は復元を諦めるだけで、挿入自体は続行する
+
             # クリップボードにコピー
             pyperclip.copy(text)
-            
+
             # クリップボードの準備が整うまで少し待機
             time.sleep(PASTE_DELAY)
-            
+
             # OS別アダプタが定義する貼り付けショートカットを使用
             # 修飾キーが押しっぱなしになる事故を防ぐため try/finally で確実に release
             paste_modifier = self._platform.paste_modifier
@@ -70,6 +83,15 @@ class InputHandler:
                 except Exception as e:
                     # release 失敗は致命ではないが、修飾キーが残ると操作不能になるため警告
                     logger.warning(f"貼り付け修飾キーの解放に失敗: {e}")
+
+            # 貼り付け先がクリップボードを読み終えてから元の内容を復元する。
+            # 呼び出し元は文字起こしワーカースレッドなので、ここで待っても UI は塞がない
+            if old_clipboard:
+                time.sleep(RESTORE_DELAY)
+                try:
+                    pyperclip.copy(old_clipboard)
+                except Exception as e:
+                    logger.warning(f"クリップボード復元に失敗: {e}")
 
             logger.debug(f"テキスト挿入: {text[:50]}...")
             return True

@@ -2,7 +2,8 @@
 macOS向けプラットフォーム実装。
 """
 
-from typing import Optional, Sequence
+import subprocess
+from typing import Dict, Optional, Sequence
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QSystemTrayIcon
@@ -124,3 +125,44 @@ class MacOSPlatformAdapter(PlatformAdapter):
             NSApp.activateIgnoringOtherApps_(True)
         except Exception as e:
             logger.warning(f"NSApp.activateIgnoringOtherApps_ 失敗: {e}")
+
+    # --- 入力系権限チェック（macOS 固有） ---
+
+    # 権限設定画面への deep link
+    _PERMISSION_URLS = {
+        "accessibility": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+        "input_monitoring": "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
+    }
+
+    def check_input_permissions(self) -> Dict[str, bool]:
+        """
+        アクセシビリティ（テキスト挿入用）と入力監視（ホットキー検出用）の
+        権限状態を返す。
+
+        権限がないと pynput はイベントを受け取れず「ホットキーが効かない」
+        だけが起き、原因がユーザーに見えないため、起動時に明示的に確認する。
+        API が使えない環境（pyobjc 不在等）では安全側に True を返す。
+        """
+        result = {"accessibility": True, "input_monitoring": True}
+        try:
+            from ApplicationServices import AXIsProcessTrusted  # type: ignore
+            result["accessibility"] = bool(AXIsProcessTrusted())
+        except Exception as e:
+            logger.debug(f"アクセシビリティ権限の確認をスキップ: {e}")
+        try:
+            import Quartz  # type: ignore
+            if hasattr(Quartz, "CGPreflightListenEventAccess"):
+                result["input_monitoring"] = bool(Quartz.CGPreflightListenEventAccess())
+        except Exception as e:
+            logger.debug(f"入力監視権限の確認をスキップ: {e}")
+        return result
+
+    def open_permission_settings(self, which: str) -> None:
+        """システム設定の該当権限ペインを開く。"""
+        url = self._PERMISSION_URLS.get(which)
+        if not url:
+            return
+        try:
+            subprocess.Popen(["open", url])
+        except Exception as e:
+            logger.warning(f"システム設定を開けませんでした: {e}")

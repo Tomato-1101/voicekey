@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
-from .app import SuperWhisperApp
+from .app import VoicekeyApp
 from .platform import get_platform_adapter
 from .utils.logger import get_logger, setup_logger
 
@@ -44,7 +44,7 @@ def main() -> int:
         get_platform_adapter().configure_app_visibility(hide_from_dock=True)
 
         # メインコントローラーを作成
-        controller = SuperWhisperApp()
+        controller = VoicekeyApp()
         
         # イベントループを実行
         return app.exec()
