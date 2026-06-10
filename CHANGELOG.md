@@ -19,6 +19,14 @@ voicekeyの変更履歴を記録するファイルです。
   - **AppController**: 文字起こしパイプラインの直列チェーン化（録音順の挿入保証）、録音 300 秒上限の保険、起動時の権限チェック（マイク・入力監視・アクセシビリティ）とシステム設定への誘導
   - ビルド: SwiftPM + `scripts/build_app.sh`（.app バンドル組み立て + ad-hoc 署名）。`swift build` 警告ゼロ、起動スモークテスト済み
 
+### Added (2026-06-10 追記)
+- **ElevenLabs / Deepgram バックエンドを追加（Mac 版）**
+  - ElevenLabs Scribe（`scribe_v1` / `scribe_v1_experimental`）: multipart + `xi-api-key` 認証。音声イベントタグ（笑い声など）は音声入力に不要なため無効化
+  - Deepgram（`nova-2` 既定 / `nova-3`）: WAV 生バイト POST + `Token` 認証。`smart_format` 有効。言語未指定時は自動判定、nova-3 + 非英語は多言語モードに自動切替
+  - `Transcriber` をバックエンド別のリクエスト構築/応答解析に再構成（`MultipartForm` ヘルパー新設）。Keychain サービス名は Python 版と互換（`voicekey.ElevenLabs` / `voicekey.Deepgram`）。設定 UI の API キータブ・バックエンド/モデル選択は全 4 バックエンド対応
+- **ログイン時自動起動（Mac 版）**
+  - 初回起動時に `SMAppService.mainApp.register()` を自動実行（Mac を開けば voicekey が必ず起動する）。設定画面の「ログイン時に起動」トグルでオフにすれば再登録しない
+
 ### Fixed
 - **メニューバーアイコンが表示されない問題（Mac 版）**
   - 原因 1: SwiftUI `MenuBarExtra` がラベルの `NSImage` を正しく描画できない（青い円になる）

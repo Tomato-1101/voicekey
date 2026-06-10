@@ -140,8 +140,9 @@ private struct SlotSettingsTab: View {
 private struct ApiKeysTab: View {
     var body: some View {
         Form {
-            ApiKeyRow(backend: .openai)
-            ApiKeyRow(backend: .groq)
+            ForEach(Backend.allCases) { backend in
+                ApiKeyRow(backend: backend)
+            }
             Text("API キーは macOS のキーチェーンに安全に保存されます。")
                 .font(.caption)
                 .foregroundStyle(.secondary)

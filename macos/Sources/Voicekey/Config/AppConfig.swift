@@ -31,6 +31,8 @@ enum HotkeyMode: String, Codable, CaseIterable, Identifiable {
 enum Backend: String, Codable, CaseIterable, Identifiable {
     case openai
     case groq
+    case elevenlabs
+    case deepgram
 
     var id: String { rawValue }
 
@@ -38,6 +40,8 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .openai: return "OpenAI"
         case .groq: return "Groq"
+        case .elevenlabs: return "ElevenLabs"
+        case .deepgram: return "Deepgram"
         }
     }
 
@@ -46,6 +50,9 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .openai: return ["gpt-4o-transcribe", "gpt-4o-mini-transcribe"]
         case .groq: return ["whisper-large-v3-turbo", "whisper-large-v3"]
+        case .elevenlabs: return ["scribe_v1", "scribe_v1_experimental"]
+        // nova-2 は language=ja の単言語指定に対応しているため既定にする
+        case .deepgram: return ["nova-2", "nova-3"]
         }
     }
 

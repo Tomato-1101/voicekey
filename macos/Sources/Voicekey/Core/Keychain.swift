@@ -19,6 +19,8 @@ enum Keychain {
         switch backend {
         case .openai: return "voicekey.OpenAI"
         case .groq: return "voicekey.Groq"
+        case .elevenlabs: return "voicekey.ElevenLabs"
+        case .deepgram: return "voicekey.Deepgram"
         }
     }
 
@@ -43,7 +45,13 @@ enum Keychain {
             return value
         }
         // 環境変数フォールバック（開発時用）
-        let envVar = backend == .openai ? "OPENAI_API_KEY" : "GROQ_API_KEY"
+        let envVar: String
+        switch backend {
+        case .openai: envVar = "OPENAI_API_KEY"
+        case .groq: envVar = "GROQ_API_KEY"
+        case .elevenlabs: envVar = "ELEVENLABS_API_KEY"
+        case .deepgram: envVar = "DEEPGRAM_API_KEY"
+        }
         return ProcessInfo.processInfo.environment[envVar]
     }
 

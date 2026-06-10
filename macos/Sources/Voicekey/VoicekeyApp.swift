@@ -10,7 +10,11 @@
 
 import AppKit
 import Combine
+import ServiceManagement
 import SwiftUI
+import os.log
+
+private let log = Logger(subsystem: "com.voicekey.app", category: "main")
 
 @main
 @MainActor
@@ -42,6 +46,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.controller = controller
         statusBar = StatusItemController(controller: controller)
         controller.startup()
+        registerLaunchAtLoginIfFirstRun()
+    }
+
+    /// 初回起動時にログイン時自動起動を登録する。
+    /// 一度だけ実行するため、設定画面のトグルでオフにすれば再登録されない
+    private func registerLaunchAtLoginIfFirstRun() {
+        let key = "didSetupLaunchAtLogin"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        UserDefaults.standard.set(true, forKey: key)
+        guard SMAppService.mainApp.status != .enabled else { return }
+        do {
+            try SMAppService.mainApp.register()
+            log.info("ログイン時自動起動を登録しました")
+        } catch {
+            // swift run など未バンドル実行では失敗するが、動作には影響しない
+            log.error("ログイン時自動起動の登録に失敗: \(error.localizedDescription)")
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

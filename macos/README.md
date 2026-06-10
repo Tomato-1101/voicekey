@@ -1,8 +1,8 @@
 # voicekey for Mac
 
 macOS ネイティブ（Swift / SwiftUI）の音声入力アプリ。
-ホットキーを押している間マイクで録音し、離すと OpenAI / Groq API で文字起こしして、
-アクティブなウィンドウにテキストを貼り付けます。
+ホットキーを押している間マイクで録音し、離すと OpenAI / Groq / ElevenLabs / Deepgram API で
+文字起こしして、アクティブなウィンドウにテキストを貼り付けます。
 
 ## 特徴
 
@@ -10,6 +10,8 @@ macOS ネイティブ（Swift / SwiftUI）の音声入力アプリ。
 - **デュアルホットキー**: 2 つのホットキーに別々のバックエンド / モデルを割り当て可能
   - 既定: 右⌘（OpenAI gpt-4o-transcribe）/ 右⌥（Groq whisper-large-v3-turbo）
   - 右側修飾キー単独のホットキーに対応（CGEventTap でデバイスビットを直接判定）
+- **4 つのバックエンド**: OpenAI / Groq / ElevenLabs (Scribe) / Deepgram から選択
+- **ログイン時自動起動**: 初回起動時に自動登録（設定画面のトグルで解除可能）
 - **小型 HUD**: 録音中だけ画面下部に音声レベル連動の波形ピルを表示
 - **ダブルタップで自動送信**: ホットキーを素早く 2 回押して録音すると、貼り付け後に Enter を自動送信
 - **VAD（発話検出）**: Apple SoundAnalysis のオンデバイス ML 分類器で発話を判定。

@@ -1,9 +1,10 @@
 //
 //  Transcriber.swift
-//  OpenAI / Groq Audio Transcriptions API クライアント
+//  文字起こし API クライアント（OpenAI / Groq / ElevenLabs / Deepgram）
 //
-//  両 API は OpenAI 互換の同一 REST 形式のため、1 つの実装で共用する。
-//  multipart/form-data で 16kHz モノラル WAV を送信する。
+//  - OpenAI / Groq: OpenAI 互換 REST（multipart WAV、Bearer 認証、text 応答）
+//  - ElevenLabs: Scribe API（multipart WAV、xi-api-key 認証、JSON 応答）
+//  - Deepgram: prerecorded API（WAV 生バイト、Token 認証、JSON 応答）
 //
 
 import Foundation
@@ -55,7 +56,7 @@ enum WavEncoder {
     }
 }
 
-/// OpenAI 互換 Audio Transcriptions API のクライアント
+/// 文字起こし API クライアント（バックエンドごとにリクエスト形式を切り替える）
 final class Transcriber {
 
     let backend: Backend
@@ -70,6 +71,8 @@ final class Transcriber {
         switch backend {
         case .openai: return URL(string: "https://api.openai.com/v1")!
         case .groq: return URL(string: "https://api.groq.com/openai/v1")!
+        case .elevenlabs: return URL(string: "https://api.elevenlabs.io/v1")!
+        case .deepgram: return URL(string: "https://api.deepgram.com/v1")!
         }
     }
 
@@ -90,10 +93,28 @@ final class Transcriber {
     /// 失敗しても文字起こしには影響しないため、結果は無視する。
     func prewarm() {
         guard let apiKey = Keychain.apiKey(for: backend) else { return }
-        var request = URLRequest(url: baseURL.appendingPathComponent("models"))
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        // 軽量な GET エンドポイントにアクセスして接続だけ確立する
+        let path: String
+        switch backend {
+        case .openai, .groq, .elevenlabs: path = "models"
+        case .deepgram: path = "projects"
+        }
+        var request = URLRequest(url: baseURL.appendingPathComponent(path))
+        setAuth(apiKey, on: &request)
         request.timeoutInterval = 5
         session.dataTask(with: request) { _, _, _ in }.resume()
+    }
+
+    /// バックエンドごとの認証ヘッダを設定する
+    private func setAuth(_ apiKey: String, on request: inout URLRequest) {
+        switch backend {
+        case .openai, .groq:
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        case .elevenlabs:
+            request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
+        case .deepgram:
+            request.setValue("Token \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
     }
 
     /// 音声を文字起こしする
@@ -108,30 +129,7 @@ final class Transcriber {
         }
 
         let wav = WavEncoder.encode(samples)
-        let boundary = "voicekey-\(UUID().uuidString)"
-
-        var request = URLRequest(url: baseURL.appendingPathComponent("audio/transcriptions"))
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-
-        var body = Data()
-        func field(_ name: String, _ value: String) {
-            body.append(Data("--\(boundary)\r\n".utf8))
-            body.append(Data("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n".utf8))
-            body.append(Data("\(value)\r\n".utf8))
-        }
-        field("model", model)
-        field("response_format", "text")
-        field("temperature", "0")
-        if !language.isEmpty { field("language", language) }
-        if !prompt.isEmpty { field("prompt", prompt) }
-        body.append(Data("--\(boundary)\r\n".utf8))
-        body.append(Data("Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n".utf8))
-        body.append(Data("Content-Type: audio/wav\r\n\r\n".utf8))
-        body.append(wav)
-        body.append(Data("\r\n--\(boundary)--\r\n".utf8))
-        request.httpBody = body
+        let request = buildRequest(wav: wav, apiKey: apiKey)
 
         let start = Date()
         let data: Data
@@ -164,10 +162,147 @@ final class Transcriber {
             throw TranscriptionError(message: "\(backend.label) API エラー (HTTP \(http.statusCode)): \(detail)")
         }
 
-        let text = (String(data: data, encoding: .utf8) ?? "")
+        let text = try parseResponse(data)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let elapsed = Int(Date().timeIntervalSince(start) * 1000)
         log.info("\(self.backend.label, privacy: .public) 文字起こし完了: \(elapsed)ms, \(text.count) 文字")
         return text
+    }
+
+    // MARK: - リクエスト構築（バックエンド別）
+
+    private func buildRequest(wav: Data, apiKey: String) -> URLRequest {
+        switch backend {
+        case .openai, .groq:
+            return openAIRequest(wav: wav, apiKey: apiKey)
+        case .elevenlabs:
+            return elevenLabsRequest(wav: wav, apiKey: apiKey)
+        case .deepgram:
+            return deepgramRequest(wav: wav, apiKey: apiKey)
+        }
+    }
+
+    /// OpenAI 互換 Audio Transcriptions API（OpenAI / Groq 共用）
+    private func openAIRequest(wav: Data, apiKey: String) -> URLRequest {
+        var request = URLRequest(url: baseURL.appendingPathComponent("audio/transcriptions"))
+        request.httpMethod = "POST"
+        setAuth(apiKey, on: &request)
+
+        var form = MultipartForm()
+        form.field("model", model)
+        form.field("response_format", "text")
+        form.field("temperature", "0")
+        if !language.isEmpty { form.field("language", language) }
+        if !prompt.isEmpty { form.field("prompt", prompt) }
+        form.file("file", filename: "audio.wav", contentType: "audio/wav", data: wav)
+        form.apply(to: &request)
+        return request
+    }
+
+    /// ElevenLabs Scribe API（speech-to-text）
+    private func elevenLabsRequest(wav: Data, apiKey: String) -> URLRequest {
+        var request = URLRequest(url: baseURL.appendingPathComponent("speech-to-text"))
+        request.httpMethod = "POST"
+        setAuth(apiKey, on: &request)
+
+        var form = MultipartForm()
+        form.field("model_id", model)
+        // (笑い) などの音声イベントタグは音声入力には不要
+        form.field("tag_audio_events", "false")
+        if !language.isEmpty { form.field("language_code", language) }
+        form.file("file", filename: "audio.wav", contentType: "audio/wav", data: wav)
+        form.apply(to: &request)
+        return request
+    }
+
+    /// Deepgram prerecorded API（WAV 生バイトを直接送る）
+    private func deepgramRequest(wav: Data, apiKey: String) -> URLRequest {
+        var components = URLComponents(
+            url: baseURL.appendingPathComponent("listen"), resolvingAgainstBaseURL: false
+        )!
+        var query = [
+            URLQueryItem(name: "model", value: model),
+            URLQueryItem(name: "smart_format", value: "true"),
+        ]
+        if language.isEmpty {
+            // 言語未指定（自動判定）の場合は言語検出を有効化する
+            query.append(URLQueryItem(name: "detect_language", value: "true"))
+        } else if model.hasPrefix("nova-3") && language != "en" {
+            // nova-3 は英語以外の単言語指定に未対応のため多言語モードを使う
+            query.append(URLQueryItem(name: "language", value: "multi"))
+        } else {
+            query.append(URLQueryItem(name: "language", value: language))
+        }
+        components.queryItems = query
+
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "POST"
+        setAuth(apiKey, on: &request)
+        request.setValue("audio/wav", forHTTPHeaderField: "Content-Type")
+        request.httpBody = wav
+        return request
+    }
+
+    // MARK: - 応答解析（バックエンド別）
+
+    private struct ElevenLabsResponse: Decodable {
+        let text: String
+    }
+
+    private struct DeepgramResponse: Decodable {
+        struct Alternative: Decodable { let transcript: String }
+        struct Channel: Decodable { let alternatives: [Alternative] }
+        struct Results: Decodable { let channels: [Channel] }
+        let results: Results
+    }
+
+    private func parseResponse(_ data: Data) throws -> String {
+        switch backend {
+        case .openai, .groq:
+            // response_format=text のためプレーンテキストがそのまま返る
+            return String(data: data, encoding: .utf8) ?? ""
+        case .elevenlabs:
+            guard let parsed = try? JSONDecoder().decode(ElevenLabsResponse.self, from: data) else {
+                throw TranscriptionError(message: "ElevenLabs API の応答を解析できませんでした")
+            }
+            return parsed.text
+        case .deepgram:
+            guard let parsed = try? JSONDecoder().decode(DeepgramResponse.self, from: data),
+                  let transcript = parsed.results.channels.first?.alternatives.first?.transcript else {
+                throw TranscriptionError(message: "Deepgram API の応答を解析できませんでした")
+            }
+            return transcript
+        }
+    }
+}
+
+/// multipart/form-data リクエストボディの組み立てヘルパー
+private struct MultipartForm {
+    private let boundary = "voicekey-\(UUID().uuidString)"
+    private var body = Data()
+
+    mutating func field(_ name: String, _ value: String) {
+        body.append(Data("--\(boundary)\r\n".utf8))
+        body.append(Data("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n".utf8))
+        body.append(Data("\(value)\r\n".utf8))
+    }
+
+    mutating func file(_ name: String, filename: String, contentType: String, data: Data) {
+        body.append(Data("--\(boundary)\r\n".utf8))
+        body.append(Data(
+            "Content-Disposition: form-data; name=\"\(name)\"; filename=\"\(filename)\"\r\n".utf8
+        ))
+        body.append(Data("Content-Type: \(contentType)\r\n\r\n".utf8))
+        body.append(data)
+        body.append(Data("\r\n".utf8))
+    }
+
+    func apply(to request: inout URLRequest) {
+        var final = body
+        final.append(Data("--\(boundary)--\r\n".utf8))
+        request.setValue(
+            "multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type"
+        )
+        request.httpBody = final
     }
 }
