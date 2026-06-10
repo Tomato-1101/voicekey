@@ -33,9 +33,11 @@ BYTES_PER_CHUNK = SR * 2 * CHUNK_MS // 1000  # 16k * 2byte * 0.1s = 3200
 STREAM_MODELS = [
     ("deepgram", "nova-2"),
     ("deepgram", "nova-3"),
+    ("deepgram-flux", "flux-general-multi"),   # 会話向け新モデル（end-of-turn 検出）
     ("openai", "gpt-4o-transcribe"),
     ("openai", "gpt-4o-mini-transcribe"),
     ("openai", "gpt-realtime-whisper"),
+    ("elevenlabs", "scribe_v2_realtime"),      # Scribe v2 Realtime（~150ms 公称）
 ]
 
 
@@ -155,23 +157,140 @@ async def run_openai(key, model, pcm):
     return t, "".join(parts)
 
 
+async def run_flux(key, model, pcm):
+    # Deepgram Flux v2: TurnInfo メッセージの transcript は累積。
+    # event=EndOfTurn で確定。発話末に無音を足して end-of-turn を自然に検出させる。
+    silence = b"\x00" * (SR * 2 * 700 // 1000)  # 700ms 無音
+    url = ("wss://api.deepgram.com/v2/listen?model=flux-general-multi"
+           "&encoding=linear16&sample_rate=16000&language_hint=ja"
+           "&eot_threshold=0.5&eot_timeout_ms=2000")
+    flux_chunk = SR * 2 * 80 // 1000  # 80ms 推奨
+    t = {"start": None, "first": None, "audio_end": None, "final": None}
+    current = ""
+    final_text = ""
+    ws = await _connect(url, {"Authorization": f"Token {key}"})
+    async with ws:
+        async def send():
+            t["start"] = time.perf_counter()
+            for i in range(0, len(pcm), flux_chunk):
+                await ws.send(pcm[i:i + flux_chunk])
+                await asyncio.sleep(0.08)
+            t["audio_end"] = time.perf_counter()  # 実音声の終わり＝離した相当
+            for i in range(0, len(silence), flux_chunk):
+                await ws.send(silence[i:i + flux_chunk])
+                await asyncio.sleep(0.08)
+
+        async def recv():
+            nonlocal current, final_text
+            async for msg in ws:
+                try:
+                    d = json.loads(msg)
+                except Exception:
+                    continue
+                if d.get("type") != "TurnInfo":
+                    continue
+                tr = (d.get("transcript") or "").strip()
+                if tr and t["first"] is None:
+                    t["first"] = time.perf_counter()
+                if tr:
+                    current = tr
+                if d.get("event") == "EndOfTurn":
+                    t["final"] = time.perf_counter()
+                    final_text = tr or current
+                    break
+
+        send_task = asyncio.create_task(send())
+        try:
+            await asyncio.wait_for(recv(), timeout=60)
+        except asyncio.TimeoutError:
+            final_text = current
+        send_task.cancel()
+    return t, final_text
+
+
+async def run_elevenlabs_rt(key, model, pcm):
+    # ElevenLabs Scribe v2 Realtime: text は累積。manual commit で最後に確定。
+    url = (f"wss://api.elevenlabs.io/v1/speech-to-text/realtime?model_id={model}"
+           f"&language_code=ja&audio_format=pcm_16000&commit_strategy=manual")
+    step = SR * 2 * 100 // 1000  # 100ms
+    t = {"start": None, "first": None, "audio_end": None, "final": None}
+    current = ""
+    final_text = ""
+    ws = await _connect(url, {"xi-api-key": key})
+    async with ws:
+        async def send():
+            t["start"] = time.perf_counter()
+            for i in range(0, len(pcm), step):
+                last = i + step >= len(pcm)
+                await ws.send(json.dumps({
+                    "message_type": "input_audio_chunk",
+                    "audio_base_64": base64.b64encode(pcm[i:i + step]).decode(),
+                    "commit": last,  # 最後のチャンクで確定を要求
+                    "sample_rate": SR,
+                }))
+                await asyncio.sleep(0.1)
+            t["audio_end"] = time.perf_counter()
+
+        async def recv():
+            nonlocal current, final_text
+            async for msg in ws:
+                try:
+                    d = json.loads(msg)
+                except Exception:
+                    continue
+                mt = d.get("message_type")
+                txt = (d.get("text") or "").strip()
+                if mt == "partial_transcript":
+                    if txt and t["first"] is None:
+                        t["first"] = time.perf_counter()
+                    if txt:
+                        current = txt
+                elif mt == "committed_transcript":
+                    if txt and t["first"] is None:
+                        t["first"] = time.perf_counter()
+                    t["final"] = time.perf_counter()
+                    final_text = txt or current
+                    break
+
+        send_task = asyncio.create_task(send())
+        try:
+            await asyncio.wait_for(recv(), timeout=60)
+        except asyncio.TimeoutError:
+            final_text = current
+        send_task.cancel()
+    return t, final_text
+
+
 async def measure(provider, model, key, pcm):
     if provider == "deepgram":
         return await run_deepgram(key, model, pcm)
+    if provider == "deepgram-flux":
+        return await run_flux(key, model, pcm)
+    if provider == "elevenlabs":
+        return await run_elevenlabs_rt(key, model, pcm)
     return await run_openai(key, model, pcm)
+
+
+def key_for(provider, keys):
+    # deepgram-flux は Deepgram キー、elevenlabs(realtime) は ElevenLabs キーを使う
+    if provider in ("deepgram", "deepgram-flux"):
+        return keys.get("deepgram")
+    if provider == "elevenlabs":
+        return keys.get("elevenlabs")
+    return keys.get("openai")
 
 
 async def main():
     load_dotenv()
     clips = {name: read_pcm(name) for name in ("short", "long")}
-    keys = {p: get_key(p) for p in ("openai", "deepgram")}
-    for p in ("openai", "deepgram"):
-        print(f"  {p:9s}: {'キーあり' if keys[p] else 'キーなし（スキップ）'}")
-    print("  groq/elevenlabs: ストリーミング非対応のため対象外\n")
+    keys = {p: get_key(p) for p in ("openai", "deepgram", "elevenlabs")}
+    for p in ("openai", "deepgram", "elevenlabs"):
+        print(f"  {p:11s}: {'キーあり' if keys[p] else 'キーなし（スキップ）'}")
+    print("  groq: ストリーミング非対応のため対象外\n")
 
     rows = []
     for provider, model in STREAM_MODELS:
-        key = keys.get(provider)
+        key = key_for(provider, keys)
         for clip_name, (pcm, truth, dur) in clips.items():
             label = f"{provider}/{model} [{clip_name}]"
             if not key:

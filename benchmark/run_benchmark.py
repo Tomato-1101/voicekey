@@ -42,6 +42,7 @@ MODELS = [
     ("openai", OPENAI, "gpt-4o-transcribe-diarize"),
     ("groq", GROQ, "whisper-large-v3-turbo"),
     ("groq", GROQ, "whisper-large-v3"),
+    ("elevenlabs", None, "scribe_v2"),
     ("elevenlabs", None, "scribe_v1"),
     ("elevenlabs", None, "scribe_v1_experimental"),
     ("deepgram", None, "nova-2"),
