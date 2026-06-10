@@ -19,6 +19,12 @@ voicekeyの変更履歴を記録するファイルです。
   - **AppController**: 文字起こしパイプラインの直列チェーン化（録音順の挿入保証）、録音 300 秒上限の保険、起動時の権限チェック（マイク・入力監視・アクセシビリティ）とシステム設定への誘導
   - ビルド: SwiftPM + `scripts/build_app.sh`（.app バンドル組み立て + ad-hoc 署名）。`swift build` 警告ゼロ、起動スモークテスト済み
 
+### Fixed
+- **メニューバーアイコンが表示されない問題（Mac 版）**
+  - 原因 1: SwiftUI `MenuBarExtra` がラベルの `NSImage` を正しく描画できない（青い円になる）
+  - 原因 2: アイテム位置の永続化値（`NSStatusItem Preferred Position`）が不可視領域（ノッチ下・Hidden Bar の隠し領域）を指すと二度と表示されない。ユーザー環境では Hidden Bar が新規アイテムを隠し領域に配置していた
+  - 対策: `MenuBarExtra` を廃止し AppKit `NSStatusItem` 直接管理へ書き換え（`VoicekeyApp.swift`）。エントリポイントを SwiftUI App から `NSApplicationDelegate` ベースに変更し、`startup()` をラベルの `.task` から `applicationDidFinishLaunching` へ移動。ドラッグでの取り外しを禁止（`behavior = []`）、設定ウィンドウは `NSHostingController` で自前管理。位置記録を可視領域にリセットして復旧
+
 ## [Unreleased] - 2026-06-10
 
 ### Changed
