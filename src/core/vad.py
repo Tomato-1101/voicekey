@@ -1,14 +1,22 @@
 """
 音声活性検出（VAD）モジュール
 
-Silero VADを使用して音声に発話が含まれるかを検出する。
-Apple Silicon (MPS) / CUDA / CPU に対応し、
-Groq/OpenAIモードでの無音判定に使用される。
+Silero VAD の ONNX モデルを onnxruntime で直接実行する。
+旧実装は torch + MPS を使っていたが、
+- torch のトップレベル import が起動を数百 ms〜数秒ブロックする
+- Silero VAD は小さなモデルのため MPS は CPU より約 8 倍遅い（実測）
+の 2 点から、onnxruntime(CPU) + numpy のみの実装に置き換えた。
+
+モデルファイルは pip の silero-vad パッケージに同梱されている
+silero_vad.onnx を import せずにパス解決して利用する
+（silero_vad を import すると torch が読み込まれてしまうため）。
 """
 
-import platform
+import importlib.util
+import os
+import threading
+from typing import Optional, Tuple
 
-import torch
 import numpy as np
 import numpy.typing as npt
 
@@ -16,135 +24,153 @@ from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Silero VAD v5 (16kHz) のフレーム仕様
+_FRAME_SAMPLES = 512      # 1 フレーム = 512 サンプル（32ms @16kHz）
+_CONTEXT_SAMPLES = 64     # 各フレームの先頭に前フレーム末尾 64 サンプルを連結する
+_SPEECH_THRESHOLD = 0.5   # 発話とみなす確率しきい値（公式デフォルトと同じ）
 
-class VadFilter:
+
+def _find_model_path() -> Optional[str]:
+    """silero-vad パッケージ同梱の ONNX モデルパスを import せずに解決する。"""
+    spec = importlib.util.find_spec("silero_vad")
+    if spec is None or not spec.origin:
+        return None
+    path = os.path.join(os.path.dirname(spec.origin), "data", "silero_vad.onnx")
+    return path if os.path.exists(path) else None
+
+
+class SileroVad:
     """
-    音声活性検出（VAD）フィルター。
-    
-    Silero VADを使用して、音声データに発話が含まれるかを判定する。
-    発話が検出されない場合、API呼び出しをスキップして効率化できる。
-    
+    Silero VAD（ONNX 版）による発話検出。
+
+    スレッドセーフ（推論はロックで直列化）。アプリ全体で 1 インスタンスを
+    共有する想定（旧実装はスロットごとに二重ロードしていた）。
+
     Attributes:
-        min_silence_duration_ms: 無音と判定する最小継続時間（ミリ秒）
-        use_cuda: ハードウェアアクセラレーションを使用するかどうか
-        device: 使用デバイス（'mps' / 'cuda' / 'cpu'）
+        min_silence_duration_ms: 発話区間を分割する最小無音時間（trim 用パディングに使用）
     """
-    
-    def __init__(
-        self,
-        min_silence_duration_ms: int = 500,
-        use_cuda: bool = True
-    ) -> None:
-        """
-        VADフィルターを初期化する。
-        
-        Args:
-            min_silence_duration_ms: 発話終了と判定する最小無音時間（ミリ秒）
-            use_cuda: ハードウェアアクセラレーション使用フラグ
-        """
+
+    def __init__(self, min_silence_duration_ms: int = 500) -> None:
         self.min_silence_duration_ms = min_silence_duration_ms
-        self._model = None  # 遅延ロード用
+        self._session = None          # onnxruntime.InferenceSession（遅延ロード）
+        self._load_failed = False     # ロード失敗を記憶し、毎回の再試行を避ける
+        self._lock = threading.Lock()
 
-        # デバイス設定: Apple Silicon(MPS)を最優先、次にCUDA、最後にCPU
-        self.device = self._select_device(use_cuda)
-        logger.info(f"VADフィルター初期化 (デバイス: {self.device})")
+    def _load_session(self) -> bool:
+        """ONNX セッションを遅延ロードする。失敗時は False（VAD 無効で続行）。"""
+        if self._session is not None:
+            return True
+        if self._load_failed:
+            return False
+        try:
+            # onnxruntime はここで初めて import する（起動パスに乗せない）
+            import onnxruntime as ort
 
-    def _select_device(self, use_acceleration: bool) -> str:
+            model_path = _find_model_path()
+            if model_path is None:
+                raise FileNotFoundError("silero-vad パッケージの ONNX モデルが見つかりません")
+
+            opts = ort.SessionOptions()
+            # VAD は小モデルなのでスレッドを増やしても速くならない（公式設定に合わせる）
+            opts.inter_op_num_threads = 1
+            opts.intra_op_num_threads = 1
+            self._session = ort.InferenceSession(
+                model_path, providers=["CPUExecutionProvider"], sess_options=opts
+            )
+            logger.info(f"Silero VAD (ONNX) をロードしました: {model_path}")
+            return True
+        except Exception as e:
+            # VAD が使えなくても文字起こし自体は続行できるよう、安全側に倒す
+            self._load_failed = True
+            logger.error(f"VAD モデルのロードに失敗（VAD 無効で続行）: {e}")
+            return False
+
+    def preload(self) -> None:
+        """起動時に呼んで初回録音時のロード遅延（数十 ms）を避ける。"""
+        with self._lock:
+            self._load_session()
+
+    def _frame_probs(self, audio: npt.NDArray[np.float32]) -> np.ndarray:
+        """音声全体をフレーム分割し、フレームごとの発話確率を返す。
+
+        呼び出し側で self._lock を保持していること。
         """
-        使用デバイスを選択する。
+        # フレーム長の倍数になるよう末尾をゼロ詰め
+        n = len(audio)
+        pad = (-n) % _FRAME_SAMPLES
+        if pad:
+            audio = np.concatenate([audio, np.zeros(pad, dtype=np.float32)])
 
-        macOSではMPSを最優先で使用し、利用できない場合はCUDA/CPUにフォールバックする。
-        """
-        if not use_acceleration:
-            return "cpu"
+        state = np.zeros((2, 1, 128), dtype=np.float32)
+        context = np.zeros((1, _CONTEXT_SAMPLES), dtype=np.float32)
+        sr = np.array(16000, dtype=np.int64)
 
-        is_macos = platform.system() == "Darwin"
-        mps_available = bool(
-            hasattr(torch.backends, "mps")
-            and torch.backends.mps.is_available()
-        )
-        if is_macos and mps_available:
-            return "mps"
+        probs = []
+        for i in range(0, len(audio), _FRAME_SAMPLES):
+            frame = audio[i:i + _FRAME_SAMPLES].reshape(1, -1)
+            x = np.concatenate([context, frame], axis=1)
+            out, state = self._session.run(None, {"input": x, "state": state, "sr": sr})
+            context = x[:, -_CONTEXT_SAMPLES:]
+            probs.append(float(out[0, 0]))
+        return np.array(probs, dtype=np.float32)
 
-        if torch.cuda.is_available():
-            return "cuda"
-
-        return "cpu"
-
-    def _load_model(self):
-        """Silero VADモデルを遅延ロードする。"""
-        if self._model is None:
-            try:
-                from silero_vad import load_silero_vad
-                
-                # モデルをロード
-                self._model = load_silero_vad()
-
-                # デバイスに移動（失敗時はCPUフォールバック）
-                if self.device != "cpu":
-                    try:
-                        self._model = self._model.to(self.device)
-                    except Exception as e:
-                        logger.warning(f"VADモデルを{self.device}へ移動できませんでした。CPUへフォールバックします: {e}")
-                        self.device = "cpu"
-                
-                logger.info(f"Silero VADモデルをロード ({self.device})")
-                
-            except Exception as e:
-                logger.error(f"Silero VADモデルのロードに失敗: {e}")
-                raise
-    
-    def has_speech(self, audio_data: npt.NDArray[np.float32], sample_rate: int = 16000) -> bool:
+    def has_speech(self, audio: npt.NDArray[np.float32], sample_rate: int = 16000) -> bool:
         """
         音声データに発話が含まれるかを判定する。
-        
-        Args:
-            audio_data: 音声データ（float32のNumPy配列）
-            sample_rate: サンプリングレート（Hz）
-            
-        Returns:
-            発話が検出された場合True、無音の場合False
-        """
-        if len(audio_data) == 0:
-            return False
-        
-        # モデルをロード（未ロードの場合）
-        self._load_model()
-            
-        try:
-            from silero_vad import get_speech_timestamps
-            
-            # NumPy配列をTensorに変換
-            audio_tensor = torch.from_numpy(audio_data)
-            if self.device != "cpu":
-                audio_tensor = audio_tensor.to(self.device)
-            
-            # 発話区間を検出
-            with torch.inference_mode():
-                speech_timestamps = get_speech_timestamps(
-                    audio_tensor,
-                    self._model,
-                    sampling_rate=sample_rate,
-                    min_silence_duration_ms=self.min_silence_duration_ms,
-                    return_seconds=False
-                )
-            
-            has_speech = len(speech_timestamps) > 0
-            logger.debug(f"VAD結果: has_speech={has_speech}, セグメント数={len(speech_timestamps)}")
-            return has_speech
-            
-        except Exception as e:
-            logger.error(f"VADエラー: {e}")
-            # エラー時は安全側に倒してTrueを返す（文字起こしを実行）
-            return True
 
-    def preload_model(self) -> None:
+        Args:
+            audio: 音声データ（float32, 16kHz モノラル）
+            sample_rate: サンプリングレート（16000 のみ対応）
+
+        Returns:
+            発話が検出された場合 True。VAD が使えない場合も True（安全側）
         """
-        VADモデルを事前にロードする。
-        
-        アプリ起動時に呼び出すことで、最初の音声入力時の
-        モデルロード遅延を回避できる。
+        if len(audio) < _FRAME_SAMPLES:
+            return False
+        with self._lock:
+            if not self._load_session():
+                return True
+            try:
+                probs = self._frame_probs(audio)
+            except Exception as e:
+                logger.error(f"VAD 推論エラー（発話ありとして続行）: {e}")
+                return True
+        # 単発のクリックノイズ誤検出を避けるため、しきい値超えフレームが
+        # 2 つ以上（≒64ms 以上）ある場合のみ発話とみなす
+        return int(np.count_nonzero(probs >= _SPEECH_THRESHOLD)) >= 2
+
+    def speech_bounds(
+        self, audio: npt.NDArray[np.float32], pad_ms: int = 250
+    ) -> Optional[Tuple[int, int]]:
         """
-        logger.info("VADモデルをプリロード中...")
-        self._load_model()
-        logger.info("VADモデルのプリロードが完了しました")
+        発話区間の先頭・末尾サンプル位置を返す（前後の無音トリミング用）。
+
+        長い録音の前後の無音・ノイズ区間を API に送らないことで、
+        幻覚（無音区間の架空テキスト）とレイテンシを減らす。
+
+        Args:
+            audio: 音声データ（float32, 16kHz モノラル）
+            pad_ms: 検出区間の前後に残すパディング（ミリ秒）
+
+        Returns:
+            (start_sample, end_sample)。発話なし・VAD 不能時は None
+        """
+        if len(audio) < _FRAME_SAMPLES:
+            return None
+        with self._lock:
+            if not self._load_session():
+                return None
+            try:
+                probs = self._frame_probs(audio)
+            except Exception as e:
+                logger.error(f"VAD 推論エラー（トリミングをスキップ）: {e}")
+                return None
+
+        speech_idx = np.flatnonzero(probs >= _SPEECH_THRESHOLD)
+        if len(speech_idx) < 2:
+            return None
+
+        pad = int(16000 * pad_ms / 1000)
+        start = max(0, int(speech_idx[0]) * _FRAME_SAMPLES - pad)
+        end = min(len(audio), (int(speech_idx[-1]) + 1) * _FRAME_SAMPLES + pad)
+        return (start, end)

@@ -7,7 +7,8 @@ Manager）へ保存・読み出しするための薄いラッパー。`keyring` 
 （呼び出し側で環境変数フォールバックを使う想定）。
 """
 
-from typing import Optional
+import threading
+from typing import Dict, Optional
 
 from .logger import get_logger
 
@@ -17,9 +18,16 @@ logger = get_logger(__name__)
 # Hotkey1/2 が同じバックエンドを使う場合は同一エントリを共有する。
 SERVICE_GROQ: str = "voicekey.Groq"
 SERVICE_OPENAI: str = "voicekey.OpenAI"
+SERVICE_ELEVENLABS: str = "voicekey.ElevenLabs"
 
 # ユーザー名は固定。アプリ単一ユーザー前提のため、エントリ識別はサービス名のみで足りる。
 _USERNAME: str = "default"
+
+# Keychain 読み出しは 1 回あたり数十 ms かかり、録音のたびに呼ばれると
+# レイテンシに直結するため、プロセス内でキャッシュする。
+# None（未登録）もキャッシュし、set/delete 時に無効化する。
+_cache: Dict[str, Optional[str]] = {}
+_cache_lock = threading.Lock()
 
 
 # keyring 遅延インポート。テスト環境やヘッドレス Linux で keyring が無いケースでも
@@ -48,25 +56,29 @@ def is_keyring_available() -> bool:
 
 def get_api_key(service: str) -> Optional[str]:
     """
-    シークレットストアから API キーを取得する。
+    シークレットストアから API キーを取得する（プロセス内キャッシュ付き）。
 
     Args:
-        service: サービス識別子（SERVICE_GROQ / SERVICE_OPENAI）
+        service: サービス識別子（SERVICE_GROQ / SERVICE_OPENAI / SERVICE_ELEVENLABS）
 
     Returns:
         保存済み API キー、未保存または取得失敗時は None
     """
     if _keyring_module is None:
         return None
+    with _cache_lock:
+        if service in _cache:
+            return _cache[service]
     try:
-        value = _keyring_module.get_password(service, _USERNAME)
+        value = _keyring_module.get_password(service, _USERNAME) or None
     except Exception as e:
-        # NoKeyringError / KeyringError / OS 認証拒否などをまとめて握る
+        # NoKeyringError / KeyringError / OS 認証拒否などをまとめて握る。
+        # 失敗はキャッシュしない（次回呼び出しで再試行させる）
         logger.warning(f"keyring 読み込みに失敗 ({service}): {e}")
         return None
-    if value:
-        return value
-    return None
+    with _cache_lock:
+        _cache[service] = value
+    return value
 
 
 def set_api_key(service: str, key: str) -> bool:
@@ -88,6 +100,9 @@ def set_api_key(service: str, key: str) -> bool:
     except Exception as e:
         logger.warning(f"keyring 書き込みに失敗 ({service}): {e}")
         return False
+    # 古い値をキャッシュし続けないよう更新する
+    with _cache_lock:
+        _cache[service] = key
     return True
 
 
@@ -103,6 +118,8 @@ def delete_api_key(service: str) -> bool:
     """
     if _keyring_module is None:
         return False
+    with _cache_lock:
+        _cache[service] = None
     try:
         _keyring_module.delete_password(service, _USERNAME)
     except Exception as e:

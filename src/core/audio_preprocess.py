@@ -19,6 +19,10 @@ logger = get_logger(__name__)
 TARGET_RMS_DBFS: float = -20.0
 # ピーク上限 = -3 dBFS（音割れ防止のヘッドルーム）
 PEAK_CEILING_DBFS: float = -3.0
+# ゲイン上限 = +20 dB（約 10 倍）。
+# 上限なしだと「ほぼ無音＋ノイズフロア」の録音でノイズだけが目標 RMS まで
+# 増幅され、API 側の幻覚（架空テキスト出力）の主要因になっていた。
+MAX_GAIN_DB: float = 20.0
 
 
 def _dbfs_to_amp(dbfs: float) -> float:
@@ -30,7 +34,7 @@ def normalize_volume(audio: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
     """
     Peak+RMS ハイブリッド方式で音量を一定化する。
 
-    1. RMS を目標値（-20 dBFS）に合わせるゲインを算出
+    1. RMS を目標値（-20 dBFS）に合わせるゲインを算出（上限 +20 dB）
     2. 適用後にピークが -3 dBFS を超えていれば追加で抑え込む（音割れ防止）
 
     短い音声でも安定し、numpy のみで <1ms の処理時間。
@@ -51,7 +55,8 @@ def normalize_volume(audio: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
         return audio
 
     target_amp = _dbfs_to_amp(TARGET_RMS_DBFS)
-    gain = target_amp / rms
+    # ノイズフロアだけの録音を増幅し尽くさないようゲインに上限を設ける
+    gain = min(target_amp / rms, _dbfs_to_amp(MAX_GAIN_DB))
     boosted = audio * gain
 
     # ピーク制限（クリッピング防止のヘッドルーム）

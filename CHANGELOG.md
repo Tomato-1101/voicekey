@@ -2,6 +2,43 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
+## [Unreleased] - 2026-06-10
+
+### Changed
+- **コア層の全面刷新（大規模バグ調査の結果に基づく Phase 1）**
+  - `src/core/audio_recorder.py` 全面書き換え: 永続ストリーム方式へ移行
+    - PortAudio の open/close を録音のたびに行わず、ストリームを開いたまま start/stop だけで録音を切り替える（close は 30 秒アイドル時・デバイス変更時・終了時のみ）
+    - 専用の AudioControl スレッドが PortAudio 呼び出しをすべて直列実行。公開 API（`start_async` / `stop_async`）は完全ノンブロッキングで、pynput リスナースレッドを一切ブロックしない（macOS の CGEventTap タイムアウトでホットキーが死ぬ問題の根治）
+    - `health()` / `recover()` による世代管理ウォッチドッグ復旧を実装。ハングした制御スレッドを見捨てて新世代に切り替え、取得済み音声は救出する
+    - 停止時はストリームを閉じずに同期 stop するため、発話末尾の取りこぼしが発生しない
+    - HUD 用に約 33ms 間隔の音声レベルコールバックを追加
+  - `src/core/vad.py` 全面書き換え: torch + MPS 版 VadFilter を廃止し、onnxruntime (CPU) + numpy のみの `SileroVad` に置換
+    - torch のトップレベル import（起動遅延の主因の一つ）を排除。VAD ロード約 88ms・推論 4ms/2 秒音声
+    - アプリ全体で 1 インスタンスを共有（旧実装はスロットごとに二重ロード）
+    - `speech_bounds()` を新設し、録音前後の無音・ノイズ区間をトリミングして API へ送る量と幻覚を削減
+  - `src/core/api_transcriber.py` 新設: OpenAI / Groq トランスクライバを統合
+    - openai / groq SDK を廃止し httpx の multipart POST に統一（OpenAI 互換 REST）。SDK の import 時間を排除
+    - `prewarm()` で録音開始時に TLS 接続を事前確立し、初回 API 呼び出しの往復を短縮
+    - 失敗は "Error:" 文字列ではなく `TranscriptionError` 例外で伝達
+    - 旧 `openai_transcriber.py` / `groq_transcriber.py` は削除
+  - `src/core/audio_utils.py`: MP3 変換（ffmpeg サブプロセス）を廃止し WAV 専用に簡素化
+    - import 時に `ffmpeg -version` を実行していた起動ブロック（最大 5 秒）を排除
+    - int16 変換前に `np.clip` を追加し、範囲外サンプルのラップアラウンド（轟音ノイズ化）を防止
+
+### Fixed
+- **「ほぼ無音＋ノイズ」録音で全く違う内容が出力される問題（幻覚）への対策**
+  - `src/core/audio_preprocess.py:normalize_volume`: ゲイン上限 +20dB を新設。従来は上限がなく、ノイズフロアだけの録音がフルボリュームまで増幅されて API が架空テキストを生成する主要因だった
+- **API キーの Keychain 読み出しを毎回行っていた問題**
+  - `src/utils/secrets.py`: プロセス内キャッシュを追加（set/delete で無効化）。録音のたびに数十 ms の Keychain アクセスが走らなくなった
+  - ElevenLabs 用サービス識別子 `SERVICE_ELEVENLABS` を追加
+
+### Technical Details
+- **書き換え**: `src/core/audio_recorder.py`, `src/core/vad.py`, `src/core/audio_utils.py`
+- **新規**: `src/core/api_transcriber.py`（`ApiTranscriber` 基底 + `OpenAITranscriber` / `GroqTranscriber`）
+- **削除**: `src/core/openai_transcriber.py`, `src/core/groq_transcriber.py`
+- **編集**: `src/core/audio_preprocess.py`（`MAX_GAIN_DB`）、`src/utils/secrets.py`（キャッシュ）、`src/core/__init__.py`（エクスポート更新）
+- スモークテスト: コア層 import 272ms（torch 削除前は約 1.4 秒）、WAV クリップ・ゲイン上限・VAD 無音/ノイズ判定を確認済み
+
 ## [Unreleased] - 2026-06-01
 
 ### Fixed
