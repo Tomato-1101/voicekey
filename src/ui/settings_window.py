@@ -42,7 +42,34 @@ from .styles import MacTheme
 _BACKEND_TO_SERVICE = {
     TranscriptionBackend.GROQ.value: secrets.SERVICE_GROQ,
     TranscriptionBackend.OPENAI.value: secrets.SERVICE_OPENAI,
+    TranscriptionBackend.ELEVENLABS.value: secrets.SERVICE_ELEVENLABS,
+    TranscriptionBackend.DEEPGRAM.value: secrets.SERVICE_DEEPGRAM,
 }
+
+# backend 選択値 → 選択可能モデル（先頭がベンチ実測 2026-06-10 に基づく既定）
+_BACKEND_MODELS = {
+    TranscriptionBackend.OPENAI.value: [
+        "gpt-4o-mini-transcribe",
+        "gpt-4o-transcribe",
+    ],
+    TranscriptionBackend.GROQ.value: [
+        "whisper-large-v3-turbo",
+        "whisper-large-v3",
+        "distil-whisper-large-v3-en",
+    ],
+    TranscriptionBackend.ELEVENLABS.value: [
+        "scribe_v1",                # 日本語 REST 最高精度（既定）
+        "scribe_v1_experimental",
+        "scribe_v2",                # 短文0%だが長文は後退
+    ],
+    TranscriptionBackend.DEEPGRAM.value: [
+        "nova-3",                   # ストリーミング/REST とも最良（既定）
+        "nova-2",
+    ],
+}
+
+# 各 backend の既定モデル（保存済みモデルが当該 backend のものでない時のフォールバック）
+_BACKEND_DEFAULT_MODEL = {b: models[0] for b, models in _BACKEND_MODELS.items()}
 
 
 class ThemeToggleButton(QPushButton):
@@ -460,11 +487,13 @@ class SettingsWindow(QWidget):
         setattr(self, f"_mode{slot_id}_combo", mode_combo)
         layout.addRow("Mode:", mode_combo)
 
-        # バックエンド選択
+        # バックエンド選択（REST + ストリーミングの全 4 種）
         backend_combo = QComboBox()
         backend_combo.addItems([
+            TranscriptionBackend.OPENAI.value,
             TranscriptionBackend.GROQ.value,
-            TranscriptionBackend.OPENAI.value
+            TranscriptionBackend.ELEVENLABS.value,
+            TranscriptionBackend.DEEPGRAM.value,
         ])
         backend_combo.currentTextChanged.connect(
             lambda text, sid=slot_id: self._on_slot_backend_changed(sid, text)
@@ -610,6 +639,20 @@ class SettingsWindow(QWidget):
         layout = QFormLayout(page)
         layout.setSpacing(15)
 
+        # リアルタイムストリーミング（Deepgram のホットキーで有効）
+        self._streaming_check = QCheckBox("リアルタイムストリーミング（Deepgram）")
+        layout.addRow("Streaming:", self._streaming_check)
+        streaming_hint = QLabel(
+            "Deepgram のホットキーで、話しながら HUD に字幕を表示し離した瞬間に確定します"
+        )
+        streaming_hint.setStyleSheet("color: #888; font-size: 11px;")
+        streaming_hint.setWordWrap(True)
+        layout.addRow("", streaming_hint)
+
+        # 録音中 HUD（画面下部中央の小型ピル）
+        self._hud_check = QCheckBox("録音中の HUD を表示")
+        layout.addRow("HUD:", self._hud_check)
+
         # VAD設定
         self._vad_check = QCheckBox("Enable VAD")
         layout.addRow("", self._vad_check)
@@ -714,7 +757,7 @@ class SettingsWindow(QWidget):
         self._hotkey1_input.setText(hotkey1_config.get("hotkey", "<f2>"))
         self._mode1_combo.setCurrentText(hotkey1_config.get("hotkey_mode", HotkeyMode.TOGGLE.value))
         backend1 = hotkey1_config.get("backend", "openai")
-        if backend1 not in [TranscriptionBackend.GROQ.value, TranscriptionBackend.OPENAI.value]:
+        if backend1 not in _BACKEND_TO_SERVICE:
             backend1 = TranscriptionBackend.OPENAI.value
         self._backend1_combo.setCurrentText(backend1)
         self._api1_prompt_input.setText(hotkey1_config.get("api_prompt", ""))
@@ -724,12 +767,14 @@ class SettingsWindow(QWidget):
         self._hotkey2_input.setText(hotkey2_config.get("hotkey", "<f3>"))
         self._mode2_combo.setCurrentText(hotkey2_config.get("hotkey_mode", HotkeyMode.TOGGLE.value))
         backend2 = hotkey2_config.get("backend", "groq")
-        if backend2 not in [TranscriptionBackend.GROQ.value, TranscriptionBackend.OPENAI.value]:
+        if backend2 not in _BACKEND_TO_SERVICE:
             backend2 = TranscriptionBackend.GROQ.value
         self._backend2_combo.setCurrentText(backend2)
         self._api2_prompt_input.setText(hotkey2_config.get("api_prompt", ""))
 
         # Advanced
+        self._streaming_check.setChecked(config.get("streaming_enabled", True))
+        self._hud_check.setChecked(config.get("hud_enabled", True))
         self._vad_check.setChecked(config.get("vad_filter", True))
         self._vad_silence_spin.setValue(config.get("vad_min_silence_duration_ms", 500))
         self._auto_enter_delay_slider.setValue(config.get("auto_enter_delay_ms", 50))
@@ -751,44 +796,32 @@ class SettingsWindow(QWidget):
 
         Args:
             slot_id: スロットID（1または2）
-            backend: 選択されたバックエンド（"groq" または "openai"）
+            backend: 選択されたバックエンド（openai/groq/elevenlabs/deepgram）
         """
-        is_api = backend in [TranscriptionBackend.GROQ.value, TranscriptionBackend.OPENAI.value]
-
-        # API設定ウィジェットの表示/非表示
+        # 4 種すべて API バックエンド。未知値のみウィジェットを隠す
+        is_api = backend in _BACKEND_TO_SERVICE
         api_widget = getattr(self, f"_api{slot_id}_widget")
         api_widget.setVisible(is_api)
+        if not is_api:
+            return
 
-        # APIバックエンドの場合、モデルコンボボックスを更新
-        if is_api:
-            model_combo = getattr(self, f"_api{slot_id}_model_combo")
-            model_combo.clear()
+        # モデル候補を差し替える。保存済みモデルが当該 backend のものなら復元、
+        # そうでなければ先頭（既定）を選ぶ
+        model_combo = getattr(self, f"_api{slot_id}_model_combo")
+        model_combo.clear()
+        models = _BACKEND_MODELS.get(backend, [])
+        model_combo.addItems(models)
 
-            if backend == TranscriptionBackend.GROQ.value:
-                model_combo.addItems([
-                    "whisper-large-v3-turbo",
-                    "whisper-large-v3",
-                    "distil-whisper-large-v3-en"
-                ])
-                # 設定から読み込み
-                config = self._config_manager.config
-                hotkey_config = config.get(f"hotkey{slot_id}", {})
-                api_model = hotkey_config.get("api_model", "whisper-large-v3-turbo")
-                model_combo.setCurrentText(api_model)
+        config = self._config_manager.config
+        hotkey_config = config.get(f"hotkey{slot_id}", {})
+        saved_model = hotkey_config.get("api_model", "")
+        if saved_model in models:
+            model_combo.setCurrentText(saved_model)
+        elif models:
+            model_combo.setCurrentIndex(0)
 
-            elif backend == TranscriptionBackend.OPENAI.value:
-                model_combo.addItems([
-                    "gpt-4o-mini-transcribe",
-                    "gpt-4o-transcribe"
-                ])
-                # 設定から読み込み
-                config = self._config_manager.config
-                hotkey_config = config.get(f"hotkey{slot_id}", {})
-                api_model = hotkey_config.get("api_model", "gpt-4o-mini-transcribe")
-                model_combo.setCurrentText(api_model)
-
-            # 切り替えに伴い Keychain 保存状況の表示も更新
-            self._refresh_api_key_status(slot_id)
+        # 切り替えに伴い Keychain 保存状況の表示も更新
+        self._refresh_api_key_status(slot_id)
 
     def _toggle_theme(self) -> None:
         """ダーク/ライトモードを切り替える。"""
@@ -822,6 +855,10 @@ class SettingsWindow(QWidget):
             "audio_input_device": selected_input_device,
             "auto_enter_delay_ms": self._auto_enter_delay_slider.value(),
 
+            # リアルタイムストリーミング / HUD 表示
+            "streaming_enabled": self._streaming_check.isChecked(),
+            "hud_enabled": self._hud_check.isChecked(),
+
             # 音声前処理（音量正規化のみ）
             "audio_preprocess": {
                 "volume_normalize": self._volume_normalize_check.isChecked(),
@@ -845,10 +882,12 @@ class SettingsWindow(QWidget):
                 "api_prompt": self._api2_prompt_input.text(),
             },
 
-            # APIモデルデフォルト値
+            # APIモデルデフォルト値（全 4 バックエンド）
             "default_api_models": self._config_manager.get("default_api_models", {
                 "groq": "whisper-large-v3-turbo",
                 "openai": "gpt-4o-mini-transcribe",
+                "elevenlabs": "scribe_v1",
+                "deepgram": "nova-3",
             }),
 
             # その他の設定

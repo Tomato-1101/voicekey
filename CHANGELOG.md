@@ -68,6 +68,36 @@ voicekeyの変更履歴を記録するファイルです。
   - **ストリーミング最終結論**: 離して→確定が最速・最精度なのは **Deepgram nova-3（確定 94〜109ms、CER 0.0%/1.3%）**。ライブ字幕の既定として最適。OpenAI 統一なら gpt-realtime-whisper（確定 ~800ms）。Flux は会話エージェント向け、ElevenLabs Realtime は現状 nova-3 に及ばず
   - 新規キーが要る有力候補（未計測・要サインアップ）: Soniox（日本語 WER 8.7% 主張・$0.12/h）、Speechmatics（月 40h 無料）、Mistral Voxtral Realtime（$0.006/min）
 
+### Added (2026-06-10 追記 5) — Windows 版を Mac 版と同等まで刷新
+- **ElevenLabs / Deepgram バックエンドを追加（Windows/Python 版、全 4 バックエンド対応）**
+  - `TranscriptionBackend` 列挙型に `ELEVENLABS` / `DEEPGRAM` を追加（従来は groq/openai のみ）
+  - `ElevenLabsTranscriber`（REST、`scribe_v1` 既定）: `xi-api-key` 認証 + multipart（`model_id` / `language_code`）。応答 JSON の `text` を採用。実 API で短文 CER 0.0% を確認
+  - `DeepgramTranscriber`（REST、`nova-3` 既定）: `Token` 認証 + WAV 生バイト POST、`punctuate` / `smart_format` 有効。nova-3 は日本語単言語非対応のため `language=multi` に自動切替。日本語の単語間スペースを除去。実 API で短文 CER 0.0% を確認
+  - `ApiTranscriber` 基底に `_auth_headers()` / `_raise_for_status()` / `_post()` を抽出し、4 バックエンドで共通化（重複削減）。Keychain サービス名は Mac 版と互換（`voicekey.Deepgram` 追加）
+- **Deepgram リアルタイムストリーミング + HUD ライブ字幕を実装（Mac 版と同挙動）**
+  - 新規 `src/core/streaming_transcriber.py`: Deepgram WebSocket（`websockets` 同期クライアント、受信は専用スレッド。アプリのスレッドベース設計に合わせ asyncio 不使用）。Mac 版 `StreamingTranscriber.swift` の移植
+  - `AudioRecorder` に `chunk_callback` を追加。REST 用バッファ（`audio_q`）とは独立に録音中の生 PCM を逐次送出。ストリーミング失敗時は同じ録音バッファで REST に自動フォールバック
+  - `app.py`: backend=Deepgram かつストリーミング有効のとき WS 経路。離した瞬間に確定テキストを貼り付け、空/失敗時は REST フォールバック。設定ホットリロード・ハング復旧・終了時に接続を確実に破棄
+  - 接続確立前に `finish()` が呼ばれた短い発話向けに接続猶予（最大 1 秒）を実装し、取りこぼしを防止
+  - 実 API 結合テスト: 短文はリアルタイム送信で完全一致（離して→確定 1.4s）、長文も全文取得を確認
+- **録音中 HUD を新規実装（`src/ui/hud.py`、UI 刷新）**
+  - 画面下部中央の小型ピル。録音中は音声レベル連動の波形バー、ストリーミング時はライブ字幕（頭省略で最新の語尾を表示）、変換中は「変換中…」、通知は 2 秒表示
+  - **フォーカスを絶対に奪わない**設計（`WindowDoesNotAcceptFocus` + `WA_ShowWithoutActivating` + 入力透過）。貼り付け先ウィンドウのフォーカスを維持。タスクバー非登録
+  - これまで表示先のなかった `notice` シグナル（エラー・無音検出）も HUD で可視化
+- **設定 UI を全 4 バックエンド対応に拡張（`settings_window.py`）**
+  - バックエンド選択に elevenlabs / deepgram を追加。モデル一覧をバックエンド別マップ（`_BACKEND_MODELS`）で差し替え、保存済みモデルが非対応なら既定（先頭）へ
+  - Advanced タブに「リアルタイムストリーミング（Deepgram）」「録音中の HUD を表示」トグルを追加（保存・ロード対応）
+- **既定値 / 依存 / パッケージング**
+  - `constants.py`: `streaming_enabled` / `hud_enabled`（既定 ON）、`default_api_models` を全 4 バックエンド（deepgram=nova-3 / elevenlabs=scribe_v1）に拡張。`config_manager.py` の `API_BACKENDS` を 4 種へ
+  - `requirements.txt` に `websockets>=13.0`、`voicekey.spec` に `collect_submodules('websockets')`（遅延 import のため明示収集）
+- **ユニットテスト基盤を新規追加（`tests/`、これまで皆無）**
+  - text_utils（CJK スペース除去）/ streaming_transcriber（メッセージ解析・PCM 変換・接続前 finish）/ api_transcriber（認証ヘッダー・言語解決・ステータス検査）/ config_manager（マイグレーション・正規化・既定）/ audio_utils（WAV ヘッダ・クリップ）の 38 テスト。ネットワーク/実機非依存で全パス
+
+### Technical Details (追記 5)
+- **types.py**: `TranscriptionBackend` に ELEVENLABS/DEEPGRAM、`TranscriptionTask` に `streamer` フィールド
+- **app.py**: `_BACKEND_CLASSES` マップ、`interim_text` シグナル、`_active_streamer` 状態、`_insert_and_enter()` ヘルパー、ストリーミング優先＋REST フォールバックの `_process_task`
+- **検証**: 全変更ファイル `py_compile` OK、オフスクリーン結合スモーク OK、実 Deepgram/ElevenLabs API で REST・ストリーミングとも一致、ユニットテスト 38 件パス。Windows GUI/ホットキー/トレイ/マイクの実機確認はユーザー側で実施（開発は macOS のため）
+
 ### Fixed (2026-06-10 追記 2)
 - **ホットキーがほとんど反応しない問題（Mac 版）**
   - 原因 1: ウィンドウを 1 つも持たないメニューバーアプリは App Nap の対象になり、イベントタップのコールバックが遅延 → OS にタイムアウト無効化されてホットキーが死ぬ。`beginActivity` と Info.plist `NSAppSleepDisabled` で App Nap を無効化し、タップ監視スレッドの QoS を `.userInteractive` に引き上げ

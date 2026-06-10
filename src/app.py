@@ -41,18 +41,29 @@ from .config.types import TranscriptionTask
 from .core import (
     ApiTranscriber,
     AudioRecorder,
+    DeepgramTranscriber,
+    ElevenLabsTranscriber,
     GroqTranscriber,
     InputHandler,
     OpenAITranscriber,
     SileroVad,
+    StreamingTranscriber,
     TranscriptionError,
 )
 from .core.audio_preprocess import preprocess as preprocess_audio
 from .platform import get_platform_adapter
-from .ui import SettingsWindow, SystemTray
+from .ui import Hud, SettingsWindow, SystemTray
 from .utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# バックエンド識別子 → トランスクライバクラスの対応
+_BACKEND_CLASSES = {
+    TranscriptionBackend.GROQ.value: GroqTranscriber,
+    TranscriptionBackend.OPENAI.value: OpenAITranscriber,
+    TranscriptionBackend.ELEVENLABS.value: ElevenLabsTranscriber,
+    TranscriptionBackend.DEEPGRAM.value: DeepgramTranscriber,
+}
 
 # 録音の最大継続時間（秒）。release 取りこぼし等による永久録音を防ぐ保険
 _MAX_RECORDING_SEC: float = 300.0
@@ -101,11 +112,13 @@ class VoicekeyApp(QObject):
         status_changed: UI 状態の変更通知（"idle"/"recording"/"recording_auto_enter"/"transcribing"）
         audio_level: 録音中の音声レベル（0.0-1.0、約 30fps）。HUD のレベルメーター用
         notice: ユーザーに見せるべき一時メッセージ（エラー、無音検出など）
+        interim_text: ストリーミング中のライブ字幕（受信スレッド → メインへホップ）
     """
 
     status_changed = Signal(str)
     audio_level = Signal(float)
     notice = Signal(str)
+    interim_text = Signal(str)
 
     def __init__(self) -> None:
         """アプリケーションを初期化する。"""
@@ -131,6 +144,8 @@ class VoicekeyApp(QObject):
         self._recording_started: float = 0.0        # 録音開始時刻（monotonic）
         self._auto_enter = False                    # ダブルタップによる auto_enter 録音か
         self._outstanding = 0                       # 未完了の文字起こしタスク数
+        # ストリーミング録音中の Deepgram セッション（非ストリーミング時は None）
+        self._active_streamer: Optional[StreamingTranscriber] = None
 
         # ダブルタップ検出（hold モードのみ。listener スレッドからのみ更新）
         self._last_release_time: float = 0.0
@@ -156,6 +171,14 @@ class VoicekeyApp(QObject):
         self._tray.force_reset.connect(self._force_restart)
         self._tray.quit_app.connect(self._quit_app)
         self.status_changed.connect(self._tray.set_status)
+
+        # 録音中 HUD（画面下部中央の小型ピル）。シグナルはワーカー/音声スレッドから
+        # 発火するが、Qt のキュー接続でメインスレッド上の HUD へ安全にホップする
+        self._hud = Hud(enabled=bool(self._config.get("hud_enabled", True)))
+        self.status_changed.connect(self._hud.set_state)
+        self.audio_level.connect(self._hud.push_level)
+        self.notice.connect(self._hud.show_notice)
+        self.interim_text.connect(self._hud.set_caption)
 
         # --- 背景スレッド ---
         self._monitoring = True
@@ -190,13 +213,13 @@ class VoicekeyApp(QObject):
             hotkey = cfg.get("hotkey", f"<f{slot_id + 1}>")
             mode = cfg.get("hotkey_mode", HotkeyMode.HOLD.value)
             backend = cfg.get("backend", "openai")
-            if backend not in (TranscriptionBackend.GROQ.value, TranscriptionBackend.OPENAI.value):
+            if backend not in _BACKEND_CLASSES:
                 logger.warning(f"未対応バックエンド '{backend}' のため openai にフォールバックします")
                 backend = TranscriptionBackend.OPENAI.value
             model = cfg.get("api_model", "") or defaults.get(backend, "")
             prompt = cfg.get("api_prompt", "")
 
-            cls = GroqTranscriber if backend == TranscriptionBackend.GROQ.value else OpenAITranscriber
+            cls = _BACKEND_CLASSES[backend]
             transcriber = cls(model=model, language=language, prompt=prompt)
             if not transcriber.is_available():
                 logger.warning(
@@ -374,6 +397,25 @@ class VoicekeyApp(QObject):
         self._emit_state()
         # 録音中に API への TLS 接続を事前確立し、停止後の初回往復を短縮する
         threading.Thread(target=slot.transcriber.prewarm, daemon=True).start()
+
+        # Deepgram かつストリーミング有効ならライブ字幕用に WebSocket を開く。
+        # 開始できなければ（キー無し / websockets 未導入）chunk_callback を張らないため
+        # REST 経路（slot.transcriber = DeepgramTranscriber）に自動フォールバックする
+        if (
+            self._config.get("streaming_enabled", True)
+            and slot.backend == TranscriptionBackend.DEEPGRAM.value
+        ):
+            stream = StreamingTranscriber(
+                model=slot.api_model,
+                language=self._config.get("language", "ja"),
+                on_interim=self.interim_text.emit,  # 受信スレッド → シグナルでメインへ
+            )
+            if stream.start():
+                with self._state_lock:
+                    self._active_streamer = stream
+                # 録音中のみ発火するフック。次の停止で解除する
+                self._recorder.chunk_callback = stream.send
+
         self._recorder.start_async(self._on_record_started)
 
     def _on_record_started(self, ok: bool) -> None:
@@ -393,9 +435,14 @@ class VoicekeyApp(QObject):
             if slot_id is None:
                 return
             auto_enter = self._auto_enter
+            streamer = self._active_streamer  # ストリーミング録音なら確定待ちをワーカーへ託す
             self._recording_slot = None
             self._auto_enter = False
+            self._active_streamer = None
             self._outstanding += 1  # 音声確定前から「変換中」を表示する
+
+        # ストリーミング送出を停止（確定は finish() がワーカー上で行う）
+        self._recorder.chunk_callback = None
 
         logger.info(f"録音停止要求 (スロット{slot_id})")
         self._emit_state()
@@ -408,6 +455,7 @@ class VoicekeyApp(QObject):
                     slot_id=slot_id,
                     timestamp=time.perf_counter(),
                     auto_enter=auto_enter,
+                    streamer=streamer,
                 )
             )
 
@@ -441,7 +489,24 @@ class VoicekeyApp(QObject):
                 self._emit_state()
 
     def _process_task(self, task: TranscriptionTask) -> None:
-        """正規化 → VAD → API → テキスト挿入を 1 タスク分実行する。"""
+        """ストリーミング確定 →（空なら）正規化 → VAD → API → テキスト挿入を実行する。"""
+        # --- ストリーミング経路: Deepgram の確定テキストを受け取って貼り付け ---
+        streamer = task.streamer
+        if streamer is not None:
+            try:
+                streamed = streamer.finish()
+            except Exception as e:
+                logger.warning(f"ストリーミング確定でエラー、REST にフォールバック: {e}")
+                streamed = ""
+            if streamed:
+                total_ms = (time.perf_counter() - task.timestamp) * 1000
+                logger.info(f"ストリーミング確定: {len(streamed)} 文字 ({total_ms:.0f}ms)")
+                self._insert_and_enter(streamed, task.auto_enter)
+                return
+            # 確定が空（接続失敗・無音など）→ 取得済みバッファで REST にフォールバック
+            logger.info("ストリーミング結果が空のため REST にフォールバックします")
+
+        # --- REST 経路（従来の 正規化 → VAD → API → 貼り付け）---
         audio = task.audio_data
         duration = len(audio) / SAMPLE_RATE
         if duration < _MIN_AUDIO_SEC:
@@ -486,8 +551,12 @@ class VoicekeyApp(QObject):
         logger.info(f"文字起こし完了: 音声 {duration:.1f}s → {len(text)} 文字 ({total_ms:.0f}ms)")
 
         # テキスト挿入（ワーカースレッド上で実行し UI スレッドを塞がない）
+        self._insert_and_enter(text, task.auto_enter)
+
+    def _insert_and_enter(self, text: str, auto_enter: bool) -> None:
+        """テキストを貼り付け、ダブルタップ時は遅延後に Enter を送る（ワーカースレッド上）。"""
         self._input_handler.insert_text(text)
-        if task.auto_enter:
+        if auto_enter:
             delay_ms = self._config.get("auto_enter_delay_ms", 50)
             time.sleep(max(0, delay_ms) / 1000.0)
             self._input_handler.press_enter()
@@ -543,6 +612,9 @@ class VoicekeyApp(QObject):
             timer.daemon = True
             timer.start()
 
+        # HUD 表示の有効/無効を反映
+        self._hud.enabled = bool(self._config.get("hud_enabled", True))
+
         logger.info("設定を再読み込みして適用しました")
 
     def _watchdog_check(self) -> None:
@@ -563,6 +635,12 @@ class VoicekeyApp(QObject):
             self.notice.emit("マイク処理の応答がないため自動復旧しました")
             with self._state_lock:
                 self._recording_slot = None
+                streamer = self._active_streamer
+                self._active_streamer = None
+            # ハング時もストリーミング接続を確実に破棄する
+            self._recorder.chunk_callback = None
+            if streamer is not None:
+                streamer.cancel()
             self._recorder.recover()
             self._emit_state()
 
@@ -646,6 +724,14 @@ class VoicekeyApp(QObject):
         """アプリケーションを終了する（最大 1 秒でマイクを解放）。"""
         logger.info("終了処理を開始します")
         self._monitoring = False
+
+        # 録音中のストリーミング接続を破棄してマイク/WebSocket を確実に解放する
+        with self._state_lock:
+            streamer = self._active_streamer
+            self._active_streamer = None
+        self._recorder.chunk_callback = None
+        if streamer is not None:
+            streamer.cancel()
 
         listener = self._listener
         if listener is not None:
