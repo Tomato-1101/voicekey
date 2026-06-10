@@ -35,6 +35,52 @@ swift run
 open dist/voicekey.app
 ```
 
+### 署名について（重要 — 権限の引き継ぎ）
+
+`build_app.sh` は自己署名証明書 `voicekey-codesign` があればそれで署名する。
+**ad-hoc 署名（`-` 署名）はビルドごとに「別アプリ」扱いになり、マイク・入力監視・
+アクセシビリティの許可が毎回リセットされてホットキーが効かなくなる。**
+証明書署名なら署名 ID が固定され、リビルド後も許可が引き継がれる。
+
+一度だけ以下を実行して証明書を作成・登録する（登録時に Mac のログインパスワードを求められる）:
+
+```bash
+# コード署名用の自己署名証明書を作成
+cat > /tmp/vk_csr.conf <<'EOF'
+[req]
+distinguished_name = dn
+x509_extensions = v3
+prompt = no
+[dn]
+CN = voicekey-codesign
+[v3]
+keyUsage = critical,digitalSignature
+extendedKeyUsage = critical,codeSigning
+basicConstraints = critical,CA:false
+EOF
+openssl req -x509 -newkey rsa:2048 -keyout /tmp/vk_key.pem -out /tmp/vk_cert.pem \
+  -days 3650 -nodes -config /tmp/vk_csr.conf
+# macOS 互換の p12 を /usr/bin/openssl(LibreSSL) で作る（OpenSSL3 の p12 は import 不可）
+/usr/bin/openssl pkcs12 -export -out /tmp/vk_identity.p12 \
+  -inkey /tmp/vk_key.pem -in /tmp/vk_cert.pem -passout pass:voicekey -name voicekey-codesign
+# login キーチェーンに取り込み、コード署名用として信頼
+security import /tmp/vk_identity.p12 -k ~/Library/Keychains/login.keychain-db \
+  -P voicekey -T /usr/bin/codesign
+security add-trusted-cert -p codeSign -k ~/Library/Keychains/login.keychain-db /tmp/vk_cert.pem
+```
+
+ad-hoc 版から証明書版に切り替えた直後は、古い許可が残っているため一度だけ
+リセットして付け直す:
+
+```bash
+tccutil reset ListenEvent com.voicekey.app
+tccutil reset Accessibility com.voicekey.app
+tccutil reset Microphone com.voicekey.app
+open dist/voicekey.app   # 再起動して許可ダイアログに従う（この 1 回だけ）
+```
+
+以降はリビルドしても許可を聞かれない。
+
 ## 初回セットアップ
 
 1. 起動するとメニューバーにマイクアイコンが表示される
