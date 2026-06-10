@@ -8,20 +8,31 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var config: ConfigStore
+    @State private var selectedTab: Int
+
+    init(config: ConfigStore, initialTab: Int = 0) {
+        self.config = config
+        _selectedTab = State(initialValue: initialTab)
+    }
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             GeneralSettingsTab(config: config)
                 .tabItem { Label("一般", systemImage: "gearshape") }
+                .tag(0)
             SlotSettingsTab(title: "ホットキー 1", slot: $config.slot1)
                 .tabItem { Label("ホットキー 1", systemImage: "1.circle") }
+                .tag(1)
             SlotSettingsTab(title: "ホットキー 2", slot: $config.slot2)
                 .tabItem { Label("ホットキー 2", systemImage: "2.circle") }
+                .tag(2)
             ApiKeysTab()
                 .tabItem { Label("API キー", systemImage: "key") }
+                .tag(3)
         }
-        .frame(width: 440)
-        .fixedSize()
+        // fixedSize() だと NSHostingController 上で高さが潰れて
+        // 入力欄が描画されないことがあるため、明示サイズを与える
+        .frame(width: 480, height: 520)
     }
 }
 
@@ -53,6 +64,7 @@ private struct GeneralSettingsTab: View {
                         value: $config.autoEnterDelayMs,
                         format: .number
                     )
+                    .textFieldStyle(.roundedBorder)
                     .frame(width: 60)
                     .multilineTextAlignment(.trailing)
                     Text("ms")
@@ -125,6 +137,7 @@ private struct SlotSettingsTab: View {
                 Text("プロンプト（任意）")
                 TextField("専門用語や固有名詞のヒントを入力", text: $slot.prompt, axis: .vertical)
                     .lineLimit(2...4)
+                    .textFieldStyle(.roundedBorder)
                 Text("文字起こしのヒント。よく使う固有名詞を書いておくと精度が上がります。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -169,7 +182,10 @@ private struct ApiKeyRow: View {
                 }
             }
             HStack {
+                // グループ化フォーム内の既定スタイルは枠が描画されず
+                // 入力欄と認識できないため、明示的に枠付きにする
                 SecureField("API キーを入力", text: $input)
+                    .textFieldStyle(.roundedBorder)
                 Button("保存") {
                     let key = input.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !key.isEmpty else { return }

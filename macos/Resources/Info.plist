@@ -25,6 +25,9 @@
 	<!-- メニューバー常駐アプリ: Dock と Cmd+Tab に表示しない -->
 	<key>LSUIElement</key>
 	<true/>
+	<!-- App Nap を無効化: ナップ中はイベントタップが遅延しホットキーが効かなくなる -->
+	<key>NSAppSleepDisabled</key>
+	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>音声入力（文字起こし）のためにマイクを使用します。</string>
 	<key>NSHumanReadableCopyright</key>

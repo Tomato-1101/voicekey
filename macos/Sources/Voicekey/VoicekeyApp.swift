@@ -33,6 +33,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var controller: AppController?
     private var statusBar: StatusItemController?
+    /// App Nap 無効化トークン（プロセス生存中ずっと保持する）
+    private var activityToken: NSObjectProtocol?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         // メニューバー常駐アプリとして Dock / Cmd+Tab から隠す
@@ -42,11 +44,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // App Nap を無効化する。ウィンドウを 1 つも持たないメニューバーアプリは
+        // ナップ対象になり、イベントタップのコールバックが遅延 → OS にタイムアウト
+        // 無効化されてホットキーが効かなくなるため（システムスリープは妨げない）
+        activityToken = ProcessInfo.processInfo.beginActivity(
+            options: .userInitiatedAllowingIdleSystemSleep,
+            reason: "グローバルホットキー監視"
+        )
+
         let controller = AppController()
         self.controller = controller
         statusBar = StatusItemController(controller: controller)
         controller.startup()
         registerLaunchAtLoginIfFirstRun()
+
+        // デバッグ用: 起動直後に設定ウィンドウを開く（一回限り、読み取り後に削除）
+        // 使い方: defaults write com.voicekey.app VOICEKEY_OPEN_SETTINGS -string 3 → 起動
+        let debugTab = UserDefaults.standard.string(forKey: "VOICEKEY_OPEN_SETTINGS")
+            ?? ProcessInfo.processInfo.environment["VOICEKEY_OPEN_SETTINGS"]
+        if let debugTab {
+            UserDefaults.standard.removeObject(forKey: "VOICEKEY_OPEN_SETTINGS")
+            log.info("デバッグ: 設定ウィンドウを自動表示します (tab=\(debugTab, privacy: .public))")
+            statusBar?.showSettings(initialTab: Int(debugTab) ?? 0)
+        }
     }
 
     /// 初回起動時にログイン時自動起動を登録する。
@@ -122,8 +142,16 @@ final class StatusItemController: NSObject {
     }
 
     @objc private func openSettings() {
+        showSettings(initialTab: 0)
+    }
+
+    /// 設定ウィンドウを表示する
+    func showSettings(initialTab: Int) {
+        log.info("設定ウィンドウを表示します (tab=\(initialTab), 既存=\(self.settingsWindow != nil))")
         if settingsWindow == nil, let config = controller?.config {
-            let hosting = NSHostingController(rootView: SettingsView(config: config))
+            let hosting = NSHostingController(
+                rootView: SettingsView(config: config, initialTab: initialTab)
+            )
             let window = NSWindow(contentViewController: hosting)
             window.title = "voicekey 設定"
             window.styleMask = [.titled, .closable]

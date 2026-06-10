@@ -69,9 +69,25 @@ final class HotkeyMonitor {
             self.runLoop = CFRunLoopGetCurrent()
             CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
             CGEvent.tapEnable(tap: tap, enable: true)
+
+            // ウォッチドッグ: tapDisabledByTimeout の通知自体を取りこぼしても
+            // 復旧できるよう、5 秒ごとにタップの有効状態を確認して再有効化する
+            let timer = CFRunLoopTimerCreateWithHandler(
+                kCFAllocatorDefault, CFAbsoluteTimeGetCurrent() + 5, 5, 0, 0
+            ) { [weak self] _ in
+                guard let self, let tap = self.tap else { return }
+                if !CGEvent.tapIsEnabled(tap: tap) {
+                    CGEvent.tapEnable(tap: tap, enable: true)
+                    log.warning("ウォッチドッグ: 無効化されたイベントタップを再有効化しました")
+                }
+            }
+            CFRunLoopAddTimer(CFRunLoopGetCurrent(), timer, .commonModes)
             CFRunLoopRun()
         }
         thread.name = "voicekey.hotkey-tap"
+        // App Nap やスレッド調停で遅延するとタップが OS にタイムアウト無効化
+        // されるため、最高優先度で動かす
+        thread.qualityOfService = .userInteractive
         thread.start()
         self.thread = thread
         log.info("ホットキー監視を開始しました")
@@ -96,10 +112,13 @@ final class HotkeyMonitor {
     private func handle(type: CGEventType, event: CGEvent) {
         switch type {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
-            // OS にタップを無効化されたら即座に再有効化（ホットキー永久無反応の防止）
+            // OS にタップを無効化されたら即座に再有効化（ホットキー永久無反応の防止）。
+            // 原因の切り分けのため無効化理由も記録する
+            // （timeout=コールバック遅延 / userInput=セキュア入力などによる強制無効化）
             if let tap {
                 CGEvent.tapEnable(tap: tap, enable: true)
-                log.warning("イベントタップが無効化されたため再有効化しました")
+                let reason = type == .tapDisabledByTimeout ? "timeout" : "userInput"
+                log.warning("イベントタップが無効化されたため再有効化しました (理由: \(reason, privacy: .public))")
             }
 
         case .flagsChanged:
