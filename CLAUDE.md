@@ -2,6 +2,21 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 最重要: Mac 版（macos/ ディレクトリ・Swift）の作業ルール
+
+このリポジトリには Windows 版（下記 Project Overview、Python/faster-whisper）に加えて
+**Mac 版（`macos/`、Swift製メニューバーアプリ）** がある。Mac 版を触るときは以下を厳守:
+
+- `macos/Sources/` を変更したら、**報告前に必ずワンセットで実行する**（ユーザーのビルド忘れ防止・2026-06-10 指示）:
+  1. `cd macos && ./scripts/build_app.sh`
+  2. `pgrep -x voicekey` で旧プロセスを kill
+  3. `open macos/dist/voicekey.app` で再起動
+  4. ログ / スクリーンショットで動作確認
+- 「コミットした＝反映された」ではない。ビルド+再起動するまで挙動は変わらない（詳細は `deploy-verify` スキル）。
+- メニューバーアイコンが見えない時: `defaults read com.voicekey.app "NSStatusItem Preferred Position Item-0"` を確認。
+  値が 490 超だと Hidden Bar / ノッチ下で不可視 → 250 程度に再設定して再起動。
+- UI インジケーターは「動作速度 > 見た目」。音声入力に待ち時間を足す実装（close() のタイムアウト待ち等）は禁止。
+
 ## Project Overview
 
 voicekey (SuperWhisper) is a Windows desktop application for real-time speech-to-text transcription using faster-whisper. It runs as a system tray application with a Dynamic Island-style overlay UI, activated by global hotkeys.
