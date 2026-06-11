@@ -25,6 +25,20 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/voicekey "$APP/Contents/MacOS/voicekey"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 
+# Sparkle.framework を同梱する。SPM の手組みバンドルでは Xcode と違い自動埋め込み
+# されないため、xcframework から自分でコピーして rpath を通す
+SPARKLE_FW=".build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+if [[ -d "$SPARKLE_FW" ]]; then
+    mkdir -p "$APP/Contents/Frameworks"
+    cp -R "$SPARKLE_FW" "$APP/Contents/Frameworks/"
+    # 既に同じ rpath があると install_name_tool が失敗するので無視する
+    install_name_tool -add_rpath "@executable_path/../Frameworks" \
+        "$APP/Contents/MacOS/voicekey" 2>/dev/null || true
+else
+    echo "エラー: Sparkle.framework が見つかりません（swift package resolve を実行してください）" >&2
+    exit 1
+fi
+
 # 署名: VOICEKEY_SIGN_IDENTITY があればそれを使う（配布ビルドが Developer ID 等を指定する用）。
 # 無ければ Apple 発行の Apple Development 証明書を優先する。
 # 自己署名証明書は再ビルドごとに Keychain ACL の cdhash が変わるため使わない。

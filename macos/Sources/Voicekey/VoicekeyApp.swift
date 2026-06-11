@@ -125,6 +125,25 @@ final class StatusItemController: NSObject {
         let settings = NSMenuItem(title: "設定…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
+
+        // 配布ビルドのみ: Sparkle の手動アップデート確認
+        if UpdaterController.shared.isAvailable {
+            let update = NSMenuItem(
+                title: "アップデートを確認…",
+                action: #selector(checkForUpdates),
+                keyEquivalent: ""
+            )
+            update.target = self
+            menu.addItem(update)
+        }
+
+        let feedback = NSMenuItem(
+            title: "フィードバックを送る…",
+            action: #selector(sendFeedback),
+            keyEquivalent: ""
+        )
+        feedback.target = self
+        menu.addItem(feedback)
         menu.addItem(.separator())
 
         let quit = NSMenuItem(title: "voicekey を終了", action: #selector(quitApp), keyEquivalent: "q")
@@ -143,6 +162,21 @@ final class StatusItemController: NSObject {
 
     @objc private func openSettings() {
         showSettings(initialTab: 0)
+    }
+
+    @objc private func checkForUpdates() {
+        UpdaterController.shared.checkForUpdates()
+    }
+
+    /// フィードバックをメールで送る（ベータ配布のフィードバック導線。
+    /// 件数が増えたら Google フォーム等の URL に差し替える）
+    @objc private func sendFeedback() {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let subject = "voicekey フィードバック (v\(version))"
+            .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        if let url = URL(string: "mailto:zhaounhaku@gmail.com?subject=\(subject)") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     /// 設定ウィンドウを表示する

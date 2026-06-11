@@ -7,9 +7,16 @@ let package = Package(
     platforms: [
         .macOS(.v14)
     ],
+    dependencies: [
+        // 自動アップデート（ベータ配布用）。appcast は voicekey-releases リポジトリで配信
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0")
+    ],
     targets: [
         .executableTarget(
             name: "voicekey",
+            dependencies: [
+                .product(name: "Sparkle", package: "Sparkle")
+            ],
             path: "Sources/Voicekey",
             swiftSettings: [
                 // Swift 6 の strict concurrency は段階導入とし、まず v5 モードで安定させる

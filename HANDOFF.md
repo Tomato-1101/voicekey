@@ -29,8 +29,9 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 - [x] Phase 1: Mac キー埋め込み（検証済み: スタブビルド起動OK / ダミーキー DIST で strings に平文なし /
       XOR 復号ラウンドトリップ OK。残: DIST の API キータブ非表示の目視と Keychain 空環境での
       文字起こし E2E は Phase 3 の実キービルドで行う）
-- [ ] Phase 2: Sparkle + build_dmg.sh（検証: codesign --verify / ローカル http.server で旧→新更新 E2E /
-      DMG 右クリック→開くで起動）
+- [x] Phase 2: Sparkle + build_dmg.sh（検証済み: codesign --verify --deep --strict 通過 /
+      ローカル http.server の appcast で旧→新の自動更新 E2E 成功（差分 DL→終了時インストール）。
+      Sparkle EdDSA 鍵: 公開鍵は Info.plist、秘密鍵は ~/.voicekey/sparkle_eddsa_key とログイン Keychain）
 - [ ] Phase 3: 初回 Mac リリース（voicekey-releases 作成・v1.0.0 公開。ユーザー側: API 利用上限設定・
       Developer Program 加入）
 - [ ] Phase 4: Windows 配布一式（embedded_keys / updater.py / voicekey.iss / build_windows_dist.ps1 /

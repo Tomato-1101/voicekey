@@ -19,6 +19,23 @@ voicekeyの変更履歴を記録するファイルです。
     `VOICEKEY_SIGN_IDENTITY` 対応（Developer ID への後日切替用）
   - 検証済み: XOR 復号ラウンドトリップ（swiftc 単体テスト）/ DIST バイナリの strings に平文キーなし /
     スタブビルドで通常起動
+- **Mac 版 Sparkle 2 自動アップデート + 配布パイプライン（ベータ配布 Phase 2）**
+  - `Package.swift` に Sparkle 2.9.3 を追加。`build_app.sh` が Sparkle.framework を
+    Contents/Frameworks へ同梱し rpath を追加（SPM 手組みバンドルのため手動埋め込み）
+  - `UpdaterController.swift`: DIST ビルド かつ .app バンドル実行時のみ Sparkle を起動
+    （開発ビルドに更新ダイアログが出るのを防止）
+  - メニューに「アップデートを確認…」（DIST のみ）と「フィードバックを送る…」（mailto）を追加
+  - `Info.plist`: SUFeedURL（voicekey-releases の appcast）/ SUPublicEDKey / 自動チェック 24h
+  - `build_dmg.sh` 新規: バージョン更新 → キー埋め込み（終了時に必ずスタブへ復元）→ ビルド →
+    開発機 rpath 除去 → hardened runtime で inside-out 署名（ad-hoc はエラー終了）→
+    DMG（/Applications リンク + 手順書同梱）→ Sparkle 用 zip → appcast 生成。
+    `--identity` / `--notarize` は Developer ID 加入後にそのまま使えるパラメータ化済み
+  - `voicekey.entitlements` 新規（hardened runtime 下のマイク使用に必須）
+  - `dmg_readme.txt` 新規: Gatekeeper 回避手順（macOS 14/15 別）+ 音声が外部 STT API に
+    送信される旨のプライバシー注意
+  - 検証済み: 偽キーで v0.0.1 → v0.0.2 の DMG/zip/appcast を実ビルドし、ローカル HTTP サーバの
+    appcast 経由で旧版が新版を検知 → バイナリ差分 DL → 終了時に自動インストールされ
+    バンドルが 0.0.2 に置き換わる E2E を確認。codesign --verify --deep --strict 通過
 
 ## [Unreleased] - 2026-06-10 (voicekey for Mac)
 
