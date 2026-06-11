@@ -2,6 +2,14 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
+## [Unreleased] - 2026-06-12 (無料テスト版・ベータ配布準備)
+
+### Added
+- ベータ配布計画の開始（HANDOFF.md にゴール・フェーズ・恒久要件を記録）
+- `.gitignore` に配布ビルド用キー生成物を追加（`.env.dist` / `src/config/embedded_keys.py` /
+  `macos/Sources/Voicekey/Config/EmbeddedKeys.generated.swift`）。API キーは git に絶対コミットしない
+- 配布用 `beta` ブランチを新設（開発は main、リリース時に main → beta マージで dist ビルド）
+
 ## [Unreleased] - 2026-06-10 (voicekey for Mac)
 
 ### Added

@@ -24,6 +24,11 @@ ENV/
 .env
 benchmark/.env
 
+# 配布ビルド用のキー（git にコミット絶対禁止・ビルド時にローカルから生成）
+.env.dist
+src/config/embedded_keys.py
+macos/Sources/Voicekey/Config/EmbeddedKeys.generated.swift
+
 # ------------------------------------------
 # ベンチマーク生成物
 # ------------------------------------------

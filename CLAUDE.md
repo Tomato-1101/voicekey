@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**進行中の長期作業がある場合はまず `HANDOFF.md` を読む**（ベータ配布計画の現在地・恒久要件が書いてある）。
+
 ## 最重要: Mac 版（macos/ ディレクトリ・Swift）の作業ルール
 
 このリポジトリには Windows 版（下記 Project Overview、Python/faster-whisper）に加えて
