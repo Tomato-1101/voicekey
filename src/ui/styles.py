@@ -294,6 +294,27 @@ class MacTheme:
             border: none;
             background: transparent;
         }}
+
+        /* リスト（履歴タブ） */
+        QListWidget {{
+            background-color: {c.INPUT_BG};
+            border: 1px solid {c.BORDER};
+            border-radius: 8px;
+            padding: 4px;
+            outline: none;
+        }}
+        QListWidget::item {{
+            padding: 8px 10px;
+            border-radius: 6px;
+            color: {c.TEXT};
+        }}
+        QListWidget::item:hover {{
+            background-color: {c.HOVER_BG};
+        }}
+        QListWidget::item:selected {{
+            background-color: {c.ACCENT};
+            color: white;
+        }}
         
         /* スクロールバー */
         QScrollBar:vertical {{

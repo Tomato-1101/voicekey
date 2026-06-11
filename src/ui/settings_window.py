@@ -1,16 +1,17 @@
 """
 設定ウィンドウモジュール
 
-Mac 版 SettingsView.swift と同じ 4 タブ構成（一般 / ホットキー 1 / ホットキー 2 / API キー）
+Mac 版 SettingsView.swift と同じ 5 タブ構成（一般 / ホットキー 1 / ホットキー 2 / 履歴 / API キー）
 ・同じ日本語文言で設定を管理する。
 ダーク/ライトテーマ切り替えに対応（Qt は OS テーマに自動追従しないため Windows 版のみ）。
 """
 
 from typing import Optional
 
-from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QPointF
+from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QPointF, QTimer
 from PySide6.QtGui import QKeyEvent, QPainter, QPainterPath, QColor, QPen, QBrush
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QFormLayout,
@@ -18,6 +19,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -31,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from ..config import ConfigManager, HotkeyMode, TranscriptionBackend
 from ..core.audio_recorder import AudioRecorder
+from ..core.history import MAX_ITEMS as HISTORY_MAX_ITEMS, HistoryStore
 from ..core.text_formatter import DEFAULT_FORMAT_PROMPT, KNOWN_FORMAT_MODELS
 from ..platform import PlatformAdapter, get_platform_adapter
 from ..utils import autostart, secrets
@@ -347,14 +351,25 @@ class SettingsWindow(QWidget):
     """
     アプリケーション設定ウィンドウ。
 
-    Mac 版と同じ 4 タブ（一般 / ホットキー 1 / ホットキー 2 / API キー）で設定を管理する。
+    Mac 版と同じ 5 タブ（一般 / ホットキー 1 / ホットキー 2 / 履歴 / API キー）で設定を管理する。
     設定は settings.yaml に保存し、アプリ側のホットリロードで即反映される。
     """
 
-    def __init__(self, platform_adapter: Optional[PlatformAdapter] = None) -> None:
-        """設定ウィンドウを初期化する。"""
+    def __init__(
+        self,
+        platform_adapter: Optional[PlatformAdapter] = None,
+        history: Optional[HistoryStore] = None,
+    ) -> None:
+        """
+        設定ウィンドウを初期化する。
+
+        Args:
+            platform_adapter: プラットフォーム依存処理のアダプタ
+            history: 音声入力履歴ストア（「履歴」タブで表示・再コピーする）
+        """
         super().__init__()
         self._platform = platform_adapter or get_platform_adapter()
+        self._history = history
 
         self._config_manager = ConfigManager()
 
@@ -396,12 +411,15 @@ class SettingsWindow(QWidget):
         header_layout.addWidget(self._theme_toggle)
         main_layout.addLayout(header_layout)
 
-        # 4 タブ（Mac 版 SettingsView の TabView と同じ構成・順序）
+        # 5 タブ（Mac 版 SettingsView の TabView と同じ構成・順序）
         self._tabs = QTabWidget()
         self._tabs.addTab(self._create_general_tab(), "一般")
         self._tabs.addTab(self._create_slot_tab(1), "ホットキー 1")
         self._tabs.addTab(self._create_slot_tab(2), "ホットキー 2")
+        self._history_tab_index = self._tabs.addTab(self._create_history_tab(), "履歴")
         self._tabs.addTab(self._create_api_keys_tab(), "API キー")
+        # ウィンドウを開いたまま音声入力しても、履歴タブを開いた時点で最新になるように
+        self._tabs.currentChanged.connect(self._on_tab_changed)
         main_layout.addWidget(self._tabs, 1)
 
         # ボタンエリア（保存/キャンセル）。Mac 版は即時反映だが、Windows 版は
@@ -637,6 +655,95 @@ class SettingsWindow(QWidget):
     # ------------------------------------------------------------------
     # API キータブ（Mac 版 ApiKeysTab と同構成）
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # 履歴タブ（Mac 版 HistoryTab と同構成。クリックでクリップボードにコピー）
+    # ------------------------------------------------------------------
+
+    def _create_history_tab(self) -> QWidget:
+        """履歴タブを作成する（直近の音声入力をクリックで再コピー）。"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(10)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        # QListWidget 自体がスクロールするため _wrap_scroll は不要
+        self._history_list = QListWidget()
+        self._history_list.setWordWrap(True)
+        # 長文は折り返して表示するため横スクロールは出さない
+        self._history_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._history_list.itemClicked.connect(self._copy_history_item)
+        layout.addWidget(self._history_list, 1)
+
+        footer = QHBoxLayout()
+        footer.setSpacing(8)
+        # コピー成功の一時フィードバック（Mac 版の「コピーしました」と同等）
+        self._history_feedback = QLabel("")
+        self._history_feedback.setStyleSheet("color: #34C759; font-size: 11px;")
+        clear_btn = QPushButton("履歴を消去")
+        clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        clear_btn.clicked.connect(self._clear_history)
+        footer.addWidget(self._history_feedback)
+        footer.addStretch()
+        footer.addWidget(clear_btn)
+        layout.addLayout(footer)
+
+        layout.addWidget(_make_caption(
+            f"音声入力の直近 {HISTORY_MAX_ITEMS} 件です。行をクリックすると"
+            "クリップボードにコピーします。履歴はこの PC の中だけに保存されます。"
+        ))
+
+        self._refresh_history()
+        return page
+
+    def _on_tab_changed(self, index: int) -> None:
+        """履歴タブが選択されたら一覧を最新の内容に更新する。"""
+        if index == self._history_tab_index:
+            self._refresh_history()
+
+    def _refresh_history(self) -> None:
+        """履歴一覧をストアの現在の内容で作り直す。"""
+        self._history_list.clear()
+        items = self._history.items() if self._history is not None else []
+
+        if not items:
+            placeholder = QListWidgetItem(
+                f"まだ履歴がありません。音声入力すると、ここに直近 {HISTORY_MAX_ITEMS} 件が残ります。"
+            )
+            # 選択・クリック不可の案内行にする
+            placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
+            self._history_list.addItem(placeholder)
+            return
+
+        for entry in items:
+            text = entry["text"]
+            # 一覧は 2 行プレビュー + 日時。全文はクリック時のコピーとツールチップで確認できる
+            preview = text if len(text) <= 80 else text[:80] + "…"
+            date = entry["date"].replace("T", " ")[:16]  # 例: 2026-06-12 00:15
+            item = QListWidgetItem(f"{preview}\n{date}")
+            item.setData(Qt.ItemDataRole.UserRole, text)
+            item.setToolTip(text)
+            self._history_list.addItem(item)
+
+    def _copy_history_item(self, item: QListWidgetItem) -> None:
+        """クリックされた履歴の全文をクリップボードにコピーする。"""
+        text = item.data(Qt.ItemDataRole.UserRole)
+        if not text:
+            return
+        QApplication.clipboard().setText(text)
+        self._history_feedback.setText(f"コピーしました（{len(text)} 文字）")
+        QTimer.singleShot(1500, lambda: self._history_feedback.setText(""))
+
+    def _clear_history(self) -> None:
+        """履歴をすべて消去して一覧を更新する。"""
+        if self._history is not None:
+            self._history.clear()
+        self._refresh_history()
+
+    def showEvent(self, event) -> None:
+        """ウィンドウを開くたびに履歴一覧を最新化する。"""
+        super().showEvent(event)
+        self._refresh_history()
 
     def _create_api_keys_tab(self) -> QWidget:
         """API キータブを作成する（4 バックエンド分の保存・削除）。"""

@@ -225,6 +225,10 @@ voicekeyの変更履歴を記録するファイルです。
   - 設定ウィンドウに「履歴」タブを新設（一般 / ホットキー 1・2 / 履歴 / API キー の 5 タブ構成）。行をクリックでクリップボードにコピーし「コピーしました」を 1.5 秒表示。各行に日時、下部に「履歴を消去」ボタン
   - 履歴は `~/Library/Application Support/voicekey/history.json` に保存（アプリ再起動後も残る・この Mac の外には出ない）。11 件目以降は古いものから自動削除
 - **Technical Details (Mac)**: `Core/HistoryStore.swift`（新規、`@MainActor ObservableObject`・iso8601 JSON 永続化・atomic write）、`AppController.history` + 両貼り付け経路で `history.add(output)`、`SettingsView` に `HistoryTab`/`HistoryRow`（行全体クリック領域・lineLimit 2）。検証: swift build / build_app.sh 成功、新ビルド起動、空状態と 3 件表示をスクリーンショットで確認
+- **Windows 版: 同等の「履歴」タブを追加（5 タブ構成に）**
+  - 貼り付けの単一地点 `_insert_and_enter` で履歴に自動記録（ストリーミング・REST 両経路をカバー）。履歴は settings.yaml と同じディレクトリの `history.json` に保存
+  - 履歴タブ: 行クリックで全文をクリップボードにコピーし「コピーしました（n 文字）」を 1.5 秒表示。80 文字超は省略プレビュー（全文はツールチップ）、各行に日時、「履歴を消去」ボタン、空時はプレースホルダー。タブ切替・ウィンドウ表示のたびに最新化
+- **Technical Details (Windows)**: `src/core/history.py`（新規、`HistoryStore`・threading.Lock・一時ファイル経由の atomic 置換・壊れた JSON は空で復帰）、`app.py` に `self._history` + `SettingsWindow(history=...)`、`settings_window.py` に `_create_history_tab` / `_refresh_history` / `_copy_history_item` / `_clear_history`、`styles.py` に QListWidget テーマ。検証: ユニットテスト 77 件全パス（履歴 9 件新規）、offscreen スモークでタブ構成・クリック→クリップボード一致・消去・ストアなし時の安全動作を確認
 
 ### Fixed (2026-06-11 追記 7)
 - **API キー使用のたびに Keychain の承認ダイアログが出る問題（Mac 版）**

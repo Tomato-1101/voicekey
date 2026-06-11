@@ -52,6 +52,7 @@ from .core import (
 )
 from .core import text_formatter
 from .core.audio_preprocess import preprocess as preprocess_audio
+from .core.history import HistoryStore
 from .platform import get_platform_adapter
 from .ui import Hud, SettingsWindow, SystemTray
 from .utils.logger import get_logger
@@ -170,8 +171,13 @@ class VoicekeyApp(QObject):
         )
         self._worker.start()
 
+        # --- 音声入力履歴（貼り付けたテキストを最大 10 件保持。設定の「履歴」タブで再コピー可） ---
+        self._history = HistoryStore()
+
         # --- UI ---
-        self._settings_window = SettingsWindow(platform_adapter=self._platform)
+        self._settings_window = SettingsWindow(
+            platform_adapter=self._platform, history=self._history
+        )
         self._tray = SystemTray(platform_adapter=self._platform)
         self._tray.open_settings.connect(self._open_settings)
         self._tray.force_reset.connect(self._force_restart)
@@ -632,6 +638,8 @@ class VoicekeyApp(QObject):
 
     def _insert_and_enter(self, text: str, auto_enter: bool) -> None:
         """テキストを貼り付け、ダブルタップ時は遅延後に Enter を送る（ワーカースレッド上）。"""
+        # 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する
+        self._history.add(text)
         self._input_handler.insert_text(text)
         if auto_enter:
             delay_ms = self._config.get("auto_enter_delay_ms", 50)
