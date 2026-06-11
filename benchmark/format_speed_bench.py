@@ -4,8 +4,8 @@
 フィラー多めの日本語文）を送り、レイテンシだけを測定する。
 精度は測らない（速度のみ。ユーザー指示 2026-06-11）。
 
-API キーは run_benchmark.py と同じ手順（環境変数 / benchmark/.env → Keychain）で
-取得し、値は一切表示しない。
+API キーは環境変数 → Keychain の順で取得し、値は一切表示しない。
+.env は読まない（settings の Read(**/.env) deny を尊重するため、dotenv 経由も使わない）。
 """
 
 import statistics
@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from run_benchmark import get_key, load_dotenv  # noqa: E402
+from run_benchmark import get_key  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.core.text_formatter import (  # noqa: E402
@@ -67,10 +67,9 @@ def bench(key: str, model: str) -> dict:
 
 
 def main() -> None:
-    load_dotenv()
     key = get_key("groq")
     if not key:
-        print("GROQ_API_KEY が見つかりません（env / benchmark/.env / Keychain）")
+        print("GROQ_API_KEY が見つかりません（env / Keychain）")
         sys.exit(1)
 
     print(f"入力: {len(INPUT)} 文字 / システムプロンプト: おまかせ（自動判断） / 各 {RUNS} 回")

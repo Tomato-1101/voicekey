@@ -94,15 +94,16 @@ enum FormatMode: String, Codable, CaseIterable, Identifiable {
 /// Groq Chat Completions でテキストを整形するクライアント
 final class TextFormatter {
 
-    /// 設定 UI のモデル Picker に出す既知の整形モデル（Groq）。先頭が既定。
-    /// 廃止モデルが選ばれても API エラー → 原文フォールバックで発話は失われない
+    /// 設定 UI のモデル Picker に出す既知の整形モデル（Groq）。先頭が既定＝推奨。
+    /// ベンチ実測 2026-06-11（benchmark/format_speed_bench.py、median ms）:
+    /// 8b-instant 355 / 70b 407 / gpt-oss-20b 697 / gpt-oss-120b 1123。
+    /// kimi-k2-instruct は API 廃止（404）のため削除。
     /// （Windows 版とリストを完全一致させる）
     static let knownModels = [
         "llama-3.1-8b-instant",
         "llama-3.3-70b-versatile",
         "openai/gpt-oss-20b",
         "openai/gpt-oss-120b",
-        "moonshotai/kimi-k2-instruct",
     ]
 
     /// 接続を再利用するため URLSession を保持（Transcriber と同じパターン）

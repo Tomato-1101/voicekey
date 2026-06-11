@@ -130,7 +130,7 @@ voicekeyの変更履歴を記録するファイルです。
 - **「おまかせ（自動判断）」モードを追加し既定に**（Mac / Windows、識別子 `auto`）
   - ユーザーが毎回モードを選ばなくても、LLM がテキストの内容から整形方法を自動判断する（フィラー除去は常時。列挙・手順なら箇条書き、それ以外は自然な文章。文体は元の発言を維持）
   - 自動判断の指示（システムプロンプト）は設定で自由に編集可能（Mac: 一般タブ「おまかせ整形の指示」+ 既定に戻すボタン / Windows: Advanced「Auto Format Prompt」）。空欄なら既定の指示を使用
-- **整形モデルを自由入力からリスト選択に変更**（Mac / Windows 共通リスト）: llama-3.1-8b-instant（既定・最速）/ llama-3.3-70b-versatile / openai/gpt-oss-20b / openai/gpt-oss-120b / moonshotai/kimi-k2-instruct。保存済みのリスト外モデルも選択を保持
+- **整形モデルを自由入力からリスト選択に変更**（Mac / Windows 共通リスト）: llama-3.1-8b-instant（既定・最速）/ llama-3.3-70b-versatile / openai/gpt-oss-20b / openai/gpt-oss-120b。保存済みのリスト外モデルも選択を保持
 - Technical: Mac `FormatMode.auto` + `defaultAutoPromptBody` + `TextFormatter.knownModels`、`ConfigStore.autoFormatPrompt`（UserDefaults 永続化）。Windows `DEFAULT_AUTO_PROMPT` / `KNOWN_FORMAT_MODELS`、`format_auto_prompt` 設定（空 = 既定で保存し既定文の将来更新に追従）。`build_system_prompt` / `format_text` に `auto_prompt` 引数追加。テスト 5 件追加（全 58 件パス）。Mac は実機でモード選択 UI・一般タブの編集欄・既存スロット設定の温存を確認
 
 ### Added (2026-06-11 追記 9) — モデル選択リストに「（推奨）」表記
@@ -138,7 +138,12 @@ voicekeyの変更履歴を記録するファイルです。
   - 表示ラベルだけの変更で、保存値・API へ送る値はモデル識別子のまま（Mac: Picker tag / Windows: QComboBox userData）
   - 推奨 = ベンチ実測 2026-06-10 に基づく各バックエンドの既定: OpenAI `gpt-4o-mini-transcribe` / Groq `whisper-large-v3-turbo` / ElevenLabs `scribe_v1`（日本語最高精度。v2 は長文後退）/ Deepgram `nova-3` / 整形 `llama-3.1-8b-instant`（速度テスト実行待ちの暫定）
   - Mac の knownModels の並びを「先頭＝既定＝推奨」に統一（OpenAI を mini 先頭、ElevenLabs を scribe_v1 先頭へ。Windows と同順序に）。保存済みの選択はそのまま温存される
-- **整形モデル速度ベンチ `benchmark/format_speed_bench.py` を追加**: 全 5 整形モデルに同一リクエスト（おまかせプロンプト + フィラー多め日本語 110 文字 × 3 回）を送りレイテンシのみ計測。キーは既存ベンチと同じ手順で取得し表示しない
+- **整形モデル速度ベンチ `benchmark/format_speed_bench.py` を追加**: 全整形モデルに同一リクエスト（おまかせプロンプト + フィラー多め日本語 133 文字 × 3 回）を送りレイテンシのみ計測。キーは環境変数 → Keychain の順で取得し表示しない（.env は読まない）
+
+### Changed (2026-06-11 追記 10) — 整形モデル速度ベンチの実測で推奨を確定・廃止モデル削除
+- **整形モデルの速度ベンチを実機実行し、推奨 `llama-3.1-8b-instant` を実測で確定**（追記 9 の「暫定」を解消）
+  - 実測（median）: llama-3.1-8b-instant **355ms** / llama-3.3-70b-versatile 407ms / openai/gpt-oss-20b 697ms / openai/gpt-oss-120b 1123ms — 最速は現行既定のままで順序変更なし
+- **`moonshotai/kimi-k2-instruct` をモデルリストから削除**（Mac / Windows 両方）: Groq API で 404（廃止）。後継候補 `-0905` も 404 のため kimi 系は除外。選択済みユーザーがいてもリスト外保存値は UI で温存され、API エラー時は原文フォールバックで発話は失われない
 
 ### Fixed (2026-06-11 追記 7)
 - **API キー使用のたびに Keychain の承認ダイアログが出る問題（Mac 版）**

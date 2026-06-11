@@ -29,15 +29,16 @@ _TIMEOUT_SEC = 10.0
 # 整形モデルの既定値（グローバル設定 format_model で変更可能）
 DEFAULT_FORMAT_MODEL = "llama-3.1-8b-instant"
 
-# 設定 UI で選べる既知の整形モデル（Groq）。先頭が既定。
-# 廃止モデルが選ばれても API エラー → 原文フォールバックで発話は失われない
+# 設定 UI で選べる既知の整形モデル（Groq）。先頭が既定＝推奨。
+# ベンチ実測 2026-06-11（benchmark/format_speed_bench.py、median ms）:
+#   8b-instant 355 / 70b 407 / gpt-oss-20b 697 / gpt-oss-120b 1123。
+# kimi-k2-instruct は API 廃止（404）のため削除。
 # （Mac 版とリストを完全一致させる）
 KNOWN_FORMAT_MODELS = [
     "llama-3.1-8b-instant",
     "llama-3.3-70b-versatile",
     "openai/gpt-oss-20b",
     "openai/gpt-oss-120b",
-    "moonshotai/kimi-k2-instruct",
 ]
 
 # 「おまかせ（自動判断）」モードの既定プロンプト本文。
