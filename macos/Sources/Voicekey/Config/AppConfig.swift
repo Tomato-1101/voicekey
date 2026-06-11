@@ -164,8 +164,13 @@ final class ConfigStore: ObservableObject {
         autoEnterDelayMs = defaults.object(forKey: Keys.autoEnterDelayMs) as? Int ?? 50
         inputDeviceUID = defaults.string(forKey: Keys.inputDeviceUID) ?? ""
         formatModel = defaults.string(forKey: Keys.formatModel) ?? "llama-3.1-8b-instant"
-        // 既定値はそのまま編集できるよう実テキストを初期表示する（空欄なら実行時に既定へフォールバック）
-        autoFormatPrompt = defaults.string(forKey: Keys.autoFormatPrompt) ?? FormatMode.defaultAutoPromptBody
+        // 既定値はそのまま編集できるよう実テキストを初期表示する（空欄なら実行時に既定へフォールバック）。
+        // 保存されるのはユーザーが編集した場合のみ（下の保存処理参照）なので、
+        // 未編集なら常に最新の既定文が使われる
+        let storedAutoPrompt = defaults.string(forKey: Keys.autoFormatPrompt) ?? ""
+        autoFormatPrompt = storedAutoPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? FormatMode.defaultAutoPromptBody
+            : storedAutoPrompt
 
         // 変更を自動保存（起動直後の初期代入は上で完了しているため安全）
         $slot1.dropFirst().sink { [weak self] in self?.saveSlot($0, key: Keys.slot1) }.store(in: &cancellables)
@@ -177,7 +182,13 @@ final class ConfigStore: ObservableObject {
         $autoEnterDelayMs.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.autoEnterDelayMs) }.store(in: &cancellables)
         $inputDeviceUID.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.inputDeviceUID) }.store(in: &cancellables)
         $formatModel.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.formatModel) }.store(in: &cancellables)
-        $autoFormatPrompt.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.autoFormatPrompt) }.store(in: &cancellables)
+        // 既定文と同じ内容は保存しない（Windows 版と同じ方式）。
+        // 既定文をそのまま永続化すると、アプリ更新で既定文を改善しても古い文が使われ続けるため
+        $autoFormatPrompt.dropFirst().sink { [weak self] in
+            let isDefault = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                == FormatMode.defaultAutoPromptBody.trimmingCharacters(in: .whitespacesAndNewlines)
+            self?.defaults.set(isDefault ? "" : $0, forKey: Keys.autoFormatPrompt)
+        }.store(in: &cancellables)
     }
 
     /// スロット設定を ID で取得する
