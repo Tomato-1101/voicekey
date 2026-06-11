@@ -31,9 +31,12 @@ struct SettingsView: View {
             HistoryTab(history: history)
                 .tabItem { Label("履歴", systemImage: "clock.arrow.circlepath") }
                 .tag(3)
-            ApiKeysTab()
-                .tabItem { Label("API キー", systemImage: "key") }
-                .tag(4)
+            // 配布ビルドは埋め込みキーで動くため、API キータブは出さない（テスターの混乱防止）
+            if !EmbeddedKeys.isDist {
+                ApiKeysTab()
+                    .tabItem { Label("API キー", systemImage: "key") }
+                    .tag(4)
+            }
         }
         // fixedSize() だと NSHostingController 上で高さが潰れて
         // 入力欄が描画されないことがあるため、明示サイズを与える

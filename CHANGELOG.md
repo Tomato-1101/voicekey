@@ -9,6 +9,16 @@ voicekeyの変更履歴を記録するファイルです。
 - `.gitignore` に配布ビルド用キー生成物を追加（`.env.dist` / `src/config/embedded_keys.py` /
   `macos/Sources/Voicekey/Config/EmbeddedKeys.generated.swift`）。API キーは git に絶対コミットしない
 - 配布用 `beta` ブランチを新設（開発は main、リリース時に main → beta マージで dist ビルド）
+- **Mac 版 API キー埋め込み機構（テスター向け配布ビルド用）**
+  - `macos/scripts/generate_embedded_keys.sh`: `--dist` で Keychain の現行キー4件を抽出し、
+    ランダム 32 バイトマスクで XOR 難読化した `EmbeddedKeys.generated.swift`（git 管理外）を生成。
+    引数なしはスタブ生成（isDist=false・キーなし、通常開発用）
+  - `Keychain.swift`: キー解決を「Keychain → 環境変数 → 埋め込みキー」の3段フォールバックに拡張
+  - `SettingsView.swift`: DIST ビルドでは API キータブを非表示（テスターの混乱防止）
+  - `build_app.sh`: 生成ファイル未存在時のスタブ自動生成 + 署名 identity の環境変数
+    `VOICEKEY_SIGN_IDENTITY` 対応（Developer ID への後日切替用）
+  - 検証済み: XOR 復号ラウンドトリップ（swiftc 単体テスト）/ DIST バイナリの strings に平文キーなし /
+    スタブビルドで通常起動
 
 ## [Unreleased] - 2026-06-10 (voicekey for Mac)
 

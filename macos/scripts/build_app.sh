@@ -9,6 +9,12 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# EmbeddedKeys.generated.swift（git 管理外）が無いとコンパイルできないため、
+# 未生成ならスタブ（isDist=false・キーなし）を自動生成する
+if [[ ! -f Sources/Voicekey/Config/EmbeddedKeys.generated.swift ]]; then
+    ./scripts/generate_embedded_keys.sh
+fi
+
 echo "==> swift build (release)"
 swift build -c release
 
@@ -19,13 +25,14 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/voicekey "$APP/Contents/MacOS/voicekey"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 
-# 署名: Apple 発行の Apple Development 証明書を優先する。
+# 署名: VOICEKEY_SIGN_IDENTITY があればそれを使う（配布ビルドが Developer ID 等を指定する用）。
+# 無ければ Apple 発行の Apple Development 証明書を優先する。
 # 自己署名証明書は再ビルドごとに Keychain ACL の cdhash が変わるため使わない。
-APPLE_DEVELOPMENT_IDENTITY="$(
+APPLE_DEVELOPMENT_IDENTITY="${VOICEKEY_SIGN_IDENTITY:-$(
     security find-identity -v -p codesigning 2>/dev/null \
         | sed -n 's/^[[:space:]]*[0-9]*) [A-F0-9]* "\(Apple Development:.*\)"$/\1/p' \
         | head -n 1
-)"
+)}"
 
 if [[ -n "$APPLE_DEVELOPMENT_IDENTITY" ]]; then
     echo "==> codesign ($APPLE_DEVELOPMENT_IDENTITY)"

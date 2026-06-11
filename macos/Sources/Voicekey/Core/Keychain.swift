@@ -59,7 +59,16 @@ enum Keychain {
         case .elevenlabs: envVar = "ELEVENLABS_API_KEY"
         case .deepgram: envVar = "DEEPGRAM_API_KEY"
         }
-        return ProcessInfo.processInfo.environment[envVar]
+        if let env = ProcessInfo.processInfo.environment[envVar], !env.isEmpty {
+            return env
+        }
+        // 配布ビルドの埋め込みキー（テスター環境では Keychain も環境変数も無いため
+        // ここに落ちる。通常開発ビルドではスタブが常に nil を返す）
+        if let embedded = EmbeddedKeys.key(forService: svc) {
+            lock.lock(); cache[svc] = embedded; lock.unlock()
+            return embedded
+        }
+        return nil
     }
 
     /// API キーを保存する

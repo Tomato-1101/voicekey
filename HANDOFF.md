@@ -25,9 +25,10 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 
 ## フェーズと検証チェックポイント
 
-- [ ] Phase 0: beta ブランチ + .gitignore（検証: git check-ignore で生成物3つが無視される）
-- [ ] Phase 1: Mac キー埋め込み（検証: スタブビルドで通常動作 / --dist で strings に平文なし /
-      DIST で API キータブ非表示 / Keychain 空環境で文字起こし成功）
+- [x] Phase 0: beta ブランチ + .gitignore（検証済み: git check-ignore で生成物3つが無視される）
+- [x] Phase 1: Mac キー埋め込み（検証済み: スタブビルド起動OK / ダミーキー DIST で strings に平文なし /
+      XOR 復号ラウンドトリップ OK。残: DIST の API キータブ非表示の目視と Keychain 空環境での
+      文字起こし E2E は Phase 3 の実キービルドで行う）
 - [ ] Phase 2: Sparkle + build_dmg.sh（検証: codesign --verify / ローカル http.server で旧→新更新 E2E /
       DMG 右クリック→開くで起動）
 - [ ] Phase 3: 初回 Mac リリース（voicekey-releases 作成・v1.0.0 公開。ユーザー側: API 利用上限設定・
