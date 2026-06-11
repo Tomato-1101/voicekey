@@ -247,8 +247,9 @@ final class AppController: ObservableObject {
         // 整形設定もタスク実行中の設定変更に影響されないよう Task の外で捕捉する
         let slot = config.slot(slotId)
         let formatEnabled = slot.formatEnabled
-        let formatMode = FormatMode(rawValue: slot.formatMode) ?? .clean
+        let formatMode = FormatMode(rawValue: slot.formatMode) ?? .auto
         let formatCustomPrompt = slot.formatCustomPrompt
+        let formatAutoPrompt = config.autoFormatPrompt
         let formatModel = config.formatModel
         guard let transcriber = transcribers[slotId] else {
             streamer?.cancel()
@@ -270,7 +271,8 @@ final class AppController: ObservableObject {
                     // 整形が有効なら貼り付け前に LLM で整形（失敗時は原文が返る）
                     let output = formatEnabled
                         ? await formatter.format(streamed, mode: formatMode,
-                                                 customPrompt: formatCustomPrompt, model: formatModel)
+                                                 customPrompt: formatCustomPrompt,
+                                                 autoPrompt: formatAutoPrompt, model: formatModel)
                         : streamed
                     await Paster.paste(output)
                     if autoEnter {
@@ -319,7 +321,8 @@ final class AppController: ObservableObject {
             // 整形が有効なら貼り付け前に LLM で整形（失敗時は原文が返る）
             let output = formatEnabled
                 ? await formatter.format(text, mode: formatMode,
-                                         customPrompt: formatCustomPrompt, model: formatModel)
+                                         customPrompt: formatCustomPrompt,
+                                         autoPrompt: formatAutoPrompt, model: formatModel)
                 : text
             await Paster.paste(output)
             if autoEnter {

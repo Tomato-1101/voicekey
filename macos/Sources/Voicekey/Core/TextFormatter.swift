@@ -13,6 +13,8 @@ private let log = Logger(subsystem: "com.voicekey.app", category: "formatter")
 
 /// テキスト整形モード（識別子は Windows 版と共通の固定文字列）
 enum FormatMode: String, Codable, CaseIterable, Identifiable {
+    /// LLM が内容から箇条書き/文章などを自動判断する（既定）
+    case auto
     case clean
     case bullets
     case polite
@@ -25,6 +27,7 @@ enum FormatMode: String, Codable, CaseIterable, Identifiable {
     /// 設定 UI に表示する日本語ラベル
     var label: String {
         switch self {
+        case .auto: return "おまかせ（自動判断）"
         case .clean: return "自動クリーン"
         case .bullets: return "箇条書き"
         case .polite: return "丁寧（敬語）"
@@ -34,6 +37,17 @@ enum FormatMode: String, Codable, CaseIterable, Identifiable {
         }
     }
 
+    /// 「おまかせ」モードの既定プロンプト本文。
+    /// 設定 UI の初期値・「既定に戻す」ボタン・空欄時のフォールバックに使う
+    /// （Windows 版と文言を完全一致させる）
+    static let defaultAutoPromptBody = """
+        あなたは音声入力の整形エンジンです。文字起こしテキストの内容から最適な整形方法をあなた自身が判断して整形してください。
+        - まず「えーと」「あの」「まあ」「えっと」「なんか」「um」「uh」などのフィラー語と無意味な繰り返しを取り除き、言い直しがある場合は最終的な発言だけを残す
+        - 複数の項目・手順・列挙を話している内容なら、各行を「- 」で始める箇条書きに整理する
+        - それ以外は、句読点と改行を自然に整えた読みやすい文章にする
+        - 文体（敬語・カジュアル）は元の発言の文体を維持する
+        """
+
     /// 全モード共通のフッター（出力形式を固定する指示。Windows 版と文言を完全一致させる）
     private static let footer =
         "出力は整形後のテキストのみを返す。前置き・説明・引用符・コードブロックを付けない。入力と同じ言語で出力する。元の発言にない情報を追加しない。"
@@ -41,6 +55,8 @@ enum FormatMode: String, Codable, CaseIterable, Identifiable {
     /// モード別のシステムプロンプト本文（フッターを除く。Windows 版と文言を完全一致させる）
     private var promptBody: String {
         switch self {
+        case .auto:
+            return FormatMode.defaultAutoPromptBody
         case .clean:
             return "あなたは音声入力の整形エンジンです。文字起こしテキストから「えーと」「あの」「まあ」「えっと」「なんか」「um」「uh」などのフィラー語と無意味な繰り返しを取り除き、句読点と改行を自然に整えてください。言い直しがある場合は最終的な発言だけを残してください。"
         case .bullets:
@@ -58,12 +74,16 @@ enum FormatMode: String, Codable, CaseIterable, Identifiable {
     }
 
     /// システムプロンプトを組み立てる（モード別本文 + 共通フッター）。
-    /// custom はカスタムプロンプト本文をそのまま使う（空白のみなら clean の本文を使う）。
-    func systemPrompt(customPrompt: String) -> String {
+    /// custom はカスタムプロンプト本文をそのまま使い（空白のみなら clean の本文）、
+    /// auto はユーザー編集済みの自動判断プロンプトを使う（空白のみなら既定の本文）。
+    func systemPrompt(customPrompt: String, autoPrompt: String) -> String {
         let body: String
         if self == .custom,
            !customPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             body = customPrompt
+        } else if self == .auto,
+                  !autoPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            body = autoPrompt
         } else {
             body = promptBody
         }
@@ -73,6 +93,17 @@ enum FormatMode: String, Codable, CaseIterable, Identifiable {
 
 /// Groq Chat Completions でテキストを整形するクライアント
 final class TextFormatter {
+
+    /// 設定 UI のモデル Picker に出す既知の整形モデル（Groq）。先頭が既定。
+    /// 廃止モデルが選ばれても API エラー → 原文フォールバックで発話は失われない
+    /// （Windows 版とリストを完全一致させる）
+    static let knownModels = [
+        "llama-3.1-8b-instant",
+        "llama-3.3-70b-versatile",
+        "openai/gpt-oss-20b",
+        "openai/gpt-oss-120b",
+        "moonshotai/kimi-k2-instruct",
+    ]
 
     /// 接続を再利用するため URLSession を保持（Transcriber と同じパターン）
     private let session: URLSession
@@ -113,9 +144,13 @@ final class TextFormatter {
     ///   - text: 文字起こし確定テキスト
     ///   - mode: 整形モード
     ///   - customPrompt: custom モードで使うカスタムプロンプト本文
+    ///   - autoPrompt: auto モードで使う自動判断プロンプト本文（空なら既定）
     ///   - model: 整形に使う Groq のモデル名
     /// - Returns: 整形後テキスト（失敗時は原文）
-    func format(_ text: String, mode: FormatMode, customPrompt: String, model: String) async -> String {
+    func format(
+        _ text: String, mode: FormatMode,
+        customPrompt: String, autoPrompt: String, model: String
+    ) async -> String {
         // 空白のみの入力は API を呼ばずそのまま返す
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return text }
 
@@ -133,7 +168,7 @@ final class TextFormatter {
         let body = ChatRequest(
             model: model,
             messages: [
-                .init(role: "system", content: mode.systemPrompt(customPrompt: customPrompt)),
+                .init(role: "system", content: mode.systemPrompt(customPrompt: customPrompt, autoPrompt: autoPrompt)),
                 .init(role: "user", content: text),
             ],
             temperature: 0.2

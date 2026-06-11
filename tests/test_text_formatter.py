@@ -4,13 +4,14 @@
 ネットワーク・実 API キーなしで検証する。
 """
 
+import os
 import unittest
 from unittest.mock import MagicMock, patch
 
 import httpx
 
 from src.core import text_formatter
-from src.core.text_formatter import build_system_prompt, format_text
+from src.core.text_formatter import DEFAULT_AUTO_PROMPT, build_system_prompt, format_text
 
 # 全モード共通フッター（仕様の文言。実装側の定数とは独立に持ち、改変を検出する）
 _FOOTER = (
@@ -18,7 +19,7 @@ _FOOTER = (
     "入力と同じ言語で出力する。元の発言にない情報を追加しない。"
 )
 
-_ALL_MODES = ("clean", "bullets", "polite", "casual", "email", "custom")
+_ALL_MODES = ("auto", "clean", "bullets", "polite", "casual", "email", "custom")
 
 
 def _response(status_code: int = 200, json_data=None, text: str = ""):
@@ -37,7 +38,7 @@ class TestBuildSystemPrompt(unittest.TestCase):
     """build_system_prompt のモード別プロンプト生成を検証する。"""
 
     def test_all_modes_end_with_footer(self):
-        """全 6 モードでプロンプトが生成され、空行 + 共通フッターで終わる。"""
+        """全 7 モードでプロンプトが生成され、空行 + 共通フッターで終わる。"""
         for mode in _ALL_MODES:
             prompt = build_system_prompt(mode, "カスタム指示")
             self.assertTrue(prompt.endswith("\n\n" + _FOOTER), f"mode={mode}")
@@ -62,6 +63,24 @@ class TestBuildSystemPrompt(unittest.TestCase):
         """未知のモード識別子は clean 扱いになる。"""
         self.assertEqual(build_system_prompt("unknown", ""), build_system_prompt("clean", ""))
 
+    def test_auto_blank_uses_default_prompt(self):
+        """auto モードでプロンプトが空白のみなら既定の自動判断プロンプトを使う。"""
+        expected = DEFAULT_AUTO_PROMPT + "\n\n" + _FOOTER
+        self.assertEqual(build_system_prompt("auto", "", ""), expected)
+        self.assertEqual(build_system_prompt("auto", "", "  \n "), expected)
+
+    def test_auto_uses_user_edited_prompt(self):
+        """auto モードでユーザー編集済みプロンプトがあればそれを使う。"""
+        prompt = build_system_prompt("auto", "", "内容に応じて表形式にしてください。")
+        self.assertEqual(prompt, "内容に応じて表形式にしてください。\n\n" + _FOOTER)
+
+    def test_auto_ignores_custom_prompt(self):
+        """auto モードは custom 用プロンプトの影響を受けない。"""
+        self.assertEqual(
+            build_system_prompt("auto", "custom用の指示", ""),
+            DEFAULT_AUTO_PROMPT + "\n\n" + _FOOTER,
+        )
+
 
 class TestFormatText(unittest.TestCase):
     """format_text の API 呼び出しとフォールバック動作を検証する。"""
@@ -76,11 +95,39 @@ class TestFormatText(unittest.TestCase):
             mock_key.assert_not_called()
 
     def test_no_api_key_returns_original(self):
-        """API キー未設定なら API を呼ばず原文を返す。"""
+        """API キー未設定（Keychain・環境変数とも無し）なら API を呼ばず原文を返す。"""
+        env = {k: v for k, v in os.environ.items() if k != "GROQ_API_KEY"}
         with patch.object(text_formatter.secrets, "get_api_key", return_value=None), \
+                patch.dict(text_formatter.os.environ, env, clear=True), \
                 patch.object(text_formatter.httpx, "post") as mock_post:
             self.assertEqual(format_text("えーと原文です", "clean", "", "m"), "えーと原文です")
             mock_post.assert_not_called()
+
+    def test_env_var_fallback_is_used(self):
+        """Keychain に無くても GROQ_API_KEY 環境変数があれば API を呼ぶ。"""
+        payload = {"choices": [{"message": {"content": "整形済み"}}]}
+        with patch.object(text_formatter.secrets, "get_api_key", return_value=None), \
+                patch.dict(text_formatter.os.environ, {"GROQ_API_KEY": "ENVKEY"}), \
+                patch.object(
+                    text_formatter.httpx, "post", return_value=_response(200, payload)
+                ) as mock_post:
+            self.assertEqual(format_text("原文", "clean", "", "m"), "整形済み")
+            self.assertEqual(
+                mock_post.call_args.kwargs["headers"]["Authorization"], "Bearer ENVKEY"
+            )
+
+    def test_auto_mode_system_prompt_in_request(self):
+        """auto モードのリクエストに自動判断プロンプト（+フッター）が載る。"""
+        payload = {"choices": [{"message": {"content": "整形済み"}}]}
+        with patch.object(text_formatter.secrets, "get_api_key", return_value="K"), \
+                patch.object(
+                    text_formatter.httpx, "post", return_value=_response(200, payload)
+                ) as mock_post:
+            format_text("原文", "auto", "", "m")
+            self.assertEqual(
+                mock_post.call_args.kwargs["json"]["messages"][0]["content"],
+                DEFAULT_AUTO_PROMPT + "\n\n" + _FOOTER,
+            )
 
     def test_httpx_exception_returns_original(self):
         """タイムアウト等の httpx 例外時は原文を返し、例外を外に出さない。"""

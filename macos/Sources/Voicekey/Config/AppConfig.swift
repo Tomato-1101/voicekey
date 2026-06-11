@@ -71,8 +71,9 @@ struct SlotConfig: Codable, Equatable {
     var prompt: String
     /// 貼り付け前に LLM でテキスト整形するか（既定はオフ）
     var formatEnabled: Bool = false
-    /// 整形モードの識別子（FormatMode.rawValue。Windows 版と共通の固定文字列）
-    var formatMode: String = "clean"
+    /// 整形モードの識別子（FormatMode.rawValue。Windows 版と共通の固定文字列）。
+    /// 既定は auto（LLM が内容から整形方法を自動判断）
+    var formatMode: String = "auto"
     /// custom モードで使うカスタムプロンプト本文
     var formatCustomPrompt: String = ""
 
@@ -95,7 +96,7 @@ extension SlotConfig {
         model = try c.decodeIfPresent(String.self, forKey: .model) ?? ""
         prompt = try c.decodeIfPresent(String.self, forKey: .prompt) ?? ""
         formatEnabled = try c.decodeIfPresent(Bool.self, forKey: .formatEnabled) ?? false
-        formatMode = try c.decodeIfPresent(String.self, forKey: .formatMode) ?? "clean"
+        formatMode = try c.decodeIfPresent(String.self, forKey: .formatMode) ?? "auto"
         formatCustomPrompt = try c.decodeIfPresent(String.self, forKey: .formatCustomPrompt) ?? ""
     }
 }
@@ -123,6 +124,8 @@ final class ConfigStore: ObservableObject {
     @Published var inputDeviceUID: String
     /// テキスト整形に使う Groq のモデル名（全スロット共通）
     @Published var formatModel: String
+    /// 「おまかせ（自動判断）」モードで LLM に渡すプロンプト本文（全スロット共通・編集可）
+    @Published var autoFormatPrompt: String
 
     private var cancellables: Set<AnyCancellable> = []
     private let defaults: UserDefaults
@@ -137,6 +140,7 @@ final class ConfigStore: ObservableObject {
         static let autoEnterDelayMs = "autoEnterDelayMs"
         static let inputDeviceUID = "inputDeviceUID"
         static let formatModel = "formatModel"
+        static let autoFormatPrompt = "autoFormatPrompt"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -157,6 +161,8 @@ final class ConfigStore: ObservableObject {
         autoEnterDelayMs = defaults.object(forKey: Keys.autoEnterDelayMs) as? Int ?? 50
         inputDeviceUID = defaults.string(forKey: Keys.inputDeviceUID) ?? ""
         formatModel = defaults.string(forKey: Keys.formatModel) ?? "llama-3.1-8b-instant"
+        // 既定値はそのまま編集できるよう実テキストを初期表示する（空欄なら実行時に既定へフォールバック）
+        autoFormatPrompt = defaults.string(forKey: Keys.autoFormatPrompt) ?? FormatMode.defaultAutoPromptBody
 
         // 変更を自動保存（起動直後の初期代入は上で完了しているため安全）
         $slot1.dropFirst().sink { [weak self] in self?.saveSlot($0, key: Keys.slot1) }.store(in: &cancellables)
@@ -168,6 +174,7 @@ final class ConfigStore: ObservableObject {
         $autoEnterDelayMs.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.autoEnterDelayMs) }.store(in: &cancellables)
         $inputDeviceUID.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.inputDeviceUID) }.store(in: &cancellables)
         $formatModel.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.formatModel) }.store(in: &cancellables)
+        $autoFormatPrompt.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.autoFormatPrompt) }.store(in: &cancellables)
     }
 
     /// スロット設定を ID で取得する

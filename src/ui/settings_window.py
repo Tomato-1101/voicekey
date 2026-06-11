@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QSlider,
     QSpinBox,
@@ -32,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from ..config import ConfigManager, HotkeyMode, TranscriptionBackend
 from ..core.audio_recorder import AudioRecorder
+from ..core.text_formatter import DEFAULT_AUTO_PROMPT, KNOWN_FORMAT_MODELS
 from ..platform import PlatformAdapter, get_platform_adapter
 from ..utils import autostart, secrets
 from .styles import MacTheme
@@ -73,6 +75,7 @@ _BACKEND_DEFAULT_MODEL = {b: models[0] for b, models in _BACKEND_MODELS.items()}
 
 # LLM テキスト整形モード（識別子, UI 日本語ラベル）。Mac 版と文言を完全一致させる
 _FORMAT_MODES = [
+    ("auto", "おまかせ（自動判断）"),
     ("clean", "自動クリーン"),
     ("bullets", "箇条書き"),
     ("polite", "丁寧（敬語）"),
@@ -776,10 +779,26 @@ class SettingsWindow(QWidget):
         preprocess_hint.setStyleSheet("color: #888; font-size: 11px;")
         layout.addRow("", preprocess_hint)
 
-        # LLM テキスト整形に使う Groq モデル（両ホットキー共通）
-        self._format_model_input = QLineEdit()
-        self._format_model_input.setPlaceholderText("llama-3.1-8b-instant")
-        layout.addRow("Format Model:", self._format_model_input)
+        # LLM テキスト整形に使う Groq モデル（両ホットキー共通・リストから選択）
+        self._format_model_combo = QComboBox()
+        for model in KNOWN_FORMAT_MODELS:
+            self._format_model_combo.addItem(model)
+        layout.addRow("Format Model:", self._format_model_combo)
+
+        # 「おまかせ（自動判断）」モードで LLM に渡すプロンプト（編集可・空欄なら既定）
+        self._format_auto_prompt_edit = QPlainTextEdit()
+        self._format_auto_prompt_edit.setFixedHeight(110)
+        layout.addRow("Auto Format Prompt:", self._format_auto_prompt_edit)
+
+        auto_prompt_reset = QPushButton("既定に戻す")
+        auto_prompt_reset.clicked.connect(
+            lambda: self._format_auto_prompt_edit.setPlainText(DEFAULT_AUTO_PROMPT)
+        )
+        layout.addRow("", auto_prompt_reset)
+
+        auto_prompt_hint = QLabel("整形モード「おまかせ（自動判断）」で LLM に渡す指示。自由に編集できます")
+        auto_prompt_hint.setStyleSheet("color: #888; font-size: 11px;")
+        layout.addRow("", auto_prompt_hint)
 
         return page
 
@@ -856,8 +875,16 @@ class SettingsWindow(QWidget):
         preprocess_cfg = config.get("audio_preprocess", {}) or {}
         self._volume_normalize_check.setChecked(bool(preprocess_cfg.get("volume_normalize", True)))
 
-        # LLM テキスト整形モデル（両ホットキー共通）
-        self._format_model_input.setText(config.get("format_model", "llama-3.1-8b-instant"))
+        # LLM テキスト整形モデル（両ホットキー共通）。保存値がリスト外でも選択を保持して表示する
+        saved_model = config.get("format_model", "llama-3.1-8b-instant")
+        if self._format_model_combo.findText(saved_model) < 0:
+            self._format_model_combo.addItem(saved_model)
+        self._format_model_combo.setCurrentText(saved_model)
+
+        # おまかせ整形プロンプト（空 = 既定。編集できるよう既定の実テキストを表示する）
+        self._format_auto_prompt_edit.setPlainText(
+            config.get("format_auto_prompt", "") or DEFAULT_AUTO_PROMPT
+        )
 
         # テキスト整形設定（スロットごと）
         for slot_id in [1, 2]:
@@ -866,7 +893,7 @@ class SettingsWindow(QWidget):
                 bool(hotkey_config.get("format_enabled", False))
             )
             mode_combo = getattr(self, f"_format{slot_id}_mode_combo")
-            index = mode_combo.findData(hotkey_config.get("format_mode", "clean"))
+            index = mode_combo.findData(hotkey_config.get("format_mode", "auto"))
             mode_combo.setCurrentIndex(index if index >= 0 else 0)
             getattr(self, f"_format{slot_id}_custom_input").setText(
                 hotkey_config.get("format_custom_prompt", "")
@@ -953,7 +980,12 @@ class SettingsWindow(QWidget):
             },
 
             # LLM テキスト整形に使う Groq モデル（両ホットキー共通）
-            "format_model": self._format_model_input.text().strip() or "llama-3.1-8b-instant",
+            "format_model": self._format_model_combo.currentText().strip() or "llama-3.1-8b-instant",
+            # おまかせ整形プロンプト（既定文と同一なら空で保存し、既定文の将来更新に追従する）
+            "format_auto_prompt": (
+                "" if self._format_auto_prompt_edit.toPlainText().strip() == DEFAULT_AUTO_PROMPT.strip()
+                else self._format_auto_prompt_edit.toPlainText()
+            ),
 
             # ホットキー1 設定
             "hotkey1": {

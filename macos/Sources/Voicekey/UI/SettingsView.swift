@@ -108,14 +108,36 @@ private struct GeneralSettingsTab: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            LabeledContent("整形モデル") {
-                TextField("", text: $config.formatModel)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 220)
+            Picker("整形モデル", selection: $config.formatModel) {
+                ForEach(TextFormatter.knownModels, id: \.self) { model in
+                    Text(model).tag(model)
+                }
+                // 保存済みモデルがリスト外でも選択を保持して表示する
+                if !TextFormatter.knownModels.contains(config.formatModel) {
+                    Text(config.formatModel).tag(config.formatModel)
+                }
             }
-            Text("テキスト整形に使う Groq のモデル。速度重視なら既定のままを推奨。")
+            Text("テキスト整形に使う Groq のモデル。速度重視なら既定（llama-3.1-8b-instant）を推奨。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("おまかせ整形の指示")
+                    Spacer()
+                    Button("既定に戻す") {
+                        config.autoFormatPrompt = FormatMode.defaultAutoPromptBody
+                    }
+                    .font(.caption)
+                }
+                TextField("", text: $config.autoFormatPrompt, axis: .vertical)
+                    .lineLimit(4...8)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption)
+                Text("整形モード「おまかせ（自動判断）」で LLM に渡す指示。自由に編集できます（空欄なら既定の指示を使用）。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             Divider()
 
@@ -197,6 +219,12 @@ private struct SlotSettingsTab: View {
                     ForEach(FormatMode.allCases) { mode in
                         Text(mode.label).tag(mode.rawValue)
                     }
+                }
+
+                if slot.formatMode == "auto" {
+                    Text("内容に応じて箇条書きか文章かを LLM が判断します。判断の指示は「一般」タブで編集できます。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 if slot.formatMode == "custom" {

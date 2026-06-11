@@ -94,7 +94,7 @@ class HotkeySlot:
         api_model: API モデル名
         api_prompt: API プロンプト
         format_enabled: 貼り付け前に LLM テキスト整形を行うか
-        format_mode: 整形モード（clean/bullets/polite/casual/email/custom）
+        format_mode: 整形モード（auto/clean/bullets/polite/casual/email/custom）
         format_custom_prompt: custom モード時のプロンプト本文
         transcriber: このスロット用のトランスクライバ
     """
@@ -243,7 +243,7 @@ class VoicekeyApp(QObject):
                 api_model=model,
                 api_prompt=prompt,
                 format_enabled=bool(cfg.get("format_enabled", False)),
-                format_mode=cfg.get("format_mode", "clean"),
+                format_mode=cfg.get("format_mode", "auto"),
                 format_custom_prompt=cfg.get("format_custom_prompt", ""),
                 transcriber=transcriber,
             )
@@ -589,6 +589,7 @@ class VoicekeyApp(QObject):
             slot.format_mode,
             slot.format_custom_prompt,
             self._config.get("format_model", "llama-3.1-8b-instant"),
+            auto_prompt=self._config.get("format_auto_prompt", ""),
         )
 
     def _insert_and_enter(self, text: str, auto_enter: bool) -> None:

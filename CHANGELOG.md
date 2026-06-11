@@ -126,6 +126,13 @@ voicekeyの変更履歴を記録するファイルです。
 - **発話を絶対に失わない**: 空入力は API 非呼出、キー未設定・タイムアウト（10 秒上限）・HTTP 非 200・応答不正・空応答・あらゆる例外は警告ログ + 原文をそのまま貼り付け。整形失敗で例外が貼り付け経路へ漏れることはない
 - 整形モデルは設定（一般 / Advanced）で変更可能。ストリーミング確定・REST の両経路に適用
 
+### Added (2026-06-11 追記 8) — 整形モード「おまかせ（自動判断）」と UI 改善
+- **「おまかせ（自動判断）」モードを追加し既定に**（Mac / Windows、識別子 `auto`）
+  - ユーザーが毎回モードを選ばなくても、LLM がテキストの内容から整形方法を自動判断する（フィラー除去は常時。列挙・手順なら箇条書き、それ以外は自然な文章。文体は元の発言を維持）
+  - 自動判断の指示（システムプロンプト）は設定で自由に編集可能（Mac: 一般タブ「おまかせ整形の指示」+ 既定に戻すボタン / Windows: Advanced「Auto Format Prompt」）。空欄なら既定の指示を使用
+- **整形モデルを自由入力からリスト選択に変更**（Mac / Windows 共通リスト）: llama-3.1-8b-instant（既定・最速）/ llama-3.3-70b-versatile / openai/gpt-oss-20b / openai/gpt-oss-120b / moonshotai/kimi-k2-instruct。保存済みのリスト外モデルも選択を保持
+- Technical: Mac `FormatMode.auto` + `defaultAutoPromptBody` + `TextFormatter.knownModels`、`ConfigStore.autoFormatPrompt`（UserDefaults 永続化）。Windows `DEFAULT_AUTO_PROMPT` / `KNOWN_FORMAT_MODELS`、`format_auto_prompt` 設定（空 = 既定で保存し既定文の将来更新に追従）。`build_system_prompt` / `format_text` に `auto_prompt` 引数追加。テスト 5 件追加（全 58 件パス）。Mac は実機でモード選択 UI・一般タブの編集欄・既存スロット設定の温存を確認
+
 ### Fixed (2026-06-11 追記 7)
 - **API キー使用のたびに Keychain の承認ダイアログが出る問題（Mac 版）**
   - 原因: Python 版 keyring や旧 ad-hoc 署名ビルドが作成した Keychain 項目は ACL 上の所有者が「別アプリ」のため、現在の署名アプリの読み取りで毎回承認を求められていた

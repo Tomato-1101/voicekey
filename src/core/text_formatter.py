@@ -29,6 +29,27 @@ _TIMEOUT_SEC = 10.0
 # 整形モデルの既定値（グローバル設定 format_model で変更可能）
 DEFAULT_FORMAT_MODEL = "llama-3.1-8b-instant"
 
+# 設定 UI で選べる既知の整形モデル（Groq）。先頭が既定。
+# 廃止モデルが選ばれても API エラー → 原文フォールバックで発話は失われない
+# （Mac 版とリストを完全一致させる）
+KNOWN_FORMAT_MODELS = [
+    "llama-3.1-8b-instant",
+    "llama-3.3-70b-versatile",
+    "openai/gpt-oss-20b",
+    "openai/gpt-oss-120b",
+    "moonshotai/kimi-k2-instruct",
+]
+
+# 「おまかせ（自動判断）」モードの既定プロンプト本文。
+# 設定 UI の初期値・空欄時のフォールバックに使う（Mac 版と文言を完全一致させる）
+DEFAULT_AUTO_PROMPT = (
+    "あなたは音声入力の整形エンジンです。文字起こしテキストの内容から最適な整形方法をあなた自身が判断して整形してください。\n"
+    "- まず「えーと」「あの」「まあ」「えっと」「なんか」「um」「uh」などのフィラー語と無意味な繰り返しを取り除き、言い直しがある場合は最終的な発言だけを残す\n"
+    "- 複数の項目・手順・列挙を話している内容なら、各行を「- 」で始める箇条書きに整理する\n"
+    "- それ以外は、句読点と改行を自然に整えた読みやすい文章にする\n"
+    "- 文体（敬語・カジュアル）は元の発言の文体を維持する"
+)
+
 # 全モード共通フッター。出力形式の逸脱（前置き・引用符等）を防ぐため、
 # すべてのシステムプロンプト末尾に空行を挟んで必ず連結する
 _COMMON_FOOTER = "出力は整形後のテキストのみを返す。前置き・説明・引用符・コードブロックを付けない。入力と同じ言語で出力する。元の発言にない情報を追加しない。"
@@ -43,14 +64,16 @@ _MODE_PROMPTS = {
 }
 
 
-def build_system_prompt(mode: str, custom_prompt: str) -> str:
+def build_system_prompt(mode: str, custom_prompt: str, auto_prompt: str = "") -> str:
     """
     整形モードからシステムプロンプト全文を組み立てる。
 
     Args:
-        mode: 整形モード識別子（clean/bullets/polite/casual/email/custom）。
+        mode: 整形モード識別子（auto/clean/bullets/polite/casual/email/custom）。
               未知のモードは clean 扱い
         custom_prompt: custom モード時に使うユーザー定義プロンプト本文
+        auto_prompt: auto モード時に使うユーザー編集済みプロンプト本文
+                     （空白のみなら既定の DEFAULT_AUTO_PROMPT）
 
     Returns:
         モード別本文と共通フッターを空行で連結したシステムプロンプト
@@ -58,20 +81,26 @@ def build_system_prompt(mode: str, custom_prompt: str) -> str:
     if mode == "custom":
         # カスタムプロンプトが空白のみなら clean の本文にフォールバックする
         body = custom_prompt if custom_prompt.strip() else _MODE_PROMPTS["clean"]
+    elif mode == "auto":
+        # ユーザーが空欄にしていたら既定の自動判断プロンプトを使う
+        body = auto_prompt if auto_prompt.strip() else DEFAULT_AUTO_PROMPT
     else:
         body = _MODE_PROMPTS.get(mode, _MODE_PROMPTS["clean"])
     return body + "\n\n" + _COMMON_FOOTER
 
 
-def format_text(text: str, mode: str, custom_prompt: str, model: str) -> str:
+def format_text(
+    text: str, mode: str, custom_prompt: str, model: str, auto_prompt: str = ""
+) -> str:
     """
     テキストを Groq の LLM で整形する。失敗時は必ず原文をそのまま返す。
 
     Args:
         text: 文字起こし確定テキスト
-        mode: 整形モード識別子（clean/bullets/polite/casual/email/custom）
+        mode: 整形モード識別子（auto/clean/bullets/polite/casual/email/custom）
         custom_prompt: custom モード時のプロンプト本文
         model: 整形に使う Groq モデル名（例: "llama-3.1-8b-instant"）
+        auto_prompt: auto モード時のプロンプト本文（空なら既定）
 
     Returns:
         整形後テキスト（前後空白除去済み）。空入力・キー未設定・API 失敗時は原文
@@ -98,7 +127,7 @@ def format_text(text: str, mode: str, custom_prompt: str, model: str) -> str:
             json={
                 "model": model,
                 "messages": [
-                    {"role": "system", "content": build_system_prompt(mode, custom_prompt)},
+                    {"role": "system", "content": build_system_prompt(mode, custom_prompt, auto_prompt)},
                     {"role": "user", "content": text},
                 ],
                 "temperature": 0.2,
