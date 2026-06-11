@@ -41,10 +41,13 @@ enum Keychain {
         lock.unlock()
 
         if let value = read(service: svc) {
-            // 既存項目が Python 版 keyring や旧署名ビルドの所有だと、ACL 上で現アプリが
-            // 「別アプリ」となり読み取りのたびに承認ダイアログが出る。読めた値で書き直して
-            // 現アプリ所有の項目へ自己修復的に移行する（値は既に得ているため結果は無視）
-            _ = write(service: svc, value: value)
+            // 注意: 以前はここで「読めた値で書き直す」自己修復移行（delete→add）を行っていたが、
+            // Apple Development 証明書への移行完了（partition_id に teamid が入った状態）後は撤去した。
+            // 起動のたびに項目を作り直すと、ad-hoc 署名の実行（debug ビルド・検証ハーネス等）が
+            // 一度でも鍵を読んだ時点で項目の所有が cdhash 固定に退行し、次の正規ビルドで
+            // パスワード要求ダイアログが再発する原因になるため（2026-06-12 実測）。
+            // もし承認ダイアログが再発した場合は、設定画面からキーを 1 回再保存すれば
+            // 現アプリ所有の項目に作り直される（保存経路の delete→add は維持している）
             lock.lock(); cache[svc] = value; lock.unlock()
             return value
         }

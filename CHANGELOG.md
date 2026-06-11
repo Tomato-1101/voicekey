@@ -230,6 +230,11 @@ voicekeyの変更履歴を記録するファイルです。
   - 履歴タブ: 行クリックで全文をクリップボードにコピーし「コピーしました（n 文字）」を 1.5 秒表示。80 文字超は省略プレビュー（全文はツールチップ）、各行に日時、「履歴を消去」ボタン、空時はプレースホルダー。タブ切替・ウィンドウ表示のたびに最新化
 - **Technical Details (Windows)**: `src/core/history.py`（新規、`HistoryStore`・threading.Lock・一時ファイル経由の atomic 置換・壊れた JSON は空で復帰）、`app.py` に `self._history` + `SettingsWindow(history=...)`、`settings_window.py` に `_create_history_tab` / `_refresh_history` / `_copy_history_item` / `_clear_history`、`styles.py` に QListWidget テーマ。検証: ユニットテスト 77 件全パス（履歴 9 件新規）、offscreen スモークでタブ構成・クリック→クリップボード一致・消去・ストアなし時の安全動作を確認
 
+### Fixed (2026-06-12 追記 19) — API キーのパスワード承認ダイアログ再発を根治（自己修復 write を撤去）
+- **再発原因**: 読み取り時の「自己修復移行 write」（追記 7）が残っていたこと。起動のたびに鍵項目を delete→add で作り直すため、(a) 他プロセス（テスト用 python の keyring 等）に与えた承認が毎回消えてダイアログが再発、(b) ad-hoc 署名の実行（debug ビルド・検証ハーネス等）が一度でも鍵を読むと項目所有が cdhash 固定に退行し、次の正規ビルドでパスワード要求が再発する退行ベクトルになっていた。Apple Development 証明書移行（追記 12）の実行装置としては役目を終えていた
+- **修正**: `Keychain.apiKey()` の自己修復 write を撤去（保存経路 `setApiKey` の delete→add は維持）。承認ダイアログが再発した場合は設定画面からキーを 1 回再保存すれば現アプリ所有で作り直される
+- **検証**: 4 項目の partition_id が `[teamid:9KT598FS4A, cdhash:...]` であることを ACL メタデータの per-item 診断で実測（秘密値は読まない）→ 修正版を再ビルド（CDHash 変化）→ 再起動 → API キータブで 4 キーとも「設定済み」表示・ダイアログ 0 件・鍵項目の更新日時が不変（起動毎の作り直しが停止）
+
 ### Fixed (2026-06-11 追記 7)
 - **API キー使用のたびに Keychain の承認ダイアログが出る問題（Mac 版）**
   - 原因: Python 版 keyring や旧 ad-hoc 署名ビルドが作成した Keychain 項目は ACL 上の所有者が「別アプリ」のため、現在の署名アプリの読み取りで毎回承認を求められていた
