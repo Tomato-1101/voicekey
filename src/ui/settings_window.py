@@ -8,7 +8,7 @@ Mac 版 SettingsView.swift と同じ 5 タブ構成（一般 / ホットキー 1
 
 from typing import Optional
 
-from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QPointF, QTimer
+from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QPointF, QTimer, Signal
 from PySide6.QtGui import QKeyEvent, QPainter, QPainterPath, QColor, QPen, QBrush
 from PySide6.QtWidgets import (
     QApplication,
@@ -355,6 +355,9 @@ class SettingsWindow(QWidget):
     設定は settings.yaml に保存し、アプリ側のホットリロードで即反映される。
     """
 
+    # マイク自動検出の完了通知（ワーカースレッド → メインスレッドへ結果を渡す）
+    _mic_detect_done = Signal(object)
+
     def __init__(
         self,
         platform_adapter: Optional[PlatformAdapter] = None,
@@ -482,14 +485,26 @@ class SettingsWindow(QWidget):
         refresh_button.setToolTip("デバイス一覧を更新")
         refresh_button.clicked.connect(self._populate_input_devices)
 
+        # マイク自動検出（Mac 版と同機能）: 押した後に喋ると声が入ったマイクを自動選択する
+        self._mic_detect_button = QPushButton("自動検出")
+        self._mic_detect_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._mic_detect_button.setToolTip("全マイクを監視し、喋った声が入ったマイクを自動選択します")
+        self._mic_detect_button.clicked.connect(self._start_mic_auto_detect)
+
         device_row = QWidget()
         device_row_layout = QHBoxLayout(device_row)
         device_row_layout.setContentsMargins(0, 0, 0, 0)
         device_row_layout.setSpacing(8)
         device_row_layout.addWidget(self._input_device_combo)
         device_row_layout.addWidget(refresh_button)
+        device_row_layout.addWidget(self._mic_detect_button)
         layout.addRow("入力デバイス:", device_row)
+        # 検出中・検出結果の表示（待ち時間を可視化する。無表示の待ちはバグと区別できない）
+        self._mic_detect_status = _make_caption("")
+        self._mic_detect_status.setVisible(False)
+        layout.addRow("", self._mic_detect_status)
         layout.addRow("", _make_caption("録音に使うマイク。「システム既定」は OS の設定に従います。"))
+        self._mic_detect_done.connect(self._on_mic_detect_done)
 
         # VAD（無音スキップ）
         self._vad_check = QCheckBox("無音を自動スキップ（VAD）")
@@ -899,6 +914,36 @@ class SettingsWindow(QWidget):
                 return
 
         self._input_device_combo.setCurrentIndex(0)
+
+    def _start_mic_auto_detect(self) -> None:
+        """マイク自動検出を開始する（検出処理は使い捨てスレッドで実行）。"""
+        from ..core.mic_auto_detect import detect_async
+
+        self._mic_detect_button.setEnabled(False)
+        self._mic_detect_status.setText("自動検出中… マイクに向かって喋ってください")
+        self._mic_detect_status.setVisible(True)
+        # コールバックはワーカースレッドから呼ばれるため、Signal でメインスレッドへ渡す
+        detect_async(self._mic_detect_done.emit)
+
+    def _on_mic_detect_done(self, result) -> None:
+        """マイク自動検出の完了処理（メインスレッド）。"""
+        self._mic_detect_button.setEnabled(True)
+        if result:
+            # 一覧を最新化してから検出デバイスを選択する（保存は「保存」ボタンで確定）
+            self._populate_input_devices()
+            self._set_input_device_selection(int(result["id"]))
+            self._mic_detect_status.setText(f"「{result['name']}」を選択しました")
+            display_ms = 2000
+        else:
+            self._mic_detect_status.setText(
+                "音声を検出できませんでした。喋りながらもう一度お試しください"
+            )
+            display_ms = 4000
+        # 結果表示は数秒で消す（再実行中に消さないようガード）
+        QTimer.singleShot(
+            display_ms,
+            lambda: self._mic_detect_button.isEnabled() and self._mic_detect_status.setVisible(False),
+        )
 
     # ------------------------------------------------------------------
     # 設定の読み込み・保存

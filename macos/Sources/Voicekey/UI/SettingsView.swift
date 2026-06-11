@@ -51,6 +51,10 @@ private struct GeneralSettingsTab: View {
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     /// 入力デバイス一覧（開いたタイミングと更新ボタンで読み直す）
     @State private var inputDevices: [AudioInputDevice] = AudioDevices.inputDevices()
+    /// マイク自動検出の実行中フラグ（実行中はボタンを無効化する）
+    @State private var isDetectingMic = false
+    /// マイク自動検出の進捗・結果表示（nil なら非表示）
+    @State private var micDetectStatus: String?
 
     var body: some View {
         Form {
@@ -80,9 +84,20 @@ private struct GeneralSettingsTab: View {
                         Image(systemName: "arrow.clockwise")
                     }
                     .help("デバイス一覧を更新")
+                    Button("自動検出") {
+                        startMicAutoDetect()
+                    }
+                    .disabled(isDetectingMic)
+                    .help("全マイクを監視し、喋った声が入ったマイクを自動選択します")
                 }
             }
             .onAppear { inputDevices = AudioDevices.inputDevices() }
+            // 検出中・検出結果の表示（待ち時間を可視化する。無表示の待ちはバグと区別できない）
+            if let micDetectStatus {
+                Text(micDetectStatus)
+                    .font(.caption)
+                    .foregroundStyle(isDetectingMic ? Color.accentColor : .secondary)
+            }
             Text("録音に使うマイク。「システム既定」は macOS の設定に従います。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -167,6 +182,31 @@ private struct GeneralSettingsTab: View {
         }
         .formStyle(.grouped)
         .padding(.vertical, 8)
+    }
+
+    /// マイク自動検出を開始する。検出中はユーザーに喋るよう促し、結果を 2 秒表示する
+    private func startMicAutoDetect() {
+        isDetectingMic = true
+        micDetectStatus = "自動検出中… マイクに向かって喋ってください"
+        MicAutoDetector.detect { detection in
+            isDetectingMic = false
+            let displaySeconds: Double
+            if let detection {
+                config.inputDeviceUID = detection.device.uid
+                inputDevices = AudioDevices.inputDevices()
+                micDetectStatus = "「\(detection.device.name)」を選択しました"
+                displaySeconds = 2
+            } else {
+                micDetectStatus = "音声を検出できませんでした。喋りながらもう一度お試しください"
+                displaySeconds = 4
+            }
+            // 結果表示は数秒で消す（再実行中に消さないようガード）
+            DispatchQueue.main.asyncAfter(deadline: .now() + displaySeconds) {
+                if !isDetectingMic {
+                    micDetectStatus = nil
+                }
+            }
+        }
     }
 }
 

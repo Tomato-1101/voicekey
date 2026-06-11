@@ -39,7 +39,12 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
       オフスクリーン UI スモークで dev=5タブ・DIST=4タブ・トレイ更新通知を確認（secrets モック）。
       DIST 時の設定画面クラッシュバグをスモークで発見し修正済み。
       残: Windows 実機での E2E は docs/BUILD_WINDOWS.md のチェックリストで実施（実機が無いため未実施））
-- [ ] Phase 5: マイク自動検出 両 OS（スコア = RMS p90 − p10。検証: Mac 実機 E2E / Win は pytest）
+- [x] Phase 5: マイク自動検出 両 OS（スコア = RMS p90 − p10。検証済み: スコアロジック単体テスト
+      Swift/Python 両方 / 偽 sounddevice での同時監視統合テスト / オフスクリーン UI スモーク /
+      Mac ビルド+再起動。残: Mac 実マイクでの最終確認は要ユーザー操作 — 設定 → 一般 →
+      「自動検出」→ 一言喋る。スコアは `log show --predicate 'subsystem == "com.voicekey.app"'
+      --last 5m | grep 自動検出` で確認できる。CLI からの実マイクテストは Terminal への
+      TCC マイク許可ダイアログを誘発するため実施しない）
 - [ ] Phase 6: Windows UI 再デザイン（検証: preview_ui.py のスクショをユーザーに提示）
 - [ ] Phase 7（後日）: Developer ID + 公証切替（加入完了待ち）
 
@@ -56,8 +61,8 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 
 ## 現在地 / 次の一手
 
-- 現在地: Phase 0〜2・4 完了。Phase 3 はユーザー待ち項目のみ残し準備完了。
-- 次の一手: Phase 5（マイク自動検出 Mac/Windows）→ Phase 6（Windows UI 再デザイン）。
+- 現在地: Phase 0〜2・4・5 完了。Phase 3 はユーザー待ち項目のみ残し準備完了。
+- 次の一手: Phase 6（Windows UI 再デザイン）。
 - Windows 版リリース手順: Mac で `--export-env` → `.env.dist` を Windows ビルド機へ →
   `build_windows_dist.ps1 -Version X.Y.Z` → Releases 添付 → version.json コミット
   （詳細と順序の注意は docs/BUILD_WINDOWS.md）。

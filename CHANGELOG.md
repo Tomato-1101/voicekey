@@ -61,6 +61,21 @@ voicekeyの変更履歴を記録するファイルです。
   - `tests/test_updater.py`・`tests/test_secrets_embedded.py` 新規（22 テスト。
     バージョン比較・SHA256 不一致時の非実行・キー解決チェーン・生成スクリプトのラウンドトリップ）
 
+- **マイク自動検出（Mac 版・Windows 版、ベータ配布 Phase 5）**
+  - 設定の入力デバイス行に「自動検出」ボタンを追加。押した後に喋ると、全入力デバイスを
+    約 4 秒間同時監視し、声が入っているマイクを自動選択する（どのマイクか分からない人向け）
+  - 判定: 30ms フレームの RMS を集め `score = p90 − p10`。喋り声は変動大・定常ノイズや
+    ループバック系は変動小のため、単純な最大 RMS より誤選択が少ない（しきい値 0.005）
+  - Mac: `MicAutoDetector.swift` 新規（デバイスごとに独立 AVAudioEngine を同時起動・使い捨て。
+    録音用エンジンには触れない。開けない/ハングするデバイスはスキップ）+
+    `SettingsView.swift` にボタンと「自動検出中… マイクに向かって喋ってください」進捗表示
+  - Windows: `src/core/mic_auto_detect.py` 新規（使い捨てスレッドで全デバイスに sd.InputStream を
+    同時オープン。AudioRecorder の永続ストリームには触れない）+ `settings_window.py` に
+    ボタン・進捗ラベル（完了は Qt Signal でメインスレッドへ）
+  - 検証: スコアロジックの単体テスト（Swift 5 ケース / Python 12 テスト・偽 sounddevice での
+    同時監視統合テスト含む）、オフスクリーン UI スモーク、Mac ビルド+再起動。
+    実マイクでの最終確認は要ユーザー操作（設定 → 自動検出 → 一言喋る）
+
 ### Changed
 - `voicekey.spec`: **`datas=[('src','src')]` を削除し `noarchive=False` 化**
   （配布物に Python ソース平文が同梱されていた問題の根治）。代わりに
