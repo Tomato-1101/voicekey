@@ -51,6 +51,11 @@ final class AppController: ObservableObject {
     // --- ダブルタップ検出 ---
     private var lastReleaseTime: TimeInterval = 0
     private var lastReleaseSlot: Int?
+    /// 録音開始時刻（短いタップ＝ダブルタップ 1 打目の判定用）
+    private var recordingStartedAt: TimeInterval = 0
+    /// 短いタップの離鍵後、ダブルタップ 2 打目を待つ間の遅延停止タスク。
+    /// 1 打目で録音を止めない（タップと同時に話し始めた声の冒頭を失わない）ための仕組み
+    private var pendingTapFinish: Task<Void, Never>?
 
     /// 文字起こしパイプラインの直列化チェーン。
     /// 連続録音時も「録音順にテキストが挿入される」ことを保証する
@@ -105,6 +110,9 @@ final class AppController: ObservableObject {
             let micOK = await AudioRecorder.requestPermission()
             if !micOK {
                 log.error("マイクの使用が許可されていません")
+            } else {
+                // 初回録音の開始遅延を減らすため、起動時に入力ユニットを温めておく
+                recorder.prewarm()
             }
 
             // 入力監視・アクセシビリティ権限の確認と監視開始
@@ -121,10 +129,20 @@ final class AppController: ObservableObject {
 
     private func handlePress(token: String, pressed: Set<String>) {
         if let slotId = recordingSlot {
-            // toggle モード: 録音中の再押下で停止
             let slot = config.slot(slotId)
+            // toggle モード: 録音中の再押下で停止
             if slot.mode == .toggle, slotMatches(slot, pressed: pressed) {
                 finishRecording()
+                return
+            }
+            // hold モード: 短いタップ後の待機中に同スロットが再押下されたらダブルタップ確定。
+            // 録音は 1 打目から止めていないため、タップ中・タップ間の音声もすべて残っている
+            if slot.mode == .hold, pendingTapFinish != nil, slotMatches(slot, pressed: pressed) {
+                pendingTapFinish?.cancel()
+                pendingTapFinish = nil
+                autoEnter = true
+                emitState()
+                log.info("ダブルタップ検出: 録音を継続して auto_enter を有効化 (スロット\(slotId))")
             }
             return
         }
@@ -151,9 +169,23 @@ final class AppController: ObservableObject {
             KeyToken.acceptableNames(for: required).contains(token)
         }
         if isHotkeyKey {
-            lastReleaseTime = ProcessInfo.processInfo.systemUptime
+            let now = ProcessInfo.processInfo.systemUptime
+            lastReleaseTime = now
             lastReleaseSlot = slotId
-            finishRecording()
+            if now - recordingStartedAt < kDoubleTapWindow {
+                // 短いタップ＝ダブルタップの 1 打目の可能性。録音を止めずに 2 打目を待つ
+                // （タップと同時に話し始めた声を失わない。2 打目が来なければ通常どおり確定。
+                //  誤タップで発話が無い場合は通知を出さず静かに捨てる）
+                pendingTapFinish?.cancel()
+                pendingTapFinish = Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(kDoubleTapWindow))
+                    guard let self, !Task.isCancelled else { return }
+                    self.pendingTapFinish = nil
+                    self.finishRecording(quietIfNoSpeech: true)
+                }
+            } else {
+                finishRecording()
+            }
         }
     }
 
@@ -170,6 +202,7 @@ final class AppController: ObservableObject {
         guard recordingSlot == nil else { return }
         recordingSlot = slotId
         self.autoEnter = autoEnter
+        recordingStartedAt = ProcessInfo.processInfo.systemUptime
         emitState()
 
         let slot = config.slot(slotId)
@@ -215,7 +248,7 @@ final class AppController: ObservableObject {
         }
     }
 
-    private func finishRecording() {
+    private func finishRecording(quietIfNoSpeech: Bool = false) {
         guard let slotId = recordingSlot else { return }
         let useAutoEnter = autoEnter
         // ストリーミング送信を打ち切り、確定待ちはパイプライン側で行う
@@ -224,6 +257,8 @@ final class AppController: ObservableObject {
         recorder.chunkHandler = nil
         recordingSlot = nil
         autoEnter = false
+        pendingTapFinish?.cancel()
+        pendingTapFinish = nil
         failsafeTask?.cancel()
         outstanding += 1
         emitState()
@@ -232,7 +267,8 @@ final class AppController: ObservableObject {
             // audio キューから呼ばれる。メインへホップしてタスク起動
             DispatchQueue.main.async {
                 self?.processAudio(samples, slotId: slotId,
-                                   autoEnter: useAutoEnter, streamer: activeStreamer)
+                                   autoEnter: useAutoEnter, streamer: activeStreamer,
+                                   quietIfNoSpeech: quietIfNoSpeech)
             }
         }
     }
@@ -240,16 +276,15 @@ final class AppController: ObservableObject {
     // MARK: - 文字起こしパイプライン
 
     private func processAudio(
-        _ samples: [Float], slotId: Int, autoEnter: Bool, streamer: StreamingTranscriber?
+        _ samples: [Float], slotId: Int, autoEnter: Bool, streamer: StreamingTranscriber?,
+        quietIfNoSpeech: Bool = false
     ) {
         let vadEnabled = config.vadEnabled
         let delayMs = config.autoEnterDelayMs
         // 整形設定もタスク実行中の設定変更に影響されないよう Task の外で捕捉する
         let slot = config.slot(slotId)
         let formatEnabled = slot.formatEnabled
-        let formatMode = FormatMode(rawValue: slot.formatMode) ?? .auto
-        let formatCustomPrompt = slot.formatCustomPrompt
-        let formatAutoPrompt = config.autoFormatPrompt
+        let formatPrompt = config.autoFormatPrompt
         let formatModel = config.formatModel
         guard let transcriber = transcribers[slotId] else {
             streamer?.cancel()
@@ -270,9 +305,7 @@ final class AppController: ObservableObject {
                 if !streamed.isEmpty {
                     // 整形が有効なら貼り付け前に LLM で整形（失敗時は原文が返る）
                     let output = formatEnabled
-                        ? await formatter.format(streamed, mode: formatMode,
-                                                 customPrompt: formatCustomPrompt,
-                                                 autoPrompt: formatAutoPrompt, model: formatModel)
+                        ? await formatter.format(streamed, prompt: formatPrompt, model: formatModel)
                         : streamed
                     await Paster.paste(output)
                     if autoEnter {
@@ -295,7 +328,10 @@ final class AppController: ObservableObject {
             // 1+2. 正規化と VAD（CPU 処理はメインスレッド外で実行される）
             guard let audio = await Self.prepareAudio(samples, vadEnabled: vadEnabled) else {
                 log.info("発話が検出されなかったためスキップ")
-                hud.notice("音声が検出されませんでした")
+                // 誤タップ由来（ダブルタップ待ちの期限切れ）の無音は通知しない
+                if !quietIfNoSpeech {
+                    hud.notice("音声が検出されませんでした")
+                }
                 return
             }
 
@@ -320,9 +356,7 @@ final class AppController: ObservableObject {
             // 4. テキスト貼り付け（+ ダブルタップ時は Enter 自動送信）
             // 整形が有効なら貼り付け前に LLM で整形（失敗時は原文が返る）
             let output = formatEnabled
-                ? await formatter.format(text, mode: formatMode,
-                                         customPrompt: formatCustomPrompt,
-                                         autoPrompt: formatAutoPrompt, model: formatModel)
+                ? await formatter.format(text, prompt: formatPrompt, model: formatModel)
                 : text
             await Paster.paste(output)
             if autoEnter {

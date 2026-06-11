@@ -58,6 +58,11 @@ enum VoiceActivity {
     /// SoundAnalysis（オンデバイス ML 分類器）を優先し、失敗時はエネルギー判定
     static func hasSpeech(_ samples: [Float]) async -> Bool {
         guard samples.count >= frameLen * 2 else { return false }
+        // 分類器の解析窓（1 秒）に満たない短い発話は分類結果が出ない／不安定なため、
+        // 最初からエネルギー判定を使う（短い一言が「声なし」と誤判定されるのを防ぐ）
+        if samples.count < Int(Double(sampleRate) * 1.2) {
+            return hasSpeechEnergy(samples)
+        }
         if let result = await classifySpeech(samples) {
             return result
         }
@@ -138,6 +143,9 @@ enum VoiceActivity {
             try analyzer.add(request, withObserver: observer)
             analyzer.analyze(buffer, atAudioFramePosition: 0)
             analyzer.completeAnalysis()
+            // 解析窓が一度も評価されなかった（短すぎる等で結果ゼロ）場合は
+            // 「声なし」ではなく「判定不能」としてエネルギー判定に委ねる
+            guard observer.resultCount > 0 else { return nil }
             return observer.speechDetected
         } catch {
             log.warning("SoundAnalysis が利用できません（エネルギー判定へ）: \(error.localizedDescription)")
@@ -150,9 +158,12 @@ enum VoiceActivity {
         /// speech とみなす信頼度しきい値
         private let confidenceThreshold = 0.6
         private(set) var speechDetected = false
+        /// 産出された分類結果の数（0 なら判定不能としてフォールバックさせる）
+        private(set) var resultCount = 0
 
         func request(_ request: SNRequest, didProduce result: SNResult) {
             guard let classification = result as? SNClassificationResult else { return }
+            resultCount += 1
             if let speech = classification.classification(forIdentifier: "speech"),
                speech.confidence >= confidenceThreshold {
                 speechDetected = true

@@ -39,7 +39,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 
     # LLM テキスト整形に使う Groq モデル（両ホットキー共通）
     "format_model": "llama-3.1-8b-instant",
-    # 「おまかせ（自動判断）」モードのプロンプト本文（空 = 既定の DEFAULT_AUTO_PROMPT を使用）
+    # 整形プロンプト本文（空 = 既定の DEFAULT_FORMAT_PROMPT を使用）
     "format_auto_prompt": "",
 
     # ホットキー1 設定
@@ -50,8 +50,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "api_model": "",
         "api_prompt": "",
         "format_enabled": False,        # 貼り付け前の LLM テキスト整形
-        "format_mode": "auto",          # 整形モード（auto/clean/bullets/polite/casual/email/custom）
-        "format_custom_prompt": "",     # custom モード時のプロンプト本文
     },
 
     # ホットキー2 設定
@@ -62,8 +60,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "api_model": "",
         "api_prompt": "",
         "format_enabled": False,        # 貼り付け前の LLM テキスト整形
-        "format_mode": "auto",          # 整形モード（auto/clean/bullets/polite/casual/email/custom）
-        "format_custom_prompt": "",     # custom モード時のプロンプト本文
     },
 
     # APIモデルデフォルト値（バックエンド別、ベンチ実測 2026-06-10 に基づく既定）

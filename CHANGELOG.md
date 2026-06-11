@@ -168,6 +168,41 @@ voicekeyの変更履歴を記録するファイルです。
   - **Mac 版の「既定プロンプト改善が反映されない」隠れバグも修正**: 既定の auto プロンプトが UserDefaults にそのまま永続化されており、アプリ更新で既定文を改善しても古い文が使われ続けていた。Windows 版と同じ「既定文と同じ内容は保存しない」方式に変更し、未編集ユーザーには常に最新の既定文が使われるようにした（保存済みの旧既定文は削除済み）
   - 検証: 実 API（llama-3.1-8b-instant）で「導入文 + 列挙（auto / bullets）」「緩い導入（買い物リストなんだけど）」「質問に答えない」「通常文を箇条書きにしない」の 5 ケース × 2 試行すべて期待どおりを確認。ユニットテスト 60 件全パス
 
+### Changed (2026-06-11 追記 14) — Windows 版 UI を Mac 版と同等に刷新
+- **設定ウィンドウを Mac 版と同じ 4 タブ構成（一般 / ホットキー 1 / ホットキー 2 / API キー）に再構成**（`settings_window.py`）
+  - サイドバー 2 ページ（General / Advanced）構成を廃止し、QTabWidget でタブ化。全ラベル・補足説明文を Mac 版 SettingsView.swift と同一の日本語文言に統一（「押している間 / トグル」「無音を自動スキップ（VAD）」「専門用語や固有名詞のヒントを入力」等）
+  - **API キータブを新設**: 4 バックエンド（OpenAI / Groq / ElevenLabs / Deepgram）のキーを 1 か所で保存・削除。「設定済み / 未設定」を色付きで表示し、従来ホットキー設定の中に埋もれていたスロット別キー入力を廃止
+  - 言語は自由入力から「日本語 / 英語 / 自動判定」の選択式に変更（空文字 = API 側の自動判定。全バックエンド対応済みの既存挙動）
+  - 各タブは縦スクロール対応。保存値がリスト外でも選択を保持する既存ポリシーは言語・整形モデルにも適用
+  - Windows 版固有設定（VAD 最小無音時間・音量正規化・ダークモード切替・自動 Enter スライダー）は一般タブに統合して維持
+- **HUD を Mac 版 Hud.swift と同寸・同表現に刷新**（`hud.py`）
+  - 460×56 / 波形バー 24 本（旧 360×48 / 20 本）。ピルが Mac 版カプセル同様に内容の幅へ縮む
+  - 変換中の回転スピナー（約 30fps、表示中のみタイマー駆動）と、自動 Enter 録音時の紫 ⏎ バッジを追加
+- **システムトレイの表記を voicekey に統一**（`system_tray.py`）: ツールチップの旧称 SuperWhisper を「voicekey - 待機中 / 録音中 / 録音中（自動 Enter）/ 変換中」へ、メニューを「設定… / 強制リセット（フリーズ復帰）/ 終了」の日本語表記（Mac 版メニューバーと同文言）へ変更
+- **Technical Details**: `styles.py` に QTabWidget/QTabBar・QPlainTextEdit・QScrollArea スタイルを追加（不要になったサイドバー用 QListWidget スタイルは削除）。設定値の保存形式（settings.yaml のキー・値）は不変のため後方互換。検証: ユニットテスト全パス + offscreen スモーク（4 タブ構築・バックエンド切替でモデル候補差し替え・保存 dict 整合・HUD 全状態の描画）+ スクリーンショット目視確認
+
+### Changed (2026-06-11 追記 15) — 整形モード撤去・プロンプト全面刷新（すべておまかせに一本化）
+- **整形モード選択（自動クリーン / 箇条書き / 丁寧 / カジュアル / メール調 / カスタム / おまかせ）を廃止**（Mac / Windows）
+  - 整形は常に「LLM の自動判断」一本に。スロット設定はオン/オフのトグルだけになり、モード Picker とスロット別カスタムプロンプト欄を削除（整形指示の編集は一般タブ「整形の指示」に集約、既定に戻すボタンは維持）
+  - 設定の後方互換: 保存キー（Windows `format_auto_prompt` / Mac `autoFormatPrompt`・`formatEnabled`）は維持。旧 `format_mode` / `format_custom_prompt`（Mac: `formatMode` / `formatCustomPrompt`）は読み捨てされるだけで設定リセットは起きない
+- **既定プロンプトを市販音声入力アプリの調査に基づき全面書き直し**（約 870 → 約 490 文字に半減。プロンプト長は prefill 時間に直結するため速度改善）
+  - 調査対象: Wispr Flow / superwhisper / VoiceInk / Aqua Voice / Dragon 等の整形機能（フィラー除去・自己訂正の解決・句読点と段落・リスト自動整形・数字や日付の表記正規化・文体維持・質問に答えないガード）
+  - 新プロンプトの構成: フィラーと無意味な繰り返しの削除 / 言い直しは最終発言のみ残す（例付き）/ 句読点・改行・段落と数字・日付・時刻の表記 / 列挙・手順はリスト化してよい（緩い指定）+ 導入文は残す / 文体維持・要約禁止
+  - 共通フッター（質問に回答しない・`<<< >>>` デリミタ・出力形式）は文言を圧縮しつつ全ガードを維持（追記 11・13 の回帰なし）
+- **Technical Details**: `text_formatter.py` / `TextFormatter.swift` から `_MODE_PROMPTS` / `FormatMode` を削除し `DEFAULT_FORMAT_PROMPT`（Mac: `TextFormatter.defaultPrompt`）に統一。`build_system_prompt(prompt)` / `format_text(text, model, prompt)` にシグネチャ変更。`HotkeySlot` / `HotkeySlotConfig` / `SlotConfig` から mode/custom フィールド撤去。テスト 16 件を新仕様に書き直し全 57 件パス。実 API で「列挙→導入文+リスト」「質問に回答しない」を確認
+
+### Fixed (2026-06-11 追記 16) — 録音開始の高速化とダブルタップ・短音声の取りこぼし修正
+- **ダブルタップ（自動 Enter）の 1 打目から録音が途切れないように**（Mac / Windows）
+  - 旧挙動: 1 打目の離鍵で録音停止（短すぎて破棄）→ 2 打目で録音を再開、のためタップと同時に話し始めた文頭が欠けていた
+  - 新挙動: hold モードで押下から 0.4 秒未満の離鍵では録音を止めず、2 打目を待つ（2 打目が来たらそのまま録音継続 + auto_enter 化、来なければ通常確定）。1 打目のタップ中・タップ間の音声もすべて録音される
+  - 通常のホールド入力（0.4 秒以上）は従来どおり離した瞬間に確定（待ち時間の追加なし）
+  - 誤タップ（無音の短いタップ）は「音声が検出されませんでした」を出さず静かに破棄
+- **短い発話が「音声が検出されませんでした」になる問題を修正**（Mac 版）
+  - 原因: SoundAnalysis 分類器の解析窓が 1 秒のため、1 秒未満の音声では分類結果が一度も出ず、その場合に「声なし」と誤判定していた（エネルギー判定へのフォールバックが効いていなかった）
+  - 修正: 約 1.2 秒未満の音声は最初からエネルギー判定を使用 + 分類結果ゼロ件は「判定不能」としてエネルギー判定にフォールバック
+- **録音開始そのものを高速化**（Mac 版）: 起動時と録音停止直後に CoreAudio 入力ユニットの初期化と `engine.prepare()` を済ませておき、ホットキー押下から実際に音が録れ始めるまでの遅延を最小化（`AudioRecorder.prewarm()` 新設。マイク自体は起動しないため常時録音やインジケータ点灯はない）
+- **Technical Details**: AppController に `pendingTapFinish` / `recordingStartedAt`、`finishRecording(quietIfNoSpeech:)`。app.py に `_pending_tap_timer`（threading.Timer、_state_lock 保護）、`TranscriptionTask.quiet_if_no_speech`。`VoiceActivity.SpeechObserver` に `resultCount`。Windows 版 VAD（Silero、32ms フレーム）は短音声に強いため変更なし
+
 ### Fixed (2026-06-11 追記 7)
 - **API キー使用のたびに Keychain の承認ダイアログが出る問題（Mac 版）**
   - 原因: Python 版 keyring や旧 ad-hoc 署名ビルドが作成した Keychain 項目は ACL 上の所有者が「別アプリ」のため、現在の署名アプリの読み取りで毎回承認を求められていた

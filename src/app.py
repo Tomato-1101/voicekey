@@ -94,8 +94,6 @@ class HotkeySlot:
         api_model: API モデル名
         api_prompt: API プロンプト
         format_enabled: 貼り付け前に LLM テキスト整形を行うか
-        format_mode: 整形モード（auto/clean/bullets/polite/casual/email/custom）
-        format_custom_prompt: custom モード時のプロンプト本文
         transcriber: このスロット用のトランスクライバ
     """
     slot_id: int
@@ -106,8 +104,6 @@ class HotkeySlot:
     api_model: str
     api_prompt: str
     format_enabled: bool
-    format_mode: str
-    format_custom_prompt: str
     transcriber: ApiTranscriber
 
 
@@ -157,6 +153,9 @@ class VoicekeyApp(QObject):
         # ダブルタップ検出（hold モードのみ。listener スレッドからのみ更新）
         self._last_release_time: float = 0.0
         self._last_release_slot: Optional[int] = None
+        # 短いタップの離鍵後、2 打目を待つ間の遅延停止タイマー（_state_lock で保護）。
+        # 1 打目で録音を止めない（タップと同時に話し始めた声の冒頭を失わない）ための仕組み
+        self._pending_tap_timer: Optional[threading.Timer] = None
 
         # 現在押されているキー（listener スレッドからのみ更新）
         self._pressed_keys: Set[str] = set()
@@ -243,8 +242,6 @@ class VoicekeyApp(QObject):
                 api_model=model,
                 api_prompt=prompt,
                 format_enabled=bool(cfg.get("format_enabled", False)),
-                format_mode=cfg.get("format_mode", "auto"),
-                format_custom_prompt=cfg.get("format_custom_prompt", ""),
                 transcriber=transcriber,
             )
             logger.info(f"ホットキー{slot_id}: {hotkey} ({mode}) -> {backend}/{model}")
@@ -348,14 +345,26 @@ class VoicekeyApp(QObject):
                         self._begin_recording(slot_id, auto_enter)
                         break
             else:
-                # toggle モード: 録音中の再押下で停止
                 slot = self._slots.get(recording_slot)
-                if (
-                    slot is not None
-                    and slot.hotkey_mode == HotkeyMode.TOGGLE.value
-                    and self._slot_matches(slot)
-                ):
+                if slot is None or not self._slot_matches(slot):
+                    return
+                # toggle モード: 録音中の再押下で停止
+                if slot.hotkey_mode == HotkeyMode.TOGGLE.value:
                     self._finish_recording()
+                # hold モード: 短いタップ後の待機中に再押下されたらダブルタップ確定。
+                # 録音は 1 打目から止めていないため、タップ中・タップ間の音声も残っている
+                elif slot.hotkey_mode == HotkeyMode.HOLD.value:
+                    with self._state_lock:
+                        timer = self._pending_tap_timer
+                        if timer is None:
+                            return
+                        timer.cancel()
+                        self._pending_tap_timer = None
+                        self._auto_enter = True
+                    logger.info(
+                        f"ダブルタップ検出: 録音を継続して auto_enter を有効化 (スロット{recording_slot})"
+                    )
+                    self._emit_state()
         except Exception as e:
             # ハンドラ内例外でリスナーを殺さない
             logger.exception(f"キー押下処理で例外: {e}")
@@ -376,9 +385,26 @@ class VoicekeyApp(QObject):
 
             if key_str is not None and self._key_in_slot(key_str, slot):
                 # ダブルタップ検出用にリリース時刻を記録してから停止
-                self._last_release_time = time.monotonic()
+                now = time.monotonic()
+                self._last_release_time = now
                 self._last_release_slot = recording_slot
-                self._finish_recording()
+                if now - self._recording_started < _DOUBLE_TAP_SEC:
+                    # 短いタップ＝ダブルタップの 1 打目の可能性。録音を止めずに 2 打目を待つ
+                    # （タップと同時に話し始めた声を失わない。2 打目が来なければ通常どおり確定。
+                    #  誤タップで発話が無い場合は通知を出さず静かに捨てる）
+                    with self._state_lock:
+                        if self._pending_tap_timer is not None:
+                            self._pending_tap_timer.cancel()
+                        timer = threading.Timer(
+                            _DOUBLE_TAP_SEC,
+                            self._finish_recording,
+                            kwargs={"quiet_if_no_speech": True},
+                        )
+                        timer.daemon = True
+                        self._pending_tap_timer = timer
+                    timer.start()
+                else:
+                    self._finish_recording()
             elif key_str is None and not self._pressed_keys:
                 # 正規化失敗でキー状態が消失した場合の保険（永久録音防止）
                 logger.warning("キー状態の消失を検出したため録音を停止します")
@@ -438,8 +464,13 @@ class VoicekeyApp(QObject):
         self.notice.emit("録音を開始できませんでした（マイクを確認してください）")
         self._emit_state()
 
-    def _finish_recording(self) -> None:
-        """録音を停止し文字起こしタスクを積む（即座に返る）。"""
+    def _finish_recording(self, quiet_if_no_speech: bool = False) -> None:
+        """録音を停止し文字起こしタスクを積む（即座に返る）。
+
+        Args:
+            quiet_if_no_speech: 無音時の「音声が検出されませんでした」通知を抑制する
+                （ダブルタップ待ち期限切れ＝誤タップの可能性が高い経路で使う）
+        """
         with self._state_lock:
             slot_id = self._recording_slot
             if slot_id is None:
@@ -450,6 +481,10 @@ class VoicekeyApp(QObject):
             self._auto_enter = False
             self._active_streamer = None
             self._outstanding += 1  # 音声確定前から「変換中」を表示する
+            # ダブルタップ待ちが残っていれば破棄（failsafe 等の別経路からの停止に備える）
+            if self._pending_tap_timer is not None:
+                self._pending_tap_timer.cancel()
+                self._pending_tap_timer = None
 
         # ストリーミング送出を停止（確定は finish() がワーカー上で行う）
         self._recorder.chunk_callback = None
@@ -466,6 +501,7 @@ class VoicekeyApp(QObject):
                     timestamp=time.perf_counter(),
                     auto_enter=auto_enter,
                     streamer=streamer,
+                    quiet_if_no_speech=quiet_if_no_speech,
                 )
             )
 
@@ -542,7 +578,9 @@ class VoicekeyApp(QObject):
             vad_start = time.perf_counter()
             if not self._vad.has_speech(audio):
                 logger.info("発話が検出されなかったためスキップ")
-                self.notice.emit("音声が検出されませんでした")
+                # 誤タップ由来（ダブルタップ待ちの期限切れ）の無音は通知しない
+                if not task.quiet_if_no_speech:
+                    self.notice.emit("音声が検出されませんでした")
                 return
             # 前後の無音・ノイズ区間をトリミングして送信量と幻覚をさらに削減
             bounds = self._vad.speech_bounds(audio)
@@ -586,10 +624,8 @@ class VoicekeyApp(QObject):
             return text
         return text_formatter.format_text(
             text,
-            slot.format_mode,
-            slot.format_custom_prompt,
             self._config.get("format_model", "llama-3.1-8b-instant"),
-            auto_prompt=self._config.get("format_auto_prompt", ""),
+            prompt=self._config.get("format_auto_prompt", ""),
         )
 
     def _insert_and_enter(self, text: str, auto_enter: bool) -> None:

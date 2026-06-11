@@ -1,6 +1,6 @@
 """テキスト整形 LLM（Groq Chat Completions）の速度ベンチマーク。
 
-設定 UI で選べる全整形モデルに同一の整形リクエスト（おまかせ自動判断プロンプト +
+設定 UI で選べる全整形モデルに同一の整形リクエスト（既定の整形プロンプト +
 フィラー多めの日本語文）を送り、レイテンシだけを測定する。
 精度は測らない（速度のみ。ユーザー指示 2026-06-11）。
 
@@ -18,7 +18,6 @@ from run_benchmark import get_key  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.core.text_formatter import (  # noqa: E402
-    DEFAULT_AUTO_PROMPT,
     KNOWN_FORMAT_MODELS,
     build_system_prompt,
 )
@@ -49,7 +48,7 @@ def bench(key: str, model: str) -> dict:
                 json={
                     "model": model,
                     "messages": [
-                        {"role": "system", "content": build_system_prompt("auto", "", "")},
+                        {"role": "system", "content": build_system_prompt()},
                         {"role": "user", "content": INPUT},
                     ],
                     "temperature": 0.2,

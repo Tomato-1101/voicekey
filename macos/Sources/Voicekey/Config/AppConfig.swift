@@ -74,11 +74,6 @@ struct SlotConfig: Codable, Equatable {
     var prompt: String
     /// 貼り付け前に LLM でテキスト整形するか（既定はオフ）
     var formatEnabled: Bool = false
-    /// 整形モードの識別子（FormatMode.rawValue。Windows 版と共通の固定文字列）。
-    /// 既定は auto（LLM が内容から整形方法を自動判断）
-    var formatMode: String = "auto"
-    /// custom モードで使うカスタムプロンプト本文
-    var formatCustomPrompt: String = ""
 
     /// 人間が読める表記（例: "右⌘"、"⌃+Space"）
     var hotkeyLabel: String {
@@ -99,8 +94,6 @@ extension SlotConfig {
         model = try c.decodeIfPresent(String.self, forKey: .model) ?? ""
         prompt = try c.decodeIfPresent(String.self, forKey: .prompt) ?? ""
         formatEnabled = try c.decodeIfPresent(Bool.self, forKey: .formatEnabled) ?? false
-        formatMode = try c.decodeIfPresent(String.self, forKey: .formatMode) ?? "auto"
-        formatCustomPrompt = try c.decodeIfPresent(String.self, forKey: .formatCustomPrompt) ?? ""
     }
 }
 
@@ -127,7 +120,7 @@ final class ConfigStore: ObservableObject {
     @Published var inputDeviceUID: String
     /// テキスト整形に使う Groq のモデル名（全スロット共通）
     @Published var formatModel: String
-    /// 「おまかせ（自動判断）」モードで LLM に渡すプロンプト本文（全スロット共通・編集可）
+    /// 整形で LLM に渡すプロンプト本文（全スロット共通・編集可）
     @Published var autoFormatPrompt: String
 
     private var cancellables: Set<AnyCancellable> = []
@@ -169,7 +162,7 @@ final class ConfigStore: ObservableObject {
         // 未編集なら常に最新の既定文が使われる
         let storedAutoPrompt = defaults.string(forKey: Keys.autoFormatPrompt) ?? ""
         autoFormatPrompt = storedAutoPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? FormatMode.defaultAutoPromptBody
+            ? TextFormatter.defaultPrompt
             : storedAutoPrompt
 
         // 変更を自動保存（起動直後の初期代入は上で完了しているため安全）
@@ -186,7 +179,7 @@ final class ConfigStore: ObservableObject {
         // 既定文をそのまま永続化すると、アプリ更新で既定文を改善しても古い文が使われ続けるため
         $autoFormatPrompt.dropFirst().sink { [weak self] in
             let isDefault = $0.trimmingCharacters(in: .whitespacesAndNewlines)
-                == FormatMode.defaultAutoPromptBody.trimmingCharacters(in: .whitespacesAndNewlines)
+                == TextFormatter.defaultPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
             self?.defaults.set(isDefault ? "" : $0, forKey: Keys.autoFormatPrompt)
         }.store(in: &cancellables)
     }

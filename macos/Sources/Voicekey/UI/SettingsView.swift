@@ -125,10 +125,10 @@ private struct GeneralSettingsTab: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text("おまかせ整形の指示")
+                    Text("整形の指示")
                     Spacer()
                     Button("既定に戻す") {
-                        config.autoFormatPrompt = FormatMode.defaultAutoPromptBody
+                        config.autoFormatPrompt = TextFormatter.defaultPrompt
                     }
                     .font(.caption)
                 }
@@ -136,7 +136,7 @@ private struct GeneralSettingsTab: View {
                     .lineLimit(4...8)
                     .textFieldStyle(.roundedBorder)
                     .font(.caption)
-                Text("整形モード「おまかせ（自動判断）」で LLM に渡す指示。自由に編集できます（空欄なら既定の指示を使用）。")
+                Text("テキスト整形で LLM に渡す指示。自由に編集できます（空欄なら既定の指示を使用）。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -213,33 +213,9 @@ private struct SlotSettingsTab: View {
             }
 
             Toggle("テキスト整形（LLM）", isOn: $slot.formatEnabled)
-            Text("文字起こし後に Groq の高速 LLM で整形してから貼り付けます。オフなら文字起こしをそのまま貼り付けます。")
+            Text("文字起こし後に Groq の高速 LLM で整形してから貼り付けます。内容に応じた整形を LLM が自動判断します（指示は「一般」タブで編集可）。オフなら文字起こしをそのまま貼り付けます。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-
-            if slot.formatEnabled {
-                // selection が String（rawValue 保存）のため tag も String にする
-                Picker("整形モード", selection: $slot.formatMode) {
-                    ForEach(FormatMode.allCases) { mode in
-                        Text(mode.label).tag(mode.rawValue)
-                    }
-                }
-
-                if slot.formatMode == "auto" {
-                    Text("内容に応じて箇条書きか文章かを LLM が判断します。判断の指示は「一般」タブで編集できます。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                if slot.formatMode == "custom" {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("整形カスタムプロンプト")
-                        TextField("整形の指示を入力", text: $slot.formatCustomPrompt, axis: .vertical)
-                            .lineLimit(2...4)
-                            .textFieldStyle(.roundedBorder)
-                    }
-                }
-            }
         }
         .formStyle(.grouped)
         .padding(.vertical, 8)

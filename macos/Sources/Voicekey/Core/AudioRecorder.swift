@@ -43,6 +43,18 @@ final class AudioRecorder {
     private var recording = false
     private var lastLevelTime: TimeInterval = 0
 
+    /// 次回 start() を高速化するウォームアップ（マイクは起動しない）。
+    /// inputNode へのアクセスで CoreAudio の入力ユニットを初期化し、prepare で
+    /// エンジンのリソースを事前確保する。アプリ起動時・録音停止後に呼ぶことで、
+    /// 押した瞬間から声を取りこぼさないよう録音開始までの遅延を最小化する
+    func prewarm() {
+        queue.async { [self] in
+            guard !recording else { return }
+            _ = engine.inputNode.inputFormat(forBus: 0)
+            engine.prepare()
+        }
+    }
+
     /// 録音を開始する（即座に返る。結果はコールバック）
     func start(completion: @escaping (Bool) -> Void) {
         queue.async { [self] in
@@ -126,6 +138,10 @@ final class AudioRecorder {
 
             log.info("録音停止 (samples=\(result.count), duration=\(String(format: "%.2f", Double(result.count) / Self.sampleRate))s)")
             completion(result)
+
+            // 次回の録音開始を速くするため、停止直後にリソースを確保し直しておく
+            // （completion 後に行うので文字起こしの開始は一切遅らせない）
+            engine.prepare()
         }
     }
 

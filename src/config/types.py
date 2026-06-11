@@ -63,12 +63,14 @@ class TranscriptionTask:
         streamer: ストリーミング録音時の Deepgram セッション（非ストリーミング時は None）。
                   ワーカーが finish() を呼んで確定テキストを取得する。型は循環参照を
                   避けるため Any（実体は core.streaming_transcriber.StreamingTranscriber）
+        quiet_if_no_speech: 無音時の通知を抑制するか（誤タップの可能性が高い録音用）
     """
     audio_data: Any
     slot_id: int
     timestamp: float
     auto_enter: bool = False
     streamer: Any = None
+    quiet_if_no_speech: bool = False
 
 
 @dataclass
@@ -103,8 +105,6 @@ class HotkeySlotConfig:
         api_model: APIバックエンド使用時のモデル名
         api_prompt: APIバックエンド使用時のプロンプト
         format_enabled: 貼り付け前に LLM テキスト整形を行うか
-        format_mode: 整形モード（auto/clean/bullets/polite/casual/email/custom）
-        format_custom_prompt: custom モード時のプロンプト本文
     """
     hotkey: str = "<f2>"
     hotkey_mode: str = HotkeyMode.TOGGLE.value
@@ -112,8 +112,6 @@ class HotkeySlotConfig:
     api_model: str = ""
     api_prompt: str = ""
     format_enabled: bool = False
-    format_mode: str = "auto"
-    format_custom_prompt: str = ""
 
 
 @dataclass
