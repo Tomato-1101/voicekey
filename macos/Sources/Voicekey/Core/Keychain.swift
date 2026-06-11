@@ -41,6 +41,10 @@ enum Keychain {
         lock.unlock()
 
         if let value = read(service: svc) {
+            // 既存項目が Python 版 keyring や旧署名ビルドの所有だと、ACL 上で現アプリが
+            // 「別アプリ」となり読み取りのたびに承認ダイアログが出る。読めた値で書き直して
+            // 現アプリ所有の項目へ自己修復的に移行する（値は既に得ているため結果は無視）
+            _ = write(service: svc, value: value)
             lock.lock(); cache[svc] = value; lock.unlock()
             return value
         }
@@ -113,14 +117,13 @@ enum Keychain {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        // 既存エントリがあれば更新、なければ追加
-        let update: [String: Any] = [kSecValueData as String: data]
-        var status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
-        if status == errSecItemNotFound {
-            var add = query
-            add[kSecValueData as String] = data
-            status = SecItemAdd(add as CFDictionary, nil)
-        }
+        // SecItemUpdate だと他アプリ（Python 版 keyring・旧署名ビルド）所有の項目が
+        // ACL ごと残り、現アプリは読み取りのたびに承認を求められる。
+        // 削除 → 新規追加にすることで項目を常に現アプリが作成して所有権を取る
+        SecItemDelete(query as CFDictionary)
+        var add = query
+        add[kSecValueData as String] = data
+        let status = SecItemAdd(add as CFDictionary, nil)
         return status == errSecSuccess
     }
 }
