@@ -7,10 +7,11 @@
 
 from typing import Optional, Union
 
-from PySide6.QtCore import Signal, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+from PySide6.QtCore import Signal, Qt, QUrl
+from PySide6.QtGui import QColor, QDesktopServices, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
+from ..config.constants import APP_VERSION
 from ..config.types import AppState
 from ..platform import PlatformAdapter, get_platform_adapter
 
@@ -26,12 +27,14 @@ class SystemTray(QSystemTrayIcon):
         open_settings: 設定を開く要求
         force_reset: 録音状態の強制リセット要求（フリーズ復帰用）
         quit_app: アプリケーション終了要求
+        install_update: 新バージョンのインストール要求（自動アップデート）
     """
 
     # メニューアクション用シグナル
     open_settings = Signal()
     force_reset = Signal()
     quit_app = Signal()
+    install_update = Signal()
     
     # 状態別アイコンカラー
     ICON_COLORS = {
@@ -73,6 +76,15 @@ class SystemTray(QSystemTrayIcon):
         settings_action = self._menu.addAction("設定…")
         settings_action.triggered.connect(self.open_settings.emit)
 
+        # 新バージョン検知時のみ表示するインストール項目（モーダルは出さない方針）
+        self._update_action = self._menu.addAction("")
+        self._update_action.triggered.connect(self.install_update.emit)
+        self._update_action.setVisible(False)
+
+        # フィードバック導線（Mac 版メニューバーと同じ。mailto は既定メーラーで開く）
+        feedback_action = self._menu.addAction("フィードバックを送る…")
+        feedback_action.triggered.connect(self._send_feedback)
+
         self._menu.addSeparator()
 
         # 録音/マイクが詰まったときに再起動なしで内部状態を作り直す脱出口
@@ -86,6 +98,37 @@ class SystemTray(QSystemTrayIcon):
         quit_action.triggered.connect(self.quit_app.emit)
 
         self.setContextMenu(self._menu)
+
+    def show_update_available(self, version: str) -> None:
+        """
+        新バージョンの通知を表示し、メニューにインストール項目を出す。
+
+        Args:
+            version: 検知した新バージョン文字列
+        """
+        self._update_action.setText(f"アップデート {version} をインストール…")
+        self._update_action.setVisible(True)
+        self.showMessage(
+            "voicekey アップデート",
+            f"新しいバージョン {version} があります。\nトレイメニューからインストールできます。",
+            QSystemTrayIcon.MessageIcon.Information,
+            10000,
+        )
+
+    def show_update_failed(self, message: str) -> None:
+        """アップデート失敗をトレイ通知で知らせる。"""
+        self.showMessage(
+            "voicekey アップデート失敗",
+            f"{message}\n次回のチェックで再試行されます。",
+            QSystemTrayIcon.MessageIcon.Warning,
+            10000,
+        )
+
+    def _send_feedback(self) -> None:
+        """フィードバック用のメール作成画面を開く（件数が増えたらフォーム URL に差し替え）。"""
+        QDesktopServices.openUrl(
+            QUrl(f"mailto:zhaounhaku@gmail.com?subject=voicekey フィードバック (Windows v{APP_VERSION})")
+        )
 
     def set_status(self, status: Union[str, AppState]) -> None:
         """

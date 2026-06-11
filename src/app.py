@@ -56,6 +56,7 @@ from .core.history import HistoryStore
 from .platform import get_platform_adapter
 from .ui import Hud, SettingsWindow, SystemTray
 from .utils.logger import get_logger
+from .utils.updater import Updater
 
 logger = get_logger(__name__)
 
@@ -183,6 +184,14 @@ class VoicekeyApp(QObject):
         self._tray.force_reset.connect(self._force_restart)
         self._tray.quit_app.connect(self._quit_app)
         self.status_changed.connect(self._tray.set_status)
+
+        # 自動アップデート（配布ビルドのみ動作。通知・インストールはトレイ経由）
+        self._updater = Updater(parent=self)
+        self._updater.update_available.connect(self._tray.show_update_available)
+        self._updater.update_failed.connect(self._tray.show_update_failed)
+        self._updater.quit_requested.connect(self._quit_app)
+        self._tray.install_update.connect(self._updater.download_and_install)
+        self._updater.start()
 
         # 録音中 HUD（画面下部中央の小型ピル）。シグナルはワーカー/音声スレッドから
         # 発火するが、Qt のキュー接続でメインスレッド上の HUD へ安全にホップする

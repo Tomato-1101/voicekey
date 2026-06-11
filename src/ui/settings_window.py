@@ -371,6 +371,11 @@ class SettingsWindow(QWidget):
         self._platform = platform_adapter or get_platform_adapter()
         self._history = history
 
+        # DIST ビルドでは API キータブを作らないため、タブ生成前に空で初期化しておく
+        # （_load_current_settings が無条件に _refresh_api_key_status を呼ぶ）
+        self._api_key_inputs = {}
+        self._api_key_status = {}
+
         self._config_manager = ConfigManager()
 
         # テーマ設定を読み込み（デフォルトはライトモード）
@@ -417,7 +422,9 @@ class SettingsWindow(QWidget):
         self._tabs.addTab(self._create_slot_tab(1), "ホットキー 1")
         self._tabs.addTab(self._create_slot_tab(2), "ホットキー 2")
         self._history_tab_index = self._tabs.addTab(self._create_history_tab(), "履歴")
-        self._tabs.addTab(self._create_api_keys_tab(), "API キー")
+        # 配布ビルドは埋め込みキーで動くため、API キータブは出さない（テスターの混乱防止）
+        if not secrets.is_dist_build():
+            self._tabs.addTab(self._create_api_keys_tab(), "API キー")
         # ウィンドウを開いたまま音声入力しても、履歴タブを開いた時点で最新になるように
         self._tabs.currentChanged.connect(self._on_tab_changed)
         main_layout.addWidget(self._tabs, 1)

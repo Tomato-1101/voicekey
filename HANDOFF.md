@@ -32,15 +32,32 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 - [x] Phase 2: Sparkle + build_dmg.sh（検証済み: codesign --verify --deep --strict 通過 /
       ローカル http.server の appcast で旧→新の自動更新 E2E 成功（差分 DL→終了時インストール）。
       Sparkle EdDSA 鍵: 公開鍵は Info.plist、秘密鍵は ~/.voicekey/sparkle_eddsa_key とログイン Keychain）
-- [ ] Phase 3: 初回 Mac リリース（voicekey-releases 作成・v1.0.0 公開。ユーザー側: API 利用上限設定・
-      Developer Program 加入）
-- [ ] Phase 4: Windows 配布一式（embedded_keys / updater.py / voicekey.iss / build_windows_dist.ps1 /
-      BUILD_WINDOWS.md / spec の src 平文同梱除去。検証: py_compile・pytest・オフスクリーン UI）
+- [ ] Phase 3: 初回 Mac リリース — **ユーザーの操作待ち**（下記「ユーザー待ちの項目」参照）。
+      準備済み: main→beta マージ・push 完了 / voicekey-releases の中身は /tmp/voicekey-releases に
+      ローカル作成済み / ソース本体リポジトリは private 化済み（2026-06-12、ソース非公開要望のため）
+- [x] Phase 4: Windows 配布一式（検証済み: py_compile 全通過 / unittest 99 件全通過（新規 22 件含む）/
+      オフスクリーン UI スモークで dev=5タブ・DIST=4タブ・トレイ更新通知を確認（secrets モック）。
+      DIST 時の設定画面クラッシュバグをスモークで発見し修正済み。
+      残: Windows 実機での E2E は docs/BUILD_WINDOWS.md のチェックリストで実施（実機が無いため未実施））
 - [ ] Phase 5: マイク自動検出 両 OS（スコア = RMS p90 − p10。検証: Mac 実機 E2E / Win は pytest）
 - [ ] Phase 6: Windows UI 再デザイン（検証: preview_ui.py のスクショをユーザーに提示）
 - [ ] Phase 7（後日）: Developer ID + 公証切替（加入完了待ち）
 
+## ユーザー待ちの項目（Phase 3 の完了に必要）
+
+1. **public リポジトリ voicekey-releases の作成承認**: 権限レイヤーが「公開リポジトリ作成は
+   ユーザー明示承認が必要」と判断。中身（README・mac/・windows/）は /tmp/voicekey-releases に
+   コミット済み。承認をもらえば `gh repo create` 一発。
+2. **実キービルドの初回 Keychain 許可**: `cd macos && ./scripts/build_dmg.sh --version 1.0.0` 実行時、
+   security が voicekey.{OpenAI,Groq,ElevenLabs,Deepgram} を読む際に許可ダイアログが最大4回出る。
+   「常に許可」を選べば以後は出ない（ユーザーが画面の前にいる時に実行する）。
+3. **各 API ダッシュボードで利用上限・アラート設定**（現行キーをそのまま埋め込むため必須の保険）。
+4. **Apple Developer Program（$99/年）加入手続き** → 加入後 Phase 7 で公証に切替。
+
 ## 現在地 / 次の一手
 
-- 現在地: 計画承認直後。実装未着手。
-- 次の一手: Phase 0（beta ブランチ・.gitignore）から開始。
+- 現在地: Phase 0〜2・4 完了。Phase 3 はユーザー待ち項目のみ残し準備完了。
+- 次の一手: Phase 5（マイク自動検出 Mac/Windows）→ Phase 6（Windows UI 再デザイン）。
+- Windows 版リリース手順: Mac で `--export-env` → `.env.dist` を Windows ビルド機へ →
+  `build_windows_dist.ps1 -Version X.Y.Z` → Releases 添付 → version.json コミット
+  （詳細と順序の注意は docs/BUILD_WINDOWS.md）。

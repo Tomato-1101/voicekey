@@ -36,6 +36,40 @@ voicekeyの変更履歴を記録するファイルです。
   - 検証済み: 偽キーで v0.0.1 → v0.0.2 の DMG/zip/appcast を実ビルドし、ローカル HTTP サーバの
     appcast 経由で旧版が新版を検知 → バイナリ差分 DL → 終了時に自動インストールされ
     バンドルが 0.0.2 に置き換わる E2E を確認。codesign --verify --deep --strict 通過
+- **Windows 版 配布一式（キー埋め込み・自動アップデート・インストーラ、ベータ配布 Phase 4）**
+  - `scripts/build/generate_embedded_keys.py` 新規: `.env.dist` → 環境変数の順でキーを取得し、
+    XOR 難読化した `src/config/embedded_keys.py`（git 管理外）を生成。keyring は意図的に不使用
+    （macOS 検証時の実 Keychain ダイアログ事故防止）
+  - `src/utils/secrets.py`: キー解決を「keyring → 埋め込みキー」フォールバックに拡張 +
+    `is_dist_build()` 追加（未登録キャッシュ・keyring 例外・keyring 不在の全経路で埋め込みへ落ちる）
+  - `src/utils/updater.py` 新規: 自前自動アップデータ。voicekey-releases の version.json を
+    起動 60 秒後 + 24 時間ごとにチェック（DIST のみ）→ トレイ通知 + メニュー項目（モーダル禁止）→
+    SHA256 検証付き DL → Inno `/VERYSILENT /CLOSEAPPLICATIONS` でサイレント更新 → 新版自動再起動
+  - `src/ui/system_tray.py`: 更新通知（showMessage + 動的メニュー項目）と
+    「フィードバックを送る…」（mailto・バージョン入り件名）を追加
+  - `src/app.py`: Updater を SystemTray と配線（検知 → 通知、インストール → 終了要求 → _quit_app）
+  - `src/ui/settings_window.py`: DIST ビルドで API キータブ非表示
+  - `installer/windows/voicekey.iss` 新規: Inno Setup 6。AppId GUID 固定 /
+    `PrivilegesRequired=lowest` + `{localappdata}\Programs\voicekey`（UAC なしでサイレント更新可能）/
+    日本語 UI / スタートアップ登録 / 更新後の自動再起動
+  - `scripts/build/build_windows_dist.ps1` 新規: APP_VERSION 更新 → キー埋め込み → PyInstaller →
+    dist への .py 混入検査 → ISCC → SHA256 → version.json 出力 → embedded_keys.py 自動削除
+  - `macos/scripts/generate_embedded_keys.sh` に `--export-env` 追加（Keychain から `.env.dist` を
+    書き出し、Windows ビルド機へ手動コピーする受け渡し用。chmod 600）
+  - `docs/BUILD_WINDOWS.md` 新規: Windows 実機ビルド手順 + 配布前チェックリスト
+    （.py 非混入 / キー入力なしで動く / 自動更新 E2E / リリース順序: バイナリ添付 → version.json）
+  - `tests/test_updater.py`・`tests/test_secrets_embedded.py` 新規（22 テスト。
+    バージョン比較・SHA256 不一致時の非実行・キー解決チェーン・生成スクリプトのラウンドトリップ）
+
+### Changed
+- `voicekey.spec`: **`datas=[('src','src')]` を削除し `noarchive=False` 化**
+  （配布物に Python ソース平文が同梱されていた問題の根治）。代わりに
+  `collect_submodules('src')` で全モジュールを PYZ アーカイブへ収集
+
+### Fixed
+- 設定画面が DIST ビルドで起動時クラッシュするバグ（API キータブを作らないのに
+  `_load_current_settings` が `_api_key_status` を参照していた。オフスクリーンスモークで発見し、
+  タブ生成前の空辞書初期化で修正）
 
 ## [Unreleased] - 2026-06-10 (voicekey for Mac)
 

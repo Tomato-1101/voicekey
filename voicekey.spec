@@ -3,7 +3,9 @@ import sys
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
-datas = [('src', 'src')]
+# src/ は同梱しない（Python ソース平文同梱の防止）。コードは PYZ アーカイブに入る。
+# src/ 内に実行時読み込みのデータファイルは無いことを確認済み（.py のみ）
+datas = []
 binaries = []
 hiddenimports = ['tzdata']
 
@@ -21,6 +23,10 @@ elif sys.platform.startswith("win"):
 # websockets は streaming_transcriber 内で遅延 import するため静的解析されない。
 # Deepgram ストリーミングに必須なので明示的に全サブモジュールを収集する
 hiddenimports += collect_submodules('websockets')
+
+# src を datas で同梱しなくなった代わりに、動的 import の取りこぼしが
+# 起きないよう全サブモジュールを PYZ へ確実に収集する
+hiddenimports += collect_submodules('src')
 
 # Collect silero_vad with all its data files
 tmp_ret = collect_all('silero_vad')
@@ -47,7 +53,9 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=['PySide6.scripts.deploy_lib'],
-    noarchive=True,
+    # noarchive=True だと各モジュールが .pyc ファイルとして dist に並び
+    # 逆コンパイルが容易になるため、配布前提で PYZ アーカイブに固める
+    noarchive=False,
     optimize=0,
 )
 pyz = PYZ(a.pure)
