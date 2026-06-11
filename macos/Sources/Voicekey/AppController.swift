@@ -210,6 +210,10 @@ final class AppController: ObservableObject {
 
         // 録音中に TLS 接続を事前確立して、停止後の初回 API 往復を短縮
         transcribers[slotId]?.prewarm()
+        // 整形が有効なら整形 LLM への接続も録音中に温めておく
+        if slot.formatEnabled {
+            formatter.prewarm()
+        }
 
         // Deepgram かつストリーミング有効なら WebSocket を開いてライブ字幕を出す。
         // 開始できなければ（キー無し等）chunkHandler を張らないため REST 経路に自動フォールバック
@@ -380,9 +384,15 @@ final class AppController: ObservableObject {
         // 発話がなければ API に送らない（幻覚と無駄コストの防止）
         guard await VoiceActivity.hasSpeech(audio) else { return nil }
 
-        // 前後の無音・ノイズ区間をトリミング
-        if let bounds = VoiceActivity.speechBounds(audio) {
-            audio = Array(audio[bounds])
+        // 前後の無音トリミング + 発話間の長い無音の圧縮。
+        // 音声が短くなるほどアップロードと API 処理が速くなる（語頭・語尾の余白と
+        // 0.5 秒のポーズは保持するため精度には影響しない）
+        if let condensed = VoiceActivity.condense(audio) {
+            let cutSec = Double(audio.count - condensed.count) / AudioRecorder.sampleRate
+            if cutSec > 0.1 {
+                log.info("無音圧縮: \(String(format: "%.1f", cutSec))s 削減")
+            }
+            audio = condensed
         }
         return audio
     }

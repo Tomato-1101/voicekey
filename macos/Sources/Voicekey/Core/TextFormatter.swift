@@ -74,6 +74,16 @@ final class TextFormatter {
         self.session = URLSession(configuration: config)
     }
 
+    /// TLS 接続を事前確立して整形リクエストの往復を短縮する（録音開始時に呼ぶ）。
+    /// 文字起こし用の Transcriber.prewarm と同じパターン。失敗しても整形には影響しない
+    func prewarm() {
+        guard let apiKey = Keychain.apiKey(for: .groq) else { return }
+        var request = URLRequest(url: URL(string: "https://api.groq.com/openai/v1/models")!)
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 5
+        session.dataTask(with: request) { _, _, _ in }.resume()
+    }
+
     // MARK: - リクエスト/応答の型
 
     private struct ChatRequest: Encodable {

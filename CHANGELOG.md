@@ -203,6 +203,22 @@ voicekeyの変更履歴を記録するファイルです。
 - **録音開始そのものを高速化**（Mac 版）: 起動時と録音停止直後に CoreAudio 入力ユニットの初期化と `engine.prepare()` を済ませておき、ホットキー押下から実際に音が録れ始めるまでの遅延を最小化（`AudioRecorder.prewarm()` 新設。マイク自体は起動しないため常時録音やインジケータ点灯はない）
 - **Technical Details**: AppController に `pendingTapFinish` / `recordingStartedAt`、`finishRecording(quietIfNoSpeech:)`。app.py に `_pending_tap_timer`（threading.Timer、_state_lock 保護）、`TranscriptionTask.quiet_if_no_speech`。`VoiceActivity.SpeechObserver` に `resultCount`。Windows 版 VAD（Silero、32ms フレーム）は短音声に強いため変更なし
 
+### Changed (2026-06-11 追記 17) — 文字起こしまでの処理時間を総合削減（精度は不変）
+- **発話間の長い無音を圧縮してから送信**（Mac / Windows、REST 経路のみ）
+  - 従来は前後の無音しか切っておらず、話の途中で考え込んだ無音はすべて API に送られていた。各発話区間の前後 250ms の余白を残し、区間間の無音を最大 0.5 秒まで保持して圧縮する（元の無音が約 1 秒以下なら切らない）。長考した分だけアップロードと API 処理が丸ごと縮む
+  - ポーズは句読点・文区切りの推定材料になるため 0.5 秒残す設計（完全には消さない）。語頭・語尾は余白で保護。**リアルタイム（Deepgram ストリーミング）経路は対象外**（録音中に逐次送信済みのため圧縮しても速くならない）
+- **FLAC ロスレス圧縮でアップロードを約 4 割削減**（Mac 版、全 4 バックエンド）
+  - WAV の代わりに FLAC（16bit、量子化は WAV と同一）で送信。実測で WAV 比 61%。可逆圧縮のため精度への影響はゼロ（ラウンドトリップ検証で maxDiff = 量子化誤差 4.6e-5）。エンコード失敗時は WAV に自動フォールバック
+  - 実 API 検証: 無音圧縮 + FLAC の音声を 4 社に送信し、Groq CER 2.6% / OpenAI 2.6% / ElevenLabs 2.6% / Deepgram 0.0%（WAV ベースラインと同等、発話 2 区間とも完全保持）
+  - Windows 版は標準ライブラリで FLAC を生成できないため見送り（依存追加が必要。実機検証とセットで別途）
+- **VAD 自体の処理時間を削減**（精度・判定結果は同一）
+  - Mac: SoundAnalysis 分類器に 0.5 秒ずつ流し、speech 検出時点で打ち切る早期終了を追加。判定は「どこかに speech があるか」の OR なので結果は全量解析と同一。実測 6.8s+25s 無音の音声で 33ms（発話が冒頭にあるほど・録音が長いほど効く）
+  - Windows: has_speech と speech_bounds が同じフレーム推論を 2 回実行していたのを `analyze()` 1 回に統合（VAD 時間が半減）。無音圧縮も同じ推論結果を共用
+- **整形 LLM の接続を使い回し + 録音中に事前確立**（Mac / Windows）
+  - Windows: 整形のたびに httpx.post が TCP+TLS を張り直していた（毎回 100〜300ms 上乗せ）のを keep-alive 付き共有クライアントに変更
+  - 両 OS: 録音開始時（整形が有効なスロットのみ）に整形 API への接続も温める（文字起こし API の prewarm と同パターン）。停止後の整形リクエストはハンドシェイク済みの接続で即送信される
+- **Technical Details**: `VoiceActivity.condense()`（speechBounds を置換・吸収）/ `FlacEncoder.swift`（新規、AVAudioFile + CoreAudio 内蔵エンコーダ）/ `Transcriber.EncodedAudio`（FLAC/WAV の filename・contentType を保持）/ `TextFormatter.prewarm()`。Windows は `SileroVad.analyze()`（has_speech / speech_bounds を置換）/ `text_formatter._get_client()` + `prewarm()`。検証: ユニットテスト 68 件全パス（VAD は実 Silero ONNX で新規 7 件）、Swift 実装は実コードをリンクした検証ハーネスで 11 項目全パス、実 API 4 社で CER 劣化なしを確認、Mac ビルド成功・新ビルド起動確認済み
+
 ### Fixed (2026-06-11 追記 7)
 - **API キー使用のたびに Keychain の承認ダイアログが出る問題（Mac 版）**
   - 原因: Python 版 keyring や旧 ad-hoc 署名ビルドが作成した Keychain 項目は ACL 上の所有者が「別アプリ」のため、現在の署名アプリの読み取りで毎回承認を求められていた

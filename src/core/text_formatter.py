@@ -16,7 +16,9 @@ LLM テキスト整形モジュール
 """
 
 import os
+import threading
 import time
+from typing import Optional
 
 import httpx
 
@@ -30,6 +32,44 @@ _API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # API リクエストのタイムアウト（秒）。音声入力の待ち時間を無制限に伸ばさない
 _TIMEOUT_SEC = 10.0
+
+# 接続を使い回す共有クライアント（遅延生成、ロック保護）。
+# 旧実装の httpx.post は呼ぶたびに TCP+TLS を張り直しており、
+# 整形 1 回ごとに 100〜300ms のハンドシェイクが上乗せされていた
+_client: Optional[httpx.Client] = None
+_client_lock = threading.Lock()
+
+
+def _get_client() -> httpx.Client:
+    """keep-alive 付きの共有 httpx.Client を返す（初回のみ生成）。"""
+    global _client
+    with _client_lock:
+        if _client is None:
+            _client = httpx.Client(
+                timeout=_TIMEOUT_SEC,
+                limits=httpx.Limits(max_keepalive_connections=2, keepalive_expiry=60.0),
+            )
+        return _client
+
+
+def prewarm() -> None:
+    """
+    TLS 接続を事前確立して整形リクエストの往復を短縮する（録音開始時に呼ぶ）。
+
+    文字起こし側（api_transcriber.prewarm）と同じパターン。
+    キー未設定なら何もしない。失敗しても整形には影響しないため例外は出さない。
+    """
+    api_key = secrets.get_api_key(secrets.SERVICE_GROQ) or os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        return
+    try:
+        _get_client().get(
+            "https://api.groq.com/openai/v1/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=5.0,
+        )
+    except Exception:
+        pass
 
 # 整形モデルの既定値（グローバル設定 format_model で変更可能）
 DEFAULT_FORMAT_MODEL = "llama-3.1-8b-instant"
@@ -114,7 +154,7 @@ def format_text(text: str, model: str, prompt: str = "") -> str:
 
     start = time.perf_counter()
     try:
-        resp = httpx.post(
+        resp = _get_client().post(
             _API_URL,
             headers={
                 "Authorization": f"Bearer {api_key}",

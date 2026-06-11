@@ -29,6 +29,10 @@ _FRAME_SAMPLES = 512      # 1 フレーム = 512 サンプル（32ms @16kHz）
 _CONTEXT_SAMPLES = 64     # 各フレームの先頭に前フレーム末尾 64 サンプルを連結する
 _SPEECH_THRESHOLD = 0.5   # 発話とみなす確率しきい値（公式デフォルトと同じ）
 
+# 発話間に保持する無音の最大長（秒）。
+# ポーズは句読点・文区切りの推定材料になるため完全には消さない
+_KEPT_GAP_SEC = 0.5
+
 
 def _find_model_path() -> Optional[str]:
     """silero-vad パッケージ同梱の ONNX モデルパスを import せずに解決する。"""
@@ -114,63 +118,65 @@ class SileroVad:
             probs.append(float(out[0, 0]))
         return np.array(probs, dtype=np.float32)
 
-    def has_speech(self, audio: npt.NDArray[np.float32], sample_rate: int = 16000) -> bool:
+    def analyze(
+        self, audio: npt.NDArray[np.float32], pad_ms: int = 250
+    ) -> Tuple[bool, Optional[npt.NDArray[np.float32]]]:
         """
-        音声データに発話が含まれるかを判定する。
+        1 回の推論で「発話の有無」と「無音圧縮済み音声」をまとめて返す。
+
+        旧実装は has_speech と speech_bounds が同じフレーム推論を 2 回実行していた
+        （長い録音ほど VAD 時間が倍かかる）。本メソッドは推論 1 回に統合し、さらに
+        前後の無音トリミングに加えて発話間の長い無音も圧縮する。
+
+        圧縮は各発話区間の前後に pad_ms の余白を残し、区間間の無音は最大
+        _KEPT_GAP_SEC まで保持する（元の無音が約 1 秒以下ならそのまま）。
+        語頭・語尾の余白と句読点推定の手がかりになるポーズを残すため、
+        精度には影響せず、音声が短くなる分だけ送信と API 処理が速くなる。
 
         Args:
             audio: 音声データ（float32, 16kHz モノラル）
-            sample_rate: サンプリングレート（16000 のみ対応）
+            pad_ms: 発話区間の前後に残すパディング（ミリ秒）
 
         Returns:
-            発話が検出された場合 True。VAD が使えない場合も True（安全側）
+            (has_speech, condensed_audio)。
+            発話なしは (False, None)。VAD が使えない・推論エラー時は
+            (True, None)（安全側: 発話ありとして原音をそのまま使う）
         """
         if len(audio) < _FRAME_SAMPLES:
-            return False
+            return (False, None)
         with self._lock:
             if not self._load_session():
-                return True
+                return (True, None)
             try:
                 probs = self._frame_probs(audio)
             except Exception as e:
                 logger.error(f"VAD 推論エラー（発話ありとして続行）: {e}")
-                return True
+                return (True, None)
+
         # 単発のクリックノイズ誤検出を避けるため、しきい値超えフレームが
         # 2 つ以上（≒64ms 以上）ある場合のみ発話とみなす
-        return int(np.count_nonzero(probs >= _SPEECH_THRESHOLD)) >= 2
-
-    def speech_bounds(
-        self, audio: npt.NDArray[np.float32], pad_ms: int = 250
-    ) -> Optional[Tuple[int, int]]:
-        """
-        発話区間の先頭・末尾サンプル位置を返す（前後の無音トリミング用）。
-
-        長い録音の前後の無音・ノイズ区間を API に送らないことで、
-        幻覚（無音区間の架空テキスト）とレイテンシを減らす。
-
-        Args:
-            audio: 音声データ（float32, 16kHz モノラル）
-            pad_ms: 検出区間の前後に残すパディング（ミリ秒）
-
-        Returns:
-            (start_sample, end_sample)。発話なし・VAD 不能時は None
-        """
-        if len(audio) < _FRAME_SAMPLES:
-            return None
-        with self._lock:
-            if not self._load_session():
-                return None
-            try:
-                probs = self._frame_probs(audio)
-            except Exception as e:
-                logger.error(f"VAD 推論エラー（トリミングをスキップ）: {e}")
-                return None
-
         speech_idx = np.flatnonzero(probs >= _SPEECH_THRESHOLD)
         if len(speech_idx) < 2:
-            return None
+            return (False, None)
+
+        # 発話フレームの連続区間（インデックスの切れ目で分割）を
+        # 前後 pad 付きのサンプル範囲に変換する
+        splits = np.flatnonzero(np.diff(speech_idx) > 1)
+        starts = np.concatenate(([speech_idx[0]], speech_idx[splits + 1]))
+        ends = np.concatenate((speech_idx[splits], [speech_idx[-1]]))
 
         pad = int(16000 * pad_ms / 1000)
-        start = max(0, int(speech_idx[0]) * _FRAME_SAMPLES - pad)
-        end = min(len(audio), (int(speech_idx[-1]) + 1) * _FRAME_SAMPLES + pad)
-        return (start, end)
+        kept_gap = int(16000 * _KEPT_GAP_SEC)
+        regions: list = []
+        for s, e in zip(starts, ends):
+            lower = max(0, int(s) * _FRAME_SAMPLES - pad)
+            upper = min(len(audio), (int(e) + 1) * _FRAME_SAMPLES + pad)
+            # 近接区間はマージ（区間の間に残る無音が kept_gap 以下なら切らない）
+            if regions and lower - regions[-1][1] <= kept_gap:
+                regions[-1][1] = max(regions[-1][1], upper)
+            else:
+                regions.append([lower, upper])
+
+        # 区間を連結（各接合部には前後 pad ぶん＝計 _KEPT_GAP_SEC の実無音が残る）
+        condensed = np.concatenate([audio[lo:hi] for lo, hi in regions])
+        return (True, condensed)

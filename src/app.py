@@ -433,6 +433,9 @@ class VoicekeyApp(QObject):
         self._emit_state()
         # 録音中に API への TLS 接続を事前確立し、停止後の初回往復を短縮する
         threading.Thread(target=slot.transcriber.prewarm, daemon=True).start()
+        # 整形が有効なら整形 LLM への接続も録音中に温めておく
+        if slot.format_enabled:
+            threading.Thread(target=text_formatter.prewarm, daemon=True).start()
 
         # Deepgram かつストリーミング有効ならライブ字幕用に WebSocket を開く。
         # 開始できなければ（キー無し / websockets 未導入）chunk_callback を張らないため
@@ -573,23 +576,22 @@ class VoicekeyApp(QObject):
             except Exception as e:
                 logger.warning(f"音声前処理でエラー、原音を使用: {e}")
 
-        # VAD: 発話がなければ API に送らない（幻覚と無駄コストの防止）
+        # VAD: 発話がなければ API に送らない（幻覚と無駄コストの防止）。
+        # 推論 1 回で発話判定と無音圧縮（前後トリミング + 発話間の長い無音の短縮）を行う
         if self._config.get("vad_filter", True):
             vad_start = time.perf_counter()
-            if not self._vad.has_speech(audio):
+            has_speech, condensed = self._vad.analyze(audio)
+            if not has_speech:
                 logger.info("発話が検出されなかったためスキップ")
                 # 誤タップ由来（ダブルタップ待ちの期限切れ）の無音は通知しない
                 if not task.quiet_if_no_speech:
                     self.notice.emit("音声が検出されませんでした")
                 return
-            # 前後の無音・ノイズ区間をトリミングして送信量と幻覚をさらに削減
-            bounds = self._vad.speech_bounds(audio)
-            if bounds is not None:
-                start, end = bounds
-                trimmed_sec = (len(audio) - (end - start)) / SAMPLE_RATE
-                if trimmed_sec > 0.1:
-                    logger.info(f"前後の無音 {trimmed_sec:.1f}s をトリミング")
-                audio = audio[start:end]
+            if condensed is not None:
+                cut_sec = (len(audio) - len(condensed)) / SAMPLE_RATE
+                if cut_sec > 0.1:
+                    logger.info(f"無音圧縮: {cut_sec:.1f}s 削減")
+                audio = condensed
             logger.info(f"VAD 処理: {(time.perf_counter() - vad_start) * 1000:.0f}ms")
 
         text = slot.transcriber.transcribe(audio)

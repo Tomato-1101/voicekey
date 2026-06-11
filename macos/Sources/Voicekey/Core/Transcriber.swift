@@ -128,8 +128,17 @@ final class Transcriber {
             )
         }
 
-        let wav = WavEncoder.encode(samples)
-        let request = buildRequest(wav: wav, apiKey: apiKey)
+        // FLAC（可逆圧縮）で WAV 比約半分までアップロードサイズを削減。
+        // 量子化は WAV と同じ 16bit のため精度への影響はゼロ。失敗時は WAV
+        let audio: EncodedAudio
+        if let flac = FlacEncoder.encode(samples) {
+            audio = EncodedAudio(data: flac, filename: "audio.flac", contentType: "audio/flac")
+        } else {
+            audio = EncodedAudio(
+                data: WavEncoder.encode(samples), filename: "audio.wav", contentType: "audio/wav"
+            )
+        }
+        let request = buildRequest(audio: audio, apiKey: apiKey)
 
         let start = Date()
         let data: Data
@@ -171,19 +180,26 @@ final class Transcriber {
 
     // MARK: - リクエスト構築（バックエンド別）
 
-    private func buildRequest(wav: Data, apiKey: String) -> URLRequest {
+    /// アップロードする符号化済み音声（FLAC または WAV）
+    private struct EncodedAudio {
+        let data: Data
+        let filename: String
+        let contentType: String
+    }
+
+    private func buildRequest(audio: EncodedAudio, apiKey: String) -> URLRequest {
         switch backend {
         case .openai, .groq:
-            return openAIRequest(wav: wav, apiKey: apiKey)
+            return openAIRequest(audio: audio, apiKey: apiKey)
         case .elevenlabs:
-            return elevenLabsRequest(wav: wav, apiKey: apiKey)
+            return elevenLabsRequest(audio: audio, apiKey: apiKey)
         case .deepgram:
-            return deepgramRequest(wav: wav, apiKey: apiKey)
+            return deepgramRequest(audio: audio, apiKey: apiKey)
         }
     }
 
     /// OpenAI 互換 Audio Transcriptions API（OpenAI / Groq 共用）
-    private func openAIRequest(wav: Data, apiKey: String) -> URLRequest {
+    private func openAIRequest(audio: EncodedAudio, apiKey: String) -> URLRequest {
         var request = URLRequest(url: baseURL.appendingPathComponent("audio/transcriptions"))
         request.httpMethod = "POST"
         setAuth(apiKey, on: &request)
@@ -194,13 +210,13 @@ final class Transcriber {
         form.field("temperature", "0")
         if !language.isEmpty { form.field("language", language) }
         if !prompt.isEmpty { form.field("prompt", prompt) }
-        form.file("file", filename: "audio.wav", contentType: "audio/wav", data: wav)
+        form.file("file", filename: audio.filename, contentType: audio.contentType, data: audio.data)
         form.apply(to: &request)
         return request
     }
 
     /// ElevenLabs Scribe API（speech-to-text）
-    private func elevenLabsRequest(wav: Data, apiKey: String) -> URLRequest {
+    private func elevenLabsRequest(audio: EncodedAudio, apiKey: String) -> URLRequest {
         var request = URLRequest(url: baseURL.appendingPathComponent("speech-to-text"))
         request.httpMethod = "POST"
         setAuth(apiKey, on: &request)
@@ -210,13 +226,13 @@ final class Transcriber {
         // (笑い) などの音声イベントタグは音声入力には不要
         form.field("tag_audio_events", "false")
         if !language.isEmpty { form.field("language_code", language) }
-        form.file("file", filename: "audio.wav", contentType: "audio/wav", data: wav)
+        form.file("file", filename: audio.filename, contentType: audio.contentType, data: audio.data)
         form.apply(to: &request)
         return request
     }
 
-    /// Deepgram prerecorded API（WAV 生バイトを直接送る）
-    private func deepgramRequest(wav: Data, apiKey: String) -> URLRequest {
+    /// Deepgram prerecorded API（符号化済み音声の生バイトを直接送る）
+    private func deepgramRequest(audio: EncodedAudio, apiKey: String) -> URLRequest {
         var components = URLComponents(
             url: baseURL.appendingPathComponent("listen"), resolvingAgainstBaseURL: false
         )!
@@ -238,8 +254,8 @@ final class Transcriber {
         var request = URLRequest(url: components.url!)
         request.httpMethod = "POST"
         setAuth(apiKey, on: &request)
-        request.setValue("audio/wav", forHTTPHeaderField: "Content-Type")
-        request.httpBody = wav
+        request.setValue(audio.contentType, forHTTPHeaderField: "Content-Type")
+        request.httpBody = audio.data
         return request
     }
 

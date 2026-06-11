@@ -86,29 +86,64 @@ enum VoiceActivity {
         return false
     }
 
-    /// 発話区間の先頭・末尾を返す（前後の無音トリミング用）。
-    /// 長い録音の無音・ノイズ区間を API に送らないことで幻覚とレイテンシを減らす
-    static func speechBounds(_ samples: [Float], padMs: Int = 250) -> Range<Int>? {
-        var firstFrame: Int? = nil
-        var lastFrame: Int? = nil
-        var frameIndex = 0
+    /// 発話間に保持する無音の最大長（0.5 秒）。
+    /// ポーズは句読点・文区切りの推定材料になるため完全には消さない
+    private static let keptGapSec = 0.5
+
+    /// 前後の無音トリミングに加えて、発話間の長い無音を圧縮した音声を返す。
+    ///
+    /// 各発話区間の前後に padMs の余白を残し、区間間の無音は最大 keptGapSec まで保持する
+    /// （元の無音が約 1 秒以下ならそのまま。それより長い分だけを切り落とす）。
+    /// 音声が短くなる分だけアップロードと API の処理時間が縮む。語頭・語尾は余白で守られ、
+    /// ポーズの手がかりも残るため精度には影響しない。発話が無ければ nil
+    static func condense(_ samples: [Float], padMs: Int = 250) -> [Float]? {
+        // 1. フレームごとの発話判定（hasSpeechEnergy と同じエネルギー基準）
+        var active: [Bool] = []
         for start in stride(from: 0, to: samples.count - frameLen, by: frameLen) {
             var sum: Float = 0
             for i in start..<(start + frameLen) {
                 sum += samples[i] * samples[i]
             }
-            if sqrt(sum / Float(frameLen)) >= energyThreshold {
-                if firstFrame == nil { firstFrame = frameIndex }
-                lastFrame = frameIndex
-            }
-            frameIndex += 1
+            active.append(sqrt(sum / Float(frameLen)) >= energyThreshold)
         }
-        guard let first = firstFrame, let last = lastFrame else { return nil }
 
+        // 2. 発話フレームの連続区間を前後 pad 付きのサンプル範囲に変換
         let pad = sampleRate * padMs / 1000
-        let lower = max(0, first * frameLen - pad)
-        let upper = min(samples.count, (last + 1) * frameLen + pad)
-        return lower..<upper
+        var regions: [(lower: Int, upper: Int)] = []
+        var runStart: Int? = nil
+        for (i, isActive) in active.enumerated() {
+            if isActive {
+                if runStart == nil { runStart = i }
+            } else if let start = runStart {
+                regions.append((max(0, start * frameLen - pad),
+                                min(samples.count, i * frameLen + pad)))
+                runStart = nil
+            }
+        }
+        if let start = runStart {
+            regions.append((max(0, start * frameLen - pad),
+                            min(samples.count, active.count * frameLen + pad)))
+        }
+        guard !regions.isEmpty else { return nil }
+
+        // 3. 近接区間をマージ（区間の間に残る無音が keptGapSec 以下なら切らずに繋げたまま）
+        let keptGap = Int(Double(sampleRate) * keptGapSec)
+        var merged: [(lower: Int, upper: Int)] = [regions[0]]
+        for region in regions.dropFirst() {
+            if region.lower - merged[merged.count - 1].upper <= keptGap {
+                merged[merged.count - 1].upper = max(merged[merged.count - 1].upper, region.upper)
+            } else {
+                merged.append(region)
+            }
+        }
+
+        // 4. 区間を連結（各接合部には前後 pad ぶん＝計 keptGapSec の実無音が残る）
+        var result: [Float] = []
+        result.reserveCapacity(merged.reduce(0) { $0 + ($1.upper - $1.lower) })
+        for region in merged {
+            result.append(contentsOf: samples[region.lower..<region.upper])
+        }
+        return result
     }
 
     // MARK: - SoundAnalysis（オンデバイス ML）
@@ -123,15 +158,6 @@ enum VoiceActivity {
             interleaved: false
         ) else { return nil }
 
-        guard let buffer = AVAudioPCMBuffer(
-            pcmFormat: format,
-            frameCapacity: AVAudioFrameCount(samples.count)
-        ), let channel = buffer.floatChannelData?[0] else { return nil }
-        samples.withUnsafeBufferPointer { src in
-            channel.update(from: src.baseAddress!, count: samples.count)
-        }
-        buffer.frameLength = AVAudioFrameCount(samples.count)
-
         do {
             let request = try SNClassifySoundRequest(classifierIdentifier: .version1)
             // 1 秒窓・50% オーバーラップで短い発話も拾う
@@ -141,12 +167,31 @@ enum VoiceActivity {
             let analyzer = SNAudioStreamAnalyzer(format: format)
             let observer = SpeechObserver()
             try analyzer.add(request, withObserver: observer)
-            analyzer.analyze(buffer, atAudioFramePosition: 0)
+
+            // 0.5 秒ずつ流し、speech を検出した時点で打ち切る（早期終了）。
+            // 判定は「どこかに speech があるか」の OR なので結果は全量解析と同一。
+            // 発話は冒頭にあることが多く、長い録音ほど ML 推論時間を大きく削れる
+            let chunkLen = sampleRate / 2
+            var pos = 0
+            while pos < samples.count {
+                let len = min(chunkLen, samples.count - pos)
+                guard let chunk = AVAudioPCMBuffer(
+                    pcmFormat: format, frameCapacity: AVAudioFrameCount(len)
+                ), let chunkChannel = chunk.floatChannelData?[0] else { return nil }
+                samples.withUnsafeBufferPointer { src in
+                    chunkChannel.update(from: src.baseAddress! + pos, count: len)
+                }
+                chunk.frameLength = AVAudioFrameCount(len)
+                analyzer.analyze(chunk, atAudioFramePosition: AVAudioFramePosition(pos))
+                if observer.speechDetected { return true }
+                pos += len
+            }
             analyzer.completeAnalysis()
+            if observer.speechDetected { return true }
             // 解析窓が一度も評価されなかった（短すぎる等で結果ゼロ）場合は
             // 「声なし」ではなく「判定不能」としてエネルギー判定に委ねる
             guard observer.resultCount > 0 else { return nil }
-            return observer.speechDetected
+            return false
         } catch {
             log.warning("SoundAnalysis が利用できません（エネルギー判定へ）: \(error.localizedDescription)")
             return nil
