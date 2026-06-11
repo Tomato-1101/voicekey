@@ -32,6 +32,8 @@ final class AppController: ObservableObject {
 
     private let recorder = AudioRecorder()
     private let hotkeys = HotkeyMonitor()
+    /// 貼り付け前の LLM テキスト整形（失敗時は原文を返すため全スロットで共用できる）
+    private let formatter = TextFormatter()
 
     /// スロット ID → トランスクライバ（設定変更時に作り直す）
     private var transcribers: [Int: Transcriber] = [:]
@@ -242,6 +244,12 @@ final class AppController: ObservableObject {
     ) {
         let vadEnabled = config.vadEnabled
         let delayMs = config.autoEnterDelayMs
+        // 整形設定もタスク実行中の設定変更に影響されないよう Task の外で捕捉する
+        let slot = config.slot(slotId)
+        let formatEnabled = slot.formatEnabled
+        let formatMode = FormatMode(rawValue: slot.formatMode) ?? .clean
+        let formatCustomPrompt = slot.formatCustomPrompt
+        let formatModel = config.formatModel
         guard let transcriber = transcribers[slotId] else {
             streamer?.cancel()
             taskFinished()
@@ -259,7 +267,12 @@ final class AppController: ObservableObject {
                 let streamed = await streamer.finish()
                 hud.clearCaption()
                 if !streamed.isEmpty {
-                    await Paster.paste(streamed)
+                    // 整形が有効なら貼り付け前に LLM で整形（失敗時は原文が返る）
+                    let output = formatEnabled
+                        ? await formatter.format(streamed, mode: formatMode,
+                                                 customPrompt: formatCustomPrompt, model: formatModel)
+                        : streamed
+                    await Paster.paste(output)
                     if autoEnter {
                         try? await Task.sleep(for: .milliseconds(max(0, delayMs)))
                         Paster.pressEnter()
@@ -303,7 +316,12 @@ final class AppController: ObservableObject {
             }
 
             // 4. テキスト貼り付け（+ ダブルタップ時は Enter 自動送信）
-            await Paster.paste(text)
+            // 整形が有効なら貼り付け前に LLM で整形（失敗時は原文が返る）
+            let output = formatEnabled
+                ? await formatter.format(text, mode: formatMode,
+                                         customPrompt: formatCustomPrompt, model: formatModel)
+                : text
+            await Paster.paste(output)
             if autoEnter {
                 try? await Task.sleep(for: .milliseconds(max(0, delayMs)))
                 Paster.pressEnter()

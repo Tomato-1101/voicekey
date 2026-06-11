@@ -69,10 +69,34 @@ struct SlotConfig: Codable, Equatable {
     var backend: Backend
     var model: String
     var prompt: String
+    /// 貼り付け前に LLM でテキスト整形するか（既定はオフ）
+    var formatEnabled: Bool = false
+    /// 整形モードの識別子（FormatMode.rawValue。Windows 版と共通の固定文字列）
+    var formatMode: String = "clean"
+    /// custom モードで使うカスタムプロンプト本文
+    var formatCustomPrompt: String = ""
 
     /// 人間が読める表記（例: "右⌘"、"⌃+Space"）
     var hotkeyLabel: String {
         hotkey.isEmpty ? "未設定" : hotkey.map { KeyToken.displayName($0) }.joined(separator: "+")
+    }
+}
+
+extension SlotConfig {
+    /// 既存ユーザーの保存済み JSON には整形フィールドが無いため、
+    /// 全フィールドを decodeIfPresent + 既定値で読む（無いと decode 失敗で
+    /// ホットキー設定がリセットされる）。本体宣言内に書くと memberwise init が
+    /// 消えるため、必ず extension に置く。Encodable と CodingKeys は合成に任せる。
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        hotkey = try c.decodeIfPresent([String].self, forKey: .hotkey) ?? []
+        mode = try c.decodeIfPresent(HotkeyMode.self, forKey: .mode) ?? .hold
+        backend = try c.decodeIfPresent(Backend.self, forKey: .backend) ?? .openai
+        model = try c.decodeIfPresent(String.self, forKey: .model) ?? ""
+        prompt = try c.decodeIfPresent(String.self, forKey: .prompt) ?? ""
+        formatEnabled = try c.decodeIfPresent(Bool.self, forKey: .formatEnabled) ?? false
+        formatMode = try c.decodeIfPresent(String.self, forKey: .formatMode) ?? "clean"
+        formatCustomPrompt = try c.decodeIfPresent(String.self, forKey: .formatCustomPrompt) ?? ""
     }
 }
 
@@ -97,6 +121,8 @@ final class ConfigStore: ObservableObject {
     @Published var autoEnterDelayMs: Int
     /// 録音に使う入力デバイスの UID（空ならシステム既定マイク）
     @Published var inputDeviceUID: String
+    /// テキスト整形に使う Groq のモデル名（全スロット共通）
+    @Published var formatModel: String
 
     private var cancellables: Set<AnyCancellable> = []
     private let defaults: UserDefaults
@@ -110,6 +136,7 @@ final class ConfigStore: ObservableObject {
         static let streamingEnabled = "streamingEnabled"
         static let autoEnterDelayMs = "autoEnterDelayMs"
         static let inputDeviceUID = "inputDeviceUID"
+        static let formatModel = "formatModel"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -129,6 +156,7 @@ final class ConfigStore: ObservableObject {
         streamingEnabled = defaults.object(forKey: Keys.streamingEnabled) as? Bool ?? true
         autoEnterDelayMs = defaults.object(forKey: Keys.autoEnterDelayMs) as? Int ?? 50
         inputDeviceUID = defaults.string(forKey: Keys.inputDeviceUID) ?? ""
+        formatModel = defaults.string(forKey: Keys.formatModel) ?? "llama-3.1-8b-instant"
 
         // 変更を自動保存（起動直後の初期代入は上で完了しているため安全）
         $slot1.dropFirst().sink { [weak self] in self?.saveSlot($0, key: Keys.slot1) }.store(in: &cancellables)
@@ -139,6 +167,7 @@ final class ConfigStore: ObservableObject {
         $streamingEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.streamingEnabled) }.store(in: &cancellables)
         $autoEnterDelayMs.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.autoEnterDelayMs) }.store(in: &cancellables)
         $inputDeviceUID.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.inputDeviceUID) }.store(in: &cancellables)
+        $formatModel.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.formatModel) }.store(in: &cancellables)
     }
 
     /// スロット設定を ID で取得する

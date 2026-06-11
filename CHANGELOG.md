@@ -118,6 +118,32 @@ voicekeyの変更履歴を記録するファイルです。
 - **src/ui/settings_window.py**: `_autostart_check` 追加（load=レジストリ実状態、save=`set_enabled`）
 - **検証**: Mac `swift build` 成功、Windows `py_compile` OK・ユニットテスト 41 件パス（autostart 3 件追加）・オフスクリーンで設定ウィンドウ構築と非対応時の無効化を確認。Windows 実機でのレジストリ登録・自動起動はユーザー側で確認（開発は macOS のため）
 
+### Added (2026-06-11 追記 7) — LLM テキスト自動整形（Mac / Windows）
+文字起こし確定テキストを貼り付け直前に Groq の高速 LLM（既定 `llama-3.1-8b-instant`、Chat Completions）で 1 回整形する機能。主流ディクテーションアプリ（Wispr Flow / Superwhisper 等）と同等の後処理。
+
+- **ホットキーごとにオン/オフ**（既定オフ）。片方は raw 高速・もう片方は整形済み、という使い分けができる
+- **整形モード 6 種**（識別子・プロンプト文言は Mac / Windows で完全一致）: 自動クリーン（フィラー除去・句読点整形）/ 箇条書き / 丁寧（敬語）/ カジュアル / メール調 / カスタム（自由プロンプト。空なら自動クリーンにフォールバック）
+- **発話を絶対に失わない**: 空入力は API 非呼出、キー未設定・タイムアウト（10 秒上限）・HTTP 非 200・応答不正・空応答・あらゆる例外は警告ログ + 原文をそのまま貼り付け。整形失敗で例外が貼り付け経路へ漏れることはない
+- 整形モデルは設定（一般 / Advanced）で変更可能。ストリーミング確定・REST の両経路に適用
+
+### Fixed (2026-06-11 追記 7)
+- **API キー使用のたびに Keychain の承認ダイアログが出る問題（Mac 版）**
+  - 原因: Python 版 keyring や旧 ad-hoc 署名ビルドが作成した Keychain 項目は ACL 上の所有者が「別アプリ」のため、現在の署名アプリの読み取りで毎回承認を求められていた
+  - 修正 1: 保存処理を `SecItemUpdate` から **`SecItemDelete` → `SecItemAdd`** に変更し、項目を常に現アプリが新規作成して所有権を取る
+  - 修正 2: 読み取り成功直後に同じ値で書き直す**自己修復移行**を追加（環境変数フォールバック経路では行わない）。既存ユーザーは各キーにつき**次回の読み取りで 1 回だけ承認すれば以後ダイアログが出なくなる**（キーの再入力は不要）
+
+### Technical Details (追記 7)
+- **macos/Core/TextFormatter.swift**（新規）: `FormatMode` enum（clean/bullets/polite/casual/email/custom + 日本語ラベル + システムプロンプト）と `TextFormatter`（ephemeral URLSession、リクエスト 10 秒、temperature 0.2、失敗時は原文返しで throws しない）
+- **macos/Core/Keychain.swift**: `write()` を delete→add 化、`apiKey(for:)` に自己修復移行を追加
+- **macos/Config/AppConfig.swift**: `SlotConfig` に `formatEnabled` / `formatMode` / `formatCustomPrompt`（既定値付き）。手書き `init(from decoder:)` を extension に実装し、既存ユーザーの保存スロットを decodeIfPresent + 既定値で後方互換読み込み（設定リセット防止）。`ConfigStore` に `@Published formatModel`
+- **macos/UI/SettingsView.swift**: スロットタブに整形トグル + モード Picker +（custom 時）プロンプト欄、一般タブに整形モデル欄
+- **macos/AppController.swift**: ストリーミング / REST 両経路の `Paster.paste` 直前で `formatter.format()` を適用
+- **src/core/text_formatter.py**（新規）: `build_system_prompt` / `format_text`（httpx、Keychain → `GROQ_API_KEY` 環境変数の順でキー解決、失敗時原文）
+- **src/config/constants.py / types.py**: `format_model`（グローバル）と hotkey1/2 の `format_enabled` / `format_mode` / `format_custom_prompt` を追加
+- **src/app.py**: `_maybe_format` ヘルパーを追加し、ストリーミング確定・REST 完了の両経路で `_insert_and_enter` 直前に適用
+- **src/ui/settings_window.py**: 各ホットキーに整形チェックボックス + モード Combo +（カスタム時のみ表示の）プロンプト欄、Advanced に Format Model 欄
+- **検証**: Mac `swift build` エラー/警告 0 → `build_app.sh` → 実機再起動し、スロットタブの整形 UI（トグル → モード Picker → カスタム欄の段階表示）と既存設定の後方互換読み込み（ホットキー・バックエンドがリセットされないこと）をスクリーンショットで確認。Windows `py_compile` OK・ユニットテスト 53 件（新規 13 件含む）全パス・オフスクリーンで設定 UI 構築を確認。Groq への実呼び出しとKeychain 承認ダイアログ消滅は実ディクテーションでの確認待ち
+
 ### Fixed (2026-06-10 追記 2)
 - **ホットキーがほとんど反応しない問題（Mac 版）**
   - 原因 1: ウィンドウを 1 つも持たないメニューバーアプリは App Nap の対象になり、イベントタップのコールバックが遅延 → OS にタイムアウト無効化されてホットキーが死ぬ。`beginActivity` と Info.plist `NSAppSleepDisabled` で App Nap を無効化し、タップ監視スレッドの QoS を `.userInteractive` に引き上げ

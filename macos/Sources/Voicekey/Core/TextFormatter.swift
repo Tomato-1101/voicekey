@@ -1,0 +1,174 @@
+//
+//  TextFormatter.swift
+//  LLM テキスト整形クライアント（Groq Chat Completions、OpenAI 互換）
+//
+//  文字起こし確定テキストを貼り付け直前に 1 回だけ整形する。
+//  発話を失わないことを最優先とし、いかなる失敗時も原文をそのまま返す（throws しない）。
+//
+
+import Foundation
+import os.log
+
+private let log = Logger(subsystem: "com.voicekey.app", category: "formatter")
+
+/// テキスト整形モード（識別子は Windows 版と共通の固定文字列）
+enum FormatMode: String, Codable, CaseIterable, Identifiable {
+    case clean
+    case bullets
+    case polite
+    case casual
+    case email
+    case custom
+
+    var id: String { rawValue }
+
+    /// 設定 UI に表示する日本語ラベル
+    var label: String {
+        switch self {
+        case .clean: return "自動クリーン"
+        case .bullets: return "箇条書き"
+        case .polite: return "丁寧（敬語）"
+        case .casual: return "カジュアル"
+        case .email: return "メール調"
+        case .custom: return "カスタム"
+        }
+    }
+
+    /// 全モード共通のフッター（出力形式を固定する指示。Windows 版と文言を完全一致させる）
+    private static let footer =
+        "出力は整形後のテキストのみを返す。前置き・説明・引用符・コードブロックを付けない。入力と同じ言語で出力する。元の発言にない情報を追加しない。"
+
+    /// モード別のシステムプロンプト本文（フッターを除く。Windows 版と文言を完全一致させる）
+    private var promptBody: String {
+        switch self {
+        case .clean:
+            return "あなたは音声入力の整形エンジンです。文字起こしテキストから「えーと」「あの」「まあ」「えっと」「なんか」「um」「uh」などのフィラー語と無意味な繰り返しを取り除き、句読点と改行を自然に整えてください。言い直しがある場合は最終的な発言だけを残してください。"
+        case .bullets:
+            return "あなたは音声入力の整形エンジンです。文字起こしテキストの内容を簡潔な箇条書きに整理してください。各項目は「- 」で始め、フィラー語を取り除き、要点だけを短く書いてください。"
+        case .polite:
+            return "あなたは音声入力の整形エンジンです。文字起こしテキストからフィラー語を取り除き、丁寧な敬語（です・ます調）の自然な文章に整えてください。"
+        case .casual:
+            return "あなたは音声入力の整形エンジンです。文字起こしテキストからフィラー語を取り除き、親しい相手へのチャットのようなくだけた自然な文体に整えてください。"
+        case .email:
+            return "あなたは音声入力の整形エンジンです。文字起こしテキストからフィラー語を取り除き、ビジネスメールの本文として自然な文章に整えてください。宛名・署名・件名は追加しないでください。"
+        case .custom:
+            // custom の本文は systemPrompt(customPrompt:) 側で差し替える
+            return FormatMode.clean.promptBody
+        }
+    }
+
+    /// システムプロンプトを組み立てる（モード別本文 + 共通フッター）。
+    /// custom はカスタムプロンプト本文をそのまま使う（空白のみなら clean の本文を使う）。
+    func systemPrompt(customPrompt: String) -> String {
+        let body: String
+        if self == .custom,
+           !customPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            body = customPrompt
+        } else {
+            body = promptBody
+        }
+        return body + "\n\n" + Self.footer
+    }
+}
+
+/// Groq Chat Completions でテキストを整形するクライアント
+final class TextFormatter {
+
+    /// 接続を再利用するため URLSession を保持（Transcriber と同じパターン）
+    private let session: URLSession
+
+    private let endpoint = URL(string: "https://api.groq.com/openai/v1/chat/completions")!
+
+    init() {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 10
+        config.timeoutIntervalForResource = 30
+        self.session = URLSession(configuration: config)
+    }
+
+    // MARK: - リクエスト/応答の型
+
+    private struct ChatRequest: Encodable {
+        struct Message: Encodable {
+            let role: String
+            let content: String
+        }
+        let model: String
+        let messages: [Message]
+        let temperature: Double
+    }
+
+    private struct ChatResponse: Decodable {
+        struct Choice: Decodable {
+            struct Message: Decodable { let content: String? }
+            let message: Message
+        }
+        let choices: [Choice]
+    }
+
+    /// テキストを LLM で整形する。
+    /// キー未設定・タイムアウト・HTTP 非 200・解析失敗・空応答などあらゆる失敗時は
+    /// 警告ログを出して原文をそのまま返す（例外を呼び出し元へ投げない）。
+    /// - Parameters:
+    ///   - text: 文字起こし確定テキスト
+    ///   - mode: 整形モード
+    ///   - customPrompt: custom モードで使うカスタムプロンプト本文
+    ///   - model: 整形に使う Groq のモデル名
+    /// - Returns: 整形後テキスト（失敗時は原文）
+    func format(_ text: String, mode: FormatMode, customPrompt: String, model: String) async -> String {
+        // 空白のみの入力は API を呼ばずそのまま返す
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return text }
+
+        // 整形は Groq 固定。キー未設定なら整形せず原文を返す
+        guard let apiKey = Keychain.apiKey(for: .groq) else {
+            log.warning("整形スキップ: Groq の API キーが未設定です（原文を使用）")
+            return text
+        }
+
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body = ChatRequest(
+            model: model,
+            messages: [
+                .init(role: "system", content: mode.systemPrompt(customPrompt: customPrompt)),
+                .init(role: "user", content: text),
+            ],
+            temperature: 0.2
+        )
+        guard let encoded = try? JSONEncoder().encode(body) else {
+            log.warning("整形失敗: リクエストの JSON 生成に失敗しました（原文を使用）")
+            return text
+        }
+        request.httpBody = encoded
+
+        let start = Date()
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                log.warning("整形失敗: HTTP \(code)（原文を使用）")
+                return text
+            }
+            guard let parsed = try? JSONDecoder().decode(ChatResponse.self, from: data),
+                  let content = parsed.choices.first?.message.content else {
+                log.warning("整形失敗: 応答の解析に失敗しました（原文を使用）")
+                return text
+            }
+            let formatted = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !formatted.isEmpty else {
+                log.warning("整形失敗: 応答が空でした（原文を使用）")
+                return text
+            }
+            let elapsed = Int(Date().timeIntervalSince(start) * 1000)
+            log.info("テキスト整形完了: \(elapsed)ms, \(formatted.count) 文字")
+            return formatted
+        } catch {
+            // タイムアウトを含むあらゆる通信エラーでも原文を返す（発話を失わない）
+            log.warning("整形失敗: \(error.localizedDescription, privacy: .public)（原文を使用）")
+            return text
+        }
+    }
+}
