@@ -37,6 +37,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "vad_min_silence_duration_ms": 500,
     "audio_input_device": "default",
 
+    # LLM テキスト整形に使う Groq モデル（両ホットキー共通）
+    "format_model": "llama-3.1-8b-instant",
+
     # ホットキー1 設定
     "hotkey1": {
         "hotkey": "<f2>",
@@ -44,6 +47,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "backend": "openai",
         "api_model": "",
         "api_prompt": "",
+        "format_enabled": False,        # 貼り付け前の LLM テキスト整形
+        "format_mode": "clean",         # 整形モード（clean/bullets/polite/casual/email/custom）
+        "format_custom_prompt": "",     # custom モード時のプロンプト本文
     },
 
     # ホットキー2 設定
@@ -53,6 +59,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "backend": "groq",
         "api_model": "",
         "api_prompt": "",
+        "format_enabled": False,        # 貼り付け前の LLM テキスト整形
+        "format_mode": "clean",         # 整形モード（clean/bullets/polite/casual/email/custom）
+        "format_custom_prompt": "",     # custom モード時のプロンプト本文
     },
 
     # APIモデルデフォルト値（バックエンド別、ベンチ実測 2026-06-10 に基づく既定）

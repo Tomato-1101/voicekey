@@ -102,12 +102,18 @@ class HotkeySlotConfig:
         backend: 使用するバックエンド（groq/openai）
         api_model: APIバックエンド使用時のモデル名
         api_prompt: APIバックエンド使用時のプロンプト
+        format_enabled: 貼り付け前に LLM テキスト整形を行うか
+        format_mode: 整形モード（clean/bullets/polite/casual/email/custom）
+        format_custom_prompt: custom モード時のプロンプト本文
     """
     hotkey: str = "<f2>"
     hotkey_mode: str = HotkeyMode.TOGGLE.value
     backend: str = TranscriptionBackend.OPENAI.value
     api_model: str = ""
     api_prompt: str = ""
+    format_enabled: bool = False
+    format_mode: str = "clean"
+    format_custom_prompt: str = ""
 
 
 @dataclass

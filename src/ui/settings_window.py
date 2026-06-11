@@ -71,6 +71,16 @@ _BACKEND_MODELS = {
 # 各 backend の既定モデル（保存済みモデルが当該 backend のものでない時のフォールバック）
 _BACKEND_DEFAULT_MODEL = {b: models[0] for b, models in _BACKEND_MODELS.items()}
 
+# LLM テキスト整形モード（識別子, UI 日本語ラベル）。Mac 版と文言を完全一致させる
+_FORMAT_MODES = [
+    ("clean", "自動クリーン"),
+    ("bullets", "箇条書き"),
+    ("polite", "丁寧（敬語）"),
+    ("casual", "カジュアル"),
+    ("email", "メール調"),
+    ("custom", "カスタム"),
+]
+
 
 class ThemeToggleButton(QPushButton):
     """
@@ -506,7 +516,51 @@ class SettingsWindow(QWidget):
         setattr(self, f"_api{slot_id}_widget", api_widget)
         layout.addRow("", api_widget)
 
+        # テキスト整形（LLM）: 貼り付け前に Groq の高速 LLM で 1 回整形する
+        format_check = QCheckBox("テキスト整形（LLM）")
+        format_check.toggled.connect(
+            lambda _=False, sid=slot_id: self._update_format_controls(sid)
+        )
+        setattr(self, f"_format{slot_id}_check", format_check)
+        layout.addRow("Format:", format_check)
+
+        # 整形モード選択（userData にモード識別子を保持する）
+        format_mode_combo = QComboBox()
+        for mode, label in _FORMAT_MODES:
+            format_mode_combo.addItem(label, mode)
+        format_mode_combo.currentIndexChanged.connect(
+            lambda _=0, sid=slot_id: self._update_format_controls(sid)
+        )
+        setattr(self, f"_format{slot_id}_mode_combo", format_mode_combo)
+        layout.addRow("", format_mode_combo)
+
+        # カスタムプロンプト（モードが custom のときだけ表示）
+        format_custom_input = QLineEdit()
+        format_custom_input.setPlaceholderText("カスタムプロンプト")
+        format_custom_input.setVisible(False)
+        setattr(self, f"_format{slot_id}_custom_input", format_custom_input)
+        layout.addRow("", format_custom_input)
+
         return group
+
+    def _update_format_controls(self, slot_id: int) -> None:
+        """
+        テキスト整形コントロールの表示・有効状態を更新する。
+
+        チェックボックスの状態でモード選択を有効化し、
+        モードが custom のときだけカスタムプロンプト欄を表示する。
+
+        Args:
+            slot_id: スロットID（1または2）
+        """
+        enabled = getattr(self, f"_format{slot_id}_check").isChecked()
+        mode_combo = getattr(self, f"_format{slot_id}_mode_combo")
+        custom_input = getattr(self, f"_format{slot_id}_custom_input")
+
+        mode_combo.setEnabled(enabled)
+        is_custom = mode_combo.currentData() == "custom"
+        custom_input.setVisible(is_custom)
+        custom_input.setEnabled(enabled and is_custom)
 
     def _create_api_settings_widget(self, slot_id: int) -> QWidget:
         """
@@ -722,6 +776,11 @@ class SettingsWindow(QWidget):
         preprocess_hint.setStyleSheet("color: #888; font-size: 11px;")
         layout.addRow("", preprocess_hint)
 
+        # LLM テキスト整形に使う Groq モデル（両ホットキー共通）
+        self._format_model_input = QLineEdit()
+        self._format_model_input.setPlaceholderText("llama-3.1-8b-instant")
+        layout.addRow("Format Model:", self._format_model_input)
+
         return page
 
     def _populate_input_devices(self) -> None:
@@ -796,6 +855,23 @@ class SettingsWindow(QWidget):
         # 音声前処理（音量正規化のみ）
         preprocess_cfg = config.get("audio_preprocess", {}) or {}
         self._volume_normalize_check.setChecked(bool(preprocess_cfg.get("volume_normalize", True)))
+
+        # LLM テキスト整形モデル（両ホットキー共通）
+        self._format_model_input.setText(config.get("format_model", "llama-3.1-8b-instant"))
+
+        # テキスト整形設定（スロットごと）
+        for slot_id in [1, 2]:
+            hotkey_config = config.get(f"hotkey{slot_id}", {}) or {}
+            getattr(self, f"_format{slot_id}_check").setChecked(
+                bool(hotkey_config.get("format_enabled", False))
+            )
+            mode_combo = getattr(self, f"_format{slot_id}_mode_combo")
+            index = mode_combo.findData(hotkey_config.get("format_mode", "clean"))
+            mode_combo.setCurrentIndex(index if index >= 0 else 0)
+            getattr(self, f"_format{slot_id}_custom_input").setText(
+                hotkey_config.get("format_custom_prompt", "")
+            )
+            self._update_format_controls(slot_id)
 
         # APIモデルとバックエンド表示状態を初期化
         for slot_id in [1, 2]:
@@ -876,6 +952,9 @@ class SettingsWindow(QWidget):
                 "volume_normalize": self._volume_normalize_check.isChecked(),
             },
 
+            # LLM テキスト整形に使う Groq モデル（両ホットキー共通）
+            "format_model": self._format_model_input.text().strip() or "llama-3.1-8b-instant",
+
             # ホットキー1 設定
             "hotkey1": {
                 "hotkey": self._hotkey1_input.text(),
@@ -883,6 +962,9 @@ class SettingsWindow(QWidget):
                 "backend": self._backend1_combo.currentText(),
                 "api_model": self._api1_model_combo.currentText(),
                 "api_prompt": self._api1_prompt_input.text(),
+                "format_enabled": self._format1_check.isChecked(),
+                "format_mode": self._format1_mode_combo.currentData(),
+                "format_custom_prompt": self._format1_custom_input.text(),
             },
 
             # ホットキー2 設定
@@ -892,6 +974,9 @@ class SettingsWindow(QWidget):
                 "backend": self._backend2_combo.currentText(),
                 "api_model": self._api2_model_combo.currentText(),
                 "api_prompt": self._api2_prompt_input.text(),
+                "format_enabled": self._format2_check.isChecked(),
+                "format_mode": self._format2_mode_combo.currentData(),
+                "format_custom_prompt": self._format2_custom_input.text(),
             },
 
             # APIモデルデフォルト値（全 4 バックエンド）

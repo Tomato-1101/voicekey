@@ -50,6 +50,7 @@ from .core import (
     StreamingTranscriber,
     TranscriptionError,
 )
+from .core import text_formatter
 from .core.audio_preprocess import preprocess as preprocess_audio
 from .platform import get_platform_adapter
 from .ui import Hud, SettingsWindow, SystemTray
@@ -92,6 +93,9 @@ class HotkeySlot:
         backend: 使用するバックエンド（groq/openai）
         api_model: API モデル名
         api_prompt: API プロンプト
+        format_enabled: 貼り付け前に LLM テキスト整形を行うか
+        format_mode: 整形モード（clean/bullets/polite/casual/email/custom）
+        format_custom_prompt: custom モード時のプロンプト本文
         transcriber: このスロット用のトランスクライバ
     """
     slot_id: int
@@ -101,6 +105,9 @@ class HotkeySlot:
     backend: str
     api_model: str
     api_prompt: str
+    format_enabled: bool
+    format_mode: str
+    format_custom_prompt: str
     transcriber: ApiTranscriber
 
 
@@ -235,6 +242,9 @@ class VoicekeyApp(QObject):
                 backend=backend,
                 api_model=model,
                 api_prompt=prompt,
+                format_enabled=bool(cfg.get("format_enabled", False)),
+                format_mode=cfg.get("format_mode", "clean"),
+                format_custom_prompt=cfg.get("format_custom_prompt", ""),
                 transcriber=transcriber,
             )
             logger.info(f"ホットキー{slot_id}: {hotkey} ({mode}) -> {backend}/{model}")
@@ -501,6 +511,8 @@ class VoicekeyApp(QObject):
             if streamed:
                 total_ms = (time.perf_counter() - task.timestamp) * 1000
                 logger.info(f"ストリーミング確定: {len(streamed)} 文字 ({total_ms:.0f}ms)")
+                # 貼り付け前の LLM テキスト整形（失敗時は原文のまま）
+                streamed = self._maybe_format(streamed, task.slot_id)
                 self._insert_and_enter(streamed, task.auto_enter)
                 return
             # 確定が空（接続失敗・無音など）→ 取得済みバッファで REST にフォールバック
@@ -550,8 +562,34 @@ class VoicekeyApp(QObject):
         total_ms = (time.perf_counter() - task.timestamp) * 1000
         logger.info(f"文字起こし完了: 音声 {duration:.1f}s → {len(text)} 文字 ({total_ms:.0f}ms)")
 
+        # 貼り付け前の LLM テキスト整形（失敗時は原文のまま）
+        text = self._maybe_format(text, task.slot_id)
+
         # テキスト挿入（ワーカースレッド上で実行し UI スレッドを塞がない）
         self._insert_and_enter(text, task.auto_enter)
+
+    def _maybe_format(self, text: str, slot_id: int) -> str:
+        """
+        スロットで整形が有効なら LLM テキスト整形を適用する（ワーカースレッド上）。
+
+        format_text は失敗時に必ず原文を返すため、ここでは例外処理は不要。
+
+        Args:
+            text: 文字起こし確定テキスト
+            slot_id: 使用したホットキースロット ID
+
+        Returns:
+            整形後テキスト。整形が無効・失敗時は原文そのまま
+        """
+        slot = self._slots.get(slot_id)
+        if slot is None or not slot.format_enabled:
+            return text
+        return text_formatter.format_text(
+            text,
+            slot.format_mode,
+            slot.format_custom_prompt,
+            self._config.get("format_model", "llama-3.1-8b-instant"),
+        )
 
     def _insert_and_enter(self, text: str, auto_enter: bool) -> None:
         """テキストを貼り付け、ダブルタップ時は遅延後に Enter を送る（ワーカースレッド上）。"""
