@@ -8,10 +8,12 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var config: ConfigStore
+    @ObservedObject var history: HistoryStore
     @State private var selectedTab: Int
 
-    init(config: ConfigStore, initialTab: Int = 0) {
+    init(config: ConfigStore, history: HistoryStore, initialTab: Int = 0) {
         self.config = config
+        self.history = history
         _selectedTab = State(initialValue: initialTab)
     }
 
@@ -26,9 +28,12 @@ struct SettingsView: View {
             SlotSettingsTab(title: "ホットキー 2", slot: $config.slot2)
                 .tabItem { Label("ホットキー 2", systemImage: "2.circle") }
                 .tag(2)
+            HistoryTab(history: history)
+                .tabItem { Label("履歴", systemImage: "clock.arrow.circlepath") }
+                .tag(3)
             ApiKeysTab()
                 .tabItem { Label("API キー", systemImage: "key") }
-                .tag(3)
+                .tag(4)
         }
         // fixedSize() だと NSHostingController 上で高さが潰れて
         // 入力欄が描画されないことがあるため、明示サイズを与える
@@ -219,6 +224,85 @@ private struct SlotSettingsTab: View {
         }
         .formStyle(.grouped)
         .padding(.vertical, 8)
+    }
+}
+
+// MARK: - 履歴
+
+/// 音声入力履歴タブ。
+/// 直近 10 件をクリックでクリップボードにコピーできる（誤貼り付け・貼り付け失敗時の救出用）。
+private struct HistoryTab: View {
+    @ObservedObject var history: HistoryStore
+    /// 直近にコピーしたエントリ（行に「コピーしました」を一時表示する）
+    @State private var copiedId: UUID?
+
+    var body: some View {
+        Form {
+            if history.items.isEmpty {
+                Text("まだ履歴がありません。音声入力すると、ここに直近 \(HistoryStore.maxItems) 件が残ります。")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(history.items) { entry in
+                    HistoryRow(entry: entry, copied: copiedId == entry.id) {
+                        copyToClipboard(entry)
+                    }
+                }
+                Button("履歴を消去", role: .destructive) {
+                    history.clear()
+                }
+            }
+            Text("行をクリックするとクリップボードにコピーします。履歴はこの Mac の中だけに保存されます。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .formStyle(.grouped)
+        .padding(.vertical, 8)
+    }
+
+    private func copyToClipboard(_ entry: HistoryEntry) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(entry.text, forType: .string)
+        copiedId = entry.id
+        // 1.5 秒後にフィードバック表示を消す（その間に別の行が押されたら上書きされる）
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            if copiedId == entry.id { copiedId = nil }
+        }
+    }
+}
+
+private struct HistoryRow: View {
+    let entry: HistoryEntry
+    let copied: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(entry.text)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                HStack {
+                    Text(entry.date.formatted(date: .abbreviated, time: .shortened))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if copied {
+                        Label("コピーしました", systemImage: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    } else {
+                        Image(systemName: "doc.on.doc")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            // 行全体をクリック領域にする（テキスト部分だけだと押しにくい）
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 

@@ -219,6 +219,13 @@ voicekeyの変更履歴を記録するファイルです。
   - 両 OS: 録音開始時（整形が有効なスロットのみ）に整形 API への接続も温める（文字起こし API の prewarm と同パターン）。停止後の整形リクエストはハンドシェイク済みの接続で即送信される
 - **Technical Details**: `VoiceActivity.condense()`（speechBounds を置換・吸収）/ `FlacEncoder.swift`（新規、AVAudioFile + CoreAudio 内蔵エンコーダ）/ `Transcriber.EncodedAudio`（FLAC/WAV の filename・contentType を保持）/ `TextFormatter.prewarm()`。Windows は `SileroVad.analyze()`（has_speech / speech_bounds を置換）/ `text_formatter._get_client()` + `prewarm()`。検証: ユニットテスト 68 件全パス（VAD は実 Silero ONNX で新規 7 件）、Swift 実装は実コードをリンクした検証ハーネスで 11 項目全パス、実 API 4 社で CER 劣化なしを確認、Mac ビルド成功・新ビルド起動確認済み
 
+### Added (2026-06-12 追記 18) — 音声入力履歴（直近 10 件をクリップボードへ再コピー）
+- **Mac 版: 音声入力の履歴を最大 10 件保存し、設定画面から再コピーできる「履歴」タブを追加**
+  - 文字起こし（整形後）のテキストを貼り付けのたびに自動で履歴へ記録（貼り付け失敗時の救出にもなるよう貼り付け前に記録）。ストリーミング・REST 両経路に対応
+  - 設定ウィンドウに「履歴」タブを新設（一般 / ホットキー 1・2 / 履歴 / API キー の 5 タブ構成）。行をクリックでクリップボードにコピーし「コピーしました」を 1.5 秒表示。各行に日時、下部に「履歴を消去」ボタン
+  - 履歴は `~/Library/Application Support/voicekey/history.json` に保存（アプリ再起動後も残る・この Mac の外には出ない）。11 件目以降は古いものから自動削除
+- **Technical Details (Mac)**: `Core/HistoryStore.swift`（新規、`@MainActor ObservableObject`・iso8601 JSON 永続化・atomic write）、`AppController.history` + 両貼り付け経路で `history.add(output)`、`SettingsView` に `HistoryTab`/`HistoryRow`（行全体クリック領域・lineLimit 2）。検証: swift build / build_app.sh 成功、新ビルド起動、空状態と 3 件表示をスクリーンショットで確認
+
 ### Fixed (2026-06-11 追記 7)
 - **API キー使用のたびに Keychain の承認ダイアログが出る問題（Mac 版）**
   - 原因: Python 版 keyring や旧 ad-hoc 署名ビルドが作成した Keychain 項目は ACL 上の所有者が「別アプリ」のため、現在の署名アプリの読み取りで毎回承認を求められていた

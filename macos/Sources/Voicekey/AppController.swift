@@ -29,6 +29,8 @@ final class AppController: ObservableObject {
 
     let config = ConfigStore()
     let hud = HudController()
+    /// 音声入力履歴（貼り付けたテキストを最大 10 件保持。設定の「履歴」タブで再コピー可）
+    let history = HistoryStore()
 
     private let recorder = AudioRecorder()
     private let hotkeys = HotkeyMonitor()
@@ -311,6 +313,8 @@ final class AppController: ObservableObject {
                     let output = formatEnabled
                         ? await formatter.format(streamed, prompt: formatPrompt, model: formatModel)
                         : streamed
+                    // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する
+                    history.add(output)
                     await Paster.paste(output)
                     if autoEnter {
                         try? await Task.sleep(for: .milliseconds(max(0, delayMs)))
@@ -362,6 +366,8 @@ final class AppController: ObservableObject {
             let output = formatEnabled
                 ? await formatter.format(text, prompt: formatPrompt, model: formatModel)
                 : text
+            // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する
+            history.add(output)
             await Paster.paste(output)
             if autoEnter {
                 try? await Task.sleep(for: .milliseconds(max(0, delayMs)))

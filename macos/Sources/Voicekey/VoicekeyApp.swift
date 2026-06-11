@@ -148,9 +148,13 @@ final class StatusItemController: NSObject {
     /// 設定ウィンドウを表示する
     func showSettings(initialTab: Int) {
         log.info("設定ウィンドウを表示します (tab=\(initialTab), 既存=\(self.settingsWindow != nil))")
-        if settingsWindow == nil, let config = controller?.config {
+        if settingsWindow == nil, let controller {
             let hosting = NSHostingController(
-                rootView: SettingsView(config: config, initialTab: initialTab)
+                rootView: SettingsView(
+                    config: controller.config,
+                    history: controller.history,
+                    initialTab: initialTab
+                )
             )
             let window = NSWindow(contentViewController: hosting)
             window.title = "voicekey 設定"
