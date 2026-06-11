@@ -18,7 +18,16 @@ from collections import deque
 from typing import Deque
 
 from PySide6.QtCore import Qt, QTimer, QRectF
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QGuiApplication
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetrics,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QGuiApplication,
+)
 from PySide6.QtWidgets import QWidget
 
 
@@ -233,7 +242,7 @@ class Hud(QWidget):
         painter.setFont(self._hud_font())
         metrics = painter.fontMetrics()
 
-        # ピル背景（半透明のダーク）。Mac 版カプセルと同様に内容の幅へ縮める
+        # ピル背景。Mac 版カプセルと同様に内容の幅へ縮める
         pill_w = min(self.width() - 2.0, self._content_width(metrics) + 2 * self.PADDING_X)
         pill_rect = QRectF(
             (self.width() - pill_w) / 2,
@@ -241,11 +250,27 @@ class Hud(QWidget):
             pill_w,
             self.PILL_HEIGHT,
         )
-        path = QPainterPath()
         radius = pill_rect.height() / 2
+
+        # 影（QGraphicsDropShadowEffect は透過ウィンドウで効かないため自前で描く。
+        # 数枚の半透明レイヤーを下方向にずらして柔らかい落ち影にする）
+        for i in range(1, 4):
+            shadow_rect = pill_rect.adjusted(-i, -i + 2, i, i + 2)
+            shadow_path = QPainterPath()
+            shadow_path.addRoundedRect(
+                shadow_rect, radius + i, radius + i
+            )
+            painter.fillPath(shadow_path, QColor(0, 0, 0, 26 - i * 7))
+
+        # ピル本体: 縦グラデーションの半透明ダーク（Mac 版 .ultraThinMaterial 風）
+        path = QPainterPath()
         path.addRoundedRect(pill_rect, radius, radius)
-        painter.fillPath(path, QColor(28, 28, 30, 235))
-        painter.setPen(QColor(255, 255, 255, 26))
+        gradient = QLinearGradient(pill_rect.topLeft(), pill_rect.bottomLeft())
+        gradient.setColorAt(0.0, QColor(58, 58, 60, 228))
+        gradient.setColorAt(1.0, QColor(24, 24, 26, 240))
+        painter.fillPath(path, gradient)
+        # 白 10% のボーダー（暗い背景上でも輪郭が出る、Mac 版と同じ値）
+        painter.setPen(QPen(QColor(255, 255, 255, 26), 1))
         painter.drawPath(path)
 
         content_left = pill_rect.left() + self.PADDING_X
@@ -261,7 +286,8 @@ class Hud(QWidget):
     def _paint_recording(self, painter: QPainter, metrics: QFontMetrics, x: float) -> None:
         """録音中: 状態ドット + （字幕 or 波形バー） + 自動 Enter 時は ⏎ バッジ。"""
         auto_enter = self._mode == "recording_auto_enter"
-        dot_color = QColor("#BF40BF") if auto_enter else QColor("#FF3B30")
+        # トレイアイコンと同じ macOS システムカラー（systemPurple / systemRed）
+        dot_color = QColor("#BF5AF2") if auto_enter else QColor("#FF453A")
 
         # 左の状態ドット
         cy = self.height() / 2
@@ -290,7 +316,7 @@ class Hud(QWidget):
         # 自動 Enter のバッジ（Mac 版の return アイコン相当）
         if auto_enter:
             x += self.CONTENT_GAP
-            painter.setPen(QColor("#BF40BF"))
+            painter.setPen(QColor("#BF5AF2"))
             painter.drawText(
                 QRectF(x, 0, metrics.horizontalAdvance("⏎") + 2, self.height()),
                 int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),

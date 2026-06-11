@@ -45,7 +45,9 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
       「自動検出」→ 一言喋る。スコアは `log show --predicate 'subsystem == "com.voicekey.app"'
       --last 5m | grep 自動検出` で確認できる。CLI からの実マイクテストは Terminal への
       TCC マイク許可ダイアログを誘発するため実施しない）
-- [ ] Phase 6: Windows UI 再デザイン（検証: preview_ui.py のスクショをユーザーに提示）
+- [x] Phase 6: Windows UI 再デザイン（検証済み: preview_ui.py で全タブ × ダーク/ライト + HUD 4 状態 +
+      トレイ 4 状態のスクショを生成・目視 / py_compile / unittest 111 件全通過。
+      スクショで一般タブの横スクロールバー常駐バグを発見し修正。スクショはユーザーに送付済み）
 - [ ] Phase 7（後日）: Developer ID + 公証切替（加入完了待ち）
 
 ## ユーザー待ちの項目（Phase 3 の完了に必要）
@@ -61,8 +63,9 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 
 ## 現在地 / 次の一手
 
-- 現在地: Phase 0〜2・4・5 完了。Phase 3 はユーザー待ち項目のみ残し準備完了。
-- 次の一手: Phase 6（Windows UI 再デザイン）。
+- 現在地: Phase 0〜2・4〜6 完了。自動実行できる作業はすべて完了。
+- 次の一手: Phase 3 のユーザー待ち 4 項目（上記）→ 完了後に初回 Mac リリース実行。
+  Phase 7 は Apple Developer Program 加入後。
 - Windows 版リリース手順: Mac で `--export-env` → `.env.dist` を Windows ビルド機へ →
   `build_windows_dist.ps1 -Version X.Y.Z` → Releases 添付 → version.json コミット
   （詳細と順序の注意は docs/BUILD_WINDOWS.md）。

@@ -8,7 +8,16 @@
 from typing import Optional, Union
 
 from PySide6.QtCore import Signal, Qt, QUrl
-from PySide6.QtGui import QColor, QDesktopServices, QIcon, QPainter, QPixmap
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QDesktopServices,
+    QIcon,
+    QPainter,
+    QPen,
+    QPixmap,
+    QRadialGradient,
+)
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from ..config.constants import APP_VERSION
@@ -36,12 +45,12 @@ class SystemTray(QSystemTrayIcon):
     quit_app = Signal()
     install_update = Signal()
     
-    # 状態別アイコンカラー
+    # 状態別アイコンカラー（macOS システムカラー。原色は安っぽいため使わない）
     ICON_COLORS = {
-        AppState.IDLE: QColor("dodgerblue"),              # 待機中：青
-        AppState.RECORDING: QColor("red"),                 # 録音中：赤
-        AppState.RECORDING_AUTO_ENTER: QColor("#BF40BF"),  # 録音中（auto_enter）：紫
-        AppState.TRANSCRIBING: QColor("orange"),           # 文字起こし中：オレンジ
+        AppState.IDLE: QColor("#8E8E93"),                  # 待機中：グレー（Mac 版テンプレート相当）
+        AppState.RECORDING: QColor("#FF453A"),             # 録音中：systemRed
+        AppState.RECORDING_AUTO_ENTER: QColor("#BF5AF2"),  # 録音中（auto_enter）：systemPurple
+        AppState.TRANSCRIBING: QColor("#FF9F0A"),          # 文字起こし中：systemOrange
     }
     
     # アイコンサイズ（ピクセル）
@@ -168,21 +177,31 @@ class SystemTray(QSystemTrayIcon):
     def _set_icon_color(self, color: QColor) -> None:
         """
         指定色の円形アイコンを生成・設定する。
-        
+
+        左上ハイライトの放射グラデーション + 細い縁取りで、
+        ベタ塗りの安っぽさを解消する（Mac 版アイコンの質感に寄せる）。
+
         Args:
-            color: アイコンの色
+            color: アイコンのベース色
         """
         size = self.ICON_SIZE
         pixmap = QPixmap(size, size)
         pixmap.fill(QColor(0, 0, 0, 0))  # 透明背景
-        
+
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        painter.setBrush(color)
-        painter.setPen(Qt.PenStyle.NoPen)
+
+        # 左上に光源があるような立体感を放射グラデーションで付ける
+        gradient = QRadialGradient(size * 0.38, size * 0.32, size * 0.72)
+        gradient.setColorAt(0.0, color.lighter(140))
+        gradient.setColorAt(0.55, color)
+        gradient.setColorAt(1.0, color.darker(118))
+        painter.setBrush(QBrush(gradient))
+
+        # 細い縁取り（明るいメニューバー上でも輪郭が溶けないように）
+        painter.setPen(QPen(QColor(0, 0, 0, 70), 2))
         painter.drawEllipse(4, 4, size - 8, size - 8)
-        
+
         painter.end()
-        
+
         self.setIcon(QIcon(pixmap))

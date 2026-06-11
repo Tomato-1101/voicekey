@@ -76,6 +76,24 @@ voicekeyの変更履歴を記録するファイルです。
     同時監視統合テスト含む）、オフスクリーン UI スモーク、Mac ビルド+再起動。
     実マイクでの最終確認は要ユーザー操作（設定 → 自動検出 → 一言喋る）
 
+- **Windows 版 UI 再デザイン（Mac 版の質感へ統一、ベータ配布 Phase 6）**
+  - `src/ui/styles.py` をデザインシステム化: フォント定数（タイトル 18 / 本文 14 / キャプション 12px）、
+    角丸定数（コントロール 8px / パネル 12px）、ボタン・選択タブの qlineargradient、
+    macOS システムカラー追加（SUCCESS / WARNING / アクセントグラデ）、入力欄 hover、
+    QSlider スタイル新規（4px groove + 18px 白グラデハンドル）、QCheckBox hover、
+    ラベル用ヘルパー 5 種（title/caption/status_ok/status_warn/status_muted）
+  - `src/ui/settings_window.py`: インラインスタイル 7 箇所を styles.py ヘルパーへ集約
+  - `src/ui/system_tray.py`: トレイアイコンを原色ベタ塗り → macOS システムカラー
+    （待機 #8E8E93 / 録音 #FF453A / 変換中 #FF9F0A / 自動 Enter #BF5AF2）+
+    放射グラデーションのハイライト + 細い縁取りで立体感を付与
+  - `src/ui/hud.py`: ピル背景を縦グラデーション化（.ultraThinMaterial 風）+ 白 10% ボーダー +
+    paintEvent 内 3 層自前影（QGraphicsDropShadowEffect は透過窓で効かないため）。
+    ドット色を Mac 版と統一（録音 #FF453A / 自動 Enter #BF5AF2）。表示タイミングは不変更（速度最優先）
+  - `scripts/dev/preview_ui.py` 新規: オフスクリーンで設定全タブ（ダーク/ライト）・HUD 4 状態・
+    トレイ 4 状態を PNG 出力する目視確認ツール（secrets/keyring はモック）
+  - 検証: preview_ui.py のスクショ目視（全タブ × 2 テーマ + HUD + トレイ）、py_compile、
+    unittest 111 件全通過
+
 ### Changed
 - `voicekey.spec`: **`datas=[('src','src')]` を削除し `noarchive=False` 化**
   （配布物に Python ソース平文が同梱されていた問題の根治）。代わりに
@@ -85,6 +103,8 @@ voicekeyの変更履歴を記録するファイルです。
 - 設定画面が DIST ビルドで起動時クラッシュするバグ（API キータブを作らないのに
   `_load_current_settings` が `_api_key_status` を参照していた。オフスクリーンスモークで発見し、
   タブ生成前の空辞書初期化で修正）
+- 設定画面の一般タブに横スクロールバーが常駐するバグ（自動検出ボタン追加でデバイス行が
+  窓幅 560px を超過。コンボを最小 200px + 伸縮に変更し、タブのスクロールを縦専用化）
 
 ## [Unreleased] - 2026-06-10 (voicekey for Mac)
 

@@ -109,7 +109,7 @@ def _make_caption(text: str) -> QLabel:
     """設定項目の補足説明ラベルを作る（Mac 版の .caption 相当）。"""
     label = QLabel(text)
     label.setWordWrap(True)
-    label.setStyleSheet("color: #888; font-size: 11px;")
+    label.setStyleSheet(MacTheme.caption_style())
     return label
 
 
@@ -408,7 +408,7 @@ class SettingsWindow(QWidget):
         header_layout.setSpacing(10)
 
         title = QLabel("voicekey 設定")
-        title.setStyleSheet("font-size: 20px; font-weight: bold;")
+        title.setStyleSheet(MacTheme.title_style())
 
         # テーマ切替ボタン（Qt は OS テーマに追従しないため Windows 版独自）
         self._theme_toggle = ThemeToggleButton(is_dark=self._is_dark_mode)
@@ -457,6 +457,8 @@ class SettingsWindow(QWidget):
         scroll.setWidget(page)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        # 数 px の溢れで横スクロールバーが常駐するのを防ぐ（スクロールは縦のみ）
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         return scroll
 
     # ------------------------------------------------------------------
@@ -478,7 +480,9 @@ class SettingsWindow(QWidget):
 
         # 入力デバイス
         self._input_device_combo = QComboBox()
-        self._input_device_combo.setMinimumWidth(280)
+        # 280px 固定だと「更新」「自動検出」ボタンと合わせて窓幅 560px を超え
+        # 横スクロールバーが出るため、最小 200px + 伸縮（余白があれば広がる）にする
+        self._input_device_combo.setMinimumWidth(200)
 
         refresh_button = QPushButton("更新")
         refresh_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -495,7 +499,7 @@ class SettingsWindow(QWidget):
         device_row_layout = QHBoxLayout(device_row)
         device_row_layout.setContentsMargins(0, 0, 0, 0)
         device_row_layout.setSpacing(8)
-        device_row_layout.addWidget(self._input_device_combo)
+        device_row_layout.addWidget(self._input_device_combo, 1)
         device_row_layout.addWidget(refresh_button)
         device_row_layout.addWidget(self._mic_detect_button)
         layout.addRow("入力デバイス:", device_row)
@@ -701,7 +705,7 @@ class SettingsWindow(QWidget):
         footer.setSpacing(8)
         # コピー成功の一時フィードバック（Mac 版の「コピーしました」と同等）
         self._history_feedback = QLabel("")
-        self._history_feedback.setStyleSheet("color: #34C759; font-size: 11px;")
+        self._history_feedback.setStyleSheet(MacTheme.status_ok_style(self._is_dark_mode))
         clear_btn = QPushButton("履歴を消去")
         clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         clear_btn.clicked.connect(self._clear_history)
@@ -786,7 +790,7 @@ class SettingsWindow(QWidget):
             name_label = QLabel(label)
             name_label.setStyleSheet("font-weight: 600;")
             status_label = QLabel("未設定")
-            status_label.setStyleSheet("color: #888; font-size: 11px;")
+            status_label.setStyleSheet(MacTheme.status_muted_style())
             head.addWidget(name_label)
             head.addWidget(status_label)
             head.addStretch()
@@ -842,14 +846,14 @@ class SettingsWindow(QWidget):
             return
         if not secrets.is_keyring_available():
             status_label.setText("資格情報ストア利用不可（環境変数で設定してください）")
-            status_label.setStyleSheet("color: #FF9F0A; font-size: 11px;")
+            status_label.setStyleSheet(MacTheme.status_warn_style(self._is_dark_mode))
             return
         if secrets.get_api_key(service):
             status_label.setText("設定済み")
-            status_label.setStyleSheet("color: #34C759; font-size: 11px; font-weight: 600;")
+            status_label.setStyleSheet(MacTheme.status_ok_style(self._is_dark_mode))
         else:
             status_label.setText("未設定")
-            status_label.setStyleSheet("color: #888; font-size: 11px;")
+            status_label.setStyleSheet(MacTheme.status_muted_style())
 
     def _save_api_key(self, service: str) -> None:
         """
