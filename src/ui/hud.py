@@ -2,9 +2,11 @@
 録音中 HUD モジュール（画面下部中央の小型ピル）
 
 方針は Mac 版 Hud.swift と同じく「録音中のみ・小型・情報最小限」:
-- 録音中: 音声レベル連動の波形バー（ストリーミング字幕があればそれを優先表示）
-- 変換中: 「変換中…」テキスト
+- 録音中: 音声レベル連動の波形バー（ストリーミング字幕があればそれを優先表示、
+  自動 Enter 時は ⏎ バッジ）
+- 変換中: 回転スピナー + 「変換中…」
 - 通知: エラー・無音検出などを 2 秒だけ表示
+ピルは Mac 版カプセルと同様に内容の幅に合わせて縮む。
 
 最重要の制約: HUD は**絶対にキーフォーカスを奪ってはならない**。
 フォーカスを奪うと貼り付け先ウィンドウが変わり、文字起こし結果が別の場所に
@@ -16,7 +18,7 @@ from collections import deque
 from typing import Deque
 
 from PySide6.QtCore import Qt, QTimer, QRectF
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QGuiApplication
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QGuiApplication
 from PySide6.QtWidgets import QWidget
 
 
@@ -31,10 +33,18 @@ class Hud(QWidget):
         enabled: HUD を表示するか（設定で無効化可能。False なら常に非表示）
     """
 
-    WIDTH = 360
-    HEIGHT = 48
-    BAR_COUNT = 20
-    NOTICE_MSEC = 2000  # 通知の表示時間（ミリ秒）
+    # ウィンドウ寸法・バー本数は Mac 版 HudView と一致させる
+    WIDTH = 460
+    HEIGHT = 56
+    PILL_HEIGHT = 40          # ピル本体の高さ（Mac 版カプセル相当。残りは余白）
+    PADDING_X = 16            # ピル内の左右パディング
+    CONTENT_GAP = 10          # ドット・バー・バッジ間の間隔
+    BAR_COUNT = 24
+    BAR_WIDTH = 3
+    BAR_GAP = 2.5
+    SPINNER_RADIUS = 7        # 変換中スピナーの半径
+    CAPTION_MAX_WIDTH = 360   # ライブ字幕の最大幅（超えたら頭を省略）
+    NOTICE_MSEC = 2000        # 通知の表示時間（ミリ秒）
 
     def __init__(self, enabled: bool = True) -> None:
         """HUD を初期化する（生成時は非表示）。"""
@@ -52,6 +62,12 @@ class Hud(QWidget):
         self._notice_timer = QTimer(self)
         self._notice_timer.setSingleShot(True)
         self._notice_timer.timeout.connect(self._on_notice_timeout)
+
+        # 変換中スピナーの回転タイマー（transcribing 表示中のみ動かす）
+        self._spin_angle = 0
+        self._spin_timer = QTimer(self)
+        self._spin_timer.setInterval(33)  # 約 30fps
+        self._spin_timer.timeout.connect(self._on_spin_tick)
 
     def _setup_window(self) -> None:
         """フォーカスを奪わない・入力を透過するフレームレスウィンドウを構成する。"""
@@ -89,6 +105,7 @@ class Hud(QWidget):
 
         if state in ("recording", "recording_auto_enter"):
             self._notice_timer.stop()
+            self._spin_timer.stop()
             self._caption = ""  # 新しい録音のたびに字幕をリセット
             self._levels = deque([0.0] * self.BAR_COUNT, maxlen=self.BAR_COUNT)
             self._mode = state
@@ -96,6 +113,8 @@ class Hud(QWidget):
         elif state == "transcribing":
             self._notice_timer.stop()
             self._mode = "transcribing"
+            self._spin_angle = 0
+            self._spin_timer.start()
             self._show()
 
     def push_level(self, level: float) -> None:
@@ -116,6 +135,7 @@ class Hud(QWidget):
         """一時通知を NOTICE_MSEC だけ表示する。"""
         if not self.enabled:
             return
+        self._spin_timer.stop()
         self._notice_text = text or ""
         self._mode = "notice"
         self._show()
@@ -130,6 +150,11 @@ class Hud(QWidget):
         if self._mode == "notice":
             self._hide()
 
+    def _on_spin_tick(self) -> None:
+        """変換中スピナーを回転させる。"""
+        self._spin_angle = (self._spin_angle + 12) % 360
+        self.update()
+
     def _show(self) -> None:
         """HUD を画面下部中央へ配置して表示する（アクティブ化しない）。"""
         if not self.enabled:
@@ -143,6 +168,7 @@ class Hud(QWidget):
     def _hide(self) -> None:
         """HUD を隠す。"""
         self._mode = "hidden"
+        self._spin_timer.stop()
         self.hide()
 
     def _reposition(self) -> None:
@@ -152,12 +178,50 @@ class Hud(QWidget):
             return
         geo = screen.availableGeometry()
         x = geo.center().x() - self.WIDTH // 2
-        y = geo.bottom() - self.HEIGHT - 40  # 画面下から少し浮かせる
+        y = geo.bottom() - self.HEIGHT - 24  # 画面下から少し浮かせる（Mac 版と同じ）
         self.move(x, y)
 
     # ------------------------------------------------------------------
     # 描画
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _hud_font() -> QFont:
+        """HUD のテキスト描画に使う共通フォントを返す。"""
+        font = QFont()
+        font.setPointSize(12)
+        font.setWeight(QFont.Weight.Medium)
+        return font
+
+    def _bars_width(self) -> float:
+        """波形バー群の合計幅を返す。"""
+        return self.BAR_COUNT * self.BAR_WIDTH + (self.BAR_COUNT - 1) * self.BAR_GAP
+
+    def _content_width(self, metrics: QFontMetrics) -> float:
+        """現在のモードで描く内容の幅を計算する（ピルを内容に合わせて縮めるため）。"""
+        if self._mode in ("recording", "recording_auto_enter"):
+            if self._caption:
+                middle = min(
+                    float(metrics.horizontalAdvance(self._caption)),
+                    float(self.CAPTION_MAX_WIDTH),
+                )
+            else:
+                middle = self._bars_width()
+            width = 8 + self.CONTENT_GAP + middle  # 状態ドット + 間隔 + 中身
+            if self._mode == "recording_auto_enter":
+                width += self.CONTENT_GAP + metrics.horizontalAdvance("⏎")
+            return width
+        if self._mode == "transcribing":
+            return (
+                self.SPINNER_RADIUS * 2 + self.CONTENT_GAP
+                + metrics.horizontalAdvance("変換中…")
+            )
+        if self._mode == "notice":
+            return min(
+                float(metrics.horizontalAdvance(self._notice_text)),
+                float(self.WIDTH - 2 * self.PADDING_X - 2),
+            )
+        return 0.0
 
     def paintEvent(self, event) -> None:
         """ピル背景と状態別コンテンツを描画する。"""
@@ -166,27 +230,36 @@ class Hud(QWidget):
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setFont(self._hud_font())
+        metrics = painter.fontMetrics()
 
-        # ピル背景（半透明のダーク。クリック透過なので見た目だけ）
-        rect = QRectF(1, 1, self.width() - 2, self.height() - 2)
+        # ピル背景（半透明のダーク）。Mac 版カプセルと同様に内容の幅へ縮める
+        pill_w = min(self.width() - 2.0, self._content_width(metrics) + 2 * self.PADDING_X)
+        pill_rect = QRectF(
+            (self.width() - pill_w) / 2,
+            (self.height() - self.PILL_HEIGHT) / 2,
+            pill_w,
+            self.PILL_HEIGHT,
+        )
         path = QPainterPath()
-        radius = rect.height() / 2
-        path.addRoundedRect(rect, radius, radius)
+        radius = pill_rect.height() / 2
+        path.addRoundedRect(pill_rect, radius, radius)
         painter.fillPath(path, QColor(28, 28, 30, 235))
         painter.setPen(QColor(255, 255, 255, 26))
         painter.drawPath(path)
 
+        content_left = pill_rect.left() + self.PADDING_X
         if self._mode in ("recording", "recording_auto_enter"):
-            self._paint_recording(painter)
+            self._paint_recording(painter, metrics, content_left)
         elif self._mode == "transcribing":
-            self._paint_text(painter, "変換中…", QColor(200, 200, 205))
+            self._paint_transcribing(painter, content_left)
         elif self._mode == "notice":
-            self._paint_text(painter, self._notice_text, QColor(220, 220, 225))
+            self._paint_notice(painter, metrics, pill_rect)
 
         painter.end()
 
-    def _paint_recording(self, painter: QPainter) -> None:
-        """録音中: 状態ドット + （字幕があれば字幕、なければ波形バー）。"""
+    def _paint_recording(self, painter: QPainter, metrics: QFontMetrics, x: float) -> None:
+        """録音中: 状態ドット + （字幕 or 波形バー） + 自動 Enter 時は ⏎ バッジ。"""
         auto_enter = self._mode == "recording_auto_enter"
         dot_color = QColor("#BF40BF") if auto_enter else QColor("#FF3B30")
 
@@ -194,63 +267,69 @@ class Hud(QWidget):
         cy = self.height() / 2
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(dot_color)
-        painter.drawEllipse(int(20), int(cy - 4), 8, 8)
-
-        content_left = 40
-        content_right = self.width() - 20
+        painter.drawEllipse(QRectF(x, cy - 4, 8, 8))
+        x += 8 + self.CONTENT_GAP
 
         if self._caption:
             # ライブ字幕（末尾を残して頭を省略 = 常に最新の語尾が見える）
-            self._paint_caption(painter, content_left, content_right)
+            avail = min(
+                metrics.horizontalAdvance(self._caption), self.CAPTION_MAX_WIDTH
+            )
+            elided = metrics.elidedText(self._caption, Qt.TextElideMode.ElideLeft, avail)
+            painter.setPen(QColor(245, 245, 247))
+            painter.drawText(
+                QRectF(x, 0, avail, self.height()),
+                int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
+                elided,
+            )
+            x += avail
         else:
-            self._paint_bars(painter, content_left, content_right)
+            self._paint_bars(painter, x)
+            x += self._bars_width()
 
-    def _paint_caption(self, painter: QPainter, left: int, right: int) -> None:
-        """ライブ字幕を右寄せ・頭省略で描画する。"""
-        painter.setPen(QColor(245, 245, 247))
-        font = QFont()
-        font.setPointSize(12)
-        font.setWeight(QFont.Weight.Medium)
-        painter.setFont(font)
-        metrics = painter.fontMetrics()
-        avail = right - left
-        # 末尾優先で表示（先頭を … で省略）
-        elided = metrics.elidedText(self._caption, Qt.TextElideMode.ElideLeft, avail)
-        painter.drawText(
-            left, 0, avail, self.height(),
-            int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
-            elided,
-        )
+        # 自動 Enter のバッジ（Mac 版の return アイコン相当）
+        if auto_enter:
+            x += self.CONTENT_GAP
+            painter.setPen(QColor("#BF40BF"))
+            painter.drawText(
+                QRectF(x, 0, metrics.horizontalAdvance("⏎") + 2, self.height()),
+                int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                "⏎",
+            )
 
-    def _paint_bars(self, painter: QPainter, left: int, right: int) -> None:
+    def _paint_bars(self, painter: QPainter, start_x: float) -> None:
         """音声レベル連動の波形バーを描画する。"""
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(200, 200, 205, 200))
-        avail = right - left
-        gap = 3
-        bar_w = 3
-        total = self.BAR_COUNT * bar_w + (self.BAR_COUNT - 1) * gap
-        # バー群を表示領域の中央に寄せる
-        start_x = left + max(0, (avail - total) // 2)
         cy = self.height() / 2
         min_h, max_h = 3.0, 22.0
         for i, level in enumerate(self._levels):
             h = min_h + (max_h - min_h) * level
-            x = start_x + i * (bar_w + gap)
-            painter.drawRoundedRect(QRectF(x, cy - h / 2, bar_w, h), 1.5, 1.5)
+            bx = start_x + i * (self.BAR_WIDTH + self.BAR_GAP)
+            painter.drawRoundedRect(QRectF(bx, cy - h / 2, self.BAR_WIDTH, h), 1.5, 1.5)
 
-    def _paint_text(self, painter: QPainter, text: str, color: QColor) -> None:
-        """中央寄せの 1 行テキスト（変換中・通知）を描画する。"""
-        painter.setPen(color)
-        font = QFont()
-        font.setPointSize(12)
-        font.setWeight(QFont.Weight.Medium)
-        painter.setFont(font)
-        metrics = painter.fontMetrics()
-        avail = self.width() - 40
-        elided = metrics.elidedText(text, Qt.TextElideMode.ElideRight, avail)
+    def _paint_transcribing(self, painter: QPainter, x: float) -> None:
+        """変換中: 回転スピナー + 「変換中…」（Mac 版の ProgressView 相当）。"""
+        cy = self.height() / 2
+        r = self.SPINNER_RADIUS
+
+        # 270 度の弧を回転させてスピナーを表現する（Qt の角度は 1/16 度単位）
+        pen = QPen(QColor(200, 200, 205), 2.2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawArc(QRectF(x, cy - r, r * 2, r * 2), -self._spin_angle * 16, 270 * 16)
+
+        painter.setPen(QColor(200, 200, 205))
         painter.drawText(
-            20, 0, avail, self.height(),
-            int(Qt.AlignmentFlag.AlignCenter),
-            elided,
+            QRectF(x + r * 2 + self.CONTENT_GAP, 0, self.width(), self.height()),
+            int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+            "変換中…",
         )
+
+    def _paint_notice(self, painter: QPainter, metrics: QFontMetrics, pill_rect: QRectF) -> None:
+        """一時通知をピル中央に描画する。"""
+        avail = int(pill_rect.width() - 2 * self.PADDING_X)
+        elided = metrics.elidedText(self._notice_text, Qt.TextElideMode.ElideRight, avail)
+        painter.setPen(QColor(220, 220, 225))
+        painter.drawText(pill_rect, int(Qt.AlignmentFlag.AlignCenter), elided)

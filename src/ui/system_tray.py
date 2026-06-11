@@ -69,20 +69,20 @@ class SystemTray(QSystemTrayIcon):
         """コンテキストメニューを設定する。"""
         self._menu = QMenu()
 
-        # 設定メニュー項目
-        settings_action = self._menu.addAction("Settings")
+        # 設定メニュー項目（Mac 版メニューバーと同じ文言）
+        settings_action = self._menu.addAction("設定…")
         settings_action.triggered.connect(self.open_settings.emit)
 
         self._menu.addSeparator()
 
         # 録音/マイクが詰まったときに再起動なしで内部状態を作り直す脱出口
-        reset_action = self._menu.addAction("Force Reset (Unfreeze)")
+        reset_action = self._menu.addAction("強制リセット（フリーズ復帰）")
         reset_action.triggered.connect(self.force_reset.emit)
 
         self._menu.addSeparator()
 
         # 終了メニュー項目
-        quit_action = self._menu.addAction("Quit")
+        quit_action = self._menu.addAction("終了")
         quit_action.triggered.connect(self.quit_app.emit)
 
         self.setContextMenu(self._menu)
@@ -115,12 +115,12 @@ class SystemTray(QSystemTrayIcon):
             ツールチップ文字列
         """
         tooltips = {
-            AppState.IDLE: "SuperWhisper - Ready",
-            AppState.RECORDING: "SuperWhisper - Recording",
-            AppState.RECORDING_AUTO_ENTER: "SuperWhisper - Recording (Auto Enter)",
-            AppState.TRANSCRIBING: "SuperWhisper - Transcribing",
+            AppState.IDLE: "voicekey - 待機中",
+            AppState.RECORDING: "voicekey - 録音中",
+            AppState.RECORDING_AUTO_ENTER: "voicekey - 録音中（自動 Enter）",
+            AppState.TRANSCRIBING: "voicekey - 変換中",
         }
-        return tooltips.get(status, "SuperWhisper")
+        return tooltips.get(status, "voicekey")
 
     def _set_icon_color(self, color: QColor) -> None:
         """

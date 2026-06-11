@@ -32,8 +32,6 @@ class MacTheme:
             ACCENT_HOVER: アクセントカラー（ホバー時）
             SECONDARY_TEXT: 二次テキスト色
             BORDER: ボーダー色
-            SIDEBAR_BG: サイドバー背景色
-            SIDEBAR_BORDER: サイドバーボーダー色
             INPUT_BG: 入力欄背景色
             HOVER_BG: ホバー時背景色
         """
@@ -54,8 +52,6 @@ class MacTheme:
                 self.ACCENT_HOVER = "#409CFF"
                 self.SECONDARY_TEXT = "#A1A1A6"
                 self.BORDER = "#424242"
-                self.SIDEBAR_BG = "#262626"
-                self.SIDEBAR_BORDER = "#333333"
                 self.INPUT_BG = "#1E1E1E"
                 self.HOVER_BG = "rgba(255, 255, 255, 0.1)"
             else:
@@ -67,8 +63,6 @@ class MacTheme:
                 self.ACCENT_HOVER = "#0062CC"
                 self.SECONDARY_TEXT = "#86868B"
                 self.BORDER = "#D1D1D1"
-                self.SIDEBAR_BG = "#F0F0F5"
-                self.SIDEBAR_BORDER = "#E5E5E5"
                 self.INPUT_BG = "#FFFFFF"
                 self.HOVER_BG = "rgba(0, 0, 0, 0.05)"
 
@@ -214,7 +208,7 @@ class MacTheme:
         }}
         
         /* テキストエリア */
-        QTextEdit {{
+        QTextEdit, QPlainTextEdit {{
             background-color: {c.INPUT_BG};
             color: {c.TEXT};
             border: 1px solid {c.BORDER};
@@ -224,7 +218,7 @@ class MacTheme:
             font-size: {MacTheme.FONT_SIZE_NORMAL}px;
             selection-background-color: {c.ACCENT};
         }}
-        QTextEdit:focus {{
+        QTextEdit:focus, QPlainTextEdit:focus {{
             border: 2px solid {c.ACCENT};
             padding: 7px;
         }}
@@ -272,31 +266,33 @@ class MacTheme:
             left: 12px;
         }}
         
-        /* サイドバーリスト */
-        QListWidget {{
-            background-color: {c.SIDEBAR_BG};
-            border: none;
-            border-right: 1px solid {c.SIDEBAR_BORDER};
-            outline: none;
+        /* タブ（設定ウィンドウの 一般 / ホットキー / API キー） */
+        QTabWidget::pane {{
+            border: 1px solid {c.BORDER};
+            border-radius: 8px;
+            top: 4px;
         }}
-        QListWidget::item {{
-            height: 38px;
-            padding-left: 12px;
-            color: {c.TEXT};
+        QTabBar::tab {{
+            background: transparent;
+            border: none;
             border-radius: 6px;
-            margin: 4px 12px;
-            border: none;
-        }}
-        QListWidget::item:selected {{
-            background-color: {c.HOVER_BG};
+            padding: 6px 16px;
+            margin: 0 2px;
             color: {c.TEXT};
         }}
-        QListWidget::item:selected:active {{
+        QTabBar::tab:selected {{
             background-color: {c.ACCENT};
             color: white;
+            font-weight: 600;
         }}
-        QListWidget::item:hover:!selected {{
+        QTabBar::tab:hover:!selected {{
             background-color: {c.HOVER_BG};
+        }}
+
+        /* スクロールエリア（タブページの内容） */
+        QScrollArea {{
+            border: none;
+            background: transparent;
         }}
         
         /* スクロールバー */
