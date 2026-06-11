@@ -45,19 +45,22 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    /// 既知のモデル一覧（設定 UI の候補。自由入力も可）。先頭が既定。
+    /// 既知のモデル一覧（設定 UI の候補。自由入力も可）。
+    /// 先頭が既定＝推奨（ベンチ実測 2026-06-10 に基づく。Windows 版と順序を一致させる）。
     var knownModels: [String] {
         switch self {
-        case .openai: return ["gpt-4o-transcribe", "gpt-4o-mini-transcribe"]
+        // mini が高速で短文精度は同等（CER 2.7%）
+        case .openai: return ["gpt-4o-mini-transcribe", "gpt-4o-transcribe"]
+        // turbo が REST 最速（330ms〜）で精度も良好
         case .groq: return ["whisper-large-v3-turbo", "whisper-large-v3"]
-        // scribe_v2 が最新。ただし日本語長文は scribe_v1 の方が高精度なケースもある
-        case .elevenlabs: return ["scribe_v2", "scribe_v1", "scribe_v1_experimental"]
+        // scribe_v1 が日本語最高精度（scribe_v2 は最新だが日本語長文で後退）
+        case .elevenlabs: return ["scribe_v1", "scribe_v2", "scribe_v1_experimental"]
         // nova-3 がベンチで速度・精度とも最良（ストリーミング既定）。ja は多言語モードで対応
         case .deepgram: return ["nova-3", "nova-2"]
         }
     }
 
-    /// 既定モデル
+    /// 既定モデル（＝設定 UI で「（推奨）」表記するモデル）
     var defaultModel: String { knownModels[0] }
 }
 

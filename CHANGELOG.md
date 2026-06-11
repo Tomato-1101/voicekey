@@ -133,6 +133,13 @@ voicekeyの変更履歴を記録するファイルです。
 - **整形モデルを自由入力からリスト選択に変更**（Mac / Windows 共通リスト）: llama-3.1-8b-instant（既定・最速）/ llama-3.3-70b-versatile / openai/gpt-oss-20b / openai/gpt-oss-120b / moonshotai/kimi-k2-instruct。保存済みのリスト外モデルも選択を保持
 - Technical: Mac `FormatMode.auto` + `defaultAutoPromptBody` + `TextFormatter.knownModels`、`ConfigStore.autoFormatPrompt`（UserDefaults 永続化）。Windows `DEFAULT_AUTO_PROMPT` / `KNOWN_FORMAT_MODELS`、`format_auto_prompt` 設定（空 = 既定で保存し既定文の将来更新に追従）。`build_system_prompt` / `format_text` に `auto_prompt` 引数追加。テスト 5 件追加（全 58 件パス）。Mac は実機でモード選択 UI・一般タブの編集欄・既存スロット設定の温存を確認
 
+### Added (2026-06-11 追記 9) — モデル選択リストに「（推奨）」表記
+- **音声（文字起こし）・文字（整形）両方のモデル選択リストで、推奨モデルの表示名に「（推奨）」を付けた**（Mac / Windows）
+  - 表示ラベルだけの変更で、保存値・API へ送る値はモデル識別子のまま（Mac: Picker tag / Windows: QComboBox userData）
+  - 推奨 = ベンチ実測 2026-06-10 に基づく各バックエンドの既定: OpenAI `gpt-4o-mini-transcribe` / Groq `whisper-large-v3-turbo` / ElevenLabs `scribe_v1`（日本語最高精度。v2 は長文後退）/ Deepgram `nova-3` / 整形 `llama-3.1-8b-instant`（速度テスト実行待ちの暫定）
+  - Mac の knownModels の並びを「先頭＝既定＝推奨」に統一（OpenAI を mini 先頭、ElevenLabs を scribe_v1 先頭へ。Windows と同順序に）。保存済みの選択はそのまま温存される
+- **整形モデル速度ベンチ `benchmark/format_speed_bench.py` を追加**: 全 5 整形モデルに同一リクエスト（おまかせプロンプト + フィラー多め日本語 110 文字 × 3 回）を送りレイテンシのみ計測。キーは既存ベンチと同じ手順で取得し表示しない
+
 ### Fixed (2026-06-11 追記 7)
 - **API キー使用のたびに Keychain の承認ダイアログが出る問題（Mac 版）**
   - 原因: Python 版 keyring や旧 ad-hoc 署名ビルドが作成した Keychain 項目は ACL 上の所有者が「別アプリ」のため、現在の署名アプリの読み取りで毎回承認を求められていた

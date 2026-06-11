@@ -73,6 +73,14 @@ _BACKEND_MODELS = {
 # 各 backend の既定モデル（保存済みモデルが当該 backend のものでない時のフォールバック）
 _BACKEND_DEFAULT_MODEL = {b: models[0] for b, models in _BACKEND_MODELS.items()}
 
+
+def _model_label(model: str, recommended: str) -> str:
+    """モデル選択 Combo の表示ラベルを作る（推奨モデルに「（推奨）」を付ける）。
+
+    表示にだけ使い、保存値は userData のモデル識別子のまま（API へはラベルを送らない）。
+    """
+    return f"{model}（推奨）" if model == recommended else model
+
 # LLM テキスト整形モード（識別子, UI 日本語ラベル）。Mac 版と文言を完全一致させる
 _FORMAT_MODES = [
     ("auto", "おまかせ（自動判断）"),
@@ -780,9 +788,12 @@ class SettingsWindow(QWidget):
         layout.addRow("", preprocess_hint)
 
         # LLM テキスト整形に使う Groq モデル（両ホットキー共通・リストから選択）
+        # 表示は「（推奨）」付きラベル、値は userData のモデル識別子
         self._format_model_combo = QComboBox()
         for model in KNOWN_FORMAT_MODELS:
-            self._format_model_combo.addItem(model)
+            self._format_model_combo.addItem(
+                _model_label(model, KNOWN_FORMAT_MODELS[0]), model
+            )
         layout.addRow("Format Model:", self._format_model_combo)
 
         # 「おまかせ（自動判断）」モードで LLM に渡すプロンプト（編集可・空欄なら既定）
@@ -877,9 +888,9 @@ class SettingsWindow(QWidget):
 
         # LLM テキスト整形モデル（両ホットキー共通）。保存値がリスト外でも選択を保持して表示する
         saved_model = config.get("format_model", "llama-3.1-8b-instant")
-        if self._format_model_combo.findText(saved_model) < 0:
-            self._format_model_combo.addItem(saved_model)
-        self._format_model_combo.setCurrentText(saved_model)
+        if self._format_model_combo.findData(saved_model) < 0:
+            self._format_model_combo.addItem(saved_model, saved_model)
+        self._format_model_combo.setCurrentIndex(self._format_model_combo.findData(saved_model))
 
         # おまかせ整形プロンプト（空 = 既定。編集できるよう既定の実テキストを表示する）
         self._format_auto_prompt_edit.setPlainText(
@@ -922,16 +933,19 @@ class SettingsWindow(QWidget):
 
         # モデル候補を差し替える。保存済みモデルが当該 backend のものなら復元、
         # そうでなければ先頭（既定）を選ぶ
+        # 表示は「（推奨）」付きラベル、値は userData のモデル識別子
         model_combo = getattr(self, f"_api{slot_id}_model_combo")
         model_combo.clear()
         models = _BACKEND_MODELS.get(backend, [])
-        model_combo.addItems(models)
+        recommended = _BACKEND_DEFAULT_MODEL.get(backend, "")
+        for model in models:
+            model_combo.addItem(_model_label(model, recommended), model)
 
         config = self._config_manager.config
         hotkey_config = config.get(f"hotkey{slot_id}", {})
         saved_model = hotkey_config.get("api_model", "")
         if saved_model in models:
-            model_combo.setCurrentText(saved_model)
+            model_combo.setCurrentIndex(models.index(saved_model))
         elif models:
             model_combo.setCurrentIndex(0)
 
@@ -979,8 +993,8 @@ class SettingsWindow(QWidget):
                 "volume_normalize": self._volume_normalize_check.isChecked(),
             },
 
-            # LLM テキスト整形に使う Groq モデル（両ホットキー共通）
-            "format_model": self._format_model_combo.currentText().strip() or "llama-3.1-8b-instant",
+            # LLM テキスト整形に使う Groq モデル（両ホットキー共通。値は userData の識別子）
+            "format_model": self._format_model_combo.currentData() or "llama-3.1-8b-instant",
             # おまかせ整形プロンプト（既定文と同一なら空で保存し、既定文の将来更新に追従する）
             "format_auto_prompt": (
                 "" if self._format_auto_prompt_edit.toPlainText().strip() == DEFAULT_AUTO_PROMPT.strip()
@@ -992,7 +1006,7 @@ class SettingsWindow(QWidget):
                 "hotkey": self._hotkey1_input.text(),
                 "hotkey_mode": self._mode1_combo.currentText(),
                 "backend": self._backend1_combo.currentText(),
-                "api_model": self._api1_model_combo.currentText(),
+                "api_model": self._api1_model_combo.currentData() or "",
                 "api_prompt": self._api1_prompt_input.text(),
                 "format_enabled": self._format1_check.isChecked(),
                 "format_mode": self._format1_mode_combo.currentData(),
@@ -1004,7 +1018,7 @@ class SettingsWindow(QWidget):
                 "hotkey": self._hotkey2_input.text(),
                 "hotkey_mode": self._mode2_combo.currentText(),
                 "backend": self._backend2_combo.currentText(),
-                "api_model": self._api2_model_combo.currentText(),
+                "api_model": self._api2_model_combo.currentData() or "",
                 "api_prompt": self._api2_prompt_input.text(),
                 "format_enabled": self._format2_check.isChecked(),
                 "format_mode": self._format2_mode_combo.currentData(),

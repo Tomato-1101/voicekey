@@ -109,8 +109,10 @@ private struct GeneralSettingsTab: View {
                 .foregroundStyle(.secondary)
 
             Picker("整形モデル", selection: $config.formatModel) {
+                // 表示は推奨モデル（リスト先頭）に「（推奨）」を付け、tag はモデル識別子のまま
                 ForEach(TextFormatter.knownModels, id: \.self) { model in
-                    Text(model).tag(model)
+                    Text(model == TextFormatter.knownModels[0] ? "\(model)（推奨）" : model)
+                        .tag(model)
                 }
                 // 保存済みモデルがリスト外でも選択を保持して表示する
                 if !TextFormatter.knownModels.contains(config.formatModel) {
@@ -193,8 +195,10 @@ private struct SlotSettingsTab: View {
             }
 
             Picker("モデル", selection: $slot.model) {
+                // 表示は推奨モデルに「（推奨）」を付け、tag（保存値）はモデル識別子のまま
                 ForEach(slot.backend.knownModels, id: \.self) { model in
-                    Text(model).tag(model)
+                    Text(model == slot.backend.defaultModel ? "\(model)（推奨）" : model)
+                        .tag(model)
                 }
             }
 
