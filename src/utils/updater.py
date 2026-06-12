@@ -29,10 +29,8 @@ from .logger import get_logger
 
 logger = get_logger(__name__)
 
-# 更新情報の取得元（voicekey-releases は配布専用の公開リポジトリ）
-VERSION_URL = (
-    "https://raw.githubusercontent.com/Tomato-1101/voicekey-releases/main/windows/version.json"
-)
+# 更新情報の取得元（配布ページと同じ Vercel サイト。GitHub はテスターから見えない構成）
+VERSION_URL = "https://voicekey.vercel.app/windows/version.json"
 
 # 起動直後はアプリ初期化と被らないよう 60 秒待ってから初回チェックする
 FIRST_CHECK_DELAY_MS = 60_000

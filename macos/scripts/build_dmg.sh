@@ -120,13 +120,13 @@ echo "==> DMG: $DMG"
 # appcast 生成（dist/releases/ 内の全 zip を EdDSA 署名して appcast.xml を更新）
 .build/artifacts/sparkle/Sparkle/bin/generate_appcast \
     --ed-key-file "$EDDSA_KEY" \
-    --download-url-prefix "https://raw.githubusercontent.com/Tomato-1101/voicekey-releases/main/mac/" \
-    --link "https://github.com/Tomato-1101/voicekey-releases" \
+    --download-url-prefix "https://voicekey.vercel.app/mac/" \
+    --link "https://voicekey.vercel.app" \
     dist/releases
 echo "==> appcast: dist/releases/appcast.xml"
 
 echo ""
-echo "==> 完了。配布手順:"
-echo "    1. $ZIP と dist/releases/appcast.xml を voicekey-releases/mac/ にコミット"
-echo "    2. $DMG を voicekey-releases の GitHub Release (v$VERSION) に添付"
-echo "    3. Resources/Info.plist のバージョン更新をコミット"
+echo "==> 完了。配布手順（すべて voicekey-site / Vercel 経由。GitHub には置かない）:"
+echo "    1. $DMG を voicekey-site/downloads/ へ、$ZIP と appcast.xml を voicekey-site/mac/ へコピー"
+echo "    2. voicekey-site/downloads.json のバージョン・サイズを更新"
+echo "    3. voicekey-site で vercel deploy --prod → Resources/Info.plist のバージョン更新をコミット"

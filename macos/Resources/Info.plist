@@ -19,7 +19,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>1.0.0</string>
 	<key>CFBundleVersion</key>
-	<string>2</string>
+	<string>3</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSUIElement</key>
@@ -33,7 +33,7 @@
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUFeedURL</key>
-	<string>https://raw.githubusercontent.com/Tomato-1101/voicekey-releases/main/mac/appcast.xml</string>
+	<string>https://voicekey.vercel.app/mac/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>4Zq9NoD6Fbu1qWnrhozjoRIGWCLR/mhV3ZUTxS9J9eo=</string>
 	<key>SUScheduledCheckInterval</key>

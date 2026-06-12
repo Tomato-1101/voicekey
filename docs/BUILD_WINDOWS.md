@@ -54,13 +54,14 @@ powershell -ExecutionPolicy Bypass -File scripts\build\build_windows_dist.ps1 -V
 
 ## リリース（順番厳守）
 
-1. `voicekey-<Version>-setup.exe` を voicekey-releases リポジトリの
-   GitHub Releases（タグ `v<Version>`）へ添付
-2. `dist\installer\version.json` を voicekey-releases の `windows/version.json` に
-   上書きコミット → push
-   - **version.json のコミットが「全テスターへの更新通知」のトリガー**。
-     Releases へのバイナリ添付を必ず先に済ませること（逆順だと DL 404 で全員に失敗通知が出る）
-3. voicekey 本体リポジトリで `constants.py`（APP_VERSION）の変更をコミット
+1. `voicekey-<Version>-setup.exe` を Mac の `/Users/tomato/Project/voicekey-site/downloads/` へ、
+   `dist\installer\version.json` を `voicekey-site/windows/version.json` へコピー
+   （配布はすべて Vercel サイト経由。GitHub はテスターから見えない構成）
+2. `voicekey-site/downloads.json` の windows エントリを新バージョンに更新
+3. voicekey-site で `vercel deploy --prod`
+   - **version.json の公開が「全テスターへの更新通知」のトリガー**。exe と version.json が
+     同一デプロイで同時に公開されるため、順序問題（DL 404）は起きない
+4. voicekey 本体リポジトリで `constants.py`（APP_VERSION）の変更をコミット
 
 ## 配布前チェックリスト（Windows 実機・毎リリース）
 

@@ -91,7 +91,7 @@ try {
     $Sha256 = (Get-FileHash $Setup -Algorithm SHA256).Hash.ToLower()
     $VersionJson = @{
         version = $Version
-        url     = "https://github.com/Tomato-1101/voicekey-releases/releases/download/v$Version/voicekey-$Version-setup.exe"
+        url     = "https://voicekey.vercel.app/downloads/voicekey-$Version-setup.exe"
         sha256  = $Sha256
         notes   = "voicekey $Version"
     } | ConvertTo-Json
@@ -104,9 +104,8 @@ try {
     Write-Host "    version.json : $VersionJsonPath"
     Write-Host ""
     Write-Host "次の手順:"
-    Write-Host "  1. setup.exe を voicekey-releases の GitHub Releases（タグ v$Version）へ添付"
-    Write-Host "  2. version.json を voicekey-releases/windows/version.json として main へコミット"
-    Write-Host "     （コミットした瞬間に全テスターへ更新通知が届くので、Releases 添付を必ず先に行う）"
+    Write-Host "  1. setup.exe を voicekey-site/downloads/ へ、version.json を voicekey-site/windows/ へ配置"
+    Write-Host "  2. voicekey-site で vercel deploy --prod（exe と version.json が同時に公開される）"
     Write-Host "  3. constants.py の APP_VERSION 変更を voicekey 本体リポジトリへコミット"
 }
 finally {

@@ -17,10 +17,11 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 - ソースコード非公開。配布物に .py 平文を含めない（voicekey.spec の datas=('src','src') は根治対象）。
 - DIST ビルドでは設定画面の API キータブを非表示。
 - 配布用ブランチは `beta`。開発は main、リリース時に main → beta マージ → dist ビルド → タグ。
-- 配布物置き場: 公開リポジトリ `voicekey-releases`（バイナリ+appcast+version.json のみ。2026-06-12 に
-  ユーザー承認のうえ public 作成済み）。テスターに渡す URL は Vercel のダウンロードページ
-  **https://voicekey.vercel.app**（ソースは `/Users/tomato/Project/voicekey-site/`、
-  `vercel deploy --prod` で更新）。DL ボタンは GitHub API で最新リリースの DMG/exe 直リンクを自動解決。
+- 配布物置き場: **すべて Vercel サイト**（https://voicekey.vercel.app、ソースは
+  `/Users/tomato/Project/voicekey-site/`、`vercel deploy --prod` で更新）。
+  DMG/exe は `/downloads/`、appcast+更新 zip は `/mac/`、version.json は `/windows/`、
+  最新版表示は `/downloads.json`。**GitHub はテスターから一切見えない**（2026-06-12 ユーザー要望で
+  GitHub Releases 方式から移行。voicekey-releases は private 化済み・もう使わない）。
 - **Apple Developer Program には加入しない（2026-06-12 ユーザー確定）**。配布は Apple Development 署名 +
   右クリック→開く手順書同梱が恒久形。Phase 7（公証切替）は中止。
   build_dmg.sh の --identity / --notarize パラメータは残置するが使わない。
@@ -74,7 +75,9 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
   ②Windows 版は Windows 実機で docs/BUILD_WINDOWS.md の手順でビルド → Setup.exe を
   Releases に添付 → version.json を windows/ にコミット → サイトの Windows ボタンが自動で生きる。
 - 次回リリース（バグ修正等）の手順: main で修正 → `build_dmg.sh --version X.Y.Z` →
-  DMG を Releases に添付 + zip/appcast を mac/ に上書きコミット → 既存ユーザーへ自動配布。
+  DMG を voicekey-site/downloads/、zip+appcast を voicekey-site/mac/ へコピー →
+  downloads.json 更新 → `vercel deploy --prod` → 既存ユーザーへ自動配布。
 - Windows 版リリース手順: Mac で `--export-env` → `.env.dist` を Windows ビルド機へ →
-  `build_windows_dist.ps1 -Version X.Y.Z` → Releases 添付 → version.json コミット
-  （詳細と順序の注意は docs/BUILD_WINDOWS.md）。
+  `build_windows_dist.ps1 -Version X.Y.Z` → setup.exe を voicekey-site/downloads/、
+  version.json を voicekey-site/windows/ へ → downloads.json 更新 → `vercel deploy --prod`
+  （詳細は docs/BUILD_WINDOWS.md）。

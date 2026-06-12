@@ -4,8 +4,19 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [1.0.0] - 2026-06-12 (無料テスト版・ベータ初回リリース)
 
-Mac 版 v1.0.0 を公開（DMG: voicekey-releases の GitHub Release / 自動更新: mac/appcast.xml /
-配布ページ: https://voicekey.vercel.app）。Windows 版は実機ビルド待ち。
+Mac 版 v1.0.0 を公開。配布物（DMG・更新用 zip・appcast・version.json）はすべて配布ページ
+https://voicekey.vercel.app（Vercel）から配信し、GitHub はテスターから一切見えない構成。
+Windows 版は実機ビルド待ち。
+
+### Changed（同日追記: 配布を Vercel に一本化）
+- 当初 GitHub Releases + raw URL で公開したが、「ダウンロード URL からリポジトリの存在が
+  見えるのを防ぎたい」というユーザー要望で、配布物をすべて Vercel サイト内
+  （/downloads/・/mac/・/windows/）へ移設。サイトの最新版表示も GitHub API から
+  サイト内 downloads.json 参照に変更
+- `Info.plist` SUFeedURL / `updater.py` VERSION_URL / `build_dmg.sh` の appcast URL /
+  `build_windows_dist.ps1` の version.json URL を voicekey.vercel.app 配下へ変更し、
+  Mac 版を再ビルド（1.0.0 build 3。strings 平文キー 0 件・全配布 URL 200 を確認）
+- voicekey-releases リポジトリは private 化（バイナリ置き場としての役目を終了）
 
 ### Added
 - ベータ配布計画の開始（HANDOFF.md にゴール・フェーズ・恒久要件を記録）
