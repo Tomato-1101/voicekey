@@ -36,9 +36,11 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 - [x] Phase 2: Sparkle + build_dmg.sh（検証済み: codesign --verify --deep --strict 通過 /
       ローカル http.server の appcast で旧→新の自動更新 E2E 成功（差分 DL→終了時インストール）。
       Sparkle EdDSA 鍵: 公開鍵は Info.plist、秘密鍵は ~/.voicekey/sparkle_eddsa_key とログイン Keychain）
-- [ ] Phase 3: 初回 Mac リリース — **ユーザーの操作待ち**（下記「ユーザー待ちの項目」参照）。
-      準備済み: main→beta マージ・push 完了 / voicekey-releases の中身は /tmp/voicekey-releases に
-      ローカル作成済み / ソース本体リポジトリは private 化済み（2026-06-12、ソース非公開要望のため）
+- [x] Phase 3: 初回 Mac リリース（**2026-06-12 完了**: v1.0.0 を公開。実キービルド →
+      strings 平文 0 件確認 → DMG を Releases v1.0.0 に添付 / zip+appcast を mac/ にコミット /
+      配布ページ https://voicekey.vercel.app の Mac ボタンが v1.0.0 直リンクになったことを確認済み。
+      appcast・zip の raw URL も 200 確認済み＝既存インストールへの自動更新経路が有効。
+      ソース本体リポジトリは private 化済み（2026-06-12、ソース非公開要望のため））
 - [x] Phase 4: Windows 配布一式（検証済み: py_compile 全通過 / unittest 99 件全通過（新規 22 件含む）/
       オフスクリーン UI スモークで dev=5タブ・DIST=4タブ・トレイ更新通知を確認（secrets モック）。
       DIST 時の設定画面クラッシュバグをスモークで発見し修正済み。
@@ -60,18 +62,19 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 1. ~~public リポジトリ voicekey-releases の作成承認~~ — **完了**（2026-06-12 ユーザー承認 →
    https://github.com/Tomato-1101/voicekey-releases を public 作成・push 済み。
    同日に Vercel のダウンロードページ https://voicekey.vercel.app も公開済み）。
-2. **実キービルドの初回 Keychain 許可**: `cd macos && ./scripts/build_dmg.sh --version 1.0.0` 実行時、
-   security が voicekey.{OpenAI,Groq,ElevenLabs,Deepgram} を読む際に許可ダイアログが最大4回出る。
-   「常に許可」を選べば以後は出ない（ユーザーが画面の前にいる時に実行する）。
-3. **各 API ダッシュボードで利用上限・アラート設定**（現行キーをそのまま埋め込むため必須の保険）。
+2. ~~実キービルドの初回 Keychain 許可~~ — **完了**（2026-06-12 ビルド成功・v1.0.0 公開済み）。
+3. **各 API ダッシュボードで利用上限・アラート設定**（現行キーをそのまま埋め込むため必須の保険。
+   **唯一の残り項目**）。
 
 ## 現在地 / 次の一手
 
-- 現在地: Phase 0〜2・4〜6 完了 + バグレビュー1巡 + 配布ページ公開済み（https://voicekey.vercel.app・
-  Vercel）+ voicekey-releases public 作成済み。Phase 7 は中止（公証なしが恒久形）。
-- 次の一手: Phase 3 のユーザー待ち 2 項目（上記 2・3）→ 完了後に初回 Mac リリース実行
-  （Releases に DMG/zip 添付 + appcast コミット。サイトの DL ボタンは自動で最新版を指す）。
+- 現在地: **Mac 版 v1.0.0 リリース完了**（2026-06-12）。Phase 0〜6 完了・Phase 7 中止。
   テスターへの渡し方は https://voicekey.vercel.app を共有するだけ。
+- 次の一手: ①ユーザーが各 API ダッシュボードで利用上限・アラート設定（唯一の残り）
+  ②Windows 版は Windows 実機で docs/BUILD_WINDOWS.md の手順でビルド → Setup.exe を
+  Releases に添付 → version.json を windows/ にコミット → サイトの Windows ボタンが自動で生きる。
+- 次回リリース（バグ修正等）の手順: main で修正 → `build_dmg.sh --version X.Y.Z` →
+  DMG を Releases に添付 + zip/appcast を mac/ に上書きコミット → 既存ユーザーへ自動配布。
 - Windows 版リリース手順: Mac で `--export-env` → `.env.dist` を Windows ビルド機へ →
   `build_windows_dist.ps1 -Version X.Y.Z` → Releases 添付 → version.json コミット
   （詳細と順序の注意は docs/BUILD_WINDOWS.md）。

@@ -2,7 +2,10 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
-## [Unreleased] - 2026-06-12 (無料テスト版・ベータ配布準備)
+## [1.0.0] - 2026-06-12 (無料テスト版・ベータ初回リリース)
+
+Mac 版 v1.0.0 を公開（DMG: voicekey-releases の GitHub Release / 自動更新: mac/appcast.xml /
+配布ページ: https://voicekey.vercel.app）。Windows 版は実機ビルド待ち。
 
 ### Added
 - ベータ配布計画の開始（HANDOFF.md にゴール・フェーズ・恒久要件を記録）
