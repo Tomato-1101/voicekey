@@ -35,7 +35,7 @@ OUT_DIR = Path("/tmp/voicekey_ui_preview")
 
 
 def grab_settings_tabs(app) -> dict:
-    """設定ウィンドウをダーク/ライト × 全タブで撮影する。"""
+    """設定ウィンドウをダーク/ライト × 全ページで撮影する。"""
     from src.ui.settings_window import SettingsWindow
 
     shots = {}
@@ -43,12 +43,12 @@ def grab_settings_tabs(app) -> dict:
         window = SettingsWindow()
         window._is_dark_mode = is_dark
         window._apply_theme(is_dark)
-        window.resize(560, 640)
+        window.resize(720, 600)
         theme = "dark" if is_dark else "light"
-        for index in range(window._tabs.count()):
-            window._tabs.setCurrentIndex(index)
+        for index in range(window._nav.count()):
+            window._nav.setCurrentRow(index)
             app.processEvents()
-            name = window._tabs.tabText(index).replace(" ", "")
+            name = window._nav.item(index).text().replace(" ", "")
             shots[f"settings_{theme}_{index}_{name}"] = window.grab()
         window.deleteLater()
     return shots

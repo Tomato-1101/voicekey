@@ -1,8 +1,9 @@
 """
 設定ウィンドウモジュール
 
-Mac 版 SettingsView.swift と同じ 5 タブ構成（一般 / ホットキー 1 / ホットキー 2 / 履歴 / API キー）
+Mac 版 SettingsView.swift と同じ 5 ページ構成（一般 / ホットキー 1 / ホットキー 2 / 履歴 / API キー）
 ・同じ日本語文言で設定を管理する。
+レイアウトは macOS System Settings 風の「左サイドバーナビ + カード型セクション」。
 ダーク/ライトテーマ切り替えに対応（Qt は OS テーマに自動追従しないため Windows 版のみ）。
 """
 
@@ -10,13 +11,21 @@ import importlib.util
 import os
 from typing import Optional
 
-from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QPointF, QTimer, Signal
+from PySide6.QtCore import (
+    Property,
+    Qt,
+    QEasingCurve,
+    QPointF,
+    QPropertyAnimation,
+    QRectF,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import QKeyEvent, QPainter, QPainterPath, QColor, QPen, QBrush
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
-    QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -29,7 +38,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSlider,
     QSpinBox,
-    QTabWidget,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -108,11 +117,166 @@ def _model_label(model: str, recommended: str) -> str:
 
 
 def _make_caption(text: str) -> QLabel:
-    """設定項目の補足説明ラベルを作る（Mac 版の .caption 相当）。"""
+    """設定項目の補足説明ラベルを作る（Mac 版の .caption 相当。色は QSS 側で管理）。"""
     label = QLabel(text)
     label.setWordWrap(True)
-    label.setStyleSheet(MacTheme.caption_style())
+    label.setObjectName("caption")
     return label
+
+
+# ----------------------------------------------------------------------
+# カード型レイアウトのヘルパー（macOS System Settings 風）
+# ----------------------------------------------------------------------
+
+# カード内の行の左右パディング（ヘアラインのインデントと揃える）
+_CARD_PAD_X = 14
+
+
+def _make_card() -> tuple[QFrame, QVBoxLayout]:
+    """設定カード（角丸の面）とその縦レイアウトを作る。"""
+    card = QFrame()
+    card.setObjectName("card")
+    layout = QVBoxLayout(card)
+    layout.setContentsMargins(0, 2, 0, 2)
+    layout.setSpacing(0)
+    return card, layout
+
+
+def _make_hairline() -> QWidget:
+    """カード内の行区切り線（左右にインデントした 1px ライン）を作る。"""
+    wrap = QWidget()
+    lay = QHBoxLayout(wrap)
+    lay.setContentsMargins(_CARD_PAD_X, 0, _CARD_PAD_X, 0)
+    line = QFrame()
+    line.setObjectName("hairline")
+    line.setFixedHeight(1)
+    lay.addWidget(line)
+    return wrap
+
+
+def _add_block(card_layout: QVBoxLayout, widget: QWidget) -> None:
+    """カードへ自由構成のブロックを 1 行ぶん追加する（2 行目以降はヘアライン付き）。"""
+    if card_layout.count() > 0:
+        card_layout.addWidget(_make_hairline())
+    wrap = QWidget()
+    lay = QVBoxLayout(wrap)
+    lay.setContentsMargins(_CARD_PAD_X, 9, _CARD_PAD_X, 9)
+    lay.setSpacing(6)
+    lay.addWidget(widget)
+    card_layout.addWidget(wrap)
+
+
+def _add_row(
+    card_layout: QVBoxLayout,
+    label_text: str,
+    control: Optional[QWidget] = None,
+    caption: str = "",
+) -> None:
+    """カードへ標準行（左ラベル + 右コントロール、任意で下に補足）を追加する。"""
+    if card_layout.count() > 0:
+        card_layout.addWidget(_make_hairline())
+    row = QWidget()
+    v = QVBoxLayout(row)
+    v.setContentsMargins(_CARD_PAD_X, 9, _CARD_PAD_X, 9)
+    v.setSpacing(5)
+
+    h = QHBoxLayout()
+    h.setContentsMargins(0, 0, 0, 0)
+    h.setSpacing(8)
+    h.addWidget(QLabel(label_text))
+    h.addStretch()
+    if control is not None:
+        h.addWidget(control)
+    v.addLayout(h)
+
+    if caption:
+        v.addWidget(_make_caption(caption))
+    card_layout.addWidget(row)
+
+
+class ToggleSwitch(QCheckBox):
+    """
+    iOS 風トグルスイッチ（QCheckBox 互換のオン/オフコントロール）。
+
+    QCheckBox を継承するため isChecked()/setChecked()/toggled をそのまま使える。
+    見た目だけを paintEvent で全面的に置き換える（標準チェックボックスは
+    Windows ネイティブ描画で安っぽく見えるため）。
+    """
+
+    _TRACK_W = 40
+    _TRACK_H = 22
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedSize(self._TRACK_W, self._TRACK_H)
+        self._dark = False
+        self._offset = 1.0 if self.isChecked() else 0.0
+
+        # ノブのスライドアニメーション
+        self._anim = QPropertyAnimation(self, b"offset")
+        self._anim.setDuration(140)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.toggled.connect(self._on_toggled)
+
+    def set_dark(self, dark: bool) -> None:
+        """テーマに応じてトラック色を切り替える（QSS では描画しないため自前管理）。"""
+        self._dark = dark
+        self.update()
+
+    def _on_toggled(self, checked: bool) -> None:
+        end = 1.0 if checked else 0.0
+        # 非表示中（設定ロード時など）はアニメーションせず即座に反映する
+        if not self.isVisible():
+            self._anim.stop()
+            self.offset = end
+            return
+        self._anim.stop()
+        self._anim.setStartValue(self._offset)
+        self._anim.setEndValue(end)
+        self._anim.start()
+
+    def get_offset(self) -> float:
+        """ノブ位置（0.0=オフ 〜 1.0=オン）を取得する。"""
+        return self._offset
+
+    def set_offset(self, value: float) -> None:
+        """ノブ位置を設定して再描画する（アニメーションから呼ばれる）。"""
+        self._offset = float(value)
+        self.update()
+
+    # QPropertyAnimation が参照する Qt プロパティ（Python の property では動かない）
+    offset = Property(float, get_offset, set_offset)
+
+    def paintEvent(self, event) -> None:
+        """トラック（角丸）と白いノブを描画する。"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if not self.isEnabled():
+            painter.setOpacity(0.4)
+
+        t = self._offset
+        off = QColor("#48484E") if self._dark else QColor("#D9D9DE")
+        on = QColor("#0A84FF") if self._dark else QColor("#007AFF")
+        # オフ→オンのトラック色をノブ位置に合わせて補間する
+        track = QColor(
+            round(off.red() + (on.red() - off.red()) * t),
+            round(off.green() + (on.green() - off.green()) * t),
+            round(off.blue() + (on.blue() - off.blue()) * t),
+        )
+
+        h = self.height()
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(track)
+        painter.drawRoundedRect(QRectF(0, 0, self.width(), h), h / 2, h / 2)
+
+        # ノブ（白円 + 下方向のわずかな影で浮かせる）
+        knob_d = h - 4
+        x = 2 + (self.width() - knob_d - 4) * t
+        painter.setBrush(QColor(0, 0, 0, 30))
+        painter.drawEllipse(QRectF(x, 3, knob_d, knob_d))
+        painter.setBrush(QColor("#FFFFFF"))
+        painter.drawEllipse(QRectF(x, 2, knob_d, knob_d))
 
 
 
@@ -376,10 +540,13 @@ class SettingsWindow(QWidget):
         self._platform = platform_adapter or get_platform_adapter()
         self._history = history
 
-        # DIST ビルドでは API キータブを作らないため、タブ生成前に空で初期化しておく
+        # DIST ビルドでは API キーページを作らないため、ページ生成前に空で初期化しておく
         # （_load_current_settings が無条件に _refresh_api_key_status を呼ぶ）
         self._api_key_inputs = {}
         self._api_key_status = {}
+
+        # テーマ切替時にトラック色を更新するトグルスイッチの一覧
+        self._toggles: list[ToggleSwitch] = []
 
         self._config_manager = ConfigManager()
 
@@ -397,46 +564,79 @@ class SettingsWindow(QWidget):
     def _setup_window(self) -> None:
         """ウィンドウプロパティを設定する。"""
         self.setWindowTitle("voicekey 設定")
-        self.resize(560, 640)
+        # ルートだけが背景色を持つ（カード上のウィジェットを潰さないため。styles.py 参照）
+        self.setObjectName("settingsRoot")
+        self.resize(720, 600)
 
     def _setup_ui(self) -> None:
-        """UIコンポーネントを設定する。"""
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(20, 16, 20, 16)
-        main_layout.setSpacing(12)
+        """UIコンポーネントを設定する（左サイドバーナビ + 右コンテンツ）。"""
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        # ヘッダー（タイトル + テーマ切替）
-        header_layout = QHBoxLayout()
-        header_layout.setSpacing(10)
+        # --- 左サイドバー: ブランド + ナビゲーション ---
+        side = QFrame()
+        side.setObjectName("sidebarPane")
+        side.setFixedWidth(172)
+        sv = QVBoxLayout(side)
+        sv.setContentsMargins(8, 16, 8, 10)
+        sv.setSpacing(2)
 
-        title = QLabel("voicekey 設定")
-        title.setStyleSheet(MacTheme.title_style())
+        brand = QLabel("voicekey")
+        brand.setObjectName("brand")
+        brand_caption = QLabel("設定")
+        brand_caption.setObjectName("brandCaption")
+        sv.addWidget(brand)
+        sv.addWidget(brand_caption)
+        sv.addSpacing(12)
 
+        self._nav = QListWidget()
+        self._nav.setObjectName("sidebar")
+        self._nav.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        sv.addWidget(self._nav, 1)
+        root.addWidget(side)
+
+        # --- 右コンテンツ: ページタイトル + ページ + 保存/キャンセル ---
+        right = QWidget()
+        rv = QVBoxLayout(right)
+        rv.setContentsMargins(0, 0, 0, 0)
+        rv.setSpacing(0)
+
+        header = QWidget()
+        hh = QHBoxLayout(header)
+        hh.setContentsMargins(24, 18, 20, 8)
+        hh.setSpacing(10)
+        self._page_title = QLabel("")
+        self._page_title.setObjectName("pageTitle")
         # テーマ切替ボタン（Qt は OS テーマに追従しないため Windows 版独自）
         self._theme_toggle = ThemeToggleButton(is_dark=self._is_dark_mode)
         self._theme_toggle.clicked.connect(self._toggle_theme)
+        hh.addWidget(self._page_title)
+        hh.addStretch()
+        hh.addWidget(self._theme_toggle)
+        rv.addWidget(header)
 
-        header_layout.addWidget(title)
-        header_layout.addStretch()
-        header_layout.addWidget(self._theme_toggle)
-        main_layout.addLayout(header_layout)
-
-        # 5 タブ（Mac 版 SettingsView の TabView と同じ構成・順序）
-        self._tabs = QTabWidget()
-        self._tabs.addTab(self._create_general_tab(), "一般")
-        self._tabs.addTab(self._create_slot_tab(1), "ホットキー 1")
-        self._tabs.addTab(self._create_slot_tab(2), "ホットキー 2")
-        self._history_tab_index = self._tabs.addTab(self._create_history_tab(), "履歴")
-        # 配布ビルドは埋め込みキーで動くため、API キータブは出さない（テスターの混乱防止）
+        # 5 ページ（Mac 版 SettingsView と同じ構成・順序）
+        self._pages = QStackedWidget()
+        page_defs = [
+            ("一般", self._create_general_page()),
+            ("ホットキー 1", self._create_slot_page(1)),
+            ("ホットキー 2", self._create_slot_page(2)),
+            ("履歴", self._create_history_page()),
+        ]
+        self._history_page_index = 3
+        # 配布ビルドは埋め込みキーで動くため、API キーページは出さない（テスターの混乱防止）
         if not secrets.is_dist_build():
-            self._tabs.addTab(self._create_api_keys_tab(), "API キー")
-        # ウィンドウを開いたまま音声入力しても、履歴タブを開いた時点で最新になるように
-        self._tabs.currentChanged.connect(self._on_tab_changed)
-        main_layout.addWidget(self._tabs, 1)
+            page_defs.append(("API キー", self._create_api_keys_page()))
+        for title, page in page_defs:
+            self._nav.addItem(title)
+            self._pages.addWidget(page)
+        rv.addWidget(self._pages, 1)
 
         # ボタンエリア（保存/キャンセル）。Mac 版は即時反映だが、Windows 版は
         # settings.yaml + ホットリロードのため明示保存とする
         button_layout = QHBoxLayout()
+        button_layout.setContentsMargins(24, 10, 24, 16)
         button_layout.addStretch()
 
         self._cancel_btn = QPushButton("キャンセル")
@@ -450,7 +650,19 @@ class SettingsWindow(QWidget):
 
         button_layout.addWidget(self._cancel_btn)
         button_layout.addWidget(self._save_btn)
-        main_layout.addLayout(button_layout)
+        rv.addLayout(button_layout)
+        root.addWidget(right, 1)
+
+        # ナビ選択でページ切替（履歴ページを開いた時点で一覧を最新化する）
+        self._nav.currentRowChanged.connect(self._on_nav_changed)
+        self._nav.setCurrentRow(0)
+
+    def _make_toggle(self) -> ToggleSwitch:
+        """テーマ追従するトグルスイッチを作って登録する。"""
+        toggle = ToggleSwitch()
+        toggle.set_dark(self._is_dark_mode)
+        self._toggles.append(toggle)
+        return toggle
 
     @staticmethod
     def _wrap_scroll(page: QWidget) -> QScrollArea:
@@ -464,27 +676,28 @@ class SettingsWindow(QWidget):
         return scroll
 
     # ------------------------------------------------------------------
-    # 一般タブ（Mac 版 GeneralSettingsTab と同項目 + Windows 版固有項目）
+    # 一般ページ（Mac 版 GeneralSettingsTab と同項目 + Windows 版固有項目）
     # ------------------------------------------------------------------
 
-    def _create_general_tab(self) -> QWidget:
-        """一般タブを作成する。"""
+    def _create_general_page(self) -> QWidget:
+        """一般ページを作成する（基本 / 音声処理 / 表示と動作 / テキスト整形 / 起動）。"""
         page = QWidget()
-        layout = QFormLayout(page)
-        layout.setSpacing(10)
-        layout.setContentsMargins(16, 16, 16, 16)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 8, 24, 24)
+        layout.setSpacing(14)
+
+        # --- カード: 基本（言語・入力デバイス） ---
+        card, cl = _make_card()
 
         # 言語（Mac 版と同じ 3 択。空文字 = API 側の自動判定）
         self._lang_combo = QComboBox()
         for label, value in _LANGUAGE_OPTIONS:
             self._lang_combo.addItem(label, value)
-        layout.addRow("言語:", self._lang_combo)
+        self._lang_combo.setMinimumWidth(160)
+        _add_row(cl, "言語", self._lang_combo)
 
-        # 入力デバイス
+        # 入力デバイス（一覧 + 更新 / 自動検出ボタンを 1 ブロックにまとめる）
         self._input_device_combo = QComboBox()
-        # 280px 固定だと「更新」「自動検出」ボタンと合わせて窓幅 560px を超え
-        # 横スクロールバーが出るため、最小 200px + 伸縮（余白があれば広がる）にする
-        self._input_device_combo.setMinimumWidth(200)
 
         refresh_button = QPushButton("更新")
         refresh_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -497,53 +710,90 @@ class SettingsWindow(QWidget):
         self._mic_detect_button.setToolTip("全マイクを監視し、喋った声が入ったマイクを自動選択します")
         self._mic_detect_button.clicked.connect(self._start_mic_auto_detect)
 
-        device_row = QWidget()
-        device_row_layout = QHBoxLayout(device_row)
-        device_row_layout.setContentsMargins(0, 0, 0, 0)
-        device_row_layout.setSpacing(8)
-        device_row_layout.addWidget(self._input_device_combo, 1)
-        device_row_layout.addWidget(refresh_button)
-        device_row_layout.addWidget(self._mic_detect_button)
-        layout.addRow("入力デバイス:", device_row)
+        device_block = QWidget()
+        device_layout = QVBoxLayout(device_block)
+        device_layout.setContentsMargins(0, 0, 0, 0)
+        device_layout.setSpacing(6)
+        device_head = QHBoxLayout()
+        device_head.setSpacing(8)
+        device_head.addWidget(QLabel("入力デバイス"))
+        device_head.addStretch()
+        device_head.addWidget(refresh_button)
+        device_head.addWidget(self._mic_detect_button)
+        device_layout.addLayout(device_head)
+        device_layout.addWidget(self._input_device_combo)
         # 検出中・検出結果の表示（待ち時間を可視化する。無表示の待ちはバグと区別できない）
         self._mic_detect_status = _make_caption("")
         self._mic_detect_status.setVisible(False)
-        layout.addRow("", self._mic_detect_status)
-        layout.addRow("", _make_caption("録音に使うマイク。「システム既定」は OS の設定に従います。"))
+        device_layout.addWidget(self._mic_detect_status)
+        device_layout.addWidget(
+            _make_caption("録音に使うマイク。「システム既定」は OS の設定に従います。")
+        )
+        _add_block(cl, device_block)
         self._mic_detect_done.connect(self._on_mic_detect_done)
 
-        # VAD（無音スキップ）
-        self._vad_check = QCheckBox("無音を自動スキップ（VAD）")
-        layout.addRow("", self._vad_check)
-        layout.addRow("", _make_caption("発話が検出されない録音を API に送らず、幻覚と無駄なコストを防ぎます。"))
+        layout.addWidget(card)
+
+        # --- カード: 音声処理（VAD・音量正規化） ---
+        card, cl = _make_card()
+
+        self._vad_check = self._make_toggle()
+        _add_row(
+            cl, "無音を自動スキップ（VAD）", self._vad_check,
+            caption="発話が検出されない録音を API に送らず、幻覚と無駄なコストを防ぎます。",
+        )
 
         # VAD 最小無音時間（Windows 版固有の調整項目）
         self._vad_silence_spin = QSpinBox()
         self._vad_silence_spin.setRange(100, 5000)
         self._vad_silence_spin.setSingleStep(50)
         self._vad_silence_spin.setSuffix(" ms")
-        layout.addRow("VAD 最小無音時間:", self._vad_silence_spin)
+        self._vad_silence_spin.setMinimumWidth(110)
+        _add_row(cl, "VAD 最小無音時間", self._vad_silence_spin)
+
+        # 音声前処理（API送信前）：Peak+RMS ハイブリッド音量正規化（Windows 版固有）
+        # ノイズ対策は API モデル側に任せ、ここでは小音量を持ち上げて音割れを防ぐのみ
+        self._volume_normalize_check = self._make_toggle()
+        _add_row(
+            cl, "音量正規化（Peak+RMS）", self._volume_normalize_check,
+            caption="小さい声を底上げし、音割れしない範囲でゲイン調整します。",
+        )
+
+        layout.addWidget(card)
+
+        # --- カード: 表示と動作（HUD・ストリーミング・自動 Enter） ---
+        card, cl = _make_card()
 
         # 録音中 HUD（画面下部中央の小型ピル）
-        self._hud_check = QCheckBox("録音中に HUD を表示")
-        layout.addRow("", self._hud_check)
+        self._hud_check = self._make_toggle()
+        _add_row(cl, "録音中に HUD を表示", self._hud_check)
 
         # リアルタイムストリーミング（Deepgram のホットキーで有効）
-        self._streaming_check = QCheckBox("リアルタイムストリーミング（Deepgram）")
+        self._streaming_check = self._make_toggle()
         self._streaming_check.toggled.connect(
             lambda _=False: self._refresh_streaming_status()
         )
-        layout.addRow("", self._streaming_check)
+        streaming_block = QWidget()
+        streaming_layout = QVBoxLayout(streaming_block)
+        streaming_layout.setContentsMargins(0, 0, 0, 0)
+        streaming_layout.setSpacing(6)
+        streaming_head = QHBoxLayout()
+        streaming_head.setSpacing(8)
+        streaming_head.addWidget(QLabel("リアルタイムストリーミング（Deepgram）"))
+        streaming_head.addStretch()
+        streaming_head.addWidget(self._streaming_check)
+        streaming_layout.addLayout(streaming_head)
         # 動かない構成（キー無し / websockets 未導入 / Deepgram バックエンド無し）の理由表示。
         # 実行時は警告ログだけで REST へ無言フォールバックするため、ここで可視化しないと
         # ユーザーには「表示されない」のがバグなのか設定なのか判断できない
         self._streaming_status = _make_caption("")
         self._streaming_status.setVisible(False)
-        layout.addRow("", self._streaming_status)
-        layout.addRow("", _make_caption(
+        streaming_layout.addWidget(self._streaming_status)
+        streaming_layout.addWidget(_make_caption(
             "バックエンドが Deepgram のホットキーで、話しながら HUD に文字を表示し、"
             "離した瞬間に確定します。オフにすると従来どおり録音後にまとめて変換します。"
         ))
+        _add_block(cl, streaming_block)
 
         # Auto Enter 遅延（ダブルタップ時、テキスト挿入後のEnter押下までの待機時間）
         # 一部アプリが即時Enterに反応しないため、ユーザー側で調整可能にする
@@ -551,10 +801,13 @@ class SettingsWindow(QWidget):
         self._auto_enter_delay_slider.setRange(0, 500)
         self._auto_enter_delay_slider.setSingleStep(10)
         self._auto_enter_delay_slider.setPageStep(50)
-        self._auto_enter_delay_slider.setMinimumWidth(220)
+        self._auto_enter_delay_slider.setFixedWidth(180)
 
         self._auto_enter_delay_label = QLabel("50 ms")
-        self._auto_enter_delay_label.setMinimumWidth(56)
+        self._auto_enter_delay_label.setMinimumWidth(50)
+        self._auto_enter_delay_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
         self._auto_enter_delay_slider.valueChanged.connect(
             lambda v: self._auto_enter_delay_label.setText(f"{v} ms")
         )
@@ -565,16 +818,15 @@ class SettingsWindow(QWidget):
         delay_row_layout.setSpacing(8)
         delay_row_layout.addWidget(self._auto_enter_delay_slider)
         delay_row_layout.addWidget(self._auto_enter_delay_label)
-        layout.addRow("自動 Enter の遅延:", delay_row)
-        layout.addRow("", _make_caption(
-            "ホットキーを素早く 2 回押すと、貼り付け後に Enter を自動送信します（チャット送信用）。"
-        ))
+        _add_row(
+            cl, "自動 Enter の遅延", delay_row,
+            caption="ホットキーを素早く 2 回押すと、貼り付け後に Enter を自動送信します（チャット送信用）。",
+        )
 
-        # 音声前処理（API送信前）：Peak+RMS ハイブリッド音量正規化（Windows 版固有）
-        # ノイズ対策は API モデル側に任せ、ここでは小音量を持ち上げて音割れを防ぐのみ
-        self._volume_normalize_check = QCheckBox("音量正規化（Peak+RMS）")
-        layout.addRow("", self._volume_normalize_check)
-        layout.addRow("", _make_caption("小さい声を底上げし、音割れしない範囲でゲイン調整します。"))
+        layout.addWidget(card)
+
+        # --- カード: テキスト整形（モデル・指示） ---
+        card, cl = _make_card()
 
         # LLM テキスト整形に使う Groq モデル（両ホットキー共通・リストから選択）
         # 表示は「（推奨）」付きラベル、値は userData のモデル識別子
@@ -583,74 +835,90 @@ class SettingsWindow(QWidget):
             self._format_model_combo.addItem(
                 _model_label(model, KNOWN_FORMAT_MODELS[0]), model
             )
-        layout.addRow("整形モデル:", self._format_model_combo)
-        layout.addRow("", _make_caption(
-            "テキスト整形に使う Groq のモデル。速度重視なら既定（llama-3.1-8b-instant）を推奨。"
-        ))
+        _add_row(
+            cl, "整形モデル", self._format_model_combo,
+            caption="テキスト整形に使う Groq のモデル。速度重視なら既定（llama-3.1-8b-instant）を推奨。",
+        )
 
         # テキスト整形で LLM に渡すプロンプト（編集可・空欄なら既定）
-        auto_prompt_header = QWidget()
-        auto_prompt_header_layout = QHBoxLayout(auto_prompt_header)
-        auto_prompt_header_layout.setContentsMargins(0, 0, 0, 0)
-        auto_prompt_header_layout.addWidget(QLabel("整形の指示:"))
-        auto_prompt_header_layout.addStretch()
-
         auto_prompt_reset = QPushButton("既定に戻す")
         auto_prompt_reset.setCursor(Qt.CursorShape.PointingHandCursor)
         auto_prompt_reset.clicked.connect(
             lambda: self._format_auto_prompt_edit.setPlainText(DEFAULT_FORMAT_PROMPT)
         )
-        auto_prompt_header_layout.addWidget(auto_prompt_reset)
-        layout.addRow(auto_prompt_header)
 
         self._format_auto_prompt_edit = QPlainTextEdit()
         self._format_auto_prompt_edit.setFixedHeight(110)
-        layout.addRow(self._format_auto_prompt_edit)
-        layout.addRow("", _make_caption(
-            "テキスト整形で LLM に渡す指示。"
-            "自由に編集できます（空欄なら既定の指示を使用）。"
+
+        prompt_block = QWidget()
+        prompt_layout = QVBoxLayout(prompt_block)
+        prompt_layout.setContentsMargins(0, 0, 0, 0)
+        prompt_layout.setSpacing(6)
+        prompt_head = QHBoxLayout()
+        prompt_head.setSpacing(8)
+        prompt_head.addWidget(QLabel("整形の指示"))
+        prompt_head.addStretch()
+        prompt_head.addWidget(auto_prompt_reset)
+        prompt_layout.addLayout(prompt_head)
+        prompt_layout.addWidget(self._format_auto_prompt_edit)
+        prompt_layout.addWidget(_make_caption(
+            "テキスト整形で LLM に渡す指示。自由に編集できます（空欄なら既定の指示を使用）。"
         ))
+        _add_block(cl, prompt_block)
+
+        layout.addWidget(card)
+
+        # --- カード: 起動 ---
+        card, cl = _make_card()
 
         # ログイン時に自動起動（Windows のみ。Mac ネイティブ版は SMAppService で対応）。
         # 状態はレジストリ側が真実なので settings.yaml には保存しない
-        self._autostart_check = QCheckBox("ログイン時に起動")
+        self._autostart_check = self._make_toggle()
         self._autostart_check.setEnabled(autostart.is_supported())
-        layout.addRow("", self._autostart_check)
-        if not autostart.is_supported():
-            layout.addRow("", _make_caption("この機能は Windows でのみ利用できます。"))
+        _add_row(
+            cl, "ログイン時に起動", self._autostart_check,
+            caption="" if autostart.is_supported() else "この機能は Windows でのみ利用できます。",
+        )
+
+        layout.addWidget(card)
+        layout.addStretch()
 
         return self._wrap_scroll(page)
 
     # ------------------------------------------------------------------
-    # ホットキータブ（Mac 版 SlotSettingsTab と同項目・同文言）
+    # ホットキーページ（Mac 版 SlotSettingsTab と同項目・同文言）
     # ------------------------------------------------------------------
 
-    def _create_slot_tab(self, slot_id: int) -> QWidget:
+    def _create_slot_page(self, slot_id: int) -> QWidget:
         """
-        ホットキースロットのタブページを作成する。
+        ホットキースロットのページを作成する。
 
         Args:
             slot_id: スロットID（1または2）
 
         Returns:
-            ホットキー設定のタブページ
+            ホットキー設定のページ
         """
         page = QWidget()
-        layout = QFormLayout(page)
-        layout.setSpacing(10)
-        layout.setContentsMargins(16, 16, 16, 16)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 8, 24, 24)
+        layout.setSpacing(14)
+
+        card, cl = _make_card()
 
         # ホットキー入力
         hotkey_input = HotkeyInput(platform_adapter=self._platform)
+        hotkey_input.setFixedWidth(220)
         setattr(self, f"_hotkey{slot_id}_input", hotkey_input)
-        layout.addRow("ホットキー:", hotkey_input)
+        _add_row(cl, "ホットキー", hotkey_input)
 
         # 動作モード（表示は日本語ラベル、保存値は userData の識別子）
         mode_combo = QComboBox()
         for value, label in _MODE_LABELS:
             mode_combo.addItem(label, value)
+        mode_combo.setMinimumWidth(160)
         setattr(self, f"_mode{slot_id}_combo", mode_combo)
-        layout.addRow("動作:", mode_combo)
+        _add_row(cl, "動作", mode_combo)
 
         # バックエンド選択（REST + ストリーミングの全 4 種）
         backend_combo = QComboBox()
@@ -659,50 +927,59 @@ class SettingsWindow(QWidget):
         backend_combo.currentIndexChanged.connect(
             lambda _=0, sid=slot_id: self._on_slot_backend_changed(sid)
         )
+        backend_combo.setMinimumWidth(180)
         setattr(self, f"_backend{slot_id}_combo", backend_combo)
-        layout.addRow("バックエンド:", backend_combo)
+        _add_row(cl, "バックエンド", backend_combo)
 
         # モデル選択（バックエンド変更で候補を差し替える）
         model_combo = QComboBox()
+        model_combo.setMinimumWidth(260)
         setattr(self, f"_api{slot_id}_model_combo", model_combo)
-        layout.addRow("モデル:", model_combo)
+        _add_row(cl, "モデル", model_combo)
 
         # プロンプト入力（文字起こしのヒント）
         prompt_input = QLineEdit()
         prompt_input.setPlaceholderText("専門用語や固有名詞のヒントを入力")
         setattr(self, f"_api{slot_id}_prompt_input", prompt_input)
-        layout.addRow("プロンプト（任意）:", prompt_input)
-        layout.addRow("", _make_caption(
+        prompt_block = QWidget()
+        prompt_layout = QVBoxLayout(prompt_block)
+        prompt_layout.setContentsMargins(0, 0, 0, 0)
+        prompt_layout.setSpacing(6)
+        prompt_layout.addWidget(QLabel("プロンプト（任意）"))
+        prompt_layout.addWidget(prompt_input)
+        prompt_layout.addWidget(_make_caption(
             "文字起こしのヒント。よく使う固有名詞を書いておくと精度が上がります。"
         ))
+        _add_block(cl, prompt_block)
 
         # テキスト整形（LLM）: 貼り付け前に Groq の高速 LLM で 1 回整形する
-        # （整形内容は LLM が自動判断。指示は「一般」タブで編集可。Mac 版と文言を一致させる）
-        format_check = QCheckBox("テキスト整形（LLM）")
+        # （整形内容は LLM が自動判断。指示は「一般」ページで編集可。Mac 版と文言を一致させる）
+        format_check = self._make_toggle()
         setattr(self, f"_format{slot_id}_check", format_check)
-        layout.addRow("", format_check)
-        layout.addRow("", _make_caption(
-            "文字起こし後に Groq の高速 LLM で整形してから貼り付けます。"
-            "内容に応じた整形を LLM が自動判断します（指示は「一般」タブで編集可）。"
-            "オフなら文字起こしをそのまま貼り付けます。"
-        ))
+        _add_row(
+            cl, "テキスト整形（LLM）", format_check,
+            caption=(
+                "文字起こし後に Groq の高速 LLM で整形してから貼り付けます。"
+                "内容に応じた整形を LLM が自動判断します（指示は「一般」ページで編集可）。"
+                "オフなら文字起こしをそのまま貼り付けます。"
+            ),
+        )
+
+        layout.addWidget(card)
+        layout.addStretch()
 
         return self._wrap_scroll(page)
 
     # ------------------------------------------------------------------
-    # API キータブ（Mac 版 ApiKeysTab と同構成）
+    # 履歴ページ（Mac 版 HistoryTab と同構成。クリックでクリップボードにコピー）
     # ------------------------------------------------------------------
 
-    # ------------------------------------------------------------------
-    # 履歴タブ（Mac 版 HistoryTab と同構成。クリックでクリップボードにコピー）
-    # ------------------------------------------------------------------
-
-    def _create_history_tab(self) -> QWidget:
-        """履歴タブを作成する（直近の音声入力をクリックで再コピー）。"""
+    def _create_history_page(self) -> QWidget:
+        """履歴ページを作成する（直近の音声入力をクリックで再コピー）。"""
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setSpacing(10)
-        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setContentsMargins(24, 8, 24, 24)
 
         # QListWidget 自体がスクロールするため _wrap_scroll は不要
         self._history_list = QListWidget()
@@ -733,9 +1010,14 @@ class SettingsWindow(QWidget):
         self._refresh_history()
         return page
 
-    def _on_tab_changed(self, index: int) -> None:
-        """履歴タブが選択されたら一覧を最新の内容に更新する。"""
-        if index == self._history_tab_index:
+    def _on_nav_changed(self, row: int) -> None:
+        """サイドバー選択でページを切り替え、タイトルを更新する。"""
+        if row < 0:
+            return
+        self._pages.setCurrentIndex(row)
+        self._page_title.setText(self._nav.item(row).text())
+        # ウィンドウを開いたまま音声入力しても、履歴ページを開いた時点で最新になるように
+        if row == self._history_page_index:
             self._refresh_history()
 
     def _refresh_history(self) -> None:
@@ -782,19 +1064,26 @@ class SettingsWindow(QWidget):
         super().showEvent(event)
         self._refresh_history()
 
-    def _create_api_keys_tab(self) -> QWidget:
-        """API キータブを作成する（4 バックエンド分の保存・削除）。"""
+    def _create_api_keys_page(self) -> QWidget:
+        """API キーページを作成する（4 バックエンド分の保存・削除を 1 カードに収める）。"""
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setSpacing(16)
-        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+        layout.setContentsMargins(24, 8, 24, 24)
 
         # service 識別子 → (入力欄, 状態ラベル)
         self._api_key_inputs = {}
         self._api_key_status = {}
 
+        card, cl = _make_card()
+
         for backend_value, label in _BACKEND_LABELS:
             service = _BACKEND_TO_SERVICE[backend_value]
+
+            block = QWidget()
+            block_layout = QVBoxLayout(block)
+            block_layout.setContentsMargins(0, 0, 0, 0)
+            block_layout.setSpacing(6)
 
             head = QHBoxLayout()
             head.setSpacing(8)
@@ -829,15 +1118,14 @@ class SettingsWindow(QWidget):
             body.addWidget(save_btn)
             body.addWidget(delete_btn)
 
-            row = QVBoxLayout()
-            row.setSpacing(6)
-            row.addLayout(head)
-            row.addLayout(body)
-            layout.addLayout(row)
+            block_layout.addLayout(head)
+            block_layout.addLayout(body)
+            _add_block(cl, block)
 
             self._api_key_inputs[service] = key_input
             self._api_key_status[service] = status_label
 
+        layout.addWidget(card)
         layout.addWidget(_make_caption(
             "API キーは OS の資格情報ストア（Windows 資格情報マネージャー / macOS キーチェーン）に"
             "安全に保存されます。settings.yaml には書き込まれません。"
@@ -896,7 +1184,7 @@ class SettingsWindow(QWidget):
             secrets.get_api_key(secrets.SERVICE_DEEPGRAM)
             or os.environ.get("DEEPGRAM_API_KEY")
         ):
-            reason = "Deepgram の API キーが未設定のため動作しません（API キータブで設定）"
+            reason = "Deepgram の API キーが未設定のため動作しません（API キーページで設定）"
         if not reason:
             backends = {
                 getattr(self, f"_backend{sid}_combo").currentData()
@@ -906,7 +1194,7 @@ class SettingsWindow(QWidget):
             if TranscriptionBackend.DEEPGRAM.value not in backends:
                 reason = (
                     "どちらのホットキーもバックエンドが Deepgram でないため使われません"
-                    "（ホットキー 1 / 2 タブで Deepgram を選択）"
+                    "（ホットキー 1 / 2 ページで Deepgram を選択）"
                 )
 
         if reason:
@@ -1143,6 +1431,9 @@ class SettingsWindow(QWidget):
         """
         stylesheet = MacTheme.get_stylesheet(is_dark)
         self.setStyleSheet(stylesheet)
+        # トグルスイッチは QSS ではなく自前描画のため、テーマを個別に伝える
+        for toggle in self._toggles:
+            toggle.set_dark(is_dark)
 
     def _save_settings(self) -> None:
         """設定をファイルに保存する。"""
