@@ -16,12 +16,20 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 OUT="Sources/Voicekey/Config/EmbeddedKeys.generated.swift"
 
+# ターミナル/チャット経由のコピペで -- が – (en dash) や — (em dash) に化ける事故が
+# 実際に複数回起きたため、化けたダッシュの変種も受け付ける。
+# また、引数の打ち間違いで黙ってスタブを生成すると「できたつもり」事故になるためエラーにする
+ARG="${1:-}"
 MODE="stub"
-if [[ "${1:-}" == "--dist" ]]; then
-    MODE="dist"
-elif [[ "${1:-}" == "--export-env" ]]; then
-    MODE="export-env"
-fi
+case "$ARG" in
+    "") MODE="stub" ;;
+    --dist | –dist | —dist | –-dist | —-dist) MODE="dist" ;;
+    --export-env | –export-env | —export-env | –-export-env | —-export-env) MODE="export-env" ;;
+    *)
+        echo "エラー: 不明な引数: ${ARG} (使えるのは --dist / --export-env)" >&2
+        exit 1
+        ;;
+esac
 
 if [[ "$MODE" == "stub" ]]; then
     cat > "$OUT" <<'EOF'
