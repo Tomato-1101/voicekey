@@ -153,13 +153,9 @@ def detect_speaking_device(
     # 使い捨てスレッド内なので sleep でよい（UI はメインスレッドで進捗表示中）
     time.sleep(duration)
 
-    for probe in probes:
-        try:
-            probe.stream.stop()
-            probe.stream.close()
-        except Exception:
-            pass
-
+    # スコアはストリーム破棄より先に確定する。WASAPI 等で stop()/close() が
+    # ハングするデバイスがあると、後置だと結果通知（on_done → UI 復帰）まで
+    # 道連れになり「検出中…」のまま固まるため
     best: Optional[Dict[str, Any]] = None
     for probe in probes:
         score = probe.score()
@@ -171,6 +167,17 @@ def detect_speaking_device(
                 "label": probe.device["label"],
                 "score": score,
             }
+
+    # ストリーム破棄は別デーモンスレッドで行う（ハングしても結果には影響しない）
+    def _teardown() -> None:
+        for probe in probes:
+            try:
+                probe.stream.stop()
+                probe.stream.close()
+            except Exception:
+                pass
+
+    threading.Thread(target=_teardown, daemon=True, name="MicAutoDetectTeardown").start()
     return best
 
 

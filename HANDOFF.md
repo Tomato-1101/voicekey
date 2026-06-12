@@ -18,8 +18,9 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 - DIST ビルドでは設定画面の API キータブを非表示。
 - 配布用ブランチは `beta`。開発は main、リリース時に main → beta マージ → dist ビルド → タグ。
 - 配布物置き場: 公開リポジトリ `voicekey-releases`（バイナリ+appcast+version.json のみ）。
-- Apple Developer Program はこれから加入。それまで Apple Development 署名 + 右クリック→開く手順書同梱。
-  ビルドスクリプトは Developer ID + notarize に切替可能なパラメータ化をしておく。
+- **Apple Developer Program には加入しない（2026-06-12 ユーザー確定）**。配布は Apple Development 署名 +
+  右クリック→開く手順書同梱が恒久形。Phase 7（公証切替）は中止。
+  build_dmg.sh の --identity / --notarize パラメータは残置するが使わない。
 - Mac 版コード変更後は ビルド→旧プロセス kill→open→動作確認 までワンセット（CLAUDE.md ルール）。
 - UI スモーク・テストでは secrets/keyring を必ずモック（実 Keychain ダイアログ事故防止）。
 
@@ -48,24 +49,26 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 - [x] Phase 6: Windows UI 再デザイン（検証済み: preview_ui.py で全タブ × ダーク/ライト + HUD 4 状態 +
       トレイ 4 状態のスクショを生成・目視 / py_compile / unittest 111 件全通過。
       スクショで一般タブの横スクロールバー常駐バグを発見し修正。スクショはユーザーに送付済み）
-- [ ] Phase 7（後日）: Developer ID + 公証切替（加入完了待ち）
+- ~~Phase 7: Developer ID + 公証切替~~ — **中止**（2026-06-12、ユーザーが Apple Developer Program
+  不加入を決定。Apple Development 署名 + 手順書の現行方式が恒久形）
 
 ## ユーザー待ちの項目（Phase 3 の完了に必要）
 
 1. **public リポジトリ voicekey-releases の作成承認**: 権限レイヤーが「公開リポジトリ作成は
-   ユーザー明示承認が必要」と判断。中身（README・mac/・windows/）は /tmp/voicekey-releases に
-   コミット済み。承認をもらえば `gh repo create` 一発。
+   ユーザー明示承認が必要」と判断。中身（README・mac/・windows/）は
+   `/Users/tomato/Project/voicekey-releases/` にコミット済み（/tmp は消えたため移設）。
+   承認をもらえば `gh repo create` 一発。
 2. **実キービルドの初回 Keychain 許可**: `cd macos && ./scripts/build_dmg.sh --version 1.0.0` 実行時、
    security が voicekey.{OpenAI,Groq,ElevenLabs,Deepgram} を読む際に許可ダイアログが最大4回出る。
    「常に許可」を選べば以後は出ない（ユーザーが画面の前にいる時に実行する）。
 3. **各 API ダッシュボードで利用上限・アラート設定**（現行キーをそのまま埋め込むため必須の保険）。
-4. **Apple Developer Program（$99/年）加入手続き** → 加入後 Phase 7 で公証に切替。
 
 ## 現在地 / 次の一手
 
-- 現在地: Phase 0〜2・4〜6 完了。自動実行できる作業はすべて完了。
-- 次の一手: Phase 3 のユーザー待ち 4 項目（上記）→ 完了後に初回 Mac リリース実行。
-  Phase 7 は Apple Developer Program 加入後。
+- 現在地: Phase 0〜2・4〜6 完了 + バグレビュー1巡（ストリーミング診断表示・マイク検出ハング耐性を修正済み）。
+  自動実行できる作業はすべて完了。Phase 7 は中止（公証なしが恒久形）。
+- 次の一手: Phase 3 のユーザー待ち 3 項目（上記）→ 完了後に初回 Mac リリース実行。
+  テスターへの渡し方は voicekey-releases の README（Releases の DMG / Setup.exe の URL を共有するだけ）。
 - Windows 版リリース手順: Mac で `--export-env` → `.env.dist` を Windows ビルド機へ →
   `build_windows_dist.ps1 -Version X.Y.Z` → Releases 添付 → version.json コミット
   （詳細と順序の注意は docs/BUILD_WINDOWS.md）。
