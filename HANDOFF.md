@@ -22,11 +22,10 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
   DMG/exe は `/downloads/`、appcast+更新 zip は `/mac/`、version.json は `/windows/`、
   最新版表示は `/downloads.json`。**GitHub はテスターから一切見えない**（2026-06-12 ユーザー要望で
   GitHub Releases 方式から移行。voicekey-releases は private 化済み・もう使わない）。
-- **Apple Developer Program は加入方針へ転換（2026-06-12 ユーザー決定）**。理由: 実テスターが
-  macOS 15 の Gatekeeper ブロックで詰まった + 今後 iPhone アプリの App Store 展開に必須。
-  加入手続き（developer.apple.com/programs/enroll・$99/年）はユーザー本人のみ可・承認まで最大 48h。
-  **加入完了後に Phase 7（Developer ID + 公証）を再開する**（手順は Phase 7 の項を参照）。
-  それまでの配布は Apple Development 署名 + 手順書の現行方式を継続。
+- **Apple Developer Program 加入は「実際に売る段階で」に延期（2026-06-12 ユーザー最終決定）**。
+  経緯: 同日に不加入確定 → 加入方針 → 「テスト段階だから今はやらない。販売時にやる」で確定。
+  ベータ期間中の配布は Apple Development 署名 + Gatekeeper 回避手順書（サイト・DMG 同梱）で運用。
+  販売開始時に Phase 7（Developer ID + 公証、手順は Phase 7 の項）を実施する。
 - Mac 版コード変更後は ビルド→旧プロセス kill→open→動作確認 までワンセット（CLAUDE.md ルール）。
 - UI スモーク・テストでは secrets/keyring を必ずモック（実 Keychain ダイアログ事故防止）。
 
@@ -86,14 +85,19 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
   注意: macOS 15 では DMG を開く段階でも Gatekeeper 警告が出る（実テスター報告）。
   手順はサイトと DMG 同梱手順書に記載済み（完了 → プライバシーとセキュリティ → このまま開く）。
 - **未完了タスク: Windows 版 v1.0.0 ビルド（2026-06-12 ユーザー判断で後回し）**。
-  準備は全部済んでいる — ①`.env.dist` 生成済み（リポジトリ直下・chmod 600・4 キー入り。
-  Windows 機へは USB か共有フォルダで手動コピー、メール/クラウド禁止）
-  ②Windows 側エージェント（Claude/Codex）に貼る指示プロンプトは
-  `~/Desktop/voicekey-windows-build-prompt.txt`（git URL・認証・検証 12 項目入り）。
-  ビルド完了後は setup.exe と version.json を Mac に持ち帰り → voicekey-site/downloads/ と
-  windows/ へ配置 → downloads.json 更新 → `vercel deploy --prod`。
+  方式は **GitHub Actions に変更済み**（2026-06-12 ユーザー承認。PC またぎ・.env.dist 手運びを廃止）。
+  ワークフロー `.github/workflows/windows-build.yml` 作成済み。
+  残り: ①ユーザーが初回のみ `gh secret set -f .env.dist` で Secrets 登録（登録後 .env.dist は削除）
+  ②`gh workflow run windows-build.yml -f version=1.0.0` → artifact を DL →
+  voicekey-site へ配置 → downloads.json 更新 → `vercel deploy --prod`（詳細 docs/BUILD_WINDOWS.md）。
+  ~/Desktop/voicekey-windows-build-prompt.txt（旧・実機ビルド用プロンプト）は不要になった。
+- **dev/beta の起動運用（2026-06-12 確定）**: 普段は開発版だけを使う。
+  `/Applications/voicekey.app` に開発版を常設（`macos/scripts/run_dev.sh` がビルド→インストール→
+  再起動まで実施）。ベータ版の動作確認は `macos/scripts/run_beta.sh`（dist/ の最新 DMG を
+  マウントして一時起動・終わったら run_dev.sh で戻る）。dist/voicekey.app はビルドごとに
+  dev/dist で上書きされるため常用しない。見分け方: 設定画面に API キータブがあれば開発版。
 - 次の一手: ①ユーザーが各 API ダッシュボードで利用上限・アラート設定
-  ②上記 Windows 版ビルド（ユーザーの再開待ち）。
+  ②ユーザーが `gh secret set -f .env.dist` → Windows 版 v1.0.0 を CI でビルド・リリース。
 - 次回リリース（バグ修正等）の手順: main で修正 → `build_dmg.sh --version X.Y.Z` →
   DMG を voicekey-site/downloads/、zip+appcast を voicekey-site/mac/ へコピー →
   downloads.json 更新 → `vercel deploy --prod` → 既存ユーザーへ自動配布。

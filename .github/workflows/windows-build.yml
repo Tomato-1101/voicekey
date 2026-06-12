@@ -1,0 +1,81 @@
+# Windows 版インストーラを GitHub Actions（windows-latest）でビルドする。
+#
+# 目的: Mac から PC をまたがずに Windows 版をリリースできるようにする
+#       （.env.dist の USB 手運び・Windows 実機でのビルド作業を廃止）。
+#
+# 使い方（Mac のターミナルから）:
+#   gh workflow run windows-build.yml -f version=1.0.0
+#   gh run watch                                  # 進捗を見る（約 10〜15 分）
+#   gh run download -n voicekey-windows-installer -D dist/ci/
+#   → dist/ci/ の setup.exe と version.json を voicekey-site へ配置して deploy
+#
+# 前提（初回のみ・ユーザー作業）:
+#   リポジトリ直下で `gh secret set -f .env.dist` を実行して
+#   OPENAI_API_KEY / GROQ_API_KEY / ELEVENLABS_API_KEY / DEEPGRAM_API_KEY を
+#   GitHub Secrets に登録する（.env.dist 自体はどこにもアップロードしない）。
+#
+# セキュリティ:
+# - キーは Secrets → ビルドステップの環境変数として generate_embedded_keys.py に渡す
+#   （.env.dist ファイルはランナー上に作らない。ログにも出ない＝GitHub が自動マスク）。
+# - 生成された embedded_keys.py は build_windows_dist.ps1 の finally で削除される。
+# - リポジトリは private。artifact（XOR 難読化済みキー入り exe）はテスター配布物と同等。
+
+name: Windows ビルド
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "リリースバージョン（例: 1.0.0）"
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: バージョン書式の検証
+        shell: pwsh
+        run: |
+          if ("${{ inputs.version }}" -notmatch '^\d+\.\d+\.\d+$') {
+            Write-Error "version は X.Y.Z 形式で指定してください: ${{ inputs.version }}"
+          }
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # torch の Windows wheel が確実にある 3.12 に固定（ローカル 3.14 とは別）
+          python-version: "3.12"
+          cache: pip
+
+      - name: 依存パッケージのインストール
+        run: pip install -r requirements.txt
+
+      - name: Inno Setup 6 の確認（ランナーに無ければ導入）
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+
+      - name: 配布ビルド（キー埋め込み → PyInstaller → Inno Setup）
+        shell: pwsh
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
+        run: powershell -ExecutionPolicy Bypass -File scripts\build\build_windows_dist.ps1 -Version "${{ inputs.version }}"
+
+      - name: 成果物のアップロード（setup.exe + version.json）
+        uses: actions/upload-artifact@v4
+        with:
+          name: voicekey-windows-installer
+          path: |
+            dist/installer/voicekey-${{ inputs.version }}-setup.exe
+            dist/installer/version.json
+          if-no-files-found: error
+          retention-days: 14

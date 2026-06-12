@@ -1,17 +1,58 @@
 # Windows 配布ビルド手順
 
-Windows 実機で voicekey の配布用インストーラ（テスター向け・API キー埋め込み版）を
-ビルドする手順。macOS 上では構文・ロジック・UI の検証までしかできないため、
-本書のチェックリストは必ず Windows 実機で通すこと。
+voicekey の配布用インストーラ（テスター向け・API キー埋め込み版）のビルド手順。
+**標準の方法は GitHub Actions（Mac から完結・Windows 実機不要）**。
+Windows 実機での手動ビルドはフォールバック（後述）。
+いずれの場合も「配布前チェックリスト」の実機確認は Windows 機で通すこと
+（ビルドと動作確認は別物）。
 
-## 前提ソフトウェア
+## 標準: GitHub Actions でビルド（Mac から完結）
+
+ワークフロー: `.github/workflows/windows-build.yml`（windows-latest ランナー）。
+キーは GitHub Secrets → ビルドステップの環境変数として注入する。
+`.env.dist` をランナーに置かず、ログにはマスクされて出ない。
+
+### 初回のみ: Secrets 登録（ユーザー本人が実行）
+
+```bash
+# Mac 側・リポジトリ直下で（.env.dist が無ければ先に --export-env で生成）
+./macos/scripts/generate_embedded_keys.sh --export-env
+gh secret set -f .env.dist
+# → OPENAI_API_KEY / GROQ_API_KEY / ELEVENLABS_API_KEY / DEEPGRAM_API_KEY が登録される
+rm .env.dist   # 登録後はローカルに残さない
+```
+
+キーをローテーションしたら同じ手順で再登録する。
+
+### 毎リリース
+
+```bash
+gh workflow run windows-build.yml -f version=1.0.0
+gh run watch                          # 進捗を見る（約 10〜15 分）
+gh run download -n voicekey-windows-installer -D dist/ci/
+```
+
+`dist/ci/` に `voicekey-<Version>-setup.exe` と `version.json` が落ちる。
+以降は「リリース（順番厳守）」へ。
+
+ビルド内容はローカルと同一（build_windows_dist.ps1 を CI 上で実行）:
+constants.py の APP_VERSION 更新 → キー埋め込み生成 → PyInstaller →
+.py 混入検査 → Inno Setup → SHA256 + version.json。
+注意: CI 上の constants.py 変更はランナー内で消えるため、
+**リリース後にローカルでも APP_VERSION を同じ値に更新してコミットする**。
+
+## フォールバック: Windows 実機で手動ビルド
+
+GitHub Actions が使えないとき（Secrets 失効・ランナー障害等）のみ。
+
+### 前提ソフトウェア
 
 | ソフト | 用途 | 入手先 |
 |---|---|---|
 | Python 3.10+ | アプリ本体 | python.org |
 | Inno Setup 6 | インストーラ作成（ISCC.exe） | https://jrsoftware.org/isdl.php |
 
-## 初回セットアップ
+### 初回セットアップ
 
 ```powershell
 git clone <voicekey リポジトリ> ; cd voicekey
@@ -19,7 +60,7 @@ python -m venv venv
 venv\Scripts\python.exe -m pip install -r requirements.txt pyinstaller
 ```
 
-## API キーの持ち込み（.env.dist）
+### API キーの持ち込み（.env.dist）
 
 埋め込みキーは git 管理外の `.env.dist`（リポジトリ直下）から読む。
 Mac 側で書き出して **手動コピー**する（メール・チャット・クラウドに上げない）:
@@ -36,7 +77,7 @@ Mac 側で書き出して **手動コピー**する（メール・チャット�
 **ビルドが終わったら `.env.dist` は削除する**（`src\config\embedded_keys.py` は
 ビルドスクリプトが自動削除する）。
 
-## ビルド
+### ビルド
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build\build_windows_dist.ps1 -Version 1.0.0
@@ -45,7 +86,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build\build_windows_dist.ps1 -V
 スクリプトが行うこと:
 
 1. `src\config\constants.py` の `APP_VERSION` を指定バージョンに更新（恒久変更・要コミット）
-2. `.env.dist` から XOR 難読化した `src\config\embedded_keys.py` を生成
+2. `.env.dist`（または環境変数）から XOR 難読化した `src\config\embedded_keys.py` を生成
 3. PyInstaller（onedir・`noarchive=False` で PYZ 固め）
 4. **dist に .py が混入していないか検査**（あれば配布中止）
 5. Inno Setup で `dist\installer\voicekey-<Version>-setup.exe` を作成
@@ -55,7 +96,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build\build_windows_dist.ps1 -V
 ## リリース（順番厳守）
 
 1. `voicekey-<Version>-setup.exe` を Mac の `/Users/tomato/Project/voicekey-site/downloads/` へ、
-   `dist\installer\version.json` を `voicekey-site/windows/version.json` へコピー
+   `version.json` を `voicekey-site/windows/version.json` へコピー
    （配布はすべて Vercel サイト経由。GitHub はテスターから見えない構成）
 2. `voicekey-site/downloads.json` の windows エントリを新バージョンに更新
 3. voicekey-site で `vercel deploy --prod`

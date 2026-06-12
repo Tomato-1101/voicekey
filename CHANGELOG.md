@@ -2,6 +2,22 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
+## [Unreleased] - 2026-06-12
+
+### Added
+- **開発版／ベータ版の起動を 1 コマンド化**（「2 バージョンをはっきり区別したい」要望対応）
+  - `macos/scripts/run_dev.sh` 新規: スタブ鍵で再ビルド → `/Applications/voicekey.app` へ
+    インストール → 再起動。普段使いは常にこれ（API キータブが表示されるのが開発版の目印）
+  - `macos/scripts/run_beta.sh` 新規: dist/ の最新配布 DMG をマウントしてベータ版を一時起動
+    （テスターと同一物の動作確認用。終わったら run_dev.sh で戻る）
+  - 背景: dist/voicekey.app はビルドのたびに dev/dist で上書きされ、どちらが動いているか
+    分からなくなっていた（実際に配布ビルド後、ベータ版を常用し続ける状態が発生していた）
+- **Windows 版ビルドの GitHub Actions 化**（PC またぎ・.env.dist 手運びの廃止）
+  - `.github/workflows/windows-build.yml` 新規: windows-latest で
+    `gh workflow run windows-build.yml -f version=X.Y.Z` → setup.exe + version.json を
+    artifact で取得。キーは GitHub Secrets → 環境変数で注入（ランナーにファイルを置かない）
+  - `docs/BUILD_WINDOWS.md` を GitHub Actions 標準・実機ビルドはフォールバックに再構成
+
 ## [1.0.1] - 2026-06-12
 
 Mac 版 v1.0.1 を公開（アプリアイコン追加・DMG レイアウト改善）。
