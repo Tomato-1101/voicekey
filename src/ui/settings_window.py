@@ -6,6 +6,8 @@ Mac 版 SettingsView.swift と同じ 5 タブ構成（一般 / ホットキー 1
 ダーク/ライトテーマ切り替えに対応（Qt は OS テーマに自動追従しないため Windows 版のみ）。
 """
 
+import importlib.util
+import os
 from typing import Optional
 
 from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QPointF, QTimer, Signal
@@ -528,7 +530,16 @@ class SettingsWindow(QWidget):
 
         # リアルタイムストリーミング（Deepgram のホットキーで有効）
         self._streaming_check = QCheckBox("リアルタイムストリーミング（Deepgram）")
+        self._streaming_check.toggled.connect(
+            lambda _=False: self._refresh_streaming_status()
+        )
         layout.addRow("", self._streaming_check)
+        # 動かない構成（キー無し / websockets 未導入 / Deepgram バックエンド無し）の理由表示。
+        # 実行時は警告ログだけで REST へ無言フォールバックするため、ここで可視化しないと
+        # ユーザーには「表示されない」のがバグなのか設定なのか判断できない
+        self._streaming_status = _make_caption("")
+        self._streaming_status.setVisible(False)
+        layout.addRow("", self._streaming_status)
         layout.addRow("", _make_caption(
             "バックエンドが Deepgram のホットキーで、話しながら HUD に文字を表示し、"
             "離した瞬間に確定します。オフにすると従来どおり録音後にまとめて変換します。"
@@ -855,6 +866,56 @@ class SettingsWindow(QWidget):
             status_label.setText("未設定")
             status_label.setStyleSheet(MacTheme.status_muted_style())
 
+    def _refresh_streaming_status(self) -> None:
+        """
+        リアルタイムストリーミングを阻害する要因を診断して表示する。
+
+        実行時のフォールバック（streaming_transcriber.start() が False）は
+        警告ログにしか残らないため、設定画面で同じ判定を行い理由を見せる。
+        判定はチェックボックスが ON のときだけ行い、問題なければ何も出さない。
+        """
+        label = getattr(self, "_streaming_status", None)
+        if label is None:
+            return
+        if not self._streaming_check.isChecked():
+            label.setVisible(False)
+            return
+
+        reason = ""
+        # streaming_transcriber.start() と同じ順序で判定する
+        try:
+            ws_available = importlib.util.find_spec("websockets.sync.client") is not None
+        except Exception:
+            ws_available = False
+        if not ws_available:
+            reason = (
+                "websockets ライブラリが未導入のため動作しません"
+                "（pip install -r requirements.txt を実行してください）"
+            )
+        if not reason and not (
+            secrets.get_api_key(secrets.SERVICE_DEEPGRAM)
+            or os.environ.get("DEEPGRAM_API_KEY")
+        ):
+            reason = "Deepgram の API キーが未設定のため動作しません（API キータブで設定）"
+        if not reason:
+            backends = {
+                getattr(self, f"_backend{sid}_combo").currentData()
+                for sid in (1, 2)
+                if getattr(self, f"_backend{sid}_combo", None) is not None
+            }
+            if TranscriptionBackend.DEEPGRAM.value not in backends:
+                reason = (
+                    "どちらのホットキーもバックエンドが Deepgram でないため使われません"
+                    "（ホットキー 1 / 2 タブで Deepgram を選択）"
+                )
+
+        if reason:
+            label.setText("⚠ " + reason)
+            label.setStyleSheet(MacTheme.status_warn_style(self._is_dark_mode))
+            label.setVisible(True)
+        else:
+            label.setVisible(False)
+
     def _save_api_key(self, service: str) -> None:
         """
         入力欄の API キーを資格情報ストアに保存する。
@@ -877,12 +938,15 @@ class SettingsWindow(QWidget):
 
         key_input.clear()
         self._refresh_api_key_status(service)
+        # Deepgram キーの登録でストリーミングが解禁される（逆も然り）ため診断を更新
+        self._refresh_streaming_status()
 
     def _delete_api_key(self, service: str) -> None:
         """資格情報ストアに保存された API キーを削除する。"""
         secrets.delete_api_key(service)
         self._api_key_inputs[service].clear()
         self._refresh_api_key_status(service)
+        self._refresh_streaming_status()
 
     # ------------------------------------------------------------------
     # 入力デバイス
@@ -1031,6 +1095,9 @@ class SettingsWindow(QWidget):
         for service in _BACKEND_TO_SERVICE.values():
             self._refresh_api_key_status(service)
 
+        # ストリーミングの阻害要因診断（チェック・バックエンド・キーが揃ってから行う）
+        self._refresh_streaming_status()
+
     def _on_slot_backend_changed(self, slot_id: int) -> None:
         """
         スロットのバックエンド選択変更を処理する。
@@ -1058,6 +1125,9 @@ class SettingsWindow(QWidget):
             model_combo.setCurrentIndex(models.index(saved_model))
         elif models:
             model_combo.setCurrentIndex(0)
+
+        # Deepgram の選択有無でストリーミング診断が変わる
+        self._refresh_streaming_status()
 
     def _toggle_theme(self) -> None:
         """ダーク/ライトモードを切り替える。"""
