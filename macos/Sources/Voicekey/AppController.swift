@@ -86,6 +86,17 @@ final class AppController: ObservableObject {
             }
         }
 
+        // 録音中のマイク切断・構成変更 → 録音を確定して知らせる
+        // （エンジンは静かに止まるため、放置するとユーザーは喋り続けるが何も入らない）
+        recorder.deviceChangedHandler = { [weak self] in
+            DispatchQueue.main.async {
+                guard let self, self.recordingSlot != nil else { return }
+                log.warning("録音中にオーディオ構成が変化したため録音を確定します")
+                self.finishRecording()
+                self.hud.notice("マイクの構成が変わったため録音を停止しました")
+            }
+        }
+
         // ホットキーイベント（タップスレッドから来るためメインへホップ）
         hotkeys.onPress = { [weak self] token in
             let pressed = self?.hotkeys.pressedTokens ?? []
@@ -172,9 +183,12 @@ final class AppController: ObservableObject {
         }
         if isHotkeyKey {
             let now = ProcessInfo.processInfo.systemUptime
-            lastReleaseTime = now
-            lastReleaseSlot = slotId
             if now - recordingStartedAt < kDoubleTapWindow {
+                // 短いタップだけをダブルタップの 1 打目として記録する
+                // （長い口述の直後に素早く次の録音を始めただけで
+                //  auto_enter（Enter 自動送信）になってしまうのを防ぐ）
+                lastReleaseTime = now
+                lastReleaseSlot = slotId
                 // 短いタップ＝ダブルタップの 1 打目の可能性。録音を止めずに 2 打目を待つ
                 // （タップと同時に話し始めた声を失わない。2 打目が来なければ通常どおり確定。
                 //  誤タップで発話が無い場合は通知を出さず静かに捨てる）
@@ -210,15 +224,12 @@ final class AppController: ObservableObject {
         let slot = config.slot(slotId)
         log.info("録音開始 (スロット\(slotId), \(slot.backend.rawValue, privacy: .public)\(autoEnter ? ", auto_enter" : "", privacy: .public))")
 
-        // 録音中に TLS 接続を事前確立して、停止後の初回 API 往復を短縮
-        transcribers[slotId]?.prewarm()
-        // 整形が有効なら整形 LLM への接続も録音中に温めておく
-        if slot.formatEnabled {
-            formatter.prewarm()
-        }
+        // 設定された入力デバイスを反映（変更がなければ recorder 側では何もしない）
+        recorder.inputDeviceUID = config.inputDeviceUID
 
         // Deepgram かつストリーミング有効なら WebSocket を開いてライブ字幕を出す。
-        // 開始できなければ（キー無し等）chunkHandler を張らないため REST 経路に自動フォールバック
+        // 開始できなければ（キー無し等）chunkHandler を張らないため REST 経路に自動フォールバック。
+        // chunkHandler は録音開始前に張る必要がある（最初のチャンクを取りこぼさない）
         if config.streamingEnabled, slot.backend == .deepgram {
             let stream = StreamingTranscriber(model: slot.model, language: config.language)
             stream.onInterim = { [weak self] text in
@@ -230,17 +241,28 @@ final class AppController: ObservableObject {
             }
         }
 
-        // 設定された入力デバイスを録音開始のたびに反映（既定なら空文字）
-        recorder.inputDeviceUID = config.inputDeviceUID
-
+        // マイク起動を最優先で仕掛ける（プリウォーム類は後ろに置き、
+        // メインスレッドの Keychain 読みなどで録音開始を遅らせない）
         recorder.start { [weak self] ok in
             guard !ok else { return }
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self, self.recordingSlot == slotId else { return }
+                // ストリーミングセッションも後始末する（残すと次の録音のチャンクが
+                // 旧 WS に流れ、別バックエンドの録音に Deepgram の結果が混ざる）
+                self.streamer?.cancel()
+                self.streamer = nil
+                self.recorder.chunkHandler = nil
                 self.recordingSlot = nil
                 self.emitState()
                 self.hud.notice("録音を開始できませんでした（マイクを確認）")
             }
+        }
+
+        // 録音中に TLS 接続を事前確立して、停止後の初回 API 往復を短縮
+        transcribers[slotId]?.prewarm()
+        // 整形が有効なら整形 LLM への接続も録音中に温めておく
+        if slot.formatEnabled {
+            formatter.prewarm()
         }
 
         // 録音時間の上限（release 取りこぼし等での永久録音を防ぐ保険）

@@ -38,15 +38,20 @@ enum Paster {
 
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
+        // 復元前の上書き検出用（クリップボードが書き換わるたびに増える）
+        let ourChangeCount = pasteboard.changeCount
 
         try? await Task.sleep(for: .seconds(pasteDelay))
         postKeystroke(keyV, flags: .maskCommand)
 
-        // 貼り付け先がクリップボードを読み終えてから復元
+        // 貼り付け先がクリップボードを読み終えてから復元。
+        // 待っている間にユーザーや他アプリが新たにコピーしていたら、それを壊さないよう復元しない
         if let saved, !saved.isEmpty {
             try? await Task.sleep(for: .seconds(restoreDelay))
-            pasteboard.clearContents()
-            pasteboard.setString(saved, forType: .string)
+            if pasteboard.changeCount == ourChangeCount {
+                pasteboard.clearContents()
+                pasteboard.setString(saved, forType: .string)
+            }
         }
         log.debug("テキストを貼り付けました (\(text.count) 文字)")
     }

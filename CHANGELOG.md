@@ -18,6 +18,50 @@ voicekeyの変更履歴を記録するファイルです。
     artifact で取得。キーは GitHub Secrets → 環境変数で注入（ランナーにファイルを置かない）
   - `docs/BUILD_WINDOWS.md` を GitHub Actions 標準・実機ビルドはフォールバックに再構成
 
+### Fixed
+- **録音開始遅延の根本修正**（「キーを押してもマイクがすぐオンにならない」報告。
+  実測: 押下→マイク実起動が初回 1511ms、2 回目以降 41〜69ms）
+  - 原因①: 毎押下で全入力デバイスの HAL 列挙 + AUHAL 再構成をやり直していた
+    （既存の prewarm は設定デバイスを見ておらず、初回押下のデバイス切替で
+    温めた状態が捨てられる＝構造的に無効化されていた）
+  - 原因②: 実 IO（AudioOutputUnitStart）の初回起動コスト（1 秒超）を録音時に支払っていた
+  - 原因③: メインスレッドの Keychain 読み（API プリウォーム類）が recorder.start より
+    先に走っていた
+  - 修正: デバイス適用を「設定が変わったときだけ」に（AudioRecorder に適用済み UID を
+    キャッシュ）、起動時 prewarm で設定デバイスを適用しダミータップで IO を一度
+    起動・停止して前払い（**起動直後にマイクインジケータが一瞬点灯するのはこの
+    ウォームアップ**。音声は記録しない）、beginRecording の順序を recorder.start 最優先に入替
+- 入力デバイスを一度指定すると「システム既定」に戻せなかった（エンジンに前回のデバイスが
+  固定されたまま残る）→ 既定デバイス ID の明示設定で復帰、既定デバイスの変更にも追従
+- 録音中のマイク切断・構成変更でエンジンが静かに止まり、喋り続けても何も入らなかった
+  → AVAudioEngineConfigurationChange を監視し、録音を確定（途中までの音声は変換）+ HUD 通知
+- 録音開始失敗時に Deepgram ストリーミングセッションと chunkHandler が残留し、
+  次の録音（別バックエンドでも）に Deepgram の結果が混ざり得た → 失敗時に後始末
+- 長い口述（0.4 秒超）の直後 0.4 秒以内に次の録音を始めるとダブルタップ誤判定で
+  auto_enter（Enter 自動送信）になっていた → 短いタップの離鍵だけを 1 打目として記録
+- クリップボード復元が、貼り付け待ちの 0.3 秒間にユーザーがコピーした新しい内容を
+  上書き破壊していた → changeCount を確認し、書き換わっていたら復元しない
+- 連続録音で 1 件目がエラー通知を出すと、2 件目の変換が進行中でも HUD が消えていた
+  → 通知の消灯時に変換中なら「変換中…」表示へ戻す
+- マイク自動検出: 締め切り後に起動が完了した遅いデバイス（Bluetooth 等）が停止されず
+  マイクを掴み続けた → 締め切り後の起動完了は即停止
+- ダブルタップ確定（auto_enter 昇格）時に HUD の波形・ライブ字幕が一瞬消えていた
+- スレッド競合の修正: AudioRecorder の chunkHandler / recording（audio スレッド vs
+  メイン）、Transcriber の model/language/prompt（設定変更 vs 文字起こしタスク）を
+  lock で同期
+- URLSession の漸増リーク修正: StreamingTranscriber（録音ごとに生成）と
+  バックエンド変更で捨てられる旧 Transcriber のセッションを明示破棄
+
+### Technical Details
+- **AudioRecorder.swift**: appliedDeviceUID キャッシュ + applyInputDevice() 抽出、
+  prewarm の IO 前払い、AVAudioEngineConfigurationChange 監視（deviceChangedHandler）、
+  stateLock による同期
+- **AudioDevices.swift**: defaultInputDeviceID() 追加（プロパティ 1 回取得・軽量）
+- **AppController.swift**: beginRecording の順序入替（デバイス反映 → WS → start →
+  プリウォーム）、start 失敗時の streamer 後始末、handleRelease の lastRelease 記録条件変更
+- **Paster.swift / Hud.swift / MicAutoDetector.swift / StreamingTranscriber.swift /
+  Transcriber.swift**: 上記の各修正
+
 ## [1.0.1] - 2026-06-12
 
 Mac 版 v1.0.1 を公開（アプリアイコン追加・DMG レイアウト改善）。

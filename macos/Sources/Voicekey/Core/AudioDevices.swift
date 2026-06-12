@@ -62,6 +62,24 @@ enum AudioDevices {
         inputDevices().first { $0.uid == uid }?.id
     }
 
+    /// システム既定の入力デバイスの ID を返す（取得できなければ nil）。
+    /// 全デバイス列挙と違いプロパティ 1 回の取得なので毎回呼んでも軽い
+    static func defaultInputDeviceID() -> AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var deviceID = AudioDeviceID(kAudioObjectUnknown)
+        var dataSize = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &dataSize, &deviceID
+        ) == noErr, deviceID != kAudioObjectUnknown else {
+            return nil
+        }
+        return deviceID
+    }
+
     // MARK: - 内部ヘルパー
 
     /// 指定デバイスの入力チャンネル総数（0 なら出力専用デバイス）

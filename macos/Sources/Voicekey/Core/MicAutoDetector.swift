@@ -50,6 +50,7 @@ enum MicAutoDetector {
 
         let probesLock = NSLock()
         var probes: [Probe] = []
+        var closed = false
 
         // 全デバイスのエンジンを並行起動する。起動に成功したものだけが計測対象
         for device in devices {
@@ -57,6 +58,13 @@ enum MicAutoDetector {
                 let probe = Probe(device: device)
                 guard probe.start() else { return }
                 probesLock.lock()
+                if closed {
+                    // 締め切り後にようやく起動できた遅いデバイス（Bluetooth 等）。
+                    // 集計対象外なので、マイクを掴んだまま放置しないよう即座に止める
+                    probesLock.unlock()
+                    probe.stop()
+                    return
+                }
                 probes.append(probe)
                 probesLock.unlock()
             }
@@ -65,6 +73,7 @@ enum MicAutoDetector {
         // 起動のばらつき分 0.5 秒の余裕を持たせた締め切りで集計する
         DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + duration + 0.5) {
             probesLock.lock()
+            closed = true
             let started = probes
             probesLock.unlock()
 

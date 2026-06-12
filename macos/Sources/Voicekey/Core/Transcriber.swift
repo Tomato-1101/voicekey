@@ -60,9 +60,26 @@ enum WavEncoder {
 final class Transcriber {
 
     let backend: Backend
-    var model: String
-    var language: String
-    var prompt: String
+
+    // モデル等は設定変更時にメインスレッドが書き換え（接続を維持したまま更新する設計）、
+    // 文字起こしタスクが別スレッドで読むため lock で保護する
+    var model: String {
+        get { configLock.lock(); defer { configLock.unlock() }; return _model }
+        set { configLock.lock(); _model = newValue; configLock.unlock() }
+    }
+    var language: String {
+        get { configLock.lock(); defer { configLock.unlock() }; return _language }
+        set { configLock.lock(); _language = newValue; configLock.unlock() }
+    }
+    var prompt: String {
+        get { configLock.lock(); defer { configLock.unlock() }; return _prompt }
+        set { configLock.lock(); _prompt = newValue; configLock.unlock() }
+    }
+
+    private let configLock = NSLock()
+    private var _model: String
+    private var _language: String
+    private var _prompt: String
 
     /// 接続を再利用するためバックエンドごとに URLSession を保持
     private let session: URLSession
@@ -78,15 +95,21 @@ final class Transcriber {
 
     init(backend: Backend, model: String, language: String, prompt: String) {
         self.backend = backend
-        self.model = model
-        self.language = language
-        self.prompt = prompt
+        self._model = model
+        self._language = language
+        self._prompt = prompt
 
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 20
         config.timeoutIntervalForResource = 60
         config.httpMaximumConnectionsPerHost = 4
         self.session = URLSession(configuration: config)
+    }
+
+    deinit {
+        // バックエンド変更で捨てられた旧インスタンスのセッションを明示破棄する
+        // （invalidate しない URLSession は解放されず漸増リークになる）
+        session.finishTasksAndInvalidate()
     }
 
     /// TLS 接続を事前確立して初回リクエストの往復を短縮する（録音開始時に呼ぶ）。

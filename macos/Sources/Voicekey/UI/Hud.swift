@@ -46,12 +46,15 @@ final class HudController {
     let model = HudModel()
     private var panel: NSPanel?
     private var noticeTask: Task<Void, Never>?
+    /// 直近のアプリ状態。通知が消えるとき、進行中ならその表示へ戻すために保持する
+    private var lastState: AppState = .idle
 
     /// HUD を表示するか（設定で無効化可能）
     var enabled = true
 
     /// アプリ状態に応じて HUD を更新する
     func update(for state: AppState) {
+        lastState = state
         switch state {
         case .idle:
             // 通知表示中は消さない（通知は自身のタイマーで消える）
@@ -59,8 +62,12 @@ final class HudController {
             hide()
         case .recording(let autoEnter):
             noticeTask?.cancel()
-            model.resetLevels()
-            model.caption = ""  // 新しい録音のたびに字幕をリセット
+            // 録音中の auto_enter 昇格（ダブルタップ確定）では波形・字幕を維持する
+            // （リセットすると表示が一瞬消えて見える）
+            if case .recording = model.mode {} else {
+                model.resetLevels()
+                model.caption = ""  // 新しい録音のたびに字幕をリセット
+            }
             model.mode = .recording(autoEnter: autoEnter)
             show()
         case .transcribing:
@@ -79,7 +86,13 @@ final class HudController {
             try? await Task.sleep(for: .seconds(2))
             guard let self, !Task.isCancelled else { return }
             if case .notice = self.model.mode {
-                self.hide()
+                // 連続録音の変換が進行中なら、隠さず「変換中…」表示へ戻す
+                if case .transcribing = self.lastState {
+                    self.model.mode = .transcribing
+                    self.show()
+                } else {
+                    self.hide()
+                }
             }
         }
     }

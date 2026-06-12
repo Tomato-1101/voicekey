@@ -28,11 +28,22 @@ final class AudioRecorder {
     var levelHandler: ((Float) -> Void)?
 
     /// 16kHz モノラルチャンクの逐次通知（ストリーミング送信用、audio スレッドから呼ばれる）。
-    /// ストリーミング録音時のみ設定し、終了時に nil へ戻す
-    var chunkHandler: (([Float]) -> Void)?
+    /// ストリーミング録音時のみ設定し、終了時に nil へ戻す。
+    /// メインスレッドが書き、audio スレッドが読むため lock で同期する
+    var chunkHandler: (([Float]) -> Void)? {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _chunkHandler }
+        set { stateLock.lock(); _chunkHandler = newValue; stateLock.unlock() }
+    }
 
     /// 使用する入力デバイスの UID（空ならシステム既定）。録音開始のたびに参照する
-    var inputDeviceUID: String = ""
+    var inputDeviceUID: String {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _inputDeviceUID }
+        set { stateLock.lock(); _inputDeviceUID = newValue; stateLock.unlock() }
+    }
+
+    /// 録音中にデバイス構成が変わった（マイク切断等）ときの通知。
+    /// エンジンは静かに止まるため、呼び出し側はこれを受けて録音を確定する
+    var deviceChangedHandler: (() -> Void)?
 
     private let engine = AVAudioEngine()
     /// エンジン操作を直列化するキュー（ブロックしてもここだけ）
@@ -40,18 +51,108 @@ final class AudioRecorder {
 
     private var samples: [Float] = []
     private let samplesLock = NSLock()
-    private var recording = false
+    /// メイン・制御キュー・audio スレッドをまたぐ可変状態の保護
+    private let stateLock = NSLock()
+    private var _chunkHandler: (([Float]) -> Void)?
+    private var _inputDeviceUID = ""
+    private var _recording = false
+    private var recording: Bool {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _recording }
+        set { stateLock.lock(); _recording = newValue; stateLock.unlock() }
+    }
     private var lastLevelTime: TimeInterval = 0
 
-    /// 次回 start() を高速化するウォームアップ（マイクは起動しない）。
-    /// inputNode へのアクセスで CoreAudio の入力ユニットを初期化し、prepare で
-    /// エンジンのリソースを事前確保する。アプリ起動時・録音停止後に呼ぶことで、
-    /// 押した瞬間から声を取りこぼさないよう録音開始までの遅延を最小化する
+    /// engine に適用済みの入力デバイス UID（nil = 未適用または要再適用、空 = システム既定）。
+    /// 毎押下の HAL 全列挙と AUHAL 再構成（実測で録音開始遅延の主因だった）を避けるため、
+    /// 設定が変わったときだけ適用する。queue 上からのみ触る
+    private var appliedDeviceUID: String?
+    /// 「システム既定」を適用したときのデバイス ID（既定の変更に追従するための比較用）
+    private var appliedDefaultID: AudioDeviceID = 0
+    /// 実 IO（AudioOutputUnitStart）の初回起動コストを前払い済みか
+    private var ioWarmed = false
+
+    init() {
+        // 録音中のマイク切断・サンプルレート変更等ではエンジンが静かに止まり、
+        // ユーザーが喋り続けても音声が入らない。通知で検知して呼び出し側へ伝える
+        NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
+        ) { [weak self] _ in
+            guard let self else { return }
+            // 構成が変わったので次回 start() でデバイスを解決し直す
+            self.queue.async { self.appliedDeviceUID = nil }
+            if self.recording {
+                self.deviceChangedHandler?()
+            }
+        }
+    }
+
+    /// 次回 start() を高速化するウォームアップ。設定デバイスの適用とリソース確保に加え、
+    /// 初回のみ実 IO の起動・停止まで行う（AudioOutputUnitStart の初回コストは実測 1 秒超に
+    /// なることがあり、録音時に払うと押し始めの声が欠けるため起動時に前払いする）。
+    /// タップは何も記録しないダミーのため音声はどこにも残らない
+    /// （アプリ起動直後にマイクインジケータが一瞬点灯するのはこのウォームアップ）
     func prewarm() {
         queue.async { [self] in
             guard !recording else { return }
-            _ = engine.inputNode.inputFormat(forBus: 0)
+            applyInputDevice()
+            let input = engine.inputNode
+            let hwFormat = input.inputFormat(forBus: 0)
+            if !ioWarmed, hwFormat.sampleRate > 0, hwFormat.channelCount > 0 {
+                ioWarmed = true
+                input.installTap(onBus: 0, bufferSize: 2048, format: hwFormat) { _, _ in }
+                do {
+                    engine.prepare()
+                    try engine.start()
+                } catch {
+                    log.info("IO ウォームアップを省略: \(error.localizedDescription)")
+                }
+                engine.stop()
+                input.removeTap(onBus: 0)
+            }
             engine.prepare()
+        }
+    }
+
+    /// inputDeviceUID を engine に反映する（queue 上・エンジン停止中に呼ぶ）。
+    /// 前回適用時から変わっていなければ何もしない。
+    /// 一度 setDeviceID した AUHAL は、設定をスキップしただけでは前のデバイスに
+    /// 固定されたままになるため、「既定に戻す」も既定デバイス ID の明示設定で行う
+    private func applyInputDevice() {
+        let uid = inputDeviceUID
+        let input = engine.inputNode
+
+        if uid.isEmpty {
+            // システム既定: 既定デバイスの変更へ追従するため ID を毎回確認する（軽量）
+            guard let defaultID = AudioDevices.defaultInputDeviceID() else { return }
+            if appliedDeviceUID == "", appliedDefaultID == defaultID { return }
+            do {
+                try input.auAudioUnit.setDeviceID(defaultID)
+                appliedDeviceUID = ""
+                appliedDefaultID = defaultID
+            } catch {
+                appliedDeviceUID = nil
+                log.warning("既定デバイスへの切り替えに失敗: \(error.localizedDescription)")
+            }
+            return
+        }
+
+        guard uid != appliedDeviceUID else { return }
+        if let deviceID = AudioDevices.deviceID(forUID: uid) {
+            do {
+                try input.auAudioUnit.setDeviceID(deviceID)
+                appliedDeviceUID = uid
+            } catch {
+                appliedDeviceUID = nil
+                log.warning("入力デバイスの切り替えに失敗（既定を使用）: \(error.localizedDescription)")
+            }
+        } else {
+            // 指定デバイスが未接続: 今回は既定で録音し、接続され次第使えるよう再適用待ちにする
+            log.warning("指定の入力デバイスが見つかりません（既定を使用）")
+            if let defaultID = AudioDevices.defaultInputDeviceID() {
+                try? input.auAudioUnit.setDeviceID(defaultID)
+                appliedDefaultID = defaultID
+            }
+            appliedDeviceUID = nil
         }
     }
 
@@ -68,22 +169,14 @@ final class AudioRecorder {
 
             let input = engine.inputNode
 
-            // 指定があれば入力デバイスを切り替える（UID が解決できなければ既定のまま）。
-            // エンジン停止中に設定する必要があるが、start は常に stop 後に呼ばれる
-            if !inputDeviceUID.isEmpty {
-                if let deviceID = AudioDevices.deviceID(forUID: inputDeviceUID) {
-                    do {
-                        try input.auAudioUnit.setDeviceID(deviceID)
-                    } catch {
-                        log.warning("入力デバイスの切り替えに失敗（既定を使用）: \(error.localizedDescription)")
-                    }
-                } else {
-                    log.warning("指定の入力デバイスが見つかりません（既定を使用）")
-                }
-            }
+            // 入力デバイス設定の反映（エンジン停止中に行う必要があるが、start は常に
+            // stop 後に呼ばれる）。設定が前回から変わっていなければ何もしない
+            applyInputDevice()
 
             let hwFormat = input.inputFormat(forBus: 0)
             guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
+                // デバイス消失（切断後の再接続で ID が変わる）の可能性があるため次回は再解決する
+                appliedDeviceUID = nil
                 log.error("入力デバイスが見つかりません")
                 completion(false)
                 return
@@ -113,6 +206,8 @@ final class AudioRecorder {
                 log.info("録音開始 (HW: \(Int(hwFormat.sampleRate))Hz \(hwFormat.channelCount)ch)")
                 completion(true)
             } catch {
+                // デバイス起因の失敗に備えて次回はデバイスを解決し直す
+                appliedDeviceUID = nil
                 log.error("録音開始に失敗: \(error.localizedDescription)")
                 input.removeTap(onBus: 0)
                 completion(false)
@@ -139,8 +234,9 @@ final class AudioRecorder {
             log.info("録音停止 (samples=\(result.count), duration=\(String(format: "%.2f", Double(result.count) / Self.sampleRate))s)")
             completion(result)
 
-            // 次回の録音開始を速くするため、停止直後にリソースを確保し直しておく
-            // （completion 後に行うので文字起こしの開始は一切遅らせない）
+            // 停止直後にエンジンのリソースを確保し直しておく（completion 後に行うので
+            // 文字起こしの開始は一切遅らせない）。なお実 IO の再起動コスト（数十 ms）は
+            // prepare では前払いできず、次回 start() で支払う
             engine.prepare()
         }
     }

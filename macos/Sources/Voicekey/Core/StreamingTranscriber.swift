@@ -119,12 +119,15 @@ final class StreamingTranscriber: @unchecked Sendable {
             }
         }
         task?.cancel(with: .normalClosure, reason: nil)
+        // 録音のたびに生成するセッションは明示的に破棄する（放置すると漸増リーク）
+        session.finishTasksAndInvalidate()
         return Self.stripCJKSpaces(currentText())
     }
 
     /// 結果を使わずに接続を破棄する（録音破棄時など）
     func cancel() {
         task?.cancel(with: .normalClosure, reason: nil)
+        session.finishTasksAndInvalidate()
         resolveFinish()
     }
 
