@@ -71,9 +71,15 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 
 - 現在地: **Mac 版 v1.0.0 リリース完了**（2026-06-12）。Phase 0〜6 完了・Phase 7 中止。
   テスターへの渡し方は https://voicekey.vercel.app を共有するだけ。
-- 次の一手: ①ユーザーが各 API ダッシュボードで利用上限・アラート設定（唯一の残り）
-  ②Windows 版は Windows 実機で docs/BUILD_WINDOWS.md の手順でビルド → Setup.exe を
-  Releases に添付 → version.json を windows/ にコミット → サイトの Windows ボタンが自動で生きる。
+- **未完了タスク: Windows 版 v1.0.0 ビルド（2026-06-12 ユーザー判断で後回し）**。
+  準備は全部済んでいる — ①`.env.dist` 生成済み（リポジトリ直下・chmod 600・4 キー入り。
+  Windows 機へは USB か共有フォルダで手動コピー、メール/クラウド禁止）
+  ②Windows 側エージェント（Claude/Codex）に貼る指示プロンプトは
+  `~/Desktop/voicekey-windows-build-prompt.txt`（git URL・認証・検証 12 項目入り）。
+  ビルド完了後は setup.exe と version.json を Mac に持ち帰り → voicekey-site/downloads/ と
+  windows/ へ配置 → downloads.json 更新 → `vercel deploy --prod`。
+- 次の一手: ①ユーザーが各 API ダッシュボードで利用上限・アラート設定
+  ②上記 Windows 版ビルド（ユーザーの再開待ち）。
 - 次回リリース（バグ修正等）の手順: main で修正 → `build_dmg.sh --version X.Y.Z` →
   DMG を voicekey-site/downloads/、zip+appcast を voicekey-site/mac/ へコピー →
   downloads.json 更新 → `vercel deploy --prod` → 既存ユーザーへ自動配布。

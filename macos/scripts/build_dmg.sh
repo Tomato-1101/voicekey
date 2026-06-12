@@ -105,17 +105,9 @@ if [[ "$NOTARIZE" -eq 1 ]]; then
     ditto -c -k --keepParent "$APP" "$ZIP"
 fi
 
-# DMG 作成（/Applications へのシンボリックリンクと手順書を同梱）
-STAGE="$(mktemp -d)"
-cp -R "$APP" "$STAGE/"
-ln -s /Applications "$STAGE/Applications"
-cp scripts/dmg_readme.txt "$STAGE/はじめにお読みください.txt"
+# DMG 作成（レイアウト付き: 左にアプリ・右に Applications・背景にドラッグ誘導矢印）
 DMG="dist/voicekey-$VERSION.dmg"
-rm -f "$DMG"
-hdiutil create -volname "voicekey" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
-codesign --force --sign "$IDENTITY" "$DMG"
-rm -rf "$STAGE"
-echo "==> DMG: $DMG"
+./scripts/package_dmg.sh --version "$VERSION" --identity "$IDENTITY"
 
 # appcast 生成（dist/releases/ 内の全 zip を EdDSA 署名して appcast.xml を更新）
 .build/artifacts/sparkle/Sparkle/bin/generate_appcast \

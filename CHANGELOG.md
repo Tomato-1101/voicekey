@@ -4,6 +4,17 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased] - 2026-06-12
 
+### Changed
+- **Mac 版 DMG のレイアウトを一般的なアプリの形式に改善**（ユーザー要望）
+  - 背景画像（660x400pt・2x）にドラッグ&ドロップ誘導の矢印と「右クリック→開く」の
+    1 行ガイドを描画。左にアプリ・右に Applications・右上に手順書テキストを配置
+  - `scripts/package_dmg.sh` 新規: UDRW で作成 → Finder (AppleScript) でアイコン位置・
+    背景を .DS_Store に焼き込み → UDZO 変換 → 署名。`build_dmg.sh` の DMG 作成部を置換
+  - `scripts/dev/make_dmg_background.swift` 新規: 背景画像ジェネレータ
+    （生成物 `scripts/assets/dmg_background.png` はコミット対象）
+  - 配布中の v1.0.0 DMG を同一バイナリ（build 3・CDHash 一致確認済み）のまま
+    新レイアウトで再パッケージし、サイトへ再デプロイ（downloads.json のサイズも更新）
+
 ### Fixed
 - `generate_embedded_keys.sh`: コピペで `--` が – / —（en/em ダッシュ）に化けた引数も
   受け付けるようにした（`–export-env` で引数なし扱い→スタブ生成になる事故が実際に 2 回発生）。
