@@ -17,7 +17,10 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 - ソースコード非公開。配布物に .py 平文を含めない（voicekey.spec の datas=('src','src') は根治対象）。
 - DIST ビルドでは設定画面の API キータブを非表示。
 - 配布用ブランチは `beta`。開発は main、リリース時に main → beta マージ → dist ビルド → タグ。
-- 配布物置き場: 公開リポジトリ `voicekey-releases`（バイナリ+appcast+version.json のみ）。
+- 配布物置き場: 公開リポジトリ `voicekey-releases`（バイナリ+appcast+version.json のみ。2026-06-12 に
+  ユーザー承認のうえ public 作成済み）。テスターに渡す URL は Vercel のダウンロードページ
+  **https://voicekey.vercel.app**（ソースは `/Users/tomato/Project/voicekey-site/`、
+  `vercel deploy --prod` で更新）。DL ボタンは GitHub API で最新リリースの DMG/exe 直リンクを自動解決。
 - **Apple Developer Program には加入しない（2026-06-12 ユーザー確定）**。配布は Apple Development 署名 +
   右クリック→開く手順書同梱が恒久形。Phase 7（公証切替）は中止。
   build_dmg.sh の --identity / --notarize パラメータは残置するが使わない。
@@ -54,10 +57,9 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 
 ## ユーザー待ちの項目（Phase 3 の完了に必要）
 
-1. **public リポジトリ voicekey-releases の作成承認**: 権限レイヤーが「公開リポジトリ作成は
-   ユーザー明示承認が必要」と判断。中身（README・mac/・windows/）は
-   `/Users/tomato/Project/voicekey-releases/` にコミット済み（/tmp は消えたため移設）。
-   承認をもらえば `gh repo create` 一発。
+1. ~~public リポジトリ voicekey-releases の作成承認~~ — **完了**（2026-06-12 ユーザー承認 →
+   https://github.com/Tomato-1101/voicekey-releases を public 作成・push 済み。
+   同日に Vercel のダウンロードページ https://voicekey.vercel.app も公開済み）。
 2. **実キービルドの初回 Keychain 許可**: `cd macos && ./scripts/build_dmg.sh --version 1.0.0` 実行時、
    security が voicekey.{OpenAI,Groq,ElevenLabs,Deepgram} を読む際に許可ダイアログが最大4回出る。
    「常に許可」を選べば以後は出ない（ユーザーが画面の前にいる時に実行する）。
@@ -65,10 +67,11 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 
 ## 現在地 / 次の一手
 
-- 現在地: Phase 0〜2・4〜6 完了 + バグレビュー1巡（ストリーミング診断表示・マイク検出ハング耐性を修正済み）。
-  自動実行できる作業はすべて完了。Phase 7 は中止（公証なしが恒久形）。
-- 次の一手: Phase 3 のユーザー待ち 3 項目（上記）→ 完了後に初回 Mac リリース実行。
-  テスターへの渡し方は voicekey-releases の README（Releases の DMG / Setup.exe の URL を共有するだけ）。
+- 現在地: Phase 0〜2・4〜6 完了 + バグレビュー1巡 + 配布ページ公開済み（https://voicekey.vercel.app・
+  Vercel）+ voicekey-releases public 作成済み。Phase 7 は中止（公証なしが恒久形）。
+- 次の一手: Phase 3 のユーザー待ち 2 項目（上記 2・3）→ 完了後に初回 Mac リリース実行
+  （Releases に DMG/zip 添付 + appcast コミット。サイトの DL ボタンは自動で最新版を指す）。
+  テスターへの渡し方は https://voicekey.vercel.app を共有するだけ。
 - Windows 版リリース手順: Mac で `--export-env` → `.env.dist` を Windows ビルド機へ →
   `build_windows_dist.ps1 -Version X.Y.Z` → Releases 添付 → version.json コミット
   （詳細と順序の注意は docs/BUILD_WINDOWS.md）。
