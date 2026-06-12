@@ -22,9 +22,11 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
   DMG/exe は `/downloads/`、appcast+更新 zip は `/mac/`、version.json は `/windows/`、
   最新版表示は `/downloads.json`。**GitHub はテスターから一切見えない**（2026-06-12 ユーザー要望で
   GitHub Releases 方式から移行。voicekey-releases は private 化済み・もう使わない）。
-- **Apple Developer Program には加入しない（2026-06-12 ユーザー確定）**。配布は Apple Development 署名 +
-  右クリック→開く手順書同梱が恒久形。Phase 7（公証切替）は中止。
-  build_dmg.sh の --identity / --notarize パラメータは残置するが使わない。
+- **Apple Developer Program は加入方針へ転換（2026-06-12 ユーザー決定）**。理由: 実テスターが
+  macOS 15 の Gatekeeper ブロックで詰まった + 今後 iPhone アプリの App Store 展開に必須。
+  加入手続き（developer.apple.com/programs/enroll・$99/年）はユーザー本人のみ可・承認まで最大 48h。
+  **加入完了後に Phase 7（Developer ID + 公証）を再開する**（手順は Phase 7 の項を参照）。
+  それまでの配布は Apple Development 署名 + 手順書の現行方式を継続。
 - Mac 版コード変更後は ビルド→旧プロセス kill→open→動作確認 までワンセット（CLAUDE.md ルール）。
 - UI スモーク・テストでは secrets/keyring を必ずモック（実 Keychain ダイアログ事故防止）。
 
@@ -55,8 +57,17 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 - [x] Phase 6: Windows UI 再デザイン（検証済み: preview_ui.py で全タブ × ダーク/ライト + HUD 4 状態 +
       トレイ 4 状態のスクショを生成・目視 / py_compile / unittest 111 件全通過。
       スクショで一般タブの横スクロールバー常駐バグを発見し修正。スクショはユーザーに送付済み）
-- ~~Phase 7: Developer ID + 公証切替~~ — **中止**（2026-06-12、ユーザーが Apple Developer Program
-  不加入を決定。Apple Development 署名 + 手順書の現行方式が恒久形）
+- [ ] Phase 7: Developer ID + 公証切替 — **再開待ち**（2026-06-12 にいったん中止 → 同日ユーザーが
+      加入へ方針転換。**ユーザーの Program 加入承認が完了したら着手**）。手順:
+      ① Developer ID Application 証明書を作成（Xcode → Settings → Accounts → Manage Certificates）
+      ② App 用パスワードを appleid.apple.com で発行 → `xcrun notarytool store-credentials voicekey-notary`
+      ③ `build_dmg.sh --version X.Y.Z --identity "Developer ID Application: ..." --notarize` でリリース
+      ④ サイト・dmg_readme.txt から Gatekeeper 警告の回避手順を削除（警告自体が消える）
+      ⑤ 検証: `spctl -a -t open --context context:primary-signature` で DMG が accept、
+        クリーン環境で警告なしダブルクリック起動、既存テスターへの Sparkle 自動更新
+        （新旧同 Team ID 9KT598FS4A なので通る見込み）
+      補足: voicekey は Mac App Store 不可（サンドボックスがグローバルホットキー・テキスト注入を
+      許さない）。公証付き直接配布が正しい経路。App Store は将来の iPhone アプリ用
 
 ## ユーザー待ちの項目（Phase 3 の完了に必要）
 
