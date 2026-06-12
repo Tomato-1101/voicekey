@@ -24,6 +24,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp .build/release/voicekey "$APP/Contents/MacOS/voicekey"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/"
 
 # Sparkle.framework を同梱する。SPM の手組みバンドルでは Xcode と違い自動埋め込み
 # されないため、xcframework から自分でコピーして rpath を通す

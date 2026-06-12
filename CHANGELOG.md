@@ -4,6 +4,14 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased] - 2026-06-12
 
+### Added
+- **Mac 版アプリアイコンを新規作成**（ユーザー要望。これまではジェネリックアイコン）
+  - ダーク角丸スクエア + ブランドの青い波形バー（配布サイトの HUD と同モチーフ）
+  - `scripts/dev/make_app_icon.swift` 新規: 1024px マスター PNG のジェネレータ
+    （icns 変換コマンドはファイル冒頭コメントに記載）
+  - `Resources/AppIcon.icns` をコミットし、`Info.plist` に CFBundleIconFile、
+    `build_app.sh` に Resources へのコピーを追加。NSWorkspace 経由で解決確認済み
+
 ### Changed
 - **Mac 版 DMG のレイアウトを一般的なアプリの形式に改善**（ユーザー要望）
   - 背景画像（660x400pt・2x）にドラッグ&ドロップ誘導の矢印と「右クリック→開く」の
