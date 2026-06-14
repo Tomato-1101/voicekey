@@ -10,6 +10,7 @@ voicekeyの変更履歴を記録するファイルです。
   - `scripts/build/generate_embedded_keys.py` で stdout/stderr を UTF-8 に固定。Windows ランナーの既定 stdout（cp1252）で日本語の進捗 print が `UnicodeEncodeError` になり、鍵生成は成功しているのにスクリプトが落ちていた
   - `.github/workflows/windows-build.yml` のビルドステップに `PYTHONUTF8: "1"` を追加（PyInstaller を含むステップ全体の Python 出力を UTF-8 化）
   - **ソース平文混入チェックを `src/` 配下のみに限定**。従来は dist 内の `.py` を 1 つでも検出すると配布中止していたが、PyInstaller onedir は torch/torchaudio 等 OSS ライブラリの `.py`（公開コードで IP 漏洩に当たらない）を必ず同梱するため 2301 件を誤検知していた。自分の proprietary な `src/` は voicekey.spec で `datas=[]`＋PYZ バイトコード格納なので平文混入しない設計を維持しつつ、チェック対象を `\src\` パスのみに絞った
+  - **自動アップデータの version.json パースを BOM 耐性化**。`src/utils/updater.py` を `utf-8-sig` デコードに変更し、ビルドスクリプトは version.json を BOM 無し UTF-8 で書き出すようにした（PS5.1 の `Set-Content -Encoding UTF8` が付ける BOM で `json.loads` が落ち、自動アップデートが静かに効かなくなるのを防ぐ）
 
 ### Changed
 - **Windows 版 設定 UI の全面再デザイン**（「ダサい・安っぽい」指摘対応。2026-06-13）

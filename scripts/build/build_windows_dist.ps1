@@ -101,7 +101,10 @@ try {
         notes   = "voicekey $Version"
     } | ConvertTo-Json
     $VersionJsonPath = Join-Path $Root "dist\installer\version.json"
-    Set-Content $VersionJsonPath $VersionJson -Encoding UTF8
+    # BOM 無し UTF-8 で書く。Set-Content -Encoding UTF8（PS 5.1）は BOM を付けてしまい、
+    # 素朴な json.loads(...decode("utf-8")) 系パーサが先頭 BOM で落ちる。
+    # 自動アップデータのフィードなので確実に BOM 無しにする。
+    [System.IO.File]::WriteAllText($VersionJsonPath, $VersionJson, (New-Object System.Text.UTF8Encoding $false))
     Write-Host ""
     Write-Host "==> 完了"
     Write-Host "    インストーラ : $Setup"

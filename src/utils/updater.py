@@ -106,7 +106,10 @@ class Updater(QObject):
         """version.json を取得して現行バージョンと比較する。"""
         try:
             with urllib.request.urlopen(VERSION_URL, timeout=15) as res:
-                info = json.loads(res.read().decode("utf-8"))
+                # version.json は Windows PowerShell が BOM 付き UTF-8 で書き出すことがある。
+                # utf-8-sig で先頭 BOM を許容する（BOM が無くても安全。素朴な utf-8 だと
+                # 先頭の ﻿ で json.loads が落ち、アップデートが静かに効かなくなる）
+                info = json.loads(res.read().decode("utf-8-sig"))
             latest = str(info.get("version", ""))
             if parse_version(latest) > parse_version(APP_VERSION):
                 logger.info(f"新バージョン {latest} を検知しました（現行 {APP_VERSION}）")
