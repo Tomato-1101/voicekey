@@ -9,7 +9,6 @@ import io
 import json
 import tempfile
 import unittest
-from pathlib import Path
 from unittest import mock
 
 from src.utils.updater import Updater, parse_version
@@ -112,14 +111,22 @@ class TestUpdaterInstall(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def _fake_urlretrieve(self, url, path):
-        """urlretrieve の偽物: 偽インストーラをファイルに書く。"""
-        Path(path).write_bytes(self.installer_bytes)
+    def _fake_install_urlopen(self):
+        """_install のダウンロード用 urlopen を偽装する（偽インストーラのバイト列を返す）。"""
+
+        class _Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.close()
+
+        return mock.MagicMock(return_value=_Response(self.installer_bytes))
 
     def test_valid_sha256_launches_installer_and_quits(self):
         """SHA256 が一致すればサイレントインストーラを起動してアプリ終了を要求する。"""
         self.updater._info = {"version": "9.9.9", "url": "http://example/s.exe", "sha256": self.sha256}
-        with mock.patch("urllib.request.urlretrieve", side_effect=self._fake_urlretrieve), \
+        with mock.patch("urllib.request.urlopen", self._fake_install_urlopen()), \
              mock.patch("subprocess.Popen") as popen, \
              mock.patch("tempfile.gettempdir", return_value=self._tmp.name):
             self.updater._install()
@@ -136,7 +143,7 @@ class TestUpdaterInstall(unittest.TestCase):
         """SHA256 不一致なら起動せず update_failed を出し、再試行可能な状態に戻る。"""
         self.updater._info = {"version": "9.9.9", "url": "http://example/s.exe", "sha256": "0" * 64}
         self.updater._installing = True  # download_and_install 経由のフラグを再現
-        with mock.patch("urllib.request.urlretrieve", side_effect=self._fake_urlretrieve), \
+        with mock.patch("urllib.request.urlopen", self._fake_install_urlopen()), \
              mock.patch("subprocess.Popen") as popen, \
              mock.patch("tempfile.gettempdir", return_value=self._tmp.name):
             self.updater._install()

@@ -15,6 +15,7 @@ voicekey-releases リポジトリの version.json を定期チェックし、新
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -125,18 +126,27 @@ class Updater(QObject):
         """インストーラを %TEMP% にダウンロードし、検証してサイレント起動する。"""
         info = self._info or {}
         try:
-            url = info["url"]
-            version = info["version"]
+            url = info.get("url")
+            version = info.get("version", "")
+            expected = str(info.get("sha256", "")).lower()
+            if not url:
+                raise ValueError("version.json に url がありません")
+            # sha256 が無いと改ざん検証ができないので、その場合はインストールしない
+            if not expected:
+                raise ValueError("version.json に sha256 がないため検証できません")
             path = os.path.join(tempfile.gettempdir(), f"voicekey-setup-{version}.exe")
             logger.info(f"インストーラをダウンロード中: {url}")
-            urllib.request.urlretrieve(url, path)
+            # urlretrieve はタイムアウトを持てず、回線が stall するとスレッドが永久ブロックし
+            # 「インストール中」から戻れなくなる。timeout 付き urlopen + ストリームコピーで
+            # 確実に打ち切れるようにする
+            with urllib.request.urlopen(url, timeout=30) as res, open(path, "wb") as f:
+                shutil.copyfileobj(res, f)
 
             # 改ざん・破損対策: version.json の SHA256 と一致しなければ実行しない
             digest = hashlib.sha256()
             with open(path, "rb") as f:
                 for chunk in iter(lambda: f.read(1024 * 1024), b""):
                     digest.update(chunk)
-            expected = str(info.get("sha256", "")).lower()
             if digest.hexdigest().lower() != expected:
                 raise ValueError("インストーラの SHA256 が version.json と一致しません")
 

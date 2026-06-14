@@ -21,6 +21,10 @@ voicekeyの変更履歴を記録するファイルです。
   - `.github/workflows/windows-build.yml` のビルドステップに `PYTHONUTF8: "1"` を追加（PyInstaller を含むステップ全体の Python 出力を UTF-8 化）
   - **ソース平文混入チェックを `src/` 配下のみに限定**。従来は dist 内の `.py` を 1 つでも検出すると配布中止していたが、PyInstaller onedir は torch/torchaudio 等 OSS ライブラリの `.py`（公開コードで IP 漏洩に当たらない）を必ず同梱するため 2301 件を誤検知していた。自分の proprietary な `src/` は voicekey.spec で `datas=[]`＋PYZ バイトコード格納なので平文混入しない設計を維持しつつ、チェック対象を `\src\` パスのみに絞った
   - **自動アップデータの version.json パースを BOM 耐性化**。`src/utils/updater.py` を `utf-8-sig` デコードに変更し、ビルドスクリプトは version.json を BOM 無し UTF-8 で書き出すようにした（PS5.1 の `Set-Content -Encoding UTF8` が付ける BOM で `json.loads` が落ち、自動アップデートが静かに効かなくなるのを防ぐ）
+- **コードレビューで検出した追加バグを修正**（2026-06-14）
+  - **自動アップデータのダウンロードが回線 stall で永久ブロックするのを修正**。`urllib.request.urlretrieve`（タイムアウト不可）から `timeout=30` 付き `urlopen` + ストリームコピーに変更し、回線が固まっても確実に打ち切れるようにした。あわせて version.json に `url` / `sha256` が無い場合は DL せず明示エラーにし、検証不能なインストーラを実行しないようにした（`src/utils/updater.py`）
+  - **設定保存（`ConfigManager.save`）が手書きのネストキーを消すのを修正**。浅い `dict.update` を `_deep_merge` に変更し、`default_api_models` などネストした辞書内のカスタムキーが保存時に丸ごと失われないようにした（`src/config/config_manager.py`）
+  - **ダーク／ライトのテーマ切替トグルが回転アニメーションしないのを修正**。`ThemeToggleButton.angle` を Python 組み込み `property` から Qt の `Property(float, ...)` に変更し、`QPropertyAnimation` が回転角度を駆動できるようにした（`src/ui/settings_window.py`）
 
 ### Changed
 - **VAD の発話区間計算を共通化**（Windows `_speech_regions` / Mac `speechRegions` 抽出）。

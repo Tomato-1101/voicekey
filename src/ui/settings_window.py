@@ -335,7 +335,9 @@ class ThemeToggleButton(QPushButton):
         self._angle = value
         self.update()
 
-    angle = property(get_angle, set_angle)
+    # QPropertyAnimation は Qt が認識できる Property を必要とする。
+    # Python 組み込みの property() だとアニメーションが回転角度を駆動できない
+    angle = Property(float, get_angle, set_angle)
 
     def paintEvent(self, event):
         """太陽または月のアイコンを描画する。"""

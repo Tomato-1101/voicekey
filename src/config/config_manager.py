@@ -254,8 +254,9 @@ class ConfigManager:
             成功した場合True、失敗した場合False
         """
         try:
-            # 内部設定を更新
-            self.config.update(new_config)
+            # 内部設定を更新（ネストした辞書のカスタムキーを失わないよう deep merge する。
+            # 浅い update だと default_api_models 等の手書き追加キーが丸ごと消える）
+            self.config = _deep_merge(self.config, new_config)
             
             # ファイルに書き込み
             with open(self.config_path, "w", encoding="utf-8") as f:
