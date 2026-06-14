@@ -302,6 +302,9 @@ class VoicekeyApp(QObject):
 
     def _slot_matches(self, slot: HotkeySlot) -> bool:
         """スロットの必要キーがすべて押されているか判定する。"""
+        # 未設定（空ホットキー）のスロットを all([])==True で全キーに一致させない
+        if not slot.required_keys:
+            return False
         return all(
             self._acceptable_names(t) & self._pressed_keys
             for t in slot.required_keys
