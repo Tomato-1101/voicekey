@@ -55,3 +55,31 @@ def strip_cjk_spaces(text: str) -> str:
                 continue  # CJK 隣接のスペースは除去
         out.append(ch)
     return "".join(out)
+
+
+def join_segments(texts: list) -> str:
+    """分割文字起こしの各セグメント結果を、境界の文字種で結合する。
+
+    両端のどちらかが CJK ならスペース無し、英数字同士ならスペース 1 個で繋ぐ
+    （日本語は詰め、英単語の分かち書きは保つ）。Mac 版 VoiceActivity.joinSegments と同規則。
+
+    Args:
+        texts: セグメントごとの文字起こし結果（index 昇順）
+
+    Returns:
+        結合済みテキスト
+    """
+    result = ""
+    for piece in texts:
+        p = piece.strip()
+        if not p:
+            continue
+        if not result:
+            result = p
+            continue
+        # 境界のどちらかが CJK ならスペース不要、英数字同士は単語境界として 1 個入れる
+        if _is_cjk(result[-1]) or _is_cjk(p[0]):
+            result += p
+        else:
+            result += " " + p
+    return result

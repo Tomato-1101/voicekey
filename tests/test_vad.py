@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from src.core.vad import _KEPT_GAP_SEC, SileroVad
+from src.core.vad import _KEPT_GAP_SEC, _MIN_SPLIT_SEC, SileroVad
 
 _SAMPLE_RATE = 16000
 _SPEECH_WAV = Path(__file__).parent.parent / "benchmark" / "audio" / "short_ja.wav"
@@ -92,6 +92,64 @@ class TestAnalyze(unittest.TestCase):
         """圧縮後も接合部に _KEPT_GAP_SEC 程度の無音が残る設計値の確認。"""
         # 設計値そのものの検証（定数が誤って 0 にされた場合の回帰防止）
         self.assertGreaterEqual(_KEPT_GAP_SEC, 0.3)
+
+
+class TestSegment(unittest.TestCase):
+    """長文の分割（segment / _speech_regions）を検証する。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.vad = SileroVad()
+        cls.speech = _load_speech()  # 約 6.8 秒
+
+    def test_short_audio_not_split(self):
+        """_MIN_SPLIT_SEC 未満は分割しない（空リスト）。"""
+        # 実音声単体は約 6.8 秒 < 12 秒 なので分割対象外
+        self.assertLess(len(self.speech) / _SAMPLE_RATE, _MIN_SPLIT_SEC)
+        self.assertEqual(self.vad.segment(self.speech), [])
+
+    def test_pure_silence_not_split(self):
+        """無音だけ（発話区間 0）は分割しない。"""
+        self.assertEqual(self.vad.segment(_silence(15.0)), [])
+
+    def test_long_silence_splits_into_two(self):
+        """発話の間に長い無音（1.5 秒 > SPLIT_GAP）があれば 2 セグメントに割れる。"""
+        # 6.8s + 1.5s 無音 + 6.8s = 約 15 秒（_MIN_SPLIT_SEC 超）
+        gapped = np.concatenate([self.speech, _silence(1.5), self.speech])
+        segments = self.vad.segment(gapped)
+        self.assertEqual(len(segments), 2, "長い無音で 2 分割されていない")
+        # 各セグメントは発話を含む（無音だけの細切れではない）
+        for seg in segments:
+            self.assertGreater(len(seg) / _SAMPLE_RATE, 2.0)
+        # 分割しても合計が極端に欠落しない
+        total = sum(len(s) for s in segments)
+        self.assertGreater(total, len(gapped) * 0.5)
+
+    def test_short_pause_not_split(self):
+        """短いポーズ（0.3 秒 < SPLIT_GAP）では割らず空リスト（1 本送信に回す）。"""
+        gapped = np.concatenate([self.speech, _silence(0.3), self.speech])
+        # 全体は 12 秒超だが、ギャップが SPLIT_GAP 以下なので 1 区間 → 分割なし
+        self.assertEqual(self.vad.segment(gapped), [])
+
+    def test_speech_regions_gap_threshold(self):
+        """_speech_regions は gap_sec を境にマージ/分割を切り替える。"""
+        # フレーム 0-4 と 60-64 を発話に（間は約 55 フレーム ≒ 1.76 秒の無音）
+        probs = np.zeros(100, dtype=np.float32)
+        probs[0:5] = 1.0
+        probs[60:65] = 1.0
+        audio_len = 100 * 512
+        # gap 0.7 秒（≒21.9 フレーム）未満の無音 → 2 区間に分かれる
+        two = SileroVad._speech_regions(probs, audio_len, pad_ms=250, gap_sec=0.7)
+        self.assertEqual(len(two), 2)
+        # gap 3.0 秒 → 同じ無音がマージされ 1 区間
+        one = SileroVad._speech_regions(probs, audio_len, pad_ms=250, gap_sec=3.0)
+        self.assertEqual(len(one), 1)
+
+    def test_speech_regions_single_frame_is_noise(self):
+        """単発フレーム（クリックノイズ相当）は発話とみなさず空。"""
+        probs = np.zeros(50, dtype=np.float32)
+        probs[10] = 1.0  # 1 フレームのみ
+        self.assertEqual(SileroVad._speech_regions(probs, 50 * 512, 250, 0.7), [])
 
 
 if __name__ == "__main__":

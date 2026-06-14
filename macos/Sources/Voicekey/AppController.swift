@@ -42,6 +42,8 @@ final class AppController: ObservableObject {
 
     // --- 録音状態 ---
     private var recordingSlot: Int?
+    /// 録音中の実効モード（ハンズフリー切替キー併用時は hold スロットでも toggle になる）
+    private var recordingEffectiveMode: HotkeyMode = .hold
     private var autoEnter = false
     /// ストリーミング録音中の Deepgram セッション（非ストリーミング時は nil）
     private var streamer: StreamingTranscriber?
@@ -143,14 +145,14 @@ final class AppController: ObservableObject {
     private func handlePress(token: String, pressed: Set<String>) {
         if let slotId = recordingSlot {
             let slot = config.slot(slotId)
-            // toggle モード: 録音中の再押下で停止
-            if slot.mode == .toggle, slotMatches(slot, pressed: pressed) {
+            // toggle 実効モード: 録音中の再押下で停止（ハンズフリー切替キー併用での起動も含む）
+            if recordingEffectiveMode == .toggle, slotMatches(slot, pressed: pressed) {
                 finishRecording()
                 return
             }
-            // hold モード: 短いタップ後の待機中に同スロットが再押下されたらダブルタップ確定。
+            // hold 実効モード: 短いタップ後の待機中に同スロットが再押下されたらダブルタップ確定。
             // 録音は 1 打目から止めていないため、タップ中・タップ間の音声もすべて残っている
-            if slot.mode == .hold, pendingTapFinish != nil, slotMatches(slot, pressed: pressed) {
+            if recordingEffectiveMode == .hold, pendingTapFinish != nil, slotMatches(slot, pressed: pressed) {
                 pendingTapFinish?.cancel()
                 pendingTapFinish = nil
                 autoEnter = true
@@ -163,11 +165,16 @@ final class AppController: ObservableObject {
         for slotId in [1, 2] {
             let slot = config.slot(slotId)
             guard !slot.hotkey.isEmpty, slotMatches(slot, pressed: pressed) else { continue }
+            // ハンズフリー切替キーが併用されていれば、このスロットを toggle 実効で起動する
+            // （切替キーは空でなく全キーが押されていること。スロット設定が hold でも toggle になる）
+            let handsfree = !config.handsfreeKey.isEmpty && handsfreeKeyPressed(pressed)
+            let effectiveMode: HotkeyMode = handsfree ? .toggle : slot.mode
             // ダブルタップ: 同スロットを短時間内に再押下 → auto_enter
+            // （ハンズフリー toggle 起動時はダブルタップ判定を使わない）
             let now = ProcessInfo.processInfo.systemUptime
-            let isDoubleTap = lastReleaseSlot == slotId
+            let isDoubleTap = !handsfree && lastReleaseSlot == slotId
                 && now - lastReleaseTime < kDoubleTapWindow
-            beginRecording(slotId: slotId, autoEnter: isDoubleTap)
+            beginRecording(slotId: slotId, autoEnter: isDoubleTap, effectiveMode: effectiveMode)
             break
         }
     }
@@ -175,7 +182,8 @@ final class AppController: ObservableObject {
     private func handleRelease(token: String, pressed: Set<String>) {
         guard let slotId = recordingSlot else { return }
         let slot = config.slot(slotId)
-        guard slot.mode == .hold else { return }
+        // toggle 実効モード（ハンズフリー起動含む）は離鍵で止めない（再押下で停止）
+        guard recordingEffectiveMode == .hold else { return }
 
         // 離されたキーがホットキーの構成キーなら録音停止
         let isHotkeyKey = slot.hotkey.contains { required in
@@ -212,11 +220,19 @@ final class AppController: ObservableObject {
         }
     }
 
+    /// ハンズフリー切替キーがすべて押されているか（汎用修飾キーは左右どちらでも可）
+    private func handsfreeKeyPressed(_ pressed: Set<String>) -> Bool {
+        config.handsfreeKey.allSatisfy { required in
+            !KeyToken.acceptableNames(for: required).isDisjoint(with: pressed)
+        }
+    }
+
     // MARK: - 録音制御
 
-    private func beginRecording(slotId: Int, autoEnter: Bool) {
+    private func beginRecording(slotId: Int, autoEnter: Bool, effectiveMode: HotkeyMode = .hold) {
         guard recordingSlot == nil else { return }
         recordingSlot = slotId
+        recordingEffectiveMode = effectiveMode
         self.autoEnter = autoEnter
         recordingStartedAt = ProcessInfo.processInfo.systemUptime
         emitState()
@@ -308,6 +324,7 @@ final class AppController: ObservableObject {
         quietIfNoSpeech: Bool = false
     ) {
         let vadEnabled = config.vadEnabled
+        let splitEnabled = config.splitParallelEnabled
         let delayMs = config.autoEnterDelayMs
         // 整形設定もタスク実行中の設定変更に影響されないよう Task の外で捕捉する
         let slot = config.slot(slotId)
@@ -365,10 +382,12 @@ final class AppController: ObservableObject {
                 return
             }
 
-            // 3. API 文字起こし
+            // 3. API 文字起こし（長文は無音区間で分割し並列送信して待ち時間を短縮）
             let text: String
             do {
-                text = try await transcriber.transcribe(samples: audio)
+                text = try await Self.transcribeWithOptionalSplit(
+                    audio, transcriber: transcriber, splitEnabled: splitEnabled
+                )
             } catch let error as TranscriptionError {
                 log.error("文字起こし失敗: \(error.message, privacy: .public)")
                 hud.notice(error.message)
@@ -423,6 +442,43 @@ final class AppController: ObservableObject {
             audio = condensed
         }
         return audio
+    }
+
+    /// 文字起こし（分割並列送信オプション付き）。
+    /// 分割有効かつ長文なら無音区間で分割して並列送信し、結合テキストを返す。
+    /// 分割送信が失敗（一部セグメントのエラー・429 等）したら全体 1 本送信に自動フォールバックする。
+    nonisolated private static func transcribeWithOptionalSplit(
+        _ samples: [Float], transcriber: Transcriber, splitEnabled: Bool
+    ) async throws -> String {
+        if splitEnabled {
+            let segments = VoiceActivity.segment(samples)
+            if segments.count >= 2 {
+                log.info("長文を \(segments.count) 分割して並列送信します")
+                do {
+                    return try await Self.transcribeParallel(segments, transcriber: transcriber)
+                } catch {
+                    // 部分欠落を防ぐため、分割送信に失敗したら全体 1 本送信に切り替える
+                    log.warning("分割送信に失敗したため全体送信にフォールバックします: \(error.localizedDescription)")
+                }
+            }
+        }
+        return try await transcriber.transcribe(samples: samples)
+    }
+
+    /// 各セグメントを並列に文字起こしし、index 昇順に結合する（同時数は URLSession が制限）
+    nonisolated private static func transcribeParallel(
+        _ segments: [[Float]], transcriber: Transcriber
+    ) async throws -> String {
+        var results = [String](repeating: "", count: segments.count)
+        try await withThrowingTaskGroup(of: (Int, String).self) { group in
+            for (i, seg) in segments.enumerated() {
+                group.addTask { (i, try await transcriber.transcribe(samples: seg)) }
+            }
+            for try await (i, text) in group {
+                results[i] = text
+            }
+        }
+        return VoiceActivity.joinSegments(results)
     }
 
     private func taskFinished() {

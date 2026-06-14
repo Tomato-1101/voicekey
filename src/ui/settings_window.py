@@ -751,6 +751,17 @@ class SettingsWindow(QWidget):
         self._vad_silence_spin.setMinimumWidth(110)
         _add_row(cl, "VAD 最小無音時間", self._vad_silence_spin)
 
+        # 長文の分割並列送信（既定オン）。長い録音を無音区間で区切り API へ並列送信する
+        self._split_parallel_check = self._make_toggle()
+        _add_row(
+            cl, "長文を分割して並列送信", self._split_parallel_check,
+            caption=(
+                "長い録音を無音区間で区切り、API へ並列送信して待ち時間を短縮します（既定オン）。"
+                "区切りは無音の中だけなので文の途中では切れません。"
+                "Deepgram のリアルタイムは対象外です。"
+            ),
+        )
+
         # 音声前処理（API送信前）：Peak+RMS ハイブリッド音量正規化（Windows 版固有）
         # ノイズ対策は API モデル側に任せ、ここでは小音量を持ち上げて音割れを防ぐのみ
         self._volume_normalize_check = self._make_toggle()
@@ -821,6 +832,28 @@ class SettingsWindow(QWidget):
         _add_row(
             cl, "自動 Enter の遅延", delay_row,
             caption="ホットキーを素早く 2 回押すと、貼り付け後に Enter を自動送信します（チャット送信用）。",
+        )
+
+        # ハンズフリー切替キー（この切替キー＋ホットキーで toggle 録音になる。空＝無効）
+        self._handsfree_input = HotkeyInput(platform_adapter=self._platform)
+        self._handsfree_input.setFixedWidth(220)
+        handsfree_clear = QPushButton("クリア")
+        handsfree_clear.setCursor(Qt.CursorShape.PointingHandCursor)
+        handsfree_clear.clicked.connect(self._handsfree_input.clear)
+        handsfree_row = QWidget()
+        handsfree_row_layout = QHBoxLayout(handsfree_row)
+        handsfree_row_layout.setContentsMargins(0, 0, 0, 0)
+        handsfree_row_layout.setSpacing(8)
+        handsfree_row_layout.addWidget(self._handsfree_input)
+        handsfree_row_layout.addWidget(handsfree_clear)
+        handsfree_row_layout.addStretch()
+        _add_row(
+            cl, "ハンズフリー切替キー", handsfree_row,
+            caption=(
+                "この切替キー＋ホットキーを一緒に押すと、そのプロバイダーがトグル録音になります"
+                "（1 回で開始、もう 1 回で停止）。切替キーを使わない通常の押し方は従来どおりです。"
+                "修飾キー（右 Shift など）を推奨。"
+            ),
         )
 
         layout.addWidget(card)
@@ -1356,6 +1389,8 @@ class SettingsWindow(QWidget):
         self._autostart_check.setChecked(autostart.is_enabled())
         self._vad_check.setChecked(config.get("vad_filter", True))
         self._vad_silence_spin.setValue(config.get("vad_min_silence_duration_ms", 500))
+        self._split_parallel_check.setChecked(config.get("split_parallel_enabled", True))
+        self._handsfree_input.setText(config.get("handsfree_key", ""))
         self._auto_enter_delay_slider.setValue(config.get("auto_enter_delay_ms", 50))
         self._populate_input_devices()
         self._set_input_device_selection(config.get("audio_input_device", "default"))
@@ -1455,6 +1490,10 @@ class SettingsWindow(QWidget):
             # リアルタイムストリーミング / HUD 表示
             "streaming_enabled": self._streaming_check.isChecked(),
             "hud_enabled": self._hud_check.isChecked(),
+
+            # ハンズフリー切替キー / 長文の分割並列送信
+            "handsfree_key": self._handsfree_input.text(),
+            "split_parallel_enabled": self._split_parallel_check.isChecked(),
 
             # 音声前処理（音量正規化のみ）
             "audio_preprocess": {

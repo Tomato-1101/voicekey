@@ -33,6 +33,11 @@ _SPEECH_THRESHOLD = 0.5   # 発話とみなす確率しきい値（公式デフ�
 # ポーズは句読点・文区切りの推定材料になるため完全には消さない
 _KEPT_GAP_SEC = 0.5
 
+# 分割並列送信用の定数
+_SPLIT_GAP_SEC = 0.7      # この長さを超える無音をセグメント境界にする（秒）
+_MIN_SPLIT_SEC = 12.0     # 全体がこれ未満なら分割しない（秒）
+_MIN_SEGMENT_SEC = 2.0    # これ未満のセグメントは直前に結合する（秒）
+
 
 def _find_model_path() -> Optional[str]:
     """silero-vad パッケージ同梱の ONNX モデルパスを import せずに解決する。"""
@@ -153,30 +158,83 @@ class SileroVad:
                 logger.error(f"VAD 推論エラー（発話ありとして続行）: {e}")
                 return (True, None)
 
-        # 単発のクリックノイズ誤検出を避けるため、しきい値超えフレームが
-        # 2 つ以上（≒64ms 以上）ある場合のみ発話とみなす
-        speech_idx = np.flatnonzero(probs >= _SPEECH_THRESHOLD)
-        if len(speech_idx) < 2:
+        # 前後 pad 付き・_KEPT_GAP_SEC 以下の無音をマージしたサンプル区間を得る。
+        # 区間が無ければ発話なし（クリックノイズ誤検出の除外は _speech_regions 内）
+        regions = self._speech_regions(probs, len(audio), pad_ms, _KEPT_GAP_SEC)
+        if not regions:
             return (False, None)
 
-        # 発話フレームの連続区間（インデックスの切れ目で分割）を
-        # 前後 pad 付きのサンプル範囲に変換する
+        # 区間を連結（各接合部には前後 pad ぶん＝計 _KEPT_GAP_SEC の実無音が残る）
+        condensed = np.concatenate([audio[lo:hi] for lo, hi in regions])
+        return (True, condensed)
+
+    @staticmethod
+    def _speech_regions(
+        probs: np.ndarray, audio_len: int, pad_ms: int, gap_sec: float
+    ) -> list:
+        """発話確率列から、前後 pad 付き・gap_sec 以下の無音でマージした
+        サンプル区間 [[lower, upper], ...] を返す（発話なしは空リスト）。
+
+        単発のクリックノイズ誤検出を避けるため、しきい値超えフレームが
+        2 つ以上（≒64ms 以上）ある場合のみ発話とみなす。analyze（gap=_KEPT_GAP_SEC）と
+        segment（gap=_SPLIT_GAP_SEC）の共通処理。
+        """
+        speech_idx = np.flatnonzero(probs >= _SPEECH_THRESHOLD)
+        if len(speech_idx) < 2:
+            return []
+        # 発話フレームの連続区間（インデックスの切れ目で分割）
         splits = np.flatnonzero(np.diff(speech_idx) > 1)
         starts = np.concatenate(([speech_idx[0]], speech_idx[splits + 1]))
         ends = np.concatenate((speech_idx[splits], [speech_idx[-1]]))
 
         pad = int(16000 * pad_ms / 1000)
-        kept_gap = int(16000 * _KEPT_GAP_SEC)
+        gap = int(16000 * gap_sec)
         regions: list = []
         for s, e in zip(starts, ends):
             lower = max(0, int(s) * _FRAME_SAMPLES - pad)
-            upper = min(len(audio), (int(e) + 1) * _FRAME_SAMPLES + pad)
-            # 近接区間はマージ（区間の間に残る無音が kept_gap 以下なら切らない）
-            if regions and lower - regions[-1][1] <= kept_gap:
+            upper = min(audio_len, (int(e) + 1) * _FRAME_SAMPLES + pad)
+            # 近接区間はマージ（区間の間に残る無音が gap 以下なら切らない）
+            if regions and lower - regions[-1][1] <= gap:
                 regions[-1][1] = max(regions[-1][1], upper)
             else:
                 regions.append([lower, upper])
+        return regions
 
-        # 区間を連結（各接合部には前後 pad ぶん＝計 _KEPT_GAP_SEC の実無音が残る）
-        condensed = np.concatenate([audio[lo:hi] for lo, hi in regions])
-        return (True, condensed)
+    def segment(self, audio: npt.NDArray[np.float32], pad_ms: int = 250) -> list:
+        """長い音声を無音区間で分割したセグメント（np.ndarray）のリストを返す。
+
+        分割点は _SPLIT_GAP_SEC を超える無音の中だけなので語の途中では切れない。
+        全体が短い（_MIN_SPLIT_SEC 未満）／区間が 1 つ／VAD 不可なら空リストを返し、
+        呼び出し側は従来どおり 1 本送信にフォールバックする。
+
+        Args:
+            audio: 音声データ（float32, 16kHz モノラル）
+            pad_ms: 各セグメントの前後に残すパディング（ミリ秒）
+
+        Returns:
+            セグメント（np.ndarray）のリスト。分割しないときは空リスト
+        """
+        if len(audio) < _FRAME_SAMPLES or len(audio) / 16000 < _MIN_SPLIT_SEC:
+            return []
+        with self._lock:
+            if not self._load_session():
+                return []
+            try:
+                probs = self._frame_probs(audio)
+            except Exception as e:
+                logger.error(f"VAD 推論エラー（分割せず 1 本送信）: {e}")
+                return []
+
+        regions = self._speech_regions(probs, len(audio), pad_ms, _SPLIT_GAP_SEC)
+        if len(regions) < 2:
+            return []
+        # 短すぎるセグメントは直前に結合して細切れ・送信オーバーヘッドを抑える
+        min_len = int(16000 * _MIN_SEGMENT_SEC)
+        segments: list = []
+        for lo, hi in regions:
+            seg = audio[lo:hi]
+            if segments and len(segments[-1]) < min_len:
+                segments[-1] = np.concatenate([segments[-1], seg])
+            else:
+                segments.append(seg)
+        return segments if len(segments) >= 2 else []

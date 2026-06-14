@@ -37,6 +37,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "vad_min_silence_duration_ms": 500,
     "audio_input_device": "default",
 
+    # ハンズフリー切替キー（この切替キー＋ホットキーで toggle 録音。空＝無効）
+    "handsfree_key": "",
+    # 長文を無音区間で分割し API へ並列送信する（既定オン。Deepgram ストリーミングは対象外）
+    "split_parallel_enabled": True,
+
     # LLM テキスト整形に使う Groq モデル（両ホットキー共通）
     "format_model": "llama-3.1-8b-instant",
     # 整形プロンプト本文（空 = 既定の DEFAULT_FORMAT_PROMPT を使用）

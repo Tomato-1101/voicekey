@@ -122,6 +122,10 @@ final class ConfigStore: ObservableObject {
     @Published var formatModel: String
     /// 整形で LLM に渡すプロンプト本文（全スロット共通・編集可）
     @Published var autoFormatPrompt: String
+    /// ハンズフリー切替キー（このキー＋スロットキーでトグル録音。空＝無効）
+    @Published var handsfreeKey: [String]
+    /// 長文を無音区間で分割し API へ並列送信する（既定オン。Deepgram ストリーミングは対象外）
+    @Published var splitParallelEnabled: Bool
 
     private var cancellables: Set<AnyCancellable> = []
     private let defaults: UserDefaults
@@ -137,6 +141,8 @@ final class ConfigStore: ObservableObject {
         static let inputDeviceUID = "inputDeviceUID"
         static let formatModel = "formatModel"
         static let autoFormatPrompt = "autoFormatPrompt"
+        static let handsfreeKey = "handsfreeKey"
+        static let splitParallelEnabled = "splitParallelEnabled"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -164,6 +170,8 @@ final class ConfigStore: ObservableObject {
         autoFormatPrompt = storedAutoPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? TextFormatter.defaultPrompt
             : storedAutoPrompt
+        handsfreeKey = (defaults.array(forKey: Keys.handsfreeKey) as? [String]) ?? []
+        splitParallelEnabled = defaults.object(forKey: Keys.splitParallelEnabled) as? Bool ?? true
 
         // 変更を自動保存（起動直後の初期代入は上で完了しているため安全）
         $slot1.dropFirst().sink { [weak self] in self?.saveSlot($0, key: Keys.slot1) }.store(in: &cancellables)
@@ -182,6 +190,8 @@ final class ConfigStore: ObservableObject {
                 == TextFormatter.defaultPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
             self?.defaults.set(isDefault ? "" : $0, forKey: Keys.autoFormatPrompt)
         }.store(in: &cancellables)
+        $handsfreeKey.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.handsfreeKey) }.store(in: &cancellables)
+        $splitParallelEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.splitParallelEnabled) }.store(in: &cancellables)
     }
 
     /// スロット設定を ID で取得する

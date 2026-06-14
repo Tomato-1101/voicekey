@@ -107,6 +107,11 @@ private struct GeneralSettingsTab: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            Toggle("長文を分割して並列送信", isOn: $config.splitParallelEnabled)
+            Text("長い録音を無音区間で区切り、API へ並列送信して待ち時間を短縮します（既定オン）。区切りは無音の中だけなので文の途中では切れません。Deepgram のリアルタイムは対象外です。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             Toggle("録音中に HUD を表示", isOn: $config.hudEnabled)
 
             Toggle("リアルタイムストリーミング（Deepgram）", isOn: $config.streamingEnabled)
@@ -128,6 +133,19 @@ private struct GeneralSettingsTab: View {
                 }
             }
             Text("ホットキーを素早く 2 回押すと、貼り付け後に Enter を自動送信します（チャット送信用）。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            LabeledContent("ハンズフリー切替キー") {
+                HStack(spacing: 8) {
+                    HotkeyRecorderView(hotkey: $config.handsfreeKey)
+                    if !config.handsfreeKey.isEmpty {
+                        Button("クリア") { config.handsfreeKey = [] }
+                            .font(.caption)
+                    }
+                }
+            }
+            Text("この切替キー＋ホットキーを一緒に押すと、そのプロバイダーがトグル録音になります（1 回で開始、もう 1 回で停止）。切替キーを使わない通常の押し方は従来どおりです。修飾キー（右⇧ など）を推奨。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 

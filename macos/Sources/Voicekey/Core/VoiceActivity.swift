@@ -96,8 +96,16 @@ enum VoiceActivity {
     /// （元の無音が約 1 秒以下ならそのまま。それより長い分だけを切り落とす）。
     /// 音声が短くなる分だけアップロードと API の処理時間が縮む。語頭・語尾は余白で守られ、
     /// ポーズの手がかりも残るため精度には影響しない。発話が無ければ nil
-    static func condense(_ samples: [Float], padMs: Int = 250) -> [Float]? {
-        // 1. フレームごとの発話判定（hasSpeechEnergy と同じエネルギー基準）
+    /// 分割並列送信用: この長さを超える無音をセグメント境界にする（秒）
+    private static let splitGapSec = 0.7
+    /// 分割並列送信用: 全体がこれ未満なら分割しない（秒）
+    private static let minSplitSec = 12.0
+    /// 分割並列送信用: これ未満のセグメントは直前に結合して細切れを防ぐ（秒）
+    private static let minSegmentSec = 2.0
+
+    /// 発話フレームの連続区間を、前後 padMs の余白付きサンプル範囲にして返す（マージ前）。
+    /// condense と segment の共通前処理（エネルギー基準は hasSpeechEnergy と同一）。
+    private static func speechRegions(_ samples: [Float], padMs: Int) -> [(lower: Int, upper: Int)] {
         var active: [Bool] = []
         for start in stride(from: 0, to: samples.count - frameLen, by: frameLen) {
             var sum: Float = 0
@@ -106,8 +114,6 @@ enum VoiceActivity {
             }
             active.append(sqrt(sum / Float(frameLen)) >= energyThreshold)
         }
-
-        // 2. 発話フレームの連続区間を前後 pad 付きのサンプル範囲に変換
         let pad = sampleRate * padMs / 1000
         var regions: [(lower: Int, upper: Int)] = []
         var runStart: Int? = nil
@@ -124,26 +130,95 @@ enum VoiceActivity {
             regions.append((max(0, start * frameLen - pad),
                             min(samples.count, active.count * frameLen + pad)))
         }
-        guard !regions.isEmpty else { return nil }
+        return regions
+    }
 
-        // 3. 近接区間をマージ（区間の間に残る無音が keptGapSec 以下なら切らずに繋げたまま）
-        let keptGap = Int(Double(sampleRate) * keptGapSec)
-        var merged: [(lower: Int, upper: Int)] = [regions[0]]
+    /// 近接する区間を gapSec 以下の無音でマージする（gap を超える無音で区切られる）
+    private static func mergeRegions(
+        _ regions: [(lower: Int, upper: Int)], gapSec: Double
+    ) -> [(lower: Int, upper: Int)] {
+        guard let first = regions.first else { return [] }
+        let gap = Int(Double(sampleRate) * gapSec)
+        var merged: [(lower: Int, upper: Int)] = [first]
         for region in regions.dropFirst() {
-            if region.lower - merged[merged.count - 1].upper <= keptGap {
+            if region.lower - merged[merged.count - 1].upper <= gap {
                 merged[merged.count - 1].upper = max(merged[merged.count - 1].upper, region.upper)
             } else {
                 merged.append(region)
             }
         }
+        return merged
+    }
 
-        // 4. 区間を連結（各接合部には前後 pad ぶん＝計 keptGapSec の実無音が残る）
+    static func condense(_ samples: [Float], padMs: Int = 250) -> [Float]? {
+        let regions = speechRegions(samples, padMs: padMs)
+        guard !regions.isEmpty else { return nil }
+        // 近接区間をマージ（区間の間に残る無音が keptGapSec 以下なら切らずに繋げたまま）
+        let merged = mergeRegions(regions, gapSec: keptGapSec)
+        // 区間を連結（各接合部には前後 pad ぶん＝計 keptGapSec の実無音が残る）
         var result: [Float] = []
         result.reserveCapacity(merged.reduce(0) { $0 + ($1.upper - $1.lower) })
         for region in merged {
             result.append(contentsOf: samples[region.lower..<region.upper])
         }
         return result
+    }
+
+    /// 長い音声を無音区間で分割したセグメント配列を返す。
+    ///
+    /// 分割点は splitGapSec を超える無音の中だけなので、語の途中では切れない
+    /// （＝精度に実用上影響しない）。各セグメントは前後 pad 付きで独立に文字起こしできる。
+    /// 全体が短い（minSplitSec 未満）／区間が 1 つのときは空配列を返し、
+    /// 呼び出し側は従来どおり 1 本送信にフォールバックする。
+    static func segment(_ samples: [Float], padMs: Int = 250) -> [[Float]] {
+        let total = Double(samples.count) / Double(sampleRate)
+        guard total >= minSplitSec else { return [] }
+        let regions = speechRegions(samples, padMs: padMs)
+        let merged = mergeRegions(regions, gapSec: splitGapSec)
+        guard merged.count >= 2 else { return [] }
+        // 短すぎるセグメントは直前に結合して細切れ・送信オーバーヘッドを抑える
+        let minLen = Int(Double(sampleRate) * minSegmentSec)
+        var segments: [[Float]] = []
+        for region in merged {
+            let slice = Array(samples[region.lower..<region.upper])
+            if let last = segments.last, last.count < minLen {
+                segments[segments.count - 1] = last + slice
+            } else {
+                segments.append(slice)
+            }
+        }
+        return segments.count >= 2 ? segments : []
+    }
+
+    /// セグメントごとの文字起こし結果を、境界の文字種を見て結合する。
+    /// 両端のどちらかが CJK ならスペース無し、英数字同士ならスペース 1 個で繋ぐ。
+    static func joinSegments(_ texts: [String]) -> String {
+        var result = ""
+        for piece in texts {
+            let p = piece.trimmingCharacters(in: .whitespacesAndNewlines)
+            if p.isEmpty { continue }
+            if result.isEmpty {
+                result = p
+                continue
+            }
+            if isCJK(result.last!) || isCJK(p.first!) {
+                result += p
+            } else {
+                result += " " + p
+            }
+        }
+        return result
+    }
+
+    /// 1 文字がひらがな・カタカナ・漢字（および全角/半角形）かを判定する
+    private static func isCJK(_ ch: Character) -> Bool {
+        guard let scalar = ch.unicodeScalars.first else { return false }
+        let v = scalar.value
+        return (0x3040...0x30FF).contains(v)
+            || (0x3400...0x4DBF).contains(v)
+            || (0x4E00...0x9FFF).contains(v)
+            || (0xF900...0xFAFF).contains(v)
+            || (0xFF00...0xFFEF).contains(v)
     }
 
     // MARK: - SoundAnalysis（オンデバイス ML）

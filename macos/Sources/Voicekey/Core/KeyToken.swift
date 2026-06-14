@@ -62,6 +62,12 @@ enum KeyToken {
         // 数字
         29: "0", 18: "1", 19: "2", 20: "3", 21: "4", 23: "5", 22: "6",
         26: "7", 28: "8", 25: "9",
+        // 記号（kVK_ANSI_*。物理キーコードはレイアウト非依存なので US/JIS 共通）
+        27: "minus", 24: "equal", 33: "lbracket", 30: "rbracket",
+        42: "backslash", 41: "semicolon", 39: "quote", 43: "comma",
+        47: "period", 44: "slash", 50: "grave",
+        // JIS（日本語）配列専用キー（¥・ろ/_・かな・英数 など。US 配列には物理キーが無い）
+        93: "yen", 94: "underscore", 95: "keypad_comma", 102: "eisu", 104: "kana",
     ]
 
     /// キーコードからトークンを得る（未知のキーは nil）
@@ -101,6 +107,22 @@ enum KeyToken {
         case "esc": return "Esc"
         case "tab": return "Tab"
         case "backspace": return "Delete"
+        case "minus": return "-"
+        case "equal": return "="
+        case "lbracket": return "["
+        case "rbracket": return "]"
+        case "backslash": return "\\"
+        case "semicolon": return ";"
+        case "quote": return "'"
+        case "comma": return ","
+        case "period": return "."
+        case "slash": return "/"
+        case "grave": return "`"
+        case "yen": return "¥"
+        case "underscore": return "_"
+        case "keypad_comma": return "，"
+        case "eisu": return "英数"
+        case "kana": return "かな"
         default:
             if token.count == 1 { return token.uppercased() }
             if token.hasPrefix("f"), Int(token.dropFirst()) != nil {

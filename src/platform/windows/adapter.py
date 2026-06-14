@@ -48,6 +48,21 @@ class WindowsPlatformAdapter(PlatformAdapter):
         Qt.Key.Key_Meta: "<cmd>",
     }
 
+    # 日本語（JIS）配列の専用キー。pynput では KeyCode(vk=..., char=None) で届き、
+    # name も char も無いため共通の normalize_listener_key では拾えない。vk から
+    # 判定側トークン（<> 無し）へ変換する。記録側 keymap._SPECIAL_KEY_MAP の
+    # "<nonconvert>" 等は _parse_hotkey の <> 剥がしを通してここと一致する。
+    # VK 実値は環境・キーボードドライバで揺れるため複数 VK を同一トークンに寄せる。
+    _JIS_VK_MAP = {
+        0x1D: "nonconvert",       # 無変換
+        0x1C: "convert",          # 変換
+        0xF2: "kana",             # ひらがな/カタカナ（かな）
+        0xF3: "hankaku_zenkaku",  # 半角/全角
+        0xF4: "hankaku_zenkaku",  # 半角/全角（別ドライバ）
+        0x19: "hankaku_zenkaku",  # 漢字
+        0xF0: "eisu",             # 英数
+    }
+
     @property
     def paste_modifier(self) -> Key:
         return Key.ctrl
@@ -60,7 +75,14 @@ class WindowsPlatformAdapter(PlatformAdapter):
         )
 
     def normalize_listener_key(self, key) -> Optional[str]:
-        return normalize_listener_key(key)
+        token = normalize_listener_key(key)
+        if token is not None:
+            return token
+        # 共通正規化で拾えない＝日本語専用キー等。vk から判定用トークンを引く。
+        vk = getattr(key, "vk", None)
+        if vk is not None and vk in self._JIS_VK_MAP:
+            return self._JIS_VK_MAP[vk]
+        return None
 
     def modifier_hotkey_from_native(
         self,

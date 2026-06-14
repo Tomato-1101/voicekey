@@ -74,6 +74,23 @@ _SPECIAL_KEY_MAP = {
 }
 
 
+# 日本語（JIS）配列の専用キー（記録側トークン）。Qt のバージョンによっては
+# 未定義の列挙があるため getattr で存在するものだけ登録する。判定側の
+# windows/adapter._JIS_VK_MAP と同じ語彙（<> を剥がすと一致）にする。
+for _qt_name, _token in (
+    ("Key_Muhenkan", "<nonconvert>"),
+    ("Key_Henkan", "<convert>"),
+    ("Key_Hiragana_Katakana", "<kana>"),
+    ("Key_Hiragana", "<kana>"),
+    ("Key_Katakana", "<kana>"),
+    ("Key_Zenkaku_Hankaku", "<hankaku_zenkaku>"),
+    ("Key_Eisu_toggle", "<eisu>"),
+):
+    _qt_key = getattr(Qt.Key, _qt_name, None)
+    if _qt_key is not None:
+        _SPECIAL_KEY_MAP[_qt_key] = _token
+
+
 def normalize_listener_key(key: Any) -> Optional[str]:
     """
     pynputキーイベントを正規化する。

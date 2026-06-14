@@ -28,6 +28,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Dict, Optional, Set
 
@@ -52,6 +53,7 @@ from .core import (
 )
 from .core import text_formatter
 from .core.audio_preprocess import preprocess as preprocess_audio
+from .core.text_utils import join_segments
 from .core.history import HistoryStore
 from .platform import get_platform_adapter
 from .ui import Hud, SettingsWindow, SystemTray
@@ -76,6 +78,8 @@ _AUDIO_HANG_SEC: float = 5.0
 _DOUBLE_TAP_SEC: float = 0.4
 # これより短い録音は誤操作とみなして文字起こししない（秒）
 _MIN_AUDIO_SEC: float = 0.3
+# 長文の分割並列送信を発動する最小録音長（秒）。vad._MIN_SPLIT_SEC と一致させる
+_SPLIT_MIN_SEC: float = 12.0
 # ホットリロードで退役したトランスクライバを close するまでの猶予（秒）
 _RETIRE_CLOSE_DELAY_SEC: float = 30.0
 # 修飾キーの汎用名。macOS の pynput は左修飾キーを汎用名（cmd 等）で報告する
@@ -146,6 +150,8 @@ class VoicekeyApp(QObject):
         # --- 内部状態（_state_lock で保護） ---
         self._state_lock = threading.Lock()
         self._recording_slot: Optional[int] = None  # 録音中のスロット ID
+        # 録音中の実効モード（ハンズフリー切替キー併用時は hold スロットでも toggle になる）
+        self._recording_effective_mode: str = HotkeyMode.HOLD.value
         self._recording_started: float = 0.0        # 録音開始時刻（monotonic）
         self._auto_enter = False                    # ダブルタップによる auto_enter 録音か
         self._outstanding = 0                       # 未完了の文字起こしタスク数
@@ -164,6 +170,10 @@ class VoicekeyApp(QObject):
 
         # --- ホットキースロット ---
         self._slots: Dict[int, HotkeySlot] = self._build_slots()
+        # ハンズフリー切替キー（この切替キー＋スロットキーで toggle 録音。空＝無効）
+        self._handsfree_keys: Set[str] = self._parse_hotkey(
+            self._config.get("handsfree_key", "")
+        )
 
         # --- 文字起こしワーカー（常駐 1 本、None センチネルで終了） ---
         self._task_q: "queue.Queue[Optional[TranscriptionTask]]" = queue.Queue()
@@ -297,6 +307,15 @@ class VoicekeyApp(QObject):
             for t in slot.required_keys
         )
 
+    def _handsfree_pressed(self) -> bool:
+        """ハンズフリー切替キーがすべて押されているか判定する（空＝無効で常に False）。"""
+        if not self._handsfree_keys:
+            return False
+        return all(
+            self._acceptable_names(t) & self._pressed_keys
+            for t in self._handsfree_keys
+        )
+
     def _key_in_slot(self, key_str: str, slot: HotkeySlot) -> bool:
         """解放されたキーがスロットのホットキー構成キーか判定する。"""
         return any(key_str in self._acceptable_names(t) for t in slot.required_keys)
@@ -351,24 +370,32 @@ class VoicekeyApp(QObject):
             if recording_slot is None:
                 for slot_id, slot in self._slots.items():
                     if self._slot_matches(slot):
+                        # ハンズフリー切替キー併用なら toggle 実効モードで起動する
+                        # （スロット設定が hold でも、この一押しの間だけ toggle になる）
+                        handsfree = self._handsfree_pressed()
+                        effective_mode = (
+                            HotkeyMode.TOGGLE.value if handsfree else slot.hotkey_mode
+                        )
                         # ダブルタップ: 同スロットを短時間内に再押下 → auto_enter
+                        # （ハンズフリー toggle 起動時はダブルタップ判定を使わない）
                         now = time.monotonic()
                         auto_enter = (
-                            self._last_release_slot == slot_id
+                            not handsfree
+                            and self._last_release_slot == slot_id
                             and now - self._last_release_time < _DOUBLE_TAP_SEC
                         )
-                        self._begin_recording(slot_id, auto_enter)
+                        self._begin_recording(slot_id, auto_enter, effective_mode)
                         break
             else:
                 slot = self._slots.get(recording_slot)
                 if slot is None or not self._slot_matches(slot):
                     return
-                # toggle モード: 録音中の再押下で停止
-                if slot.hotkey_mode == HotkeyMode.TOGGLE.value:
+                # toggle 実効モード: 録音中の再押下で停止（ハンズフリー切替キー併用での起動も含む）
+                if self._recording_effective_mode == HotkeyMode.TOGGLE.value:
                     self._finish_recording()
-                # hold モード: 短いタップ後の待機中に再押下されたらダブルタップ確定。
+                # hold 実効モード: 短いタップ後の待機中に再押下されたらダブルタップ確定。
                 # 録音は 1 打目から止めていないため、タップ中・タップ間の音声も残っている
-                elif slot.hotkey_mode == HotkeyMode.HOLD.value:
+                elif self._recording_effective_mode == HotkeyMode.HOLD.value:
                     with self._state_lock:
                         timer = self._pending_tap_timer
                         if timer is None:
@@ -395,7 +422,8 @@ class VoicekeyApp(QObject):
             if recording_slot is None:
                 return
             slot = self._slots.get(recording_slot)
-            if slot is None or slot.hotkey_mode != HotkeyMode.HOLD.value:
+            # toggle 実効モード（ハンズフリー起動含む）は離鍵で止めない（再押下で停止）
+            if slot is None or self._recording_effective_mode != HotkeyMode.HOLD.value:
                 return
 
             if key_str is not None and self._key_in_slot(key_str, slot):
@@ -431,12 +459,16 @@ class VoicekeyApp(QObject):
     # 録音制御（すべてノンブロッキング）
     # ------------------------------------------------------------------
 
-    def _begin_recording(self, slot_id: int, auto_enter: bool) -> None:
+    def _begin_recording(
+        self, slot_id: int, auto_enter: bool,
+        effective_mode: str = HotkeyMode.HOLD.value,
+    ) -> None:
         """録音を開始する（listener スレッドから呼ばれる。即座に返る）。"""
         with self._state_lock:
             if self._recording_slot is not None:
                 return
             self._recording_slot = slot_id
+            self._recording_effective_mode = effective_mode
             self._recording_started = time.monotonic()
             self._auto_enter = auto_enter
 
@@ -591,25 +623,41 @@ class VoicekeyApp(QObject):
             except Exception as e:
                 logger.warning(f"音声前処理でエラー、原音を使用: {e}")
 
-        # VAD: 発話がなければ API に送らない（幻覚と無駄コストの防止）。
-        # 推論 1 回で発話判定と無音圧縮（前後トリミング + 発話間の長い無音の短縮）を行う
-        if self._config.get("vad_filter", True):
-            vad_start = time.perf_counter()
-            has_speech, condensed = self._vad.analyze(audio)
-            if not has_speech:
-                logger.info("発話が検出されなかったためスキップ")
-                # 誤タップ由来（ダブルタップ待ちの期限切れ）の無音は通知しない
-                if not task.quiet_if_no_speech:
-                    self.notice.emit("音声が検出されませんでした")
-                return
-            if condensed is not None:
-                cut_sec = (len(audio) - len(condensed)) / SAMPLE_RATE
-                if cut_sec > 0.1:
-                    logger.info(f"無音圧縮: {cut_sec:.1f}s 削減")
-                audio = condensed
-            logger.info(f"VAD 処理: {(time.perf_counter() - vad_start) * 1000:.0f}ms")
+        # 長文の分割並列送信（既定オン）。無音区間で区切り API へ並列送信して待ち時間を短縮する。
+        # 区切りは無音の中だけなので語の途中では切れない。VAD 有効・長文時のみ発動する
+        vad_on = bool(self._config.get("vad_filter", True))
+        split_on = bool(self._config.get("split_parallel_enabled", True))
+        segments = None
+        if vad_on and split_on and duration >= _SPLIT_MIN_SEC:
+            segments = self._vad.segment(audio)
 
-        text = slot.transcriber.transcribe(audio)
+        if segments and len(segments) >= 2:
+            logger.info(f"長文を {len(segments)} 分割して並列送信します")
+            text = self._transcribe_parallel(slot, segments)
+            if text is None:
+                # 一部セグメントの失敗（429 等）→ 全体 1 本送信にフォールバック（部分欠落を防ぐ）
+                logger.warning("分割送信に失敗したため全体送信にフォールバックします")
+                text = slot.transcriber.transcribe(audio)
+        else:
+            # VAD: 発話がなければ API に送らない（幻覚と無駄コストの防止）。
+            # 推論 1 回で発話判定と無音圧縮（前後トリミング + 発話間の長い無音の短縮）を行う
+            if vad_on:
+                vad_start = time.perf_counter()
+                has_speech, condensed = self._vad.analyze(audio)
+                if not has_speech:
+                    logger.info("発話が検出されなかったためスキップ")
+                    # 誤タップ由来（ダブルタップ待ちの期限切れ）の無音は通知しない
+                    if not task.quiet_if_no_speech:
+                        self.notice.emit("音声が検出されませんでした")
+                    return
+                if condensed is not None:
+                    cut_sec = (len(audio) - len(condensed)) / SAMPLE_RATE
+                    if cut_sec > 0.1:
+                        logger.info(f"無音圧縮: {cut_sec:.1f}s 削減")
+                    audio = condensed
+                logger.info(f"VAD 処理: {(time.perf_counter() - vad_start) * 1000:.0f}ms")
+
+            text = slot.transcriber.transcribe(audio)
         if not text:
             logger.info("文字起こし結果が空でした")
             return
@@ -622,6 +670,38 @@ class VoicekeyApp(QObject):
 
         # テキスト挿入（ワーカースレッド上で実行し UI スレッドを塞がない）
         self._insert_and_enter(text, task.auto_enter)
+
+    def _transcribe_parallel(self, slot: HotkeySlot, segments: list) -> Optional[str]:
+        """各セグメントを並列に文字起こしし、index 昇順に結合して返す。
+
+        1 つでも失敗したら None を返す（呼び出し側が全体 1 本送信にフォールバックする）。
+        httpx.Client はスレッドセーフなため transcriber を共有してよい。同時数は最大 4。
+
+        Args:
+            slot: 使用するホットキースロット（transcriber を共有）
+            segments: 分割済みセグメント（index 昇順）
+
+        Returns:
+            結合済みテキスト。1 つでも失敗したら None
+        """
+        results: list = [None] * len(segments)
+        errors: list = []
+
+        def _do(index: int, seg) -> None:
+            try:
+                results[index] = slot.transcriber.transcribe(seg)
+            except Exception as e:  # フォールバック判断のため全例外を集約する
+                errors.append(e)
+
+        max_workers = min(4, len(segments))
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="split") as ex:
+            for future in [ex.submit(_do, i, seg) for i, seg in enumerate(segments)]:
+                future.result()  # 例外は _do 内で捕捉済み
+
+        if errors:
+            logger.warning(f"分割送信で {len(errors)} 件のセグメントが失敗: {errors[0]}")
+            return None
+        return join_segments([r for r in results if r])
 
     def _maybe_format(self, text: str, slot_id: int) -> str:
         """
@@ -699,6 +779,8 @@ class VoicekeyApp(QObject):
         # スロットを常に再構築（生成は軽量。ネットワークアクセスなし）
         old_slots = self._slots
         self._slots = self._build_slots()
+        # ハンズフリー切替キーもホットリロードで更新する
+        self._handsfree_keys = self._parse_hotkey(self._config.get("handsfree_key", ""))
 
         # 旧トランスクライバは処理中タスクが使っている可能性があるため遅延 close
         for old in old_slots.values():

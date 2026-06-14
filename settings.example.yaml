@@ -42,6 +42,10 @@ hotkey2:
   api_model: whisper-large-v3-turbo
   api_prompt: ''
 
+# ハンズフリー切替キー（このキー＋ホットキーでそのプロバイダーがトグル録音になる）。
+# 空文字で無効。修飾キー推奨（例: <cmd_r>, <shift_r>）。先に切替キーを押しながらホットキー
+handsfree_key: ''
+
 # 言語コード（ja / en など。空文字で自動検出）
 language: ''
 
@@ -59,3 +63,8 @@ preload_on_startup: true
 # VAD（音声区間検出）でノイズ・無音区間を API 送信前に除外
 vad_filter: true
 vad_min_silence_duration_ms: 500
+
+# 長文を無音区間で分割して並列送信し、待ち時間を短縮する（既定 true）。
+# 区切りは 0.7 秒超の無音の中だけなので語の途中では切れない。
+# 12 秒未満の録音や Deepgram ストリーミングは対象外
+split_parallel_enabled: true

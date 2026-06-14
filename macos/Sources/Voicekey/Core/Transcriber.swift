@@ -57,7 +57,11 @@ enum WavEncoder {
 }
 
 /// 文字起こし API クライアント（バックエンドごとにリクエスト形式を切り替える）
-final class Transcriber {
+///
+/// 分割並列送信では複数タスクが同一インスタンスの transcribe を同時に呼ぶ。
+/// 可変設定は configLock で保護し、URLSession は並列リクエストに対応するため
+/// 実態としてスレッドセーフ。それを明示するため @unchecked Sendable とする。
+final class Transcriber: @unchecked Sendable {
 
     let backend: Backend
 
