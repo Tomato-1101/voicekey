@@ -72,13 +72,18 @@ try {
     & $Python -m PyInstaller voicekey.spec --clean --noconfirm
     if ($LASTEXITCODE -ne 0) { Write-Error "PyInstaller に失敗しました" }
 
-    # --- 4. ソース平文混入チェック（dist に .py が 1 つでもあれば配布中止） ---
-    $LeakedPy = Get-ChildItem (Join-Path $Root "dist\voicekey") -Recurse -Filter "*.py" -ErrorAction SilentlyContinue
+    # --- 4. 自分のソース平文混入チェック ---
+    # 目的は「自分の proprietary な src/ が平文 .py で同梱されていないこと」の確認。
+    # torch / torchaudio 等の OSS ライブラリは PyInstaller onedir では .py を必ず同梱する
+    # （しかも公開コードなので IP 漏洩には当たらない）。ここでは src 配下の .py のみを対象にする。
+    # src は voicekey.spec で datas=[] とし PYZ にバイトコード格納するため、本来 0 件のはず。
+    $LeakedPy = Get-ChildItem (Join-Path $Root "dist\voicekey") -Recurse -Filter "*.py" -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -match '\\src\\' }
     if ($LeakedPy) {
         $LeakedPy | ForEach-Object { Write-Host "  混入: $($_.FullName)" }
-        Write-Error "dist に Python ソース（.py）が含まれています。voicekey.spec の datas を確認してください"
+        Write-Error "dist に自分のソース（src の .py）が含まれています。voicekey.spec の datas を確認してください"
     }
-    Write-Host "==> ソース平文混入なし（dist\voicekey に .py なし）"
+    Write-Host "==> 自分のソース平文混入なし（dist\voicekey に src の .py なし）"
 
     # --- 5. Inno Setup でインストーラ作成 ---
     & $Iscc (Join-Path $Root "installer\windows\voicekey.iss") "/DAppVersion=$Version"
