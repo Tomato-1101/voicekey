@@ -14,6 +14,19 @@
 
 ---
 
+## 🚦 配布ステータス
+
+> このセクションはコード／リリース状態が変わるたびに更新します（最終更新: **2026-06-14**）。
+
+| プラットフォーム | 最新版 | 配布状態 | 入手先 | 備考 |
+|---|---|---|---|---|
+| 🍎 macOS | **v1.0.1** | ✅ **配布中** | [voicekey.vercel.app](https://voicekey.vercel.app) | Apple Development 署名。初回起動のみ Gatekeeper 回避手順あり（サイト／DMG に同梱）。自動更新（Sparkle）対応 |
+| 🪟 Windows | — | 🚧 **ビルド準備完了・未リリース** | 準備中 | GitHub Actions（`windows-build.yml`）でビルド可。GitHub Secrets 登録後に CI で `setup.exe` を生成 |
+
+**配布の仕組み（テスター向け）**: 配布物はすべて [voicekey.vercel.app](https://voicekey.vercel.app) から入手（GitHub はテスターから見えません）。配布版（DIST ビルド）は API キーがビルド時に埋め込まれており、**テスターはキー入力不要でそのまま使えます**。
+
+---
+
 ## 📖 目次
 
 - [特徴](#-特徴)

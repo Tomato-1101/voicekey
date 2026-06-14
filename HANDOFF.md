@@ -16,7 +16,10 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 - 自動アップデートは Mac 版・Windows 版の両方に必ず組み込む（ユーザー強い要望）。
 - ソースコード非公開。配布物に .py 平文を含めない（voicekey.spec の datas=('src','src') は根治対象）。
 - DIST ビルドでは設定画面の API キータブを非表示。
-- 配布用ブランチは `beta`。開発は main、リリース時に main → beta マージ → dist ビルド → タグ。
+- ブランチは **main 一本**（2026-06-14 確定）。リリースは **git tag（vX.Y.Z）** で管理し、配布物は
+  タグ時点の main から dist ビルドする。beta ブランチは廃止（ソロ運用では同期コストだけ増え、実際 8
+  コミット遅れで放置され機能していなかった）。ソース非公開はブランチではなく「private リポジトリ ＋
+  配布物に .py 平文を含めない」で担保する（後者は voicekey.spec の datas=('src','src') が根治対象・未完）。
 - 配布物置き場: **すべて Vercel サイト**（https://voicekey.vercel.app、ソースは
   `/Users/tomato/Project/voicekey-site/`、`vercel deploy --prod` で更新）。
   DMG/exe は `/downloads/`、appcast+更新 zip は `/mac/`、version.json は `/windows/`、

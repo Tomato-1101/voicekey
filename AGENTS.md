@@ -33,3 +33,7 @@
 - Keep API keys in `.env` (GROQ_API_KEY, CEREBRAS_API_KEY, OPENAI_API_KEY); never commit secrets or local `settings.yaml`.
 - Verify `ffmpeg` is on PATH and select the correct CUDA wheel for your GPU; on fallback to cloud, ensure network access is available.
 - When switching backends, confirm `transcription_backend` and model names in `settings.yaml` align with installed/available services to avoid runtime warnings.
+
+## Documentation
+- `README.md` is user-facing documentation. Whenever you change behavior users can see — features, usage, settings, supported platforms, or release/distribution status — update the relevant part of `README.md` in the **same commit** as the code change (do not defer it).
+- Keep the "🚦 配布ステータス" table at the top of `README.md` current (latest Mac/Windows version, distribution state, and last-updated date). This rule is also recorded in `CLAUDE.md`.
