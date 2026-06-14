@@ -96,7 +96,7 @@ try {
     $Sha256 = (Get-FileHash $Setup -Algorithm SHA256).Hash.ToLower()
     $VersionJson = @{
         version = $Version
-        url     = "https://voicekey.vercel.app/downloads/voicekey-$Version-setup.exe"
+        url     = "https://github.com/Tomato-1101/voicekey-releases/releases/download/v$Version/voicekey-$Version-setup.exe"
         sha256  = $Sha256
         notes   = "voicekey $Version"
     } | ConvertTo-Json

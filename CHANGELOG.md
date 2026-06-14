@@ -4,6 +4,10 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased] - 2026-06-14
 
+### Added
+- **Windows 版 v1.0.0 を初公開配布**。GitHub Actions（`windows-build.yml`）でキー埋め込みインストーラを生成し、公開バイナリ専用リポ `voicekey-releases`（**ソース非公開**）の GitHub Releases でホスト。配布サイト（Vercel）の「Windows 版をダウンロード」を有効化。容量が大きい（約 268MB）ためサイト本体（Vercel）ではなく GitHub Releases から配る構成にした
+  - `scripts/build/build_windows_dist.ps1`: version.json の `url` を GitHub Releases のアセット URL に変更（自動アップデータのダウンロード元）
+
 ### Fixed
 - **Windows 版 GitHub Actions ビルドの文字化け／エンコーディング不具合を修正**（Mac から PC を使わずに Windows 配布物をビルドできるようにする一連の対応）
   - `scripts/build/build_windows_dist.ps1` に UTF-8 BOM を付与。Windows PowerShell 5.1（powershell.exe）が BOM なし UTF-8 を cp1252 と誤読し、日本語を含む行でパースエラー（`The string is missing the terminator`）になっていた
@@ -13,6 +17,9 @@ voicekeyの変更履歴を記録するファイルです。
   - **自動アップデータの version.json パースを BOM 耐性化**。`src/utils/updater.py` を `utf-8-sig` デコードに変更し、ビルドスクリプトは version.json を BOM 無し UTF-8 で書き出すようにした（PS5.1 の `Set-Content -Encoding UTF8` が付ける BOM で `json.loads` が落ち、自動アップデートが静かに効かなくなるのを防ぐ）
 
 ### Changed
+- **VAD の発話区間計算を共通化**（Windows `_speech_regions` / Mac `speechRegions` 抽出）。
+  無音圧縮（analyze/condense）と分割（segment）が、同じ 1 回の推論結果を 2 通りの
+  ギャップ閾値（0.5s 保持 / 0.7s 分割）でマージする方式に整理
 - **Windows 版 設定 UI の全面再デザイン**（「ダサい・安っぽい」指摘対応。2026-06-13）
   - 上部タブ → **左サイドバーナビゲーション**（macOS System Settings 風。
     ブランド表示 + ページタイトルヘッダー、ウィンドウは 560x640 → 720x600）
@@ -30,6 +37,21 @@ voicekeyの変更履歴を記録するファイルです。
   - 補足説明ラベルは objectName("caption") + QSS 化（テーマ切替に自動追従）
 
 ### Added
+- **ハンズフリー切替キー**（グローバル設定 `handsfree_key`）
+  - 切替キー＋既存ホットキーを同時押しすると、そのプロバイダーがトグル録音
+    （1 回押して開始・もう一度で停止）になる。既存の長押し（hold）はそのまま維持
+  - スロットは 2 個のまま。両プロバイダーをハンズフリー化できる。既定は空＝無効
+  - Mac/Windows 両対応。録音中の「実効モード」を新設し release/toggle 停止判定が参照
+- **長文の分割並列送信**（`split_parallel_enabled`・**既定オン**）
+  - 12 秒超の録音を 0.7 秒超の無音区間で分割し、REST batch API（OpenAI/Groq/
+    ElevenLabs）へ並列送信して index 順に結合。待ち時間を最遅セグメント分まで短縮
+  - 区切りは無音の中だけなので語の途中では切れず精度への実害なし。一部失敗時は
+    全体 1 本送信へフォールバック。VAD 推論は録音 1 回のまま（region 計算を共通化）
+  - Deepgram ストリーミングは対象外（既にリアルタイム）
+- **JIS（日本語）キーボード配列対応**
+  - 記号キー（- = [ ] \ ; ' , . / `）と日本語専用キー（¥ / かな / 英数 / 無変換 /
+    変換 / 半角全角）をホットキーに使用可能化（Mac: 物理キーコード、Windows: VK ベース）
+  - 環境・IME により一部の日本語キーは pynput に届かず使えない場合がある
 - **開発版／ベータ版の起動を 1 コマンド化**（「2 バージョンをはっきり区別したい」要望対応）
   - `macos/scripts/run_dev.sh` 新規: スタブ鍵で再ビルド → `/Applications/voicekey.app` へ
     インストール → 再起動。普段使いは常にこれ（API キータブが表示されるのが開発版の目印）

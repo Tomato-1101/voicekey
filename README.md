@@ -21,9 +21,9 @@
 | プラットフォーム | 最新版 | 配布状態 | 入手先 | 備考 |
 |---|---|---|---|---|
 | 🍎 macOS | **v1.0.1** | ✅ **配布中** | [voicekey.vercel.app](https://voicekey.vercel.app) | Apple Development 署名。初回起動のみ Gatekeeper 回避手順あり（サイト／DMG に同梱）。自動更新（Sparkle）対応 |
-| 🪟 Windows | — | 🚧 **ビルド準備完了・未リリース** | 準備中 | GitHub Actions（`windows-build.yml`）でビルド可。GitHub Secrets 登録後に CI で `setup.exe` を生成 |
+| 🪟 Windows | **v1.0.0** | ✅ **配布中** | [voicekey.vercel.app](https://voicekey.vercel.app) | GitHub Actions（`windows-build.yml`）でキー埋め込みビルド。インストーラ（約 268MB）は容量が大きいため公開バイナリ専用リポ（`voicekey-releases`・ソース非公開）の GitHub Releases でホスト。未署名のため初回のみ SmartScreen 回避手順あり。自動更新対応 |
 
-**配布の仕組み（テスター向け）**: 配布物はすべて [voicekey.vercel.app](https://voicekey.vercel.app) から入手（GitHub はテスターから見えません）。配布版（DIST ビルド）は API キーがビルド時に埋め込まれており、**テスターはキー入力不要でそのまま使えます**。
+**配布の仕組み（テスター向け）**: ダウンロードページは [voicekey.vercel.app](https://voicekey.vercel.app)。Mac の DMG は同サイトから、Windows インストーラは容量が大きいため GitHub Releases（公開バイナリ専用リポ。**ソースは含みません**）から入手します。配布版（DIST ビルド）は API キーがビルド時に埋め込まれており、**テスターはキー入力不要でそのまま使えます**。
 
 ---
 
