@@ -5,10 +5,16 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased] - 2026-06-14
 
 ### Added
+- **Windows インストーラにデスクトップショートカット作成オプションを追加**。Inno Setup の `[Tasks]`/`[Icons]` に `desktopicon` を追加し、インストール時に「デスクトップにショートカットを作成する」を選べる（既定チェック済み）。従来はスタートメニューとログイン時自動起動のみだった
 - **Windows 版 v1.0.0 を初公開配布**。GitHub Actions（`windows-build.yml`）でキー埋め込みインストーラを生成し、公開バイナリ専用リポ `voicekey-releases`（**ソース非公開**）の GitHub Releases でホスト。配布サイト（Vercel）の「Windows 版をダウンロード」を有効化。容量が大きい（約 268MB）ためサイト本体（Vercel）ではなく GitHub Releases から配る構成にした
   - `scripts/build/build_windows_dist.ps1`: version.json の `url` を GitHub Releases のアセット URL に変更（自動アップデータのダウンロード元）
 
 ### Fixed
+- **Windows でマイク自動検出が OS をクラッシュ（再起動）させる重大バグを修正（WDF エラー）**。`src/core/mic_auto_detect.py` が全入力デバイスに `sd.InputStream` を一斉に同時オープンしていたため、同じ物理マイクが host API ごと（特にカーネルストリーミングの WDM-KS）に重複列挙される Windows では、それらを同時に開いた瞬間に音声ドライバが WDF レベルでクラッシュし OS が再起動していた。次の 3 点で根治した:
+  - **同時オープンを廃止し、1 台ずつ順次プローブする**（同時に開く `InputStream` は常に最大 1）。回帰テスト `test_devices_probed_sequentially` で「同時オープンが起きない・プローブ後にストリームが残らない」ことを保証
+  - **WDM-KS / ASIO（カーネル直叩き・排他系）と同名重複デバイスを自動検出の対象から除外**（Windows のみ）。カーネルを直接叩く host API を自動検出では触らない
+  - 開く前に `sd.check_input_settings` で構成を検証し、非対応・占有中デバイスは実際に開かずスキップ
+  - 順次化に伴い、設定 UI の文言を「マイクに向かって喋り続けてください」に変更。`AudioRecorder.list_input_devices` の戻りに host API 名（`hostapi`）を追加
 - **Windows 版 GitHub Actions ビルドの文字化け／エンコーディング不具合を修正**（Mac から PC を使わずに Windows 配布物をビルドできるようにする一連の対応）
   - `scripts/build/build_windows_dist.ps1` に UTF-8 BOM を付与。Windows PowerShell 5.1（powershell.exe）が BOM なし UTF-8 を cp1252 と誤読し、日本語を含む行でパースエラー（`The string is missing the terminator`）になっていた
   - `scripts/build/generate_embedded_keys.py` で stdout/stderr を UTF-8 に固定。Windows ランナーの既定 stdout（cp1252）で日本語の進捗 print が `UnicodeEncodeError` になり、鍵生成は成功しているのにスクリプトが落ちていた

@@ -1309,7 +1309,7 @@ class SettingsWindow(QWidget):
         from ..core.mic_auto_detect import detect_async
 
         self._mic_detect_button.setEnabled(False)
-        self._mic_detect_status.setText("自動検出中… マイクに向かって喋ってください")
+        self._mic_detect_status.setText("自動検出中… マイクに向かって喋り続けてください（数秒）")
         self._mic_detect_status.setVisible(True)
         # コールバックはワーカースレッドから呼ばれるため、Signal でメインスレッドへ渡す
         detect_async(self._mic_detect_done.emit)

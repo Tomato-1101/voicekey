@@ -21,7 +21,7 @@
 | プラットフォーム | 最新版 | 配布状態 | 入手先 | 備考 |
 |---|---|---|---|---|
 | 🍎 macOS | **v1.0.1** | ✅ **配布中** | [voicekey.vercel.app](https://voicekey.vercel.app) | Apple Development 署名。初回起動のみ Gatekeeper 回避手順あり（サイト／DMG に同梱）。自動更新（Sparkle）対応 |
-| 🪟 Windows | **v1.0.0** | ✅ **配布中** | [voicekey.vercel.app](https://voicekey.vercel.app) | GitHub Actions（`windows-build.yml`）でキー埋め込みビルド。インストーラ（約 268MB）は容量が大きいため公開バイナリ専用リポ（`voicekey-releases`・ソース非公開）の GitHub Releases でホスト。未署名のため初回のみ SmartScreen 回避手順あり。自動更新対応 |
+| 🪟 Windows | **v1.0.0** | ✅ **配布中** | [voicekey.vercel.app](https://voicekey.vercel.app) | GitHub Actions（`windows-build.yml`）でキー埋め込みビルド。インストーラ（約 268MB）は容量が大きいため公開バイナリ専用リポ（`voicekey-releases`・ソース非公開）の GitHub Releases でホスト。未署名のため初回のみ SmartScreen 回避手順あり。自動更新対応。インストール時にデスクトップ／スタートメニューへショートカット作成 |
 
 **配布の仕組み（テスター向け）**: ダウンロードページは [voicekey.vercel.app](https://voicekey.vercel.app)。Mac の DMG は同サイトから、Windows インストーラは容量が大きいため GitHub Releases（公開バイナリ専用リポ。**ソースは含みません**）から入手します。配布版（DIST ビルド）は API キーがビルド時に埋め込まれており、**テスターはキー入力不要でそのまま使えます**。
 
@@ -475,6 +475,7 @@ API に送る前に、録音音声を **音量正規化（Peak+RMS ハイブリ�
 ### マイクが認識されない
 
 - 設定 → Advanced → Input Device で明示的にデバイスを選択。
+- 設定の「自動検出」ボタンを押し、**マイクに向かって数秒喋り続ける**と、声が入っているマイクを自動で選びます（Windows では一部のドライバ方式（WDM-KS / ASIO）は安全のため自動検出の対象外）。
 - macOS では **マイク** 権限を確認。
 
 ### "ご視聴ありがとうございました" 等のハルシネーション

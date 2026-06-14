@@ -262,6 +262,7 @@ class AudioRecorder:
                 "id": index,
                 "name": name,
                 "label": label,
+                "hostapi": hostapi_name,
                 "max_input_channels": max_input_channels,
             })
         return results

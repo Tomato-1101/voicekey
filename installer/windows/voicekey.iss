@@ -34,12 +34,18 @@ ArchitecturesInstallIn64BitMode=x64compatible
 [Languages]
 Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
 
+[Tasks]
+; デスクトップショートカットは任意（既定でチェック済み）。ユーザーが外せる。
+Name: "desktopicon"; Description: "デスクトップにショートカットを作成する"; GroupDescription: "追加アイコン:"
+
 [Files]
 Source: "..\..\dist\voicekey\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\voicekey"; Filename: "{app}\voicekey.exe"
 Name: "{autostartup}\voicekey"; Filename: "{app}\voicekey.exe"; Comment: "ログイン時に voicekey を起動"
+; デスクトップショートカット（desktopicon タスクが選択された場合のみ作成）
+Name: "{autodesktop}\voicekey"; Filename: "{app}\voicekey.exe"; Tasks: desktopicon
 
 [Run]
 ; インストール/サイレント更新の完了後に新版を自動起動する（skipifsilent は付けない）
