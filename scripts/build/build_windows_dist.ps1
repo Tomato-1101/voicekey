@@ -1,4 +1,4 @@
-# voicekey Windows 配布ビルドスクリプト
+﻿# voicekey Windows 配布ビルドスクリプト
 #
 # 使い方（Windows 実機・リポジトリ直下で実行）:
 #   powershell -ExecutionPolicy Bypass -File scripts\build\build_windows_dist.ps1 -Version 1.0.0
