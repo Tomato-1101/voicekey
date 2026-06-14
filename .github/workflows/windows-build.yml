@@ -71,6 +71,9 @@ jobs:
           # PyInstaller が python312.dll を見つけられない既知問題（setup-python の Windows）対策。
           # setup-python が公開する pythonLocation（DLL のある install ルート）を PYTHONHOME に渡す。
           PYTHONHOME: ${{ env.pythonLocation }}
+          # Windows ランナーの Python stdout 既定（cp1252）だと日本語の print が
+          # UnicodeEncodeError になる。UTF-8 モードを有効化してステップ全体をカバーする。
+          PYTHONUTF8: "1"
         run: powershell -ExecutionPolicy Bypass -File scripts\build\build_windows_dist.ps1 -Version "${{ inputs.version }}"
 
       - name: 成果物のアップロード（setup.exe + version.json）

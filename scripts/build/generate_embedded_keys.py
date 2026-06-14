@@ -20,6 +20,13 @@ import secrets as py_secrets
 import sys
 from pathlib import Path
 
+# Windows の既定 stdout は cp1252（英語ロケール）で、日本語の進捗 print が
+# UnicodeEncodeError になりスクリプトごと落ちる（CI の Windows ランナーで実害）。
+# 出力を UTF-8 に固定して、どのロケールでも日本語メッセージを安全に出せるようにする。
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8")
+
 # リポジトリ直下（このファイルは scripts/build/ にある）
 ROOT = Path(__file__).resolve().parent.parent.parent
 ENV_DIST = ROOT / ".env.dist"

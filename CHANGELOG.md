@@ -2,7 +2,13 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
-## [Unreleased] - 2026-06-12
+## [Unreleased] - 2026-06-14
+
+### Fixed
+- **Windows 版 GitHub Actions ビルドの文字化け／エンコーディング不具合を修正**（Mac から PC を使わずに Windows 配布物をビルドできるようにする一連の対応）
+  - `scripts/build/build_windows_dist.ps1` に UTF-8 BOM を付与。Windows PowerShell 5.1（powershell.exe）が BOM なし UTF-8 を cp1252 と誤読し、日本語を含む行でパースエラー（`The string is missing the terminator`）になっていた
+  - `scripts/build/generate_embedded_keys.py` で stdout/stderr を UTF-8 に固定。Windows ランナーの既定 stdout（cp1252）で日本語の進捗 print が `UnicodeEncodeError` になり、鍵生成は成功しているのにスクリプトが落ちていた
+  - `.github/workflows/windows-build.yml` のビルドステップに `PYTHONUTF8: "1"` を追加（PyInstaller を含むステップ全体の Python 出力を UTF-8 化）
 
 ### Changed
 - **Windows 版 設定 UI の全面再デザイン**（「ダサい・安っぽい」指摘対応。2026-06-13）
