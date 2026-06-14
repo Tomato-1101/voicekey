@@ -68,6 +68,9 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
+          # PyInstaller が python312.dll を見つけられない既知問題（setup-python の Windows）対策。
+          # setup-python が公開する pythonLocation（DLL のある install ルート）を PYTHONHOME に渡す。
+          PYTHONHOME: ${{ env.pythonLocation }}
         run: powershell -ExecutionPolicy Bypass -File scripts\build\build_windows_dist.ps1 -Version "${{ inputs.version }}"
 
       - name: 成果物のアップロード（setup.exe + version.json）
