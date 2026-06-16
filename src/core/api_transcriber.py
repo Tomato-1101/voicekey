@@ -271,7 +271,7 @@ class ApiTranscriber:
 class OpenAITranscriber(ApiTranscriber):
     """OpenAI Audio Transcriptions API（gpt-4o-transcribe 系）。"""
 
-    display_name = "OpenAI"
+    display_name = "高精度"  # ユーザー向け表示は特徴名（提供元名は伏せる）
     base_url = "https://api.openai.com/v1"
     keychain_service = secrets.SERVICE_OPENAI
     env_var = "OPENAI_API_KEY"
@@ -284,7 +284,7 @@ class OpenAITranscriber(ApiTranscriber):
 class GroqTranscriber(ApiTranscriber):
     """Groq Cloud の Whisper API（OpenAI 互換エンドポイント）。"""
 
-    display_name = "Groq"
+    display_name = "高速"  # ユーザー向け表示は特徴名（提供元名は伏せる）
     base_url = "https://api.groq.com/openai/v1"
     keychain_service = secrets.SERVICE_GROQ
     env_var = "GROQ_API_KEY"
@@ -307,7 +307,7 @@ class ElevenLabsTranscriber(ApiTranscriber):
     ただし scribe_v2 は短文0%でも長文で精度後退するため既定は scribe_v1。
     """
 
-    display_name = "ElevenLabs"
+    display_name = "多言語"  # ユーザー向け表示は特徴名（提供元名は伏せる）
     base_url = "https://api.elevenlabs.io/v1"
     keychain_service = secrets.SERVICE_ELEVENLABS
     env_var = "ELEVENLABS_API_KEY"
@@ -366,7 +366,7 @@ class DeepgramTranscriber(ApiTranscriber):
     nova-3 はストリーミング既定でもあり、REST フォールバックにも使う。
     """
 
-    display_name = "Deepgram"
+    display_name = "リアルタイム"  # ユーザー向け表示は特徴名（提供元名は伏せる）
     base_url = "https://api.deepgram.com/v1"
     keychain_service = secrets.SERVICE_DEEPGRAM
     env_var = "DEEPGRAM_API_KEY"

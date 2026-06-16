@@ -4,6 +4,23 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased]
 
+### Changed
+- **バックエンドの表示名を特徴ベース名に変更**（Mac / Windows 両方）。設定 UI の
+  バックエンド選択・ユーザー向けエラーメッセージで提供元名（OpenAI / Groq /
+  ElevenLabs / Deepgram）を出さず、**「高精度 / 高速 / 多言語 / リアルタイム」**と表示する。
+  保存値（`Backend.rawValue` / `settings.yaml` の `backend`）は従来どおり不変なので
+  既存設定はそのまま読める。API キー入力欄だけは、どのキーを入れる欄か分かるよう提供元名を
+  表示（配布版では API キータブ自体が非表示なので提供元名は開発時のみ露出）。
+  - Mac: `Backend.label` を特徴名に変更し、提供元名は `Backend.providerName` に分離。
+    `Transcriber` のエラー文（ElevenLabs / Deepgram の応答解析失敗）も `backend.label` に統一
+  - Windows: `_BACKEND_LABELS` を特徴名に変更し、提供元名は `_BACKEND_PROVIDER_NAMES` に分離。
+    `api_transcriber.py` の各 `display_name` も特徴名に変更（ユーザー向けエラー文に出るため）
+- **Windows 設定 UI の補足説明文を Mac と同等に削減**。プロバイダー名・モデル名
+  （Groq / Deepgram / llama-... 等）を晒す説明や冗長な解説を撤去し、コントロール名だけでは
+  意味が通じない 2 項目（自動 Enter の遅延 / ハンズフリー切替キー）のみ短文を残した。
+  ストリーミングのトグル名・状態メッセージからも「Deepgram」表記を除去（「リアルタイム」へ）。
+  プライバシー上の保存先注記（履歴・API キーの保存場所）は残置
+
 ## [Mac 1.0.2 / Windows 1.0.1] - 2026-06-16
 
 ### Added

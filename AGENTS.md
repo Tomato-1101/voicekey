@@ -1,5 +1,10 @@
 # Repository Guidelines
 
+## Cross-platform rule (重要)
+- voicekey は Mac（`macos/` Swift）と Windows（`src/` Python）の二本立て。**UI 文言・表示名・設定項目・機能挙動など、両 OS に同等に存在する要素を変えるときは両方を同じ作業で反映し 1 コミットにまとめる**（片方だけ変えない）。OS 固有 API（win32 / launchd / CGEventTap 等）でしか存在しない要素のみ片方で完結してよい。
+- ユーザーから見える挙動を変えたら **README も同じコミットで更新**する。
+- バックエンドは提供元名を伏せ**特徴名で表示**（openai→高精度 / groq→高速 / elevenlabs→多言語 / deepgram→リアルタイム）。保存値は不変。API キー欄のみ提供元名。
+
 ## Project Structure & Module Organization
 - `src/app.py` orchestrates config, audio pipeline, and UI; `src/main.py` boots the Qt app.
 - `src/config/` holds enums/defaults and `config_manager.py` for hot-reloadable settings.

@@ -306,13 +306,13 @@ final class Transcriber: @unchecked Sendable {
             return String(data: data, encoding: .utf8) ?? ""
         case .elevenlabs:
             guard let parsed = try? JSONDecoder().decode(ElevenLabsResponse.self, from: data) else {
-                throw TranscriptionError(message: "ElevenLabs API の応答を解析できませんでした")
+                throw TranscriptionError(message: "\(backend.label) API の応答を解析できませんでした")
             }
             return parsed.text
         case .deepgram:
             guard let parsed = try? JSONDecoder().decode(DeepgramResponse.self, from: data),
                   let transcript = parsed.results.channels.first?.alternatives.first?.transcript else {
-                throw TranscriptionError(message: "Deepgram API の応答を解析できませんでした")
+                throw TranscriptionError(message: "\(backend.label) API の応答を解析できませんでした")
             }
             return transcript
         }

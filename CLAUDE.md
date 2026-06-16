@@ -13,6 +13,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - README 更新はコード変更と同じ 1 コミットにまとめる。「あとでまとめて」は禁止。
 - 同じ趣旨を `AGENTS.md` にも記載（他の AI エージェントでも守らせるため）。
 
+## 最重要: 両OSに存在する変更は Mac・Windows 同時に実装する（2026-06-16 ユーザー指示）
+
+UI の文言・表示名・設定項目・機能挙動など、**ユーザーから見て両 OS に同等に存在する要素を変えるときは、
+Mac（`macos/` Swift）と Windows（`src/` Python）の両方を同じ作業で反映し、1 コミットにまとめる**。片方だけ変えない。
+- Mac はビルド＆再起動で、Windows は `py_compile`＋`unittest` で各々検証してから報告。
+- Windows 固有（win32・レジストリ自動起動）/ Mac 固有（launchd・SMAppService・CGEventTap）でしか存在しない要素だけ片方で完結してよい。
+- リリース配布も常に両 OS 同期（バージョンは Claude が semver で決める。範囲・版番号はユーザーに聞かない）。
+- 提供元名は伏せ、バックエンドは特徴名で表示する（`openai`→高精度 / `groq`→高速 / `elevenlabs`→多言語 / `deepgram`→リアルタイム。保存値は不変。API キー欄のみ提供元名）。
+
 ## 最重要: Mac 版（macos/ ディレクトリ・Swift）の作業ルール
 
 このリポジトリには Windows 版（下記 Project Overview、Python/faster-whisper）に加えて

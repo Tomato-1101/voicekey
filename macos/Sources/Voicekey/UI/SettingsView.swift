@@ -360,7 +360,7 @@ private struct ApiKeyRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(backend.label)
+                Text(backend.providerName)
                     .fontWeight(.medium)
                 if saved {
                     Label("設定済み", systemImage: "checkmark.circle.fill")

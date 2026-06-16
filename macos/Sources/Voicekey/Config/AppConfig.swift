@@ -36,7 +36,19 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// 設定 UI に出すバックエンド名（特徴ベース。提供元名は伏せる）
     var label: String {
+        switch self {
+        case .openai: return "高精度"
+        case .groq: return "高速"
+        case .elevenlabs: return "多言語"
+        case .deepgram: return "リアルタイム"
+        }
+    }
+
+    /// 提供元名（API キー欄でどのキーかを示すためだけに使う。配布版では
+    /// API キータブ自体を隠すので、開発時にしか表示されない）
+    var providerName: String {
         switch self {
         case .openai: return "OpenAI"
         case .groq: return "Groq"

@@ -61,13 +61,22 @@ _BACKEND_TO_SERVICE = {
     TranscriptionBackend.DEEPGRAM.value: secrets.SERVICE_DEEPGRAM,
 }
 
-# backend の表示順と UI ラベル（Mac 版 Backend.label / allCases と完全一致させる）
+# backend の表示順と UI ラベル（特徴ベース名。提供元名は伏せる。Mac 版 Backend.label と一致）
 _BACKEND_LABELS = [
-    (TranscriptionBackend.OPENAI.value, "OpenAI"),
-    (TranscriptionBackend.GROQ.value, "Groq"),
-    (TranscriptionBackend.ELEVENLABS.value, "ElevenLabs"),
-    (TranscriptionBackend.DEEPGRAM.value, "Deepgram"),
+    (TranscriptionBackend.OPENAI.value, "高精度"),
+    (TranscriptionBackend.GROQ.value, "高速"),
+    (TranscriptionBackend.ELEVENLABS.value, "多言語"),
+    (TranscriptionBackend.DEEPGRAM.value, "リアルタイム"),
 ]
+
+# 提供元名（API キー欄でどのキーかを示すためだけに使う。配布版では API キータブを
+# 隠すので開発時にしか表示されない。Mac 版 Backend.providerName と一致）
+_BACKEND_PROVIDER_NAMES = {
+    TranscriptionBackend.OPENAI.value: "OpenAI",
+    TranscriptionBackend.GROQ.value: "Groq",
+    TranscriptionBackend.ELEVENLABS.value: "ElevenLabs",
+    TranscriptionBackend.DEEPGRAM.value: "Deepgram",
+}
 
 # ホットキー動作モードの表示順と UI ラベル（Mac 版 HotkeyMode.label と完全一致させる）
 _MODE_LABELS = [
@@ -737,9 +746,6 @@ class SettingsWindow(QWidget):
         self._mic_detect_status = _make_caption("")
         self._mic_detect_status.setVisible(False)
         device_layout.addWidget(self._mic_detect_status)
-        device_layout.addWidget(
-            _make_caption("録音に使うマイク。「システム既定」は OS の設定に従います。")
-        )
         _add_block(cl, device_block)
         self._mic_detect_done.connect(self._on_mic_detect_done)
 
@@ -749,10 +755,7 @@ class SettingsWindow(QWidget):
         card, cl = _make_card()
 
         self._vad_check = self._make_toggle()
-        _add_row(
-            cl, "無音を自動スキップ（VAD）", self._vad_check,
-            caption="発話が検出されない録音を API に送らず、幻覚と無駄なコストを防ぎます。",
-        )
+        _add_row(cl, "無音を自動スキップ（VAD）", self._vad_check)
 
         # VAD 最小無音時間（Windows 版固有の調整項目）
         self._vad_silence_spin = QSpinBox()
@@ -764,22 +767,12 @@ class SettingsWindow(QWidget):
 
         # 長文の分割並列送信（既定オン）。長い録音を無音区間で区切り API へ並列送信する
         self._split_parallel_check = self._make_toggle()
-        _add_row(
-            cl, "長文を分割して並列送信", self._split_parallel_check,
-            caption=(
-                "長い録音を無音区間で区切り、API へ並列送信して待ち時間を短縮します（既定オン）。"
-                "区切りは無音の中だけなので文の途中では切れません。"
-                "Deepgram のリアルタイムは対象外です。"
-            ),
-        )
+        _add_row(cl, "長文を分割して並列送信", self._split_parallel_check)
 
         # 音声前処理（API送信前）：Peak+RMS ハイブリッド音量正規化（Windows 版固有）
         # ノイズ対策は API モデル側に任せ、ここでは小音量を持ち上げて音割れを防ぐのみ
         self._volume_normalize_check = self._make_toggle()
-        _add_row(
-            cl, "音量正規化（Peak+RMS）", self._volume_normalize_check,
-            caption="小さい声を底上げし、音割れしない範囲でゲイン調整します。",
-        )
+        _add_row(cl, "音量正規化（Peak+RMS）", self._volume_normalize_check)
 
         layout.addWidget(card)
 
@@ -801,20 +794,16 @@ class SettingsWindow(QWidget):
         streaming_layout.setSpacing(6)
         streaming_head = QHBoxLayout()
         streaming_head.setSpacing(8)
-        streaming_head.addWidget(QLabel("リアルタイムストリーミング（Deepgram）"))
+        streaming_head.addWidget(QLabel("リアルタイムストリーミング"))
         streaming_head.addStretch()
         streaming_head.addWidget(self._streaming_check)
         streaming_layout.addLayout(streaming_head)
-        # 動かない構成（キー無し / websockets 未導入 / Deepgram バックエンド無し）の理由表示。
+        # 動かない構成（キー無し / websockets 未導入 / 対象バックエンド無し）の理由表示。
         # 実行時は警告ログだけで REST へ無言フォールバックするため、ここで可視化しないと
         # ユーザーには「表示されない」のがバグなのか設定なのか判断できない
         self._streaming_status = _make_caption("")
         self._streaming_status.setVisible(False)
         streaming_layout.addWidget(self._streaming_status)
-        streaming_layout.addWidget(_make_caption(
-            "バックエンドが Deepgram のホットキーで、話しながら HUD に文字を表示し、"
-            "離した瞬間に確定します。オフにすると従来どおり録音後にまとめて変換します。"
-        ))
         _add_block(cl, streaming_block)
 
         # Auto Enter 遅延（ダブルタップ時、テキスト挿入後のEnter押下までの待機時間）
@@ -842,7 +831,7 @@ class SettingsWindow(QWidget):
         delay_row_layout.addWidget(self._auto_enter_delay_label)
         _add_row(
             cl, "自動 Enter の遅延", delay_row,
-            caption="ホットキーを素早く 2 回押すと、貼り付け後に Enter を自動送信します（チャット送信用）。",
+            caption="ホットキーを素早く 2 回押すと、貼り付け後に Enter を送信します。",
         )
 
         # ハンズフリー切替キー（この切替キー＋ホットキーで toggle 録音になる。空＝無効）
@@ -861,8 +850,7 @@ class SettingsWindow(QWidget):
         _add_row(
             cl, "ハンズフリー切替キー", handsfree_row,
             caption=(
-                "この切替キー＋ホットキーを一緒に押すと、そのプロバイダーがトグル録音になります"
-                "（1 回で開始、もう 1 回で停止）。切替キーを使わない通常の押し方は従来どおりです。"
+                "切替キー＋ホットキーで、トグル録音（1 回で開始・もう 1 回で停止）になります。"
                 "修飾キー（右 Shift など）を推奨。"
             ),
         )
@@ -879,10 +867,7 @@ class SettingsWindow(QWidget):
             self._format_model_combo.addItem(
                 _model_label(model, KNOWN_FORMAT_MODELS[0]), model
             )
-        _add_row(
-            cl, "整形モデル", self._format_model_combo,
-            caption="テキスト整形に使う Groq のモデル。速度重視なら既定（llama-3.1-8b-instant）を推奨。",
-        )
+        _add_row(cl, "整形モデル", self._format_model_combo)
 
         # テキスト整形で LLM に渡すプロンプト（編集可・空欄なら既定）
         auto_prompt_reset = QPushButton("既定に戻す")
@@ -905,9 +890,6 @@ class SettingsWindow(QWidget):
         prompt_head.addWidget(auto_prompt_reset)
         prompt_layout.addLayout(prompt_head)
         prompt_layout.addWidget(self._format_auto_prompt_edit)
-        prompt_layout.addWidget(_make_caption(
-            "テキスト整形で LLM に渡す指示。自由に編集できます（空欄なら既定の指示を使用）。"
-        ))
         _add_block(cl, prompt_block)
 
         layout.addWidget(card)
@@ -991,23 +973,13 @@ class SettingsWindow(QWidget):
         prompt_layout.setSpacing(6)
         prompt_layout.addWidget(QLabel("プロンプト（任意）"))
         prompt_layout.addWidget(prompt_input)
-        prompt_layout.addWidget(_make_caption(
-            "文字起こしのヒント。よく使う固有名詞を書いておくと精度が上がります。"
-        ))
         _add_block(cl, prompt_block)
 
-        # テキスト整形（LLM）: 貼り付け前に Groq の高速 LLM で 1 回整形する
-        # （整形内容は LLM が自動判断。指示は「一般」ページで編集可。Mac 版と文言を一致させる）
+        # テキスト整形（LLM）: 貼り付け前に高速 LLM で 1 回整形する
+        # （整形内容は LLM が自動判断。指示は「一般」ページで編集可。Mac 版と構成を一致させる）
         format_check = self._make_toggle()
         setattr(self, f"_format{slot_id}_check", format_check)
-        _add_row(
-            cl, "テキスト整形（LLM）", format_check,
-            caption=(
-                "文字起こし後に Groq の高速 LLM で整形してから貼り付けます。"
-                "内容に応じた整形を LLM が自動判断します（指示は「一般」ページで編集可）。"
-                "オフなら文字起こしをそのまま貼り付けます。"
-            ),
-        )
+        _add_row(cl, "テキスト整形（LLM）", format_check)
 
         layout.addWidget(card)
         layout.addStretch()
@@ -1121,8 +1093,11 @@ class SettingsWindow(QWidget):
 
         card, cl = _make_card()
 
-        for backend_value, label in _BACKEND_LABELS:
+        for backend_value, _label in _BACKEND_LABELS:
             service = _BACKEND_TO_SERVICE[backend_value]
+            # API キー欄はどのキーかが分かる必要があるので提供元名で見出しを出す
+            # （このタブ自体が配布版では非表示なので提供元名が露出するのは開発時のみ）
+            provider_name = _BACKEND_PROVIDER_NAMES[backend_value]
 
             block = QWidget()
             block_layout = QVBoxLayout(block)
@@ -1131,7 +1106,7 @@ class SettingsWindow(QWidget):
 
             head = QHBoxLayout()
             head.setSpacing(8)
-            name_label = QLabel(label)
+            name_label = QLabel(provider_name)
             name_label.setStyleSheet("font-weight: 600;")
             status_label = QLabel("未設定")
             status_label.setStyleSheet(MacTheme.status_muted_style())
@@ -1228,7 +1203,7 @@ class SettingsWindow(QWidget):
             secrets.get_api_key(secrets.SERVICE_DEEPGRAM)
             or os.environ.get("DEEPGRAM_API_KEY")
         ):
-            reason = "Deepgram の API キーが未設定のため動作しません（API キーページで設定）"
+            reason = "「リアルタイム」の API キーが未設定のため動作しません（API キーページで設定）"
         if not reason:
             backends = {
                 getattr(self, f"_backend{sid}_combo").currentData()
@@ -1237,8 +1212,8 @@ class SettingsWindow(QWidget):
             }
             if TranscriptionBackend.DEEPGRAM.value not in backends:
                 reason = (
-                    "どちらのホットキーもバックエンドが Deepgram でないため使われません"
-                    "（ホットキー 1 / 2 ページで Deepgram を選択）"
+                    "どちらのホットキーもバックエンドが「リアルタイム」でないため使われません"
+                    "（ホットキー 1 / 2 ページで「リアルタイム」を選択）"
                 )
 
         if reason:
