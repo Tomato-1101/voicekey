@@ -217,8 +217,8 @@ enum StatusIcon {
         case .idle:
             // テンプレート画像: ライト/ダークメニューバーに自動追従
             return symbol("mic.fill", color: nil)
-        case .recording(let autoEnter):
-            return symbol("mic.fill", color: autoEnter ? .systemPurple : .systemRed)
+        case .recording(let autoEnter, let handsFree):
+            return symbol("mic.fill", color: handsFree ? .systemTeal : (autoEnter ? .systemPurple : .systemRed))
         case .transcribing:
             return symbol("waveform", color: .systemOrange)
         }

@@ -18,7 +18,7 @@ import SwiftUI
 final class HudModel: ObservableObject {
     enum Mode: Equatable {
         case hidden
-        case recording(autoEnter: Bool)
+        case recording(autoEnter: Bool, handsFree: Bool)
         case transcribing
         case notice(String)
     }
@@ -60,7 +60,7 @@ final class HudController {
             // 通知表示中は消さない（通知は自身のタイマーで消える）
             if case .notice = model.mode { return }
             hide()
-        case .recording(let autoEnter):
+        case .recording(let autoEnter, let handsFree):
             noticeTask?.cancel()
             // 録音中の auto_enter 昇格（ダブルタップ確定）では波形・字幕を維持する
             // （リセットすると表示が一瞬消えて見える）
@@ -68,7 +68,7 @@ final class HudController {
                 model.resetLevels()
                 model.caption = ""  // 新しい録音のたびに字幕をリセット
             }
-            model.mode = .recording(autoEnter: autoEnter)
+            model.mode = .recording(autoEnter: autoEnter, handsFree: handsFree)
             show()
         case .transcribing:
             noticeTask?.cancel()
@@ -174,6 +174,8 @@ struct HudView: View {
     static let barCount = 24
     /// ライブ字幕の最大幅（これを超えると末尾を残して頭を省略表示）
     static let captionMaxWidth: CGFloat = 360
+    /// ハンズフリー録音のアクセント色（赤＝通常録音 / 紫＝自動送信 と区別するティール）
+    static let handsFreeAccent = Color(red: 0.0, green: 0.78, blue: 0.72)
 
     @ObservedObject var model: HudModel
 
@@ -201,11 +203,19 @@ struct HudView: View {
         case .hidden:
             EmptyView()
 
-        case .recording(let autoEnter):
+        case .recording(let autoEnter, let handsFree):
             HStack(spacing: 10) {
+                // 状態ドット: ハンズフリー=ティール / 自動送信=パープル / 通常=レッド
                 Circle()
-                    .fill(autoEnter ? Color.purple : Color.red)
+                    .fill(handsFree ? Self.handsFreeAccent : (autoEnter ? Color.purple : Color.red))
                     .frame(width: 8, height: 8)
+                // ハンズフリー中は「いまハンズフリー録音だ」と一目で分かるラベルを出す
+                if handsFree {
+                    Text("ハンズフリー")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Self.handsFreeAccent)
+                        .fixedSize()
+                }
                 // ストリーミング字幕があればそれを、なければ波形バーを表示。
                 // 頭を省略（.head）して常に最新の語尾が見えるようにする
                 if model.caption.isEmpty {
@@ -221,6 +231,10 @@ struct HudView: View {
                     Image(systemName: "return")
                         .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(.purple)
+                }
+                // ハンズフリー中は停止方法を控えめに添える（字幕が無いときだけ＝混雑回避）
+                if handsFree && model.caption.isEmpty {
+                    stopHint
                 }
             }
 
@@ -239,6 +253,21 @@ struct HudView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
+    }
+
+    /// ハンズフリー停止方法のヒントバッジ（同じホットキーをもう一度押すと停止）
+    private var stopHint: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "stop.fill")
+                .font(.system(size: 9, weight: .bold))
+            Text("もう一度で停止")
+                .font(.system(size: 10, weight: .medium))
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(.quaternary, in: Capsule())
+        .fixedSize()
     }
 
     /// 音声レベル連動の波形バー

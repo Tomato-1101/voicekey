@@ -27,6 +27,11 @@ voicekeyの変更履歴を記録するファイルです。
   - **ダーク／ライトのテーマ切替トグルが回転アニメーションしないのを修正**。`ThemeToggleButton.angle` を Python 組み込み `property` から Qt の `Property(float, ...)` に変更し、`QPropertyAnimation` が回転角度を駆動できるようにした（`src/ui/settings_window.py`）
 
 ### Changed
+- **ハンズフリー録音中の HUD 表示を新設**（Mac）。トグル実効モードの録音中は
+  状態ドットとメニューバーアイコンをティール色にし、ピル内に「ハンズフリー」ラベルと
+  「もう一度で停止」ヒントバッジを表示。通常録音（赤）・自動送信（紫）と一目で区別できる
+  - `AppState.recording` に `handsFree` を追加し、`recordingEffectiveMode == .toggle` を発信
+  - `HudView` に `handsFreeAccent`（ティール）と `stopHint` バッジを追加
 - **VAD の発話区間計算を共通化**（Windows `_speech_regions` / Mac `speechRegions` 抽出）。
   無音圧縮（analyze/condense）と分割（segment）が、同じ 1 回の推論結果を 2 通りの
   ギャップ閾値（0.5s 保持 / 0.7s 分割）でマージする方式に整理

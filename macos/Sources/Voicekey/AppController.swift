@@ -491,7 +491,7 @@ final class AppController: ObservableObject {
     private func emitState() {
         let newState: AppState
         if recordingSlot != nil {
-            newState = .recording(autoEnter: autoEnter)
+            newState = .recording(autoEnter: autoEnter, handsFree: recordingEffectiveMode == .toggle)
         } else if outstanding > 0 {
             newState = .transcribing
         } else {

@@ -10,8 +10,8 @@ import Foundation
 enum AppState: Equatable {
     /// 待機中
     case idle
-    /// 録音中（autoEnter: ダブルタップによる自動 Enter 送信モードか）
-    case recording(autoEnter: Bool)
+    /// 録音中（autoEnter: ダブルタップ自動 Enter / handsFree: 切替キー or toggle でハンズフリー）
+    case recording(autoEnter: Bool, handsFree: Bool)
     /// 文字起こし中
     case transcribing
 
@@ -19,7 +19,9 @@ enum AppState: Equatable {
     var label: String {
         switch self {
         case .idle: return "待機中"
-        case .recording(let autoEnter): return autoEnter ? "録音中（自動送信）" : "録音中"
+        case .recording(let autoEnter, let handsFree):
+            if handsFree { return "録音中（ハンズフリー）" }
+            return autoEnter ? "録音中（自動送信）" : "録音中"
         case .transcribing: return "変換中…"
         }
     }
