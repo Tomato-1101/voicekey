@@ -25,6 +25,16 @@ voicekeyの変更履歴を記録するファイルです。
   - **自動アップデータのダウンロードが回線 stall で永久ブロックするのを修正**。`urllib.request.urlretrieve`（タイムアウト不可）から `timeout=30` 付き `urlopen` + ストリームコピーに変更し、回線が固まっても確実に打ち切れるようにした。あわせて version.json に `url` / `sha256` が無い場合は DL せず明示エラーにし、検証不能なインストーラを実行しないようにした（`src/utils/updater.py`）
   - **設定保存（`ConfigManager.save`）が手書きのネストキーを消すのを修正**。浅い `dict.update` を `_deep_merge` に変更し、`default_api_models` などネストした辞書内のカスタムキーが保存時に丸ごと失われないようにした（`src/config/config_manager.py`）
   - **ダーク／ライトのテーマ切替トグルが回転アニメーションしないのを修正**。`ThemeToggleButton.angle` を Python 組み込み `property` から Qt の `Property(float, ...)` に変更し、`QPropertyAnimation` が回転角度を駆動できるようにした（`src/ui/settings_window.py`）
+- **ダブルタップ Enter 自動送信と録音中 UI の消去が約 0.5 秒遅れる問題を修正（Mac / Windows 両方）**（2026-06-16）。固定待ちが 2 か所あり、いずれも設定値ではないため「ミリ秒に設定しても効かない」状態だった:
+  - **ダブルタップ確定後の離鍵で再び 0.4 秒待っていたのを撤廃**。2 打目の押下で確定済み（auto_enter）なのに、最後の離鍵が録音開始から 0.4 秒以内だと「2 打目待ち」の判定窓に巻き込まれ、短い録音ほど必ず 0.4 秒遅れて停止していた。確定後の離鍵は即座に録音停止するようにした（Mac: `AppController.handleRelease` / Windows: `app._on_release`）
+  - **貼り付け後のクリップボード復元待ち（0.3 秒）を呼び出し元から切り離した**。貼り付け先が読み終えるまで 0.3 秒待ってから復元する処理が、Enter 送信と録音中 HUD の非表示を直列にブロックしていた。復元はバックグラウンドに逃がし、貼り付け直後に Enter 送信・UI 非表示へ進むようにした（Mac: `Paster.paste` を別タスク化 / Windows: `InputHandler.insert_text` を `threading.Timer` 化）。Windows の貼り付け前待機も Mac と揃えて 0.1→0.05 秒に短縮
+  - 体感の Enter までの待ちは「貼り付け前待機 + Auto Enter Delay（設定値）」だけになり、0.4〜0.5 秒の固定遅延が消えた。回帰テスト `test_double_tap_latency` / `test_input_handler` で検証
+- **コードレビューで検出した残りのバグを修正**（2026-06-16）
+  - **録音末尾チャンクの取りこぼしを修正**。`AudioRecorder._do_stop` が `stream.stop()` の「前」に録音中フラグを倒していたため、stop() が内部バッファを流し終える間に届く最後の音声が callback で捨てられていた。フラグを stop() の後で倒すようにした（回帰テスト `test_audio_recorder`）
+  - **`ConfigManager` をスレッドセーフ化**。config を listener / 設定監視 / UI の各スレッドが同時に read/write しても壊れないよう `RLock` で保護（`get` / `reload_if_changed` / `save`）
+  - **設定ウィンドウが `ConfigManager` を二重生成していたのを解消**。本体と同一インスタンスを共有し、保存時にシグナル（`settings_saved`）で設定変更を即時適用するようにした（従来は最大 1 ポーリング周期ぶん反映が遅れていた）（`src/ui/settings_window.py` / `src/app.py`）
+  - **自動アップデータのバージョン解析を堅牢化**。`v1.2.3` や `1.2.3-beta` / `+build` 形式でも `ValueError` で更新確認が無言で止まらないようにした（`parse_version`）
+  - **ホットキー入力欄の不整合を修正**。クリックしてキーを押さずにフォーカスを外すと「内部状態は空・表示は旧値」になる問題を解消（`HotkeyInput.focusInEvent`）
 
 ### Changed
 - **ハンズフリー録音中の HUD 表示を新設**（Mac）。トグル実効モードの録音中は

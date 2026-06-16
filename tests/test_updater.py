@@ -34,6 +34,13 @@ class TestParseVersion(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_version("")
 
+    def test_v_prefix_and_prerelease_tolerated(self):
+        """先頭 v とプレリリース/ビルドメタ（-beta, +build）を許容して数値化する。"""
+        self.assertEqual(parse_version("v1.2.3"), (1, 2, 3))
+        self.assertEqual(parse_version("V2.0.0"), (2, 0, 0))
+        self.assertEqual(parse_version("1.2.3-beta"), (1, 2, 3))
+        self.assertEqual(parse_version("1.2.3+build9"), (1, 2, 3))
+
 
 def _fake_urlopen(payload: dict):
     """version.json の HTTP 応答を偽装する urlopen のモックを返す。"""

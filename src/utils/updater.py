@@ -52,7 +52,10 @@ def parse_version(version: str) -> tuple:
     Raises:
         ValueError: 数値として解釈できない場合
     """
-    return tuple(int(p) for p in version.strip().split("."))
+    # 先頭の "v" とプレリリース/ビルドメタ（"-beta"、"+build" 等）を許容してから数値化する。
+    # 数値でなければ int() が ValueError を投げ、呼び出し側（_check）が握って更新をスキップする
+    cleaned = version.strip().lstrip("vV").split("-")[0].split("+")[0]
+    return tuple(int(p) for p in cleaned.split("."))
 
 
 class Updater(QObject):

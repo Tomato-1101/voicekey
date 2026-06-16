@@ -372,14 +372,15 @@ class AudioRecorder:
         audio = np.array([], dtype=np.float32)
         try:
             if self._recording:
-                self._recording = False
                 self._last_record_end = time.monotonic()
                 stream = self._stream
                 if stream is not None:
-                    # stop() は内部バッファの callback 完了を待つ。
-                    # ここで同期的に待つことで録音末尾の取りこぼしを防ぐ
-                    # （ブロックするのは制御スレッドのみ。ハングは watchdog が回収）。
+                    # stop() は内部バッファの callback 完了を待つ。録音末尾の取りこぼしを防ぐため
+                    # _recording は stop() の後で False にする（待っている間に届く最後のチャンクも
+                    # callback が拾えるようにする）。ハング中のゾンビ callback はセッション ID 不一致で
+                    # 弾かれるためメモリは増えない（ブロックするのは制御スレッドのみ。ハングは watchdog が回収）。
                     stream.stop()
+                self._recording = False
             audio = self._drain_audio()
             duration = len(audio) / self.sample_rate if self.sample_rate else 0.0
             logger.info(f"録音停止 (samples={len(audio)}, duration={duration:.2f}s)")

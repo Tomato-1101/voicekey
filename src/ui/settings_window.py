@@ -415,10 +415,14 @@ class HotkeyInput(QLineEdit):
         self._is_recording = False
 
     def focusInEvent(self, event):
-        """フォーカス取得時に録音状態をリセット。"""
+        """フォーカス取得時は録音待機状態にする。
+
+        ここでは _pressed_keys をクリアしない。クリックしただけでキーを押さずに
+        フォーカスを外すと「内部状態は空なのに表示は旧値」という不整合になるため。
+        最初のキー押下（keyPressEvent）で前の値をクリアして録音を開始する。
+        """
         super().focusInEvent(event)
-        self._pressed_keys = []
-        self._is_recording = True
+        self._is_recording = False
 
     def focusOutEvent(self, event):
         """フォーカス喪失時に録音状態を終了。"""
@@ -525,11 +529,14 @@ class SettingsWindow(QWidget):
 
     # マイク自動検出の完了通知（ワーカースレッド → メインスレッドへ結果を渡す）
     _mic_detect_done = Signal(object)
+    # 設定保存の完了通知（アプリ本体が設定変更を即座に適用するために購読する）
+    settings_saved = Signal()
 
     def __init__(
         self,
         platform_adapter: Optional[PlatformAdapter] = None,
         history: Optional[HistoryStore] = None,
+        config_manager: Optional[ConfigManager] = None,
     ) -> None:
         """
         設定ウィンドウを初期化する。
@@ -537,6 +544,7 @@ class SettingsWindow(QWidget):
         Args:
             platform_adapter: プラットフォーム依存処理のアダプタ
             history: 音声入力履歴ストア（「履歴」タブで表示・再コピーする）
+            config_manager: アプリ本体と共有する設定マネージャ（None なら単体生成）
         """
         super().__init__()
         self._platform = platform_adapter or get_platform_adapter()
@@ -550,7 +558,8 @@ class SettingsWindow(QWidget):
         # テーマ切替時にトラック色を更新するトグルスイッチの一覧
         self._toggles: list[ToggleSwitch] = []
 
-        self._config_manager = ConfigManager()
+        # 本体と同じインスタンスを共有して保存値の乖離を防ぐ（未指定時のみ単体生成）
+        self._config_manager = config_manager or ConfigManager()
 
         # テーマ設定を読み込み（デフォルトはライトモード）
         config = self._config_manager.config
@@ -1535,6 +1544,8 @@ class SettingsWindow(QWidget):
             autostart.set_enabled(self._autostart_check.isChecked())
 
         if self._config_manager.save(new_config):
+            # 本体へ設定変更を即時適用させる（共有マネージャなので mtime ポーリングを待たない）
+            self.settings_saved.emit()
             self.close()
         else:
             QMessageBox.critical(self, "エラー", "設定の保存に失敗しました。")

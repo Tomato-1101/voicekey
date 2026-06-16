@@ -43,17 +43,21 @@ enum Paster {
 
         try? await Task.sleep(for: .seconds(pasteDelay))
         postKeystroke(keyV, flags: .maskCommand)
+        log.debug("テキストを貼り付けました (\(text.count) 文字)")
 
-        // 貼り付け先がクリップボードを読み終えてから復元。
-        // 待っている間にユーザーや他アプリが新たにコピーしていたら、それを壊さないよう復元しない
+        // クリップボード復元は呼び出し側を待たせない（Enter 自動送信・HUD 非表示を即時化する）。
+        // 貼り付け先が読み終えてから復元したいので restoreDelay は別タスクで待つ。
+        // 待っている間にユーザーや他アプリが新たにコピーしていたら（changeCount 変化）、
+        // それを壊さないよう復元しない
         if let saved, !saved.isEmpty {
-            try? await Task.sleep(for: .seconds(restoreDelay))
-            if pasteboard.changeCount == ourChangeCount {
-                pasteboard.clearContents()
-                pasteboard.setString(saved, forType: .string)
+            Task {
+                try? await Task.sleep(for: .seconds(restoreDelay))
+                if pasteboard.changeCount == ourChangeCount {
+                    pasteboard.clearContents()
+                    pasteboard.setString(saved, forType: .string)
+                }
             }
         }
-        log.debug("テキストを貼り付けました (\(text.count) 文字)")
     }
 
     /// Enter キーを 1 回送信する（ダブルタップ自動送信用）

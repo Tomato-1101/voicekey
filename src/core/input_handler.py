@@ -6,6 +6,7 @@
 日本語などのマルチバイト文字にも対応。
 """
 
+import threading
 import time
 from typing import Optional
 
@@ -17,8 +18,8 @@ from ..platform import PlatformAdapter, get_platform_adapter
 
 logger = get_logger(__name__)
 
-# クリップボード貼り付け前の待機時間（秒）
-PASTE_DELAY: float = 0.1
+# クリップボード貼り付け前の待機時間（秒）。Mac 版（Paster.swift）と揃えて短く保つ
+PASTE_DELAY: float = 0.05
 # 貼り付け後、クリップボードを元に戻すまでの待機時間（秒）。
 # 貼り付け先アプリがクリップボードを読み終える前に復元すると
 # 古い内容が貼られてしまうため、十分なマージンを取る
@@ -85,13 +86,13 @@ class InputHandler:
                     logger.warning(f"貼り付け修飾キーの解放に失敗: {e}")
 
             # 貼り付け先がクリップボードを読み終えてから元の内容を復元する。
-            # 呼び出し元は文字起こしワーカースレッドなので、ここで待っても UI は塞がない
+            # 復元待ち（RESTORE_DELAY）でこのスレッドを塞ぐと、呼び出し元の Enter 自動送信や
+            # 録音中 UI の非表示がその分（実測 0.3 秒）遅れる。待機と復元はバックグラウンド
+            # スレッドに逃がし、insert_text は貼り付け直後に返す
             if old_clipboard:
-                time.sleep(RESTORE_DELAY)
-                try:
-                    pyperclip.copy(old_clipboard)
-                except Exception as e:
-                    logger.warning(f"クリップボード復元に失敗: {e}")
+                threading.Timer(
+                    RESTORE_DELAY, self._restore_clipboard, args=(old_clipboard,)
+                ).start()
 
             logger.debug(f"テキスト挿入: {text[:50]}...")
             return True
@@ -99,6 +100,14 @@ class InputHandler:
         except Exception as e:
             logger.error(f"テキスト挿入エラー: {e}")
             return False
+
+    @staticmethod
+    def _restore_clipboard(content: str) -> None:
+        """退避したクリップボード内容を復元する（貼り付け完了後にバックグラウンドで遅延実行）。"""
+        try:
+            pyperclip.copy(content)
+        except Exception as e:
+            logger.warning(f"クリップボード復元に失敗: {e}")
 
     def press_enter(self) -> bool:
         """

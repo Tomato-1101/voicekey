@@ -7,6 +7,7 @@ YAMLファイルからの設定読み込み、保存、ホットリロードを�
 
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -66,6 +67,8 @@ class ConfigManager:
         """
         self.config_path = self._resolve_config_path(config_path)
         self.last_mtime: Optional[float] = None  # ファイル更新時刻
+        # config は listener / 設定監視 / UI の各スレッドから read/write されるため保護する
+        self._lock = threading.RLock()
         self.config: Dict[str, Any] = self._load_config()
 
     def _resolve_config_path(self, config_path: Optional[str]) -> str:
@@ -223,7 +226,9 @@ class ConfigManager:
             current_mtime = os.path.getmtime(self.config_path)
             if self.last_mtime is None or current_mtime > self.last_mtime:
                 logger.info("設定ファイルが変更されました。再読み込み中...")
-                self.config = self._load_config()
+                new_config = self._load_config()
+                with self._lock:
+                    self.config = new_config
                 return True
         except Exception as e:
             logger.error(f"設定確認エラー: {e}")
@@ -241,7 +246,8 @@ class ConfigManager:
         Returns:
             設定値
         """
-        return self.config.get(key, default)
+        with self._lock:
+            return self.config.get(key, default)
 
     def save(self, new_config: Dict[str, Any]) -> bool:
         """
@@ -254,16 +260,17 @@ class ConfigManager:
             成功した場合True、失敗した場合False
         """
         try:
-            # 内部設定を更新（ネストした辞書のカスタムキーを失わないよう deep merge する。
-            # 浅い update だと default_api_models 等の手書き追加キーが丸ごと消える）
-            self.config = _deep_merge(self.config, new_config)
-            
-            # ファイルに書き込み
-            with open(self.config_path, "w", encoding="utf-8") as f:
-                yaml.dump(self.config, f, default_flow_style=False, allow_unicode=True)
-            
-            # 再読み込みループを防ぐために更新時刻を記録
-            self.last_mtime = os.path.getmtime(self.config_path)
+            with self._lock:
+                # 内部設定を更新（ネストした辞書のカスタムキーを失わないよう deep merge する。
+                # 浅い update だと default_api_models 等の手書き追加キーが丸ごと消える）
+                self.config = _deep_merge(self.config, new_config)
+
+                # ファイルに書き込み
+                with open(self.config_path, "w", encoding="utf-8") as f:
+                    yaml.dump(self.config, f, default_flow_style=False, allow_unicode=True)
+
+                # 再読み込みループを防ぐために更新時刻を記録
+                self.last_mtime = os.path.getmtime(self.config_path)
             logger.info("設定を保存しました。")
             return True
             

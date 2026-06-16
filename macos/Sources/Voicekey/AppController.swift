@@ -190,6 +190,12 @@ final class AppController: ObservableObject {
             KeyToken.acceptableNames(for: required).contains(token)
         }
         if isHotkeyKey {
+            // ダブルタップ確定後（autoEnter）の離鍵は 2 打目の待ち窓に入れず即確定する。
+            // ここで再び kDoubleTapWindow 待つと、短い録音でも Enter 自動送信が 0.4 秒遅れていた
+            if autoEnter {
+                finishRecording()
+                return
+            }
             let now = ProcessInfo.processInfo.systemUptime
             if now - recordingStartedAt < kDoubleTapWindow {
                 // 短いタップだけをダブルタップの 1 打目として記録する

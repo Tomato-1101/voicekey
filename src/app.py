@@ -186,9 +186,14 @@ class VoicekeyApp(QObject):
         self._history = HistoryStore()
 
         # --- UI ---
+        # 設定ウィンドウには本体と同じ ConfigManager を渡す（二重生成を避け保存値を即共有）。
+        # 保存完了シグナルで設定変更をその場で適用する（mtime ポーリングの遅延を待たない）
         self._settings_window = SettingsWindow(
-            platform_adapter=self._platform, history=self._history
+            platform_adapter=self._platform,
+            history=self._history,
+            config_manager=self._config,
         )
+        self._settings_window.settings_saved.connect(self._apply_config_changes)
         self._tray = SystemTray(platform_adapter=self._platform)
         self._tray.open_settings.connect(self._open_settings)
         self._tray.force_reset.connect(self._force_restart)
@@ -430,6 +435,11 @@ class VoicekeyApp(QObject):
                 return
 
             if key_str is not None and self._key_in_slot(key_str, slot):
+                # ダブルタップ確定後（auto_enter）の離鍵は 2 打目の待ち窓に入れず即停止する。
+                # ここで再び _DOUBLE_TAP_SEC 待つと、短い録音でも Enter 自動送信が 0.4 秒遅れていた
+                if self._auto_enter:
+                    self._finish_recording()
+                    return
                 # ダブルタップ検出用にリリース時刻を記録してから停止
                 now = time.monotonic()
                 self._last_release_time = now
