@@ -20,11 +20,17 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
   タグ時点の main から dist ビルドする。beta ブランチは廃止（ソロ運用では同期コストだけ増え、実際 8
   コミット遅れで放置され機能していなかった）。ソース非公開はブランチではなく「private リポジトリ ＋
   配布物に .py 平文を含めない」で担保する（後者は voicekey.spec の datas=('src','src') が根治対象・未完）。
-- 配布物置き場: **すべて Vercel サイト**（https://voicekey.vercel.app、ソースは
-  `/Users/tomato/Project/voicekey-site/`、`vercel deploy --prod` で更新）。
-  DMG/exe は `/downloads/`、appcast+更新 zip は `/mac/`、version.json は `/windows/`、
-  最新版表示は `/downloads.json`。**GitHub はテスターから一切見えない**（2026-06-12 ユーザー要望で
-  GitHub Releases 方式から移行。voicekey-releases は private 化済み・もう使わない）。
+- 配布物置き場（2026-06-14 確定の実態）:
+  - **Mac**: すべて Vercel サイト（https://voicekey.vercel.app、ソースは
+    `/Users/tomato/Project/voicekey-site/`、`vercel deploy --prod` で更新）。
+    DMG は `/downloads/`、appcast+更新 zip+delta は `/mac/`。
+  - **Windows**: setup.exe（約 270MB）は **公開リポ `voicekey-releases` の GitHub Releases** でホスト
+    （Vercel のファイルサイズ上限を超えるため）。`voicekey-releases` は **public だがソース非公開**
+    （README + バイナリのみ。アプリ本体リポ `Tomato-1101/voicekey` は private）。
+  - サイトの `/windows/version.json`（自動更新フィード・GitHub Releases の URL を指す）と
+    `/downloads.json`（ダウンロードページの最新版表示）は Vercel に置く。
+  - 注: 2026-06-12 時点では「全部 Vercel・GitHub 不使用」案だったが、Windows exe が大きすぎて
+    Vercel に置けず、06-14 に Windows のみ GitHub Releases ホストへ確定した。
 - **Apple Developer Program 加入は「実際に売る段階で」に延期（2026-06-12 ユーザー最終決定）**。
   経緯: 同日に不加入確定 → 加入方針 → 「テスト段階だから今はやらない。販売時にやる」で確定。
   ベータ期間中の配布は Apple Development 署名 + Gatekeeper 回避手順書（サイト・DMG 同梱）で運用。
@@ -82,29 +88,29 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 
 ## 現在地 / 次の一手
 
-- 現在地: **Mac 版 v1.0.1 リリース完了**（2026-06-12。アプリアイコン追加・DMG レイアウト改善・
-  Sequoia 向けインストール手順修正）。Phase 0〜6 完了・Phase 7 中止。
-  テスターへの渡し方は https://voicekey.vercel.app を共有するだけ。
-  注意: macOS 15 では DMG を開く段階でも Gatekeeper 警告が出る（実テスター報告）。
-  手順はサイトと DMG 同梱手順書に記載済み（完了 → プライバシーとセキュリティ → このまま開く）。
-- **未完了タスク: Windows 版 v1.0.0 ビルド（2026-06-12 ユーザー判断で後回し）**。
-  方式は **GitHub Actions に変更済み**（2026-06-12 ユーザー承認。PC またぎ・.env.dist 手運びを廃止）。
-  ワークフロー `.github/workflows/windows-build.yml` 作成済み。
-  残り: ①ユーザーが初回のみ `gh secret set -f .env.dist` で Secrets 登録（登録後 .env.dist は削除）
-  ②`gh workflow run windows-build.yml -f version=1.0.0` → artifact を DL →
-  voicekey-site へ配置 → downloads.json 更新 → `vercel deploy --prod`（詳細 docs/BUILD_WINDOWS.md）。
-  ~/Desktop/voicekey-windows-build-prompt.txt（旧・実機ビルド用プロンプト）は不要になった。
+- 現在地: **Mac v1.0.2 / Windows v1.0.1 リリース完了**（2026-06-16。ダブルタップ Enter 自動送信と
+  録音中 UI の約 0.5 秒遅延を両 OS で根治＋コードレビュー指摘の修正）。Phase 0〜6 完了・Phase 7 は
+  販売開始時まで延期。両 OS とも自動更新フィード（Mac=Sparkle appcast.xml / Win=version.json）配信済み。
+  - 既往: Mac v1.0.0/v1.0.1（2026-06-12）、Windows v1.0.0 初公開（2026-06-14、GitHub Actions ビルド →
+    voicekey-releases の GitHub Releases へ公開）。
+  - テスターへの渡し方は https://voicekey.vercel.app を共有するだけ。
+  - 注意: macOS 15 では DMG を開く段階でも Gatekeeper 警告が出る（実テスター報告）。
+    手順はサイトと DMG 同梱手順書に記載済み（完了 → プライバシーとセキュリティ → このまま開く）。
 - **dev/beta の起動運用（2026-06-12 確定）**: 普段は開発版だけを使う。
   `/Applications/voicekey.app` に開発版を常設（`macos/scripts/run_dev.sh` がビルド→インストール→
   再起動まで実施）。ベータ版の動作確認は `macos/scripts/run_beta.sh`（dist/ の最新 DMG を
   マウントして一時起動・終わったら run_dev.sh で戻る）。dist/voicekey.app はビルドごとに
   dev/dist で上書きされるため常用しない。見分け方: 設定画面に API キータブがあれば開発版。
-- 次の一手: ①ユーザーが各 API ダッシュボードで利用上限・アラート設定
-  ②ユーザーが `gh secret set -f .env.dist` → Windows 版 v1.0.0 を CI でビルド・リリース。
-- 次回リリース（バグ修正等）の手順: main で修正 → `build_dmg.sh --version X.Y.Z` →
-  DMG を voicekey-site/downloads/、zip+appcast を voicekey-site/mac/ へコピー →
-  downloads.json 更新 → `vercel deploy --prod` → 既存ユーザーへ自動配布。
-- Windows 版リリース手順: Mac で `--export-env` → `.env.dist` を Windows ビルド機へ →
-  `build_windows_dist.ps1 -Version X.Y.Z` → setup.exe を voicekey-site/downloads/、
-  version.json を voicekey-site/windows/ へ → downloads.json 更新 → `vercel deploy --prod`
-  （詳細は docs/BUILD_WINDOWS.md）。
+- 次の一手: 残るユーザー作業は **各 API ダッシュボードで利用上限・アラート設定**のみ（保険）。
+- **リリース手順（Mac/Windows は常に両方を同じ修正内容で同期リリースする・版番号は Claude が semver で決める）**:
+  - Mac: `cd macos && ./scripts/build_dmg.sh --version X.Y.Z`（Info.plist 自動 bump・署名・zip/DMG/appcast 生成）
+    → DMG を `voicekey-site/downloads/`、`voicekey-X.Y.Z.zip`＋`voicekeyN-M.delta`＋`appcast.xml` を
+    `voicekey-site/mac/` へコピー → `downloads.json` の mac を更新。
+  - Windows: `gh workflow run windows-build.yml -f version=X.Y.Z` → `gh run watch`（約15分）→
+    `gh run download -n voicekey-windows-installer -D /tmp/vk_ci/` → setup.exe を
+    `voicekey-releases` の GitHub Releases（タグ `vX.Y.Z`）へ `gh release create` で公開 →
+    CI が出力した `version.json`（GitHub Releases の URL を含む）を `voicekey-site/windows/` へ置き、
+    `downloads.json` の windows を更新（sha256・size も）。
+  - 仕上げ: `cd voicekey-site && vercel deploy --prod`（既存ユーザーへ自動更新が配信される）→
+    アプリ本体リポで Info.plist/CHANGELOG/README のコミット。
+  - 詳細は docs/BUILD_WINDOWS.md。
