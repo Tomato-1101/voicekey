@@ -260,7 +260,7 @@ struct HudView: View {
         HStack(spacing: 4) {
             Image(systemName: "stop.fill")
                 .font(.system(size: 9, weight: .bold))
-            Text("もう一度で停止")
+            Text("もう一度押すと停止")
                 .font(.system(size: 10, weight: .medium))
         }
         .foregroundStyle(.secondary)

@@ -98,26 +98,13 @@ private struct GeneralSettingsTab: View {
                     .font(.caption)
                     .foregroundStyle(isDetectingMic ? Color.accentColor : .secondary)
             }
-            Text("録音に使うマイク。「システム既定」は macOS の設定に従います。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
             Toggle("無音を自動スキップ（VAD）", isOn: $config.vadEnabled)
-            Text("発話が検出されない録音を API に送らず、幻覚と無駄なコストを防ぎます。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
 
             Toggle("長文を分割して並列送信", isOn: $config.splitParallelEnabled)
-            Text("長い録音を無音区間で区切り、API へ並列送信して待ち時間を短縮します（既定オン）。区切りは無音の中だけなので文の途中では切れません。Deepgram のリアルタイムは対象外です。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
 
             Toggle("録音中に HUD を表示", isOn: $config.hudEnabled)
 
-            Toggle("リアルタイムストリーミング（Deepgram）", isOn: $config.streamingEnabled)
-            Text("バックエンドが Deepgram のホットキーで、話しながら HUD に文字を表示し、離した瞬間に確定します。オフにすると従来どおり録音後にまとめて変換します。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            Toggle("リアルタイムストリーミング", isOn: $config.streamingEnabled)
 
             LabeledContent("自動 Enter の遅延") {
                 HStack {
@@ -132,7 +119,7 @@ private struct GeneralSettingsTab: View {
                     Text("ms")
                 }
             }
-            Text("ホットキーを素早く 2 回押すと、貼り付け後に Enter を自動送信します（チャット送信用）。")
+            Text("ホットキーを素早く 2 回押すと、貼り付け後に Enter を送信します。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -145,7 +132,7 @@ private struct GeneralSettingsTab: View {
                     }
                 }
             }
-            Text("この切替キー＋ホットキーを一緒に押すと、そのプロバイダーがトグル録音になります（1 回で開始、もう 1 回で停止）。切替キーを使わない通常の押し方は従来どおりです。修飾キー（右⇧ など）を推奨。")
+            Text("切替キー＋ホットキーで、トグル録音（1 回で開始・もう 1 回で停止）になります。修飾キー（右⇧ など）を推奨。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -160,10 +147,6 @@ private struct GeneralSettingsTab: View {
                     Text(config.formatModel).tag(config.formatModel)
                 }
             }
-            Text("テキスト整形に使う Groq のモデル。速度重視なら既定（llama-3.1-8b-instant）を推奨。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text("整形の指示")
@@ -177,9 +160,6 @@ private struct GeneralSettingsTab: View {
                     .lineLimit(4...8)
                     .textFieldStyle(.roundedBorder)
                     .font(.caption)
-                Text("テキスト整形で LLM に渡す指示。自由に編集できます（空欄なら既定の指示を使用）。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             Divider()
@@ -273,15 +253,9 @@ private struct SlotSettingsTab: View {
                 TextField("専門用語や固有名詞のヒントを入力", text: $slot.prompt, axis: .vertical)
                     .lineLimit(2...4)
                     .textFieldStyle(.roundedBorder)
-                Text("文字起こしのヒント。よく使う固有名詞を書いておくと精度が上がります。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             Toggle("テキスト整形（LLM）", isOn: $slot.formatEnabled)
-            Text("文字起こし後に Groq の高速 LLM で整形してから貼り付けます。内容に応じた整形を LLM が自動判断します（指示は「一般」タブで編集可）。オフなら文字起こしをそのまま貼り付けます。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
         .formStyle(.grouped)
         .padding(.vertical, 8)
@@ -312,9 +286,6 @@ private struct HistoryTab: View {
                     history.clear()
                 }
             }
-            Text("行をクリックするとクリップボードにコピーします。履歴はこの Mac の中だけに保存されます。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
         .formStyle(.grouped)
         .padding(.vertical, 8)
@@ -375,9 +346,6 @@ private struct ApiKeysTab: View {
             ForEach(Backend.allCases) { backend in
                 ApiKeyRow(backend: backend)
             }
-            Text("API キーは macOS のキーチェーンに安全に保存されます。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
         .formStyle(.grouped)
         .padding(.vertical, 8)
