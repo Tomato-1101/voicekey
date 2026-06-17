@@ -13,7 +13,7 @@ from .types import HotkeyMode
 # アプリケーションメタデータ
 # ============================================
 APP_NAME: str = "voicekey"
-APP_VERSION: str = "1.0.0"
+APP_VERSION: str = "1.1.0"
 
 # ============================================
 # 音声設定
