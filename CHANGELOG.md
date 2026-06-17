@@ -5,6 +5,21 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased]
 
 ### Changed
+- **（release＝製品版ブランチ）文字起こしを 2 モードに簡素化＋モデル/整形設定を非公開化**（Mac / Windows 両方）。
+  顧客が迷わず使えるよう、文字起こしバックエンドを **「高速リアルタイム」（Deepgram nova-3）/
+  「正確性」（ElevenLabs scribe_v1）の 2 択のみ**に絞り、モデル選択 UI を撤去（推奨モデルに固定）。
+  OpenAI は文字起こしから除外、Groq は裏のテキスト整形専用に。テキスト整形は Groq 固定モデル
+  （llama-3.1-8b-instant）＋固定プロンプトで**裏で自動実行**し、モデル/プロンプト選択 UI は撤去・
+  **オンオフトグルのみ残置（既定オン）**。
+  - Mac: `Backend.label` を製品名（高速リアルタイム/正確性）に、`Backend.selectableCases` を追加して
+    バックエンド Picker を 2 択化。スロットのモデル Picker・一般タブの整形モデル/指示 UI を撤去。
+    既定スロットを deepgram/elevenlabs に、`SlotConfig` の decode で旧 openai/groq を deepgram へ移行
+    （モデルも推奨へ揃える）。整形既定 `formatEnabled` を `true` に。API キータブは deepgram/elevenlabs/groq のみ。
+  - Windows: `_TRANSCRIBE_BACKEND_LABELS`（2 択）・`_API_KEY_BACKENDS`（3 種）を追加。バックエンド Combo を
+    2 択化、モデル Combo・整形モデル/指示 UI を撤去（不要化した `_BACKEND_LABELS`/`_BACKEND_MODELS`/
+    `_model_label` 等を削除）。`constants.py` の既定を deepgram/elevenlabs＋`format_enabled: True` に。
+    `config_manager._constrain_release_backends` を追加し、保存済み openai/groq を deepgram へ移行
+    （`api_model` を空にして `default_api_models` へフォールバック）。テスト 2 件追加。
 - **VAD・長文分割・リアルタイムストリーミング・録音 HUD（＋ Windows の音量正規化）のオンオフを
   設定 UI から撤去し、常時 ON に固定**（Mac / Windows 両方）。これらは「使い分けが難しく常に ON が
   最適」なため、ユーザーが OFF にする手段を持たせない方針に変更。動作（消費側）は従来どおり常に有効。

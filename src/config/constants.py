@@ -47,24 +47,24 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # 整形プロンプト本文（空 = 既定の DEFAULT_FORMAT_PROMPT を使用）
     "format_auto_prompt": "",
 
-    # ホットキー1 設定
+    # ホットキー1 設定（製品版の既定: 高速リアルタイム = Deepgram nova-3）
     "hotkey1": {
         "hotkey": "<f2>",
         "hotkey_mode": HotkeyMode.TOGGLE.value,
-        "backend": "openai",
+        "backend": "deepgram",
         "api_model": "",
         "api_prompt": "",
-        "format_enabled": False,        # 貼り付け前の LLM テキスト整形
+        "format_enabled": True,         # 製品版は裏でテキスト整形（既定オン）
     },
 
-    # ホットキー2 設定
+    # ホットキー2 設定（製品版の既定: 正確性 = ElevenLabs scribe_v1）
     "hotkey2": {
         "hotkey": "<f3>",
         "hotkey_mode": HotkeyMode.TOGGLE.value,
-        "backend": "groq",
+        "backend": "elevenlabs",
         "api_model": "",
         "api_prompt": "",
-        "format_enabled": False,        # 貼り付け前の LLM テキスト整形
+        "format_enabled": True,         # 製品版は裏でテキスト整形（既定オン）
     },
 
     # APIモデルデフォルト値（バックエンド別、ベンチ実測 2026-06-10 に基づく既定）

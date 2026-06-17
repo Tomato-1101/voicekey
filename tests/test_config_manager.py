@@ -60,8 +60,43 @@ class TestMigration(unittest.TestCase):
             self.assertIn("hotkey1", cfg)
             self.assertNotIn("hotkey", cfg)
             self.assertEqual(cfg["hotkey1"]["hotkey"], "<f4>")
-            self.assertEqual(cfg["hotkey1"]["backend"], "groq")
+            # 製品版(release)は文字起こし 2 択のみ。旧 groq は deepgram(高速リアルタイム)へ移行する
+            self.assertEqual(cfg["hotkey1"]["backend"], "deepgram")
             self.assertIn("hotkey2", cfg)
+        finally:
+            os.unlink(path)
+
+    def test_release_constrains_openai_groq_to_deepgram(self):
+        # 製品版は openai/groq を文字起こしに選べないため deepgram へ移行し、
+        # api_model は空にして default_api_models(nova-3) へフォールバックさせる
+        mgr, path = self._manager_for({
+            "hotkey1": {
+                "hotkey": "<f2>", "hotkey_mode": "hold",
+                "backend": "openai", "api_model": "gpt-4o-transcribe",
+            },
+            "hotkey2": {
+                "hotkey": "<f3>", "hotkey_mode": "hold",
+                "backend": "groq", "api_model": "whisper-large-v3-turbo",
+            },
+        })
+        try:
+            self.assertEqual(mgr.config["hotkey1"]["backend"], "deepgram")
+            self.assertEqual(mgr.config["hotkey1"]["api_model"], "")
+            self.assertEqual(mgr.config["hotkey2"]["backend"], "deepgram")
+            self.assertEqual(mgr.config["hotkey2"]["api_model"], "")
+        finally:
+            os.unlink(path)
+
+    def test_release_keeps_elevenlabs(self):
+        # 正確性(elevenlabs)は製品版の有効な選択肢なのでそのまま保持する
+        mgr, path = self._manager_for({
+            "hotkey1": {
+                "hotkey": "<f2>", "hotkey_mode": "hold",
+                "backend": "elevenlabs", "api_model": "",
+            },
+        })
+        try:
+            self.assertEqual(mgr.config["hotkey1"]["backend"], "elevenlabs")
         finally:
             os.unlink(path)
 

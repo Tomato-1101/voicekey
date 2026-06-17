@@ -36,15 +36,20 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    /// 設定 UI に出すバックエンド名（特徴ベース。提供元名は伏せる）
+    /// 設定 UI に出すバックエンド名（製品版＝release ブランチ）。
+    /// 文字起こしで選べるのは Deepgram=「高速リアルタイム」/ ElevenLabs=「正確性」の 2 択のみ。
+    /// openai/groq は文字起こしには出さない（groq は裏のテキスト整形専用）。
     var label: String {
         switch self {
+        case .deepgram: return "高速リアルタイム"
+        case .elevenlabs: return "正確性"
         case .openai: return "高精度"
         case .groq: return "高速"
-        case .elevenlabs: return "多言語"
-        case .deepgram: return "リアルタイム"
         }
     }
+
+    /// 製品版で文字起こしバックエンドとして選べる 2 択（表示順）
+    static var selectableCases: [Backend] { [.deepgram, .elevenlabs] }
 
     /// 提供元名（API キー欄でどのキーかを示すためだけに使う。配布版では
     /// API キータブ自体を隠すので、開発時にしか表示されない）
@@ -84,8 +89,8 @@ struct SlotConfig: Codable, Equatable {
     var backend: Backend
     var model: String
     var prompt: String
-    /// 貼り付け前に LLM でテキスト整形するか（既定はオフ）
-    var formatEnabled: Bool = false
+    /// 貼り付け前に LLM でテキスト整形するか（製品版は既定オン＝裏で整形）
+    var formatEnabled: Bool = true
 
     /// 人間が読める表記（例: "右⌘"、"⌃+Space"）
     var hotkeyLabel: String {
@@ -102,10 +107,18 @@ extension SlotConfig {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         hotkey = try c.decodeIfPresent([String].self, forKey: .hotkey) ?? []
         mode = try c.decodeIfPresent(HotkeyMode.self, forKey: .mode) ?? .hold
-        backend = try c.decodeIfPresent(Backend.self, forKey: .backend) ?? .openai
-        model = try c.decodeIfPresent(String.self, forKey: .model) ?? ""
+        // 製品版は文字起こし 2 択（deepgram/elevenlabs）のみ。保存済み openai/groq は
+        // 選択肢に無いので deepgram（高速リアルタイム）へ移行する
+        let decoded = try c.decodeIfPresent(Backend.self, forKey: .backend) ?? .deepgram
+        let migrated = Backend.selectableCases.contains(decoded) ? decoded : .deepgram
+        backend = migrated
+        let decodedModel = try c.decodeIfPresent(String.self, forKey: .model) ?? ""
+        // バックエンドを移行した（または保存モデルが当該バックエンドのものでない）場合は
+        // そのバックエンドの推奨モデルに揃える（製品版はモデル非選択で固定なので実害はないが整合のため）
+        model = migrated.knownModels.contains(decodedModel) ? decodedModel : migrated.defaultModel
         prompt = try c.decodeIfPresent(String.self, forKey: .prompt) ?? ""
-        formatEnabled = try c.decodeIfPresent(Bool.self, forKey: .formatEnabled) ?? false
+        // 製品版は整形を既定オン（裏で整形）。保存値が無ければ true
+        formatEnabled = try c.decodeIfPresent(Bool.self, forKey: .formatEnabled) ?? true
     }
 }
 
@@ -160,13 +173,14 @@ final class ConfigStore: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
 
+        // 製品版の既定: スロット1=高速リアルタイム(Deepgram nova-3) / スロット2=正確性(ElevenLabs scribe_v1)
         slot1 = Self.loadSlot(defaults, key: Keys.slot1) ?? SlotConfig(
-            hotkey: ["cmd_r"], mode: .hold, backend: .openai,
-            model: Backend.openai.defaultModel, prompt: ""
+            hotkey: ["cmd_r"], mode: .hold, backend: .deepgram,
+            model: Backend.deepgram.defaultModel, prompt: ""
         )
         slot2 = Self.loadSlot(defaults, key: Keys.slot2) ?? SlotConfig(
-            hotkey: ["alt_r"], mode: .hold, backend: .groq,
-            model: Backend.groq.defaultModel, prompt: ""
+            hotkey: ["alt_r"], mode: .hold, backend: .elevenlabs,
+            model: Backend.elevenlabs.defaultModel, prompt: ""
         )
         language = defaults.string(forKey: Keys.language) ?? "ja"
         // VAD・HUD・ストリーミング・長文分割は常時 ON に固定（設定 UI から撤去）。

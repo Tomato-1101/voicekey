@@ -33,7 +33,6 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSlider,
@@ -46,7 +45,6 @@ from PySide6.QtWidgets import (
 from ..config import ConfigManager, HotkeyMode, TranscriptionBackend
 from ..core.audio_recorder import AudioRecorder
 from ..core.history import MAX_ITEMS as HISTORY_MAX_ITEMS, HistoryStore
-from ..core.text_formatter import DEFAULT_FORMAT_PROMPT, KNOWN_FORMAT_MODELS
 from ..platform import PlatformAdapter, get_platform_adapter
 from ..utils import autostart, secrets
 from .styles import MacTheme
@@ -61,14 +59,6 @@ _BACKEND_TO_SERVICE = {
     TranscriptionBackend.DEEPGRAM.value: secrets.SERVICE_DEEPGRAM,
 }
 
-# backend の表示順と UI ラベル（特徴ベース名。提供元名は伏せる。Mac 版 Backend.label と一致）
-_BACKEND_LABELS = [
-    (TranscriptionBackend.OPENAI.value, "高精度"),
-    (TranscriptionBackend.GROQ.value, "高速"),
-    (TranscriptionBackend.ELEVENLABS.value, "多言語"),
-    (TranscriptionBackend.DEEPGRAM.value, "リアルタイム"),
-]
-
 # 提供元名（API キー欄でどのキーかを示すためだけに使う。配布版では API キータブを
 # 隠すので開発時にしか表示されない。Mac 版 Backend.providerName と一致）
 _BACKEND_PROVIDER_NAMES = {
@@ -77,6 +67,22 @@ _BACKEND_PROVIDER_NAMES = {
     TranscriptionBackend.ELEVENLABS.value: "ElevenLabs",
     TranscriptionBackend.DEEPGRAM.value: "Deepgram",
 }
+
+# 製品版（release）で文字起こしに選べる 2 択（表示順）。
+# Deepgram=「高速リアルタイム」/ ElevenLabs=「正確性」。モデルは推奨固定で非選択。
+# Mac 版 Backend.selectableCases / Backend.label と一致させる。
+_TRANSCRIBE_BACKEND_LABELS = [
+    (TranscriptionBackend.DEEPGRAM.value, "高速リアルタイム"),
+    (TranscriptionBackend.ELEVENLABS.value, "正確性"),
+]
+
+# 製品版の API キータブに出すバックエンド（開発ビルドのみ表示）。
+# 文字起こし 2 択＋裏のテキスト整形に使う Groq。OpenAI は使わない。
+_API_KEY_BACKENDS = [
+    TranscriptionBackend.DEEPGRAM.value,
+    TranscriptionBackend.ELEVENLABS.value,
+    TranscriptionBackend.GROQ.value,
+]
 
 # ホットキー動作モードの表示順と UI ラベル（Mac 版 HotkeyMode.label と完全一致させる）
 _MODE_LABELS = [
@@ -90,40 +96,6 @@ _LANGUAGE_OPTIONS = [
     ("英語", "en"),
     ("自動判定", ""),
 ]
-
-# backend 選択値 → 選択可能モデル（先頭がベンチ実測 2026-06-10 に基づく既定）
-_BACKEND_MODELS = {
-    TranscriptionBackend.OPENAI.value: [
-        "gpt-4o-mini-transcribe",
-        "gpt-4o-transcribe",
-    ],
-    TranscriptionBackend.GROQ.value: [
-        "whisper-large-v3-turbo",
-        "whisper-large-v3",
-        "distil-whisper-large-v3-en",
-    ],
-    TranscriptionBackend.ELEVENLABS.value: [
-        "scribe_v1",                # 日本語 REST 最高精度（既定）
-        "scribe_v1_experimental",
-        "scribe_v2",                # 短文0%だが長文は後退
-    ],
-    TranscriptionBackend.DEEPGRAM.value: [
-        "nova-3",                   # ストリーミング/REST とも最良（既定）
-        "nova-2",
-    ],
-}
-
-# 各 backend の既定モデル（保存済みモデルが当該 backend のものでない時のフォールバック）
-_BACKEND_DEFAULT_MODEL = {b: models[0] for b, models in _BACKEND_MODELS.items()}
-
-
-def _model_label(model: str, recommended: str) -> str:
-    """モデル選択 Combo の表示ラベルを作る（推奨モデルに「（推奨）」を付ける）。
-
-    表示にだけ使い、保存値は userData のモデル識別子のまま（API へはラベルを送らない）。
-    """
-    return f"{model}（推奨）" if model == recommended else model
-
 
 def _make_caption(text: str) -> QLabel:
     """設定項目の補足説明ラベルを作る（Mac 版の .caption 相当。色は QSS 側で管理）。"""
@@ -808,42 +780,8 @@ class SettingsWindow(QWidget):
 
         layout.addWidget(card)
 
-        # --- カード: テキスト整形（モデル・指示） ---
-        card, cl = _make_card()
-
-        # LLM テキスト整形に使う Groq モデル（両ホットキー共通・リストから選択）
-        # 表示は「（推奨）」付きラベル、値は userData のモデル識別子
-        self._format_model_combo = QComboBox()
-        for model in KNOWN_FORMAT_MODELS:
-            self._format_model_combo.addItem(
-                _model_label(model, KNOWN_FORMAT_MODELS[0]), model
-            )
-        _add_row(cl, "整形モデル", self._format_model_combo)
-
-        # テキスト整形で LLM に渡すプロンプト（編集可・空欄なら既定）
-        auto_prompt_reset = QPushButton("既定に戻す")
-        auto_prompt_reset.setCursor(Qt.CursorShape.PointingHandCursor)
-        auto_prompt_reset.clicked.connect(
-            lambda: self._format_auto_prompt_edit.setPlainText(DEFAULT_FORMAT_PROMPT)
-        )
-
-        self._format_auto_prompt_edit = QPlainTextEdit()
-        self._format_auto_prompt_edit.setFixedHeight(110)
-
-        prompt_block = QWidget()
-        prompt_layout = QVBoxLayout(prompt_block)
-        prompt_layout.setContentsMargins(0, 0, 0, 0)
-        prompt_layout.setSpacing(6)
-        prompt_head = QHBoxLayout()
-        prompt_head.setSpacing(8)
-        prompt_head.addWidget(QLabel("整形の指示"))
-        prompt_head.addStretch()
-        prompt_head.addWidget(auto_prompt_reset)
-        prompt_layout.addLayout(prompt_head)
-        prompt_layout.addWidget(self._format_auto_prompt_edit)
-        _add_block(cl, prompt_block)
-
-        layout.addWidget(card)
+        # 製品版はテキスト整形のモデル・指示文を固定（UI 非公開）。
+        # オンオフはホットキー各タブの「テキスト整形（LLM）」トグルで切り替える。
 
         # --- カード: 起動 ---
         card, cl = _make_card()
@@ -897,22 +835,14 @@ class SettingsWindow(QWidget):
         setattr(self, f"_mode{slot_id}_combo", mode_combo)
         _add_row(cl, "動作", mode_combo)
 
-        # バックエンド選択（REST + ストリーミングの全 4 種）
+        # バックエンド選択（製品版は 2 択: 高速リアルタイム / 正確性）。
+        # モデルは推奨固定で非選択（Deepgram=nova-3 / ElevenLabs=scribe_v1）。
         backend_combo = QComboBox()
-        for value, label in _BACKEND_LABELS:
+        for value, label in _TRANSCRIBE_BACKEND_LABELS:
             backend_combo.addItem(label, value)
-        backend_combo.currentIndexChanged.connect(
-            lambda _=0, sid=slot_id: self._on_slot_backend_changed(sid)
-        )
         backend_combo.setMinimumWidth(180)
         setattr(self, f"_backend{slot_id}_combo", backend_combo)
         _add_row(cl, "バックエンド", backend_combo)
-
-        # モデル選択（バックエンド変更で候補を差し替える）
-        model_combo = QComboBox()
-        model_combo.setMinimumWidth(260)
-        setattr(self, f"_api{slot_id}_model_combo", model_combo)
-        _add_row(cl, "モデル", model_combo)
 
         # プロンプト入力（文字起こしのヒント）
         prompt_input = QLineEdit()
@@ -1032,7 +962,7 @@ class SettingsWindow(QWidget):
         self._refresh_history()
 
     def _create_api_keys_page(self) -> QWidget:
-        """API キーページを作成する（4 バックエンド分の保存・削除を 1 カードに収める）。"""
+        """API キーページを作成する（製品版で使う 3 バックエンド分の保存・削除を 1 カードに収める）。"""
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setSpacing(12)
@@ -1044,7 +974,7 @@ class SettingsWindow(QWidget):
 
         card, cl = _make_card()
 
-        for backend_value, _label in _BACKEND_LABELS:
+        for backend_value in _API_KEY_BACKENDS:
             service = _BACKEND_TO_SERVICE[backend_value]
             # API キー欄はどのキーかが分かる必要があるので提供元名で見出しを出す
             # （このタブ自体が配布版では非表示なので提供元名が露出するのは開発時のみ）
@@ -1234,8 +1164,8 @@ class SettingsWindow(QWidget):
             lang_index = self._lang_combo.count() - 1
         self._lang_combo.setCurrentIndex(lang_index)
 
-        # ホットキー 1 / 2
-        slot_defaults = {1: ("<f2>", "openai"), 2: ("<f3>", "groq")}
+        # ホットキー 1 / 2（製品版の既定: 高速リアルタイム=deepgram / 正確性=elevenlabs）
+        slot_defaults = {1: ("<f2>", "deepgram"), 2: ("<f3>", "elevenlabs")}
         for slot_id, (default_hotkey, default_backend) in slot_defaults.items():
             hotkey_config = config.get(f"hotkey{slot_id}", {}) or {}
 
@@ -1274,52 +1204,11 @@ class SettingsWindow(QWidget):
         self._populate_input_devices()
         self._set_input_device_selection(config.get("audio_input_device", "default"))
 
-        # LLM テキスト整形モデル（両ホットキー共通）。保存値がリスト外でも選択を保持して表示する
-        saved_model = config.get("format_model", "llama-3.1-8b-instant")
-        if self._format_model_combo.findData(saved_model) < 0:
-            self._format_model_combo.addItem(saved_model, saved_model)
-        self._format_model_combo.setCurrentIndex(self._format_model_combo.findData(saved_model))
-
-        # 整形プロンプト（空 = 既定。編集できるよう既定の実テキストを表示する）
-        self._format_auto_prompt_edit.setPlainText(
-            config.get("format_auto_prompt", "") or DEFAULT_FORMAT_PROMPT
-        )
-
-        # APIモデル候補を初期化（setCurrentIndex がシグナルを発しないケースに備えて明示実行）
-        for slot_id in (1, 2):
-            self._on_slot_backend_changed(slot_id)
+        # 製品版は文字起こしモデル・整形モデル/指示が固定（UI 非公開）のため読み込み不要。
 
         # API キー保存状況
         for service in _BACKEND_TO_SERVICE.values():
             self._refresh_api_key_status(service)
-
-    def _on_slot_backend_changed(self, slot_id: int) -> None:
-        """
-        スロットのバックエンド選択変更を処理する。
-
-        Args:
-            slot_id: スロットID（1または2）
-        """
-        backend_combo = getattr(self, f"_backend{slot_id}_combo")
-        backend = backend_combo.currentData()
-
-        # モデル候補を差し替える。保存済みモデルが当該 backend のものなら復元、
-        # そうでなければ先頭（既定）を選ぶ
-        # 表示は「（推奨）」付きラベル、値は userData のモデル識別子
-        model_combo = getattr(self, f"_api{slot_id}_model_combo")
-        model_combo.clear()
-        models = _BACKEND_MODELS.get(backend, [])
-        recommended = _BACKEND_DEFAULT_MODEL.get(backend, "")
-        for model in models:
-            model_combo.addItem(_model_label(model, recommended), model)
-
-        config = self._config_manager.config
-        hotkey_config = config.get(f"hotkey{slot_id}", {}) or {}
-        saved_model = hotkey_config.get("api_model", "")
-        if saved_model in models:
-            model_combo.setCurrentIndex(models.index(saved_model))
-        elif models:
-            model_combo.setCurrentIndex(0)
 
     def _toggle_theme(self) -> None:
         """ダーク/ライトモードを切り替える。"""
@@ -1358,15 +1247,9 @@ class SettingsWindow(QWidget):
             "handsfree_key": self._handsfree_input.text(),
             # vad_filter / vad_min_silence_duration_ms / split_parallel_enabled /
             # streaming_enabled / hud_enabled / audio_preprocess.volume_normalize は
-            # 常時 ON 固定（UI 撤去）。ここでは保存せず config_manager 側で True を強制する
-
-            # LLM テキスト整形に使う Groq モデル（両ホットキー共通。値は userData の識別子）
-            "format_model": self._format_model_combo.currentData() or "llama-3.1-8b-instant",
-            # 整形プロンプト（既定文と同一なら空で保存し、既定文の将来更新に追従する）
-            "format_auto_prompt": (
-                "" if self._format_auto_prompt_edit.toPlainText().strip() == DEFAULT_FORMAT_PROMPT.strip()
-                else self._format_auto_prompt_edit.toPlainText()
-            ),
+            # 常時 ON 固定（UI 撤去）。ここでは保存せず config_manager 側で True を強制する。
+            # format_model / format_auto_prompt も製品版は固定（UI 非公開）なので保存しない
+            # （DEFAULT_CONFIG の既定 = llama-3.1-8b-instant / 既定プロンプトが使われる）。
 
             # ホットキー1 設定
             "hotkey1": self._collect_slot_config(1),
@@ -1413,7 +1296,8 @@ class SettingsWindow(QWidget):
             "hotkey": getattr(self, f"_hotkey{slot_id}_input").text(),
             "hotkey_mode": getattr(self, f"_mode{slot_id}_combo").currentData(),
             "backend": getattr(self, f"_backend{slot_id}_combo").currentData(),
-            "api_model": getattr(self, f"_api{slot_id}_model_combo").currentData() or "",
+            # 製品版はモデル非選択。空にして default_api_models（deepgram=nova-3 等）へフォールバック
+            "api_model": "",
             "api_prompt": getattr(self, f"_api{slot_id}_prompt_input").text(),
             "format_enabled": getattr(self, f"_format{slot_id}_check").isChecked(),
         }

@@ -128,31 +128,8 @@ private struct GeneralSettingsTab: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Picker("整形モデル", selection: $config.formatModel) {
-                // 表示は推奨モデル（リスト先頭）に「（推奨）」を付け、tag はモデル識別子のまま
-                ForEach(TextFormatter.knownModels, id: \.self) { model in
-                    Text(model == TextFormatter.knownModels[0] ? "\(model)（推奨）" : model)
-                        .tag(model)
-                }
-                // 保存済みモデルがリスト外でも選択を保持して表示する
-                if !TextFormatter.knownModels.contains(config.formatModel) {
-                    Text(config.formatModel).tag(config.formatModel)
-                }
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("整形の指示")
-                    Spacer()
-                    Button("既定に戻す") {
-                        config.autoFormatPrompt = TextFormatter.defaultPrompt
-                    }
-                    .font(.caption)
-                }
-                TextField("", text: $config.autoFormatPrompt, axis: .vertical)
-                    .lineLimit(4...8)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.caption)
-            }
+            // 製品版はテキスト整形のモデル・指示文を固定（UI 非公開）。
+            // オンオフはホットキー各タブの「テキスト整形（LLM）」トグルで切り替える。
 
             Divider()
 
@@ -220,24 +197,15 @@ private struct SlotSettingsTab: View {
             }
             .pickerStyle(.segmented)
 
+            // 製品版は文字起こし 2 択（高速リアルタイム / 正確性）のみ。モデルは推奨固定で非選択。
             Picker("バックエンド", selection: $slot.backend) {
-                ForEach(Backend.allCases) { backend in
+                ForEach(Backend.selectableCases) { backend in
                     Text(backend.label).tag(backend)
                 }
             }
             .onChange(of: slot.backend) { _, newBackend in
-                // バックエンド変更時はそのバックエンドの既定モデルに切り替える
-                if !newBackend.knownModels.contains(slot.model) {
-                    slot.model = newBackend.defaultModel
-                }
-            }
-
-            Picker("モデル", selection: $slot.model) {
-                // 表示は推奨モデルに「（推奨）」を付け、tag（保存値）はモデル識別子のまま
-                ForEach(slot.backend.knownModels, id: \.self) { model in
-                    Text(model == slot.backend.defaultModel ? "\(model)（推奨）" : model)
-                        .tag(model)
-                }
+                // バックエンド変更時はそのバックエンドの推奨モデルに固定で切り替える
+                slot.model = newBackend.defaultModel
             }
 
             VStack(alignment: .leading, spacing: 4) {
@@ -333,9 +301,13 @@ private struct HistoryRow: View {
 // MARK: - API キー
 
 private struct ApiKeysTab: View {
+    // 製品版で使うキーのみ表示（開発ビルドのみ表示されるタブ）。
+    // 文字起こし 2 択（Deepgram/ElevenLabs）＋ 裏のテキスト整形に使う Groq。OpenAI は使わない。
+    private let backends: [Backend] = [.deepgram, .elevenlabs, .groq]
+
     var body: some View {
         Form {
-            ForEach(Backend.allCases) { backend in
+            ForEach(backends) { backend in
                 ApiKeyRow(backend: backend)
             }
         }

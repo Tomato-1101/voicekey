@@ -19,6 +19,12 @@ from .constants import DEFAULT_CONFIG, SETTINGS_FILE_NAME
 logger = get_logger(__name__)
 # 対応バックエンド（REST + ストリーミング）。これ以外は openai にフォールバック
 API_BACKENDS = {"groq", "openai", "elevenlabs", "deepgram"}
+# 製品版（release ブランチ）で文字起こしに選べるバックエンド。
+# 高速リアルタイム = deepgram / 正確性 = elevenlabs の 2 択のみ。
+# openai/groq は文字起こしには出さない（groq は裏のテキスト整形専用）。
+RELEASE_TRANSCRIBE_BACKENDS = ("deepgram", "elevenlabs")
+# 製品版で範囲外（openai/groq 等）の保存値を移行する先（高速リアルタイム）
+RELEASE_DEFAULT_BACKEND = "deepgram"
 
 
 def _deep_merge(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
@@ -208,6 +214,8 @@ class ConfigManager:
             config = _deep_merge(DEFAULT_CONFIG, loaded_config)
             # 常時 ON 固定の項目を矯正（UI から撤去したため保存済みの古い false を上書き）
             self._force_always_on(config)
+            # 製品版は文字起こしバックエンドを 2 択に制限（範囲外は deepgram へ移行）
+            self._constrain_release_backends(config)
             return config
 
         except Exception as e:
@@ -234,6 +242,28 @@ class ConfigManager:
         if not isinstance(config.get("audio_preprocess"), dict):
             config["audio_preprocess"] = {}
         config["audio_preprocess"]["volume_normalize"] = True
+
+    @staticmethod
+    def _constrain_release_backends(config: Dict[str, Any]) -> None:
+        """
+        製品版（release）の文字起こしバックエンドを 2 択（deepgram/elevenlabs）に制限する。
+
+        保存済み settings.yaml に openai/groq 等の範囲外バックエンドが残っていても、
+        deepgram（高速リアルタイム）へ移行する。移行時は api_model を空にして
+        default_api_models（deepgram→nova-3）にフォールバックさせる。
+
+        Args:
+            config: 矯正対象の設定辞書（その場で書き換える）
+        """
+        for slot_key in ("hotkey1", "hotkey2"):
+            slot = config.get(slot_key)
+            if not isinstance(slot, dict):
+                continue
+            backend = str(slot.get("backend", "")).lower()
+            if backend not in RELEASE_TRANSCRIBE_BACKENDS:
+                slot["backend"] = RELEASE_DEFAULT_BACKEND
+                # 移行先バックエンドのモデルへフォールバックさせる
+                slot["api_model"] = ""
 
     def reload_if_changed(self) -> bool:
         """
