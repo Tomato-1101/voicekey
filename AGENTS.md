@@ -1,9 +1,16 @@
 # Repository Guidelines
 
+## Branch policy (最重要・2026-06-17)
+- voicekey は **2 ブランチ運用**。絶対に混ぜない:
+  - **`main` = 自分用**: 開発者が自分の API キーで使う版。4 プロバイダーを**実プロバイダー名で表示**（OpenAI / Groq / ElevenLabs / Deepgram）＋モデル名表示・選択可。
+  - **`release` = 製品版**: 顧客配布版（配布タグ `v*` はこちらで打つ）。文字起こしは **Deepgram=「高速リアルタイム」/ ElevenLabs=「正確性」の 2 択のみ**、モデル非選択、Groq 整形を裏で固定実行。
+- **どのブランチに変更を入れるかは毎回ユーザーが指定する。指定が無ければ必ず聞く**（main / release / 両方）。推測でどちらかに入れない。2 ブランチを勝手に混ぜない（指示なき cherry-pick / merge 禁止）。
+
 ## Cross-platform rule (重要)
-- voicekey は Mac（`macos/` Swift）と Windows（`src/` Python）の二本立て。**UI 文言・表示名・設定項目・機能挙動など、両 OS に同等に存在する要素を変えるときは両方を同じ作業で反映し 1 コミットにまとめる**（片方だけ変えない）。OS 固有 API（win32 / launchd / CGEventTap 等）でしか存在しない要素のみ片方で完結してよい。
+- voicekey は Mac（`macos/` Swift）と Windows（`src/` Python）の二本立て。**UI 文言・表示名・設定項目・機能挙動など、両 OS に同等に存在する要素を変えるときは両方を同じ作業で反映し 1 コミットにまとめる**（片方だけ変えない）。OS 固有 API（win32 / launchd / CGEventTap 等）でしか存在しない要素のみ片方で完結してよい。両 OS 同時実装は**同一ブランチ内**で行う。
 - ユーザーから見える挙動を変えたら **README も同じコミットで更新**する。
-- バックエンドは提供元名を伏せ**特徴名で表示**（openai→高精度 / groq→高速 / elevenlabs→多言語 / deepgram→リアルタイム）。保存値は不変。API キー欄のみ提供元名。
+- バックエンド表示名はブランチで異なる。`main`（自分用）は実プロバイダー名、`release`（製品版）は 2 択の特徴名（高速リアルタイム / 正確性）。
+- **VAD・長文分割・ストリーミング・録音 HUD は両ブランチとも常時 ON 固定**（設定 UI から撤去済み）。Mac は `ConfigStore` で true 固定、Windows は `config_manager._force_always_on` で読込・保存時に矯正。
 
 ## Project Structure & Module Organization
 - `src/app.py` orchestrates config, audio pipeline, and UI; `src/main.py` boots the Qt app.

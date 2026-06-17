@@ -169,9 +169,11 @@ final class ConfigStore: ObservableObject {
             model: Backend.groq.defaultModel, prompt: ""
         )
         language = defaults.string(forKey: Keys.language) ?? "ja"
-        vadEnabled = defaults.object(forKey: Keys.vadEnabled) as? Bool ?? true
-        hudEnabled = defaults.object(forKey: Keys.hudEnabled) as? Bool ?? true
-        streamingEnabled = defaults.object(forKey: Keys.streamingEnabled) as? Bool ?? true
+        // VAD・HUD・ストリーミング・長文分割は常時 ON に固定（設定 UI から撤去）。
+        // 保存済みの値は無視し true 固定にする（ユーザーが OFF にする手段は持たせない）
+        vadEnabled = true
+        hudEnabled = true
+        streamingEnabled = true
         autoEnterDelayMs = defaults.object(forKey: Keys.autoEnterDelayMs) as? Int ?? 50
         inputDeviceUID = defaults.string(forKey: Keys.inputDeviceUID) ?? ""
         formatModel = defaults.string(forKey: Keys.formatModel) ?? "llama-3.1-8b-instant"
@@ -183,7 +185,7 @@ final class ConfigStore: ObservableObject {
             ? TextFormatter.defaultPrompt
             : storedAutoPrompt
         handsfreeKey = (defaults.array(forKey: Keys.handsfreeKey) as? [String]) ?? []
-        splitParallelEnabled = defaults.object(forKey: Keys.splitParallelEnabled) as? Bool ?? true
+        splitParallelEnabled = true
 
         // 変更を自動保存（起動直後の初期代入は上で完了しているため安全）
         $slot1.dropFirst().sink { [weak self] in self?.saveSlot($0, key: Keys.slot1) }.store(in: &cancellables)

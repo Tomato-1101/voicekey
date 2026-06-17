@@ -5,6 +5,18 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased]
 
 ### Changed
+- **VAD・長文分割・リアルタイムストリーミング・録音 HUD（＋ Windows の音量正規化）のオンオフを
+  設定 UI から撤去し、常時 ON に固定**（Mac / Windows 両方）。これらは「使い分けが難しく常に ON が
+  最適」なため、ユーザーが OFF にする手段を持たせない方針に変更。動作（消費側）は従来どおり常に有効。
+  - Mac: `ConfigStore` の `vadEnabled / splitParallelEnabled / streamingEnabled / hudEnabled` を
+    init で `true` 固定にし、`SettingsView` GeneralSettingsTab から該当 Toggle を撤去。
+  - Windows: `settings_window.py` 一般ページから該当ウィジェットと読込/保存バインド・
+    ストリーミング診断（`_refresh_streaming_status`）を撤去。`config_manager._force_always_on` を
+    追加し、読込（`_load_config`）と保存（`save`）の双方で `vad_filter / split_parallel_enabled /
+    streaming_enabled / hud_enabled / audio_preprocess.volume_normalize` を `True` に矯正
+    （保存済み settings.yaml に古い `false` が残っていても無視して常時 ON を保証）。
+- **2 ブランチ運用に分離**（`main`=自分用 / `release`=製品版・絶対に混ぜない）。分岐ポリシーを
+  `CLAUDE.md`・`AGENTS.md`・`HANDOFF.md` に明記（どのブランチに入れるかは毎回指定、未指定なら確認）。
 - **バックエンドの表示名を特徴ベース名に変更**（Mac / Windows 両方）。設定 UI の
   バックエンド選択・ユーザー向けエラーメッセージで提供元名（OpenAI / Groq /
   ElevenLabs / Deepgram）を出さず、**「高精度 / 高速 / 多言語 / リアルタイム」**と表示する。

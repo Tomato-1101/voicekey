@@ -206,11 +206,34 @@ class ConfigManager:
 
             # デフォルト設定と深くマージ（ネストされた辞書も保証）
             config = _deep_merge(DEFAULT_CONFIG, loaded_config)
+            # 常時 ON 固定の項目を矯正（UI から撤去したため保存済みの古い false を上書き）
+            self._force_always_on(config)
             return config
 
         except Exception as e:
             logger.error(f"設定読み込みエラー: {e}")
             return DEFAULT_CONFIG.copy()
+
+    @staticmethod
+    def _force_always_on(config: Dict[str, Any]) -> None:
+        """
+        UI から撤去し常時 ON に固定する項目を矯正する（破壊的更新）。
+
+        VAD・長文分割・ストリーミング・録音 HUD・音量正規化は設定 UI から撤去したため、
+        保存済み settings.yaml に古い false が残っていても無視して True に固定する。
+        ユーザーが OFF にする手段を持たないことを保証する。
+
+        Args:
+            config: 矯正対象の設定辞書（その場で書き換える）
+        """
+        config["vad_filter"] = True
+        config["split_parallel_enabled"] = True
+        config["streaming_enabled"] = True
+        config["hud_enabled"] = True
+        # 音量正規化は Windows 固有の前処理（audio_preprocess セクション）
+        if not isinstance(config.get("audio_preprocess"), dict):
+            config["audio_preprocess"] = {}
+        config["audio_preprocess"]["volume_normalize"] = True
 
     def reload_if_changed(self) -> bool:
         """
@@ -264,6 +287,8 @@ class ConfigManager:
                 # 内部設定を更新（ネストした辞書のカスタムキーを失わないよう deep merge する。
                 # 浅い update だと default_api_models 等の手書き追加キーが丸ごと消える）
                 self.config = _deep_merge(self.config, new_config)
+                # 常時 ON 固定の項目はファイルにも True で書き戻す（UI から撤去済み）
+                self._force_always_on(self.config)
 
                 # ファイルに書き込み
                 with open(self.config_path, "w", encoding="utf-8") as f:

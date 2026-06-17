@@ -751,60 +751,11 @@ class SettingsWindow(QWidget):
 
         layout.addWidget(card)
 
-        # --- カード: 音声処理（VAD・音量正規化） ---
+        # --- カード: 動作（自動 Enter・ハンズフリー） ---
+        # VAD / VAD 最小無音時間 / 長文分割 / 音量正規化 / 録音 HUD / リアルタイム
+        # ストリーミングは常時 ON に固定したため設定 UI から撤去した
+        # （常時 ON の強制は config_manager._load_config 側で行う）
         card, cl = _make_card()
-
-        self._vad_check = self._make_toggle()
-        _add_row(cl, "無音を自動スキップ（VAD）", self._vad_check)
-
-        # VAD 最小無音時間（Windows 版固有の調整項目）
-        self._vad_silence_spin = QSpinBox()
-        self._vad_silence_spin.setRange(100, 5000)
-        self._vad_silence_spin.setSingleStep(50)
-        self._vad_silence_spin.setSuffix(" ms")
-        self._vad_silence_spin.setMinimumWidth(110)
-        _add_row(cl, "VAD 最小無音時間", self._vad_silence_spin)
-
-        # 長文の分割並列送信（既定オン）。長い録音を無音区間で区切り API へ並列送信する
-        self._split_parallel_check = self._make_toggle()
-        _add_row(cl, "長文を分割して並列送信", self._split_parallel_check)
-
-        # 音声前処理（API送信前）：Peak+RMS ハイブリッド音量正規化（Windows 版固有）
-        # ノイズ対策は API モデル側に任せ、ここでは小音量を持ち上げて音割れを防ぐのみ
-        self._volume_normalize_check = self._make_toggle()
-        _add_row(cl, "音量正規化（Peak+RMS）", self._volume_normalize_check)
-
-        layout.addWidget(card)
-
-        # --- カード: 表示と動作（HUD・ストリーミング・自動 Enter） ---
-        card, cl = _make_card()
-
-        # 録音中 HUD（画面下部中央の小型ピル）
-        self._hud_check = self._make_toggle()
-        _add_row(cl, "録音中に HUD を表示", self._hud_check)
-
-        # リアルタイムストリーミング（Deepgram のホットキーで有効）
-        self._streaming_check = self._make_toggle()
-        self._streaming_check.toggled.connect(
-            lambda _=False: self._refresh_streaming_status()
-        )
-        streaming_block = QWidget()
-        streaming_layout = QVBoxLayout(streaming_block)
-        streaming_layout.setContentsMargins(0, 0, 0, 0)
-        streaming_layout.setSpacing(6)
-        streaming_head = QHBoxLayout()
-        streaming_head.setSpacing(8)
-        streaming_head.addWidget(QLabel("リアルタイムストリーミング"))
-        streaming_head.addStretch()
-        streaming_head.addWidget(self._streaming_check)
-        streaming_layout.addLayout(streaming_head)
-        # 動かない構成（キー無し / websockets 未導入 / 対象バックエンド無し）の理由表示。
-        # 実行時は警告ログだけで REST へ無言フォールバックするため、ここで可視化しないと
-        # ユーザーには「表示されない」のがバグなのか設定なのか判断できない
-        self._streaming_status = _make_caption("")
-        self._streaming_status.setVisible(False)
-        streaming_layout.addWidget(self._streaming_status)
-        _add_block(cl, streaming_block)
 
         # Auto Enter 遅延（ダブルタップ時、テキスト挿入後のEnter押下までの待機時間）
         # 一部アプリが即時Enterに反応しないため、ユーザー側で調整可能にする
@@ -1173,56 +1124,6 @@ class SettingsWindow(QWidget):
             status_label.setText("未設定")
             status_label.setStyleSheet(MacTheme.status_muted_style())
 
-    def _refresh_streaming_status(self) -> None:
-        """
-        リアルタイムストリーミングを阻害する要因を診断して表示する。
-
-        実行時のフォールバック（streaming_transcriber.start() が False）は
-        警告ログにしか残らないため、設定画面で同じ判定を行い理由を見せる。
-        判定はチェックボックスが ON のときだけ行い、問題なければ何も出さない。
-        """
-        label = getattr(self, "_streaming_status", None)
-        if label is None:
-            return
-        if not self._streaming_check.isChecked():
-            label.setVisible(False)
-            return
-
-        reason = ""
-        # streaming_transcriber.start() と同じ順序で判定する
-        try:
-            ws_available = importlib.util.find_spec("websockets.sync.client") is not None
-        except Exception:
-            ws_available = False
-        if not ws_available:
-            reason = (
-                "websockets ライブラリが未導入のため動作しません"
-                "（pip install -r requirements.txt を実行してください）"
-            )
-        if not reason and not (
-            secrets.get_api_key(secrets.SERVICE_DEEPGRAM)
-            or os.environ.get("DEEPGRAM_API_KEY")
-        ):
-            reason = "「リアルタイム」の API キーが未設定のため動作しません（API キーページで設定）"
-        if not reason:
-            backends = {
-                getattr(self, f"_backend{sid}_combo").currentData()
-                for sid in (1, 2)
-                if getattr(self, f"_backend{sid}_combo", None) is not None
-            }
-            if TranscriptionBackend.DEEPGRAM.value not in backends:
-                reason = (
-                    "どちらのホットキーもバックエンドが「リアルタイム」でないため使われません"
-                    "（ホットキー 1 / 2 ページで「リアルタイム」を選択）"
-                )
-
-        if reason:
-            label.setText("⚠ " + reason)
-            label.setStyleSheet(MacTheme.status_warn_style(self._is_dark_mode))
-            label.setVisible(True)
-        else:
-            label.setVisible(False)
-
     def _save_api_key(self, service: str) -> None:
         """
         入力欄の API キーを資格情報ストアに保存する。
@@ -1245,15 +1146,12 @@ class SettingsWindow(QWidget):
 
         key_input.clear()
         self._refresh_api_key_status(service)
-        # Deepgram キーの登録でストリーミングが解禁される（逆も然り）ため診断を更新
-        self._refresh_streaming_status()
 
     def _delete_api_key(self, service: str) -> None:
         """資格情報ストアに保存された API キーを削除する。"""
         secrets.delete_api_key(service)
         self._api_key_inputs[service].clear()
         self._refresh_api_key_status(service)
-        self._refresh_streaming_status()
 
     # ------------------------------------------------------------------
     # 入力デバイス
@@ -1368,22 +1266,13 @@ class SettingsWindow(QWidget):
                 bool(hotkey_config.get("format_enabled", False))
             )
 
-        # 一般 - その他
-        self._streaming_check.setChecked(config.get("streaming_enabled", True))
-        self._hud_check.setChecked(config.get("hud_enabled", True))
+        # 一般 - その他（VAD/分割/HUD/ストリーミング/音量正規化は常時ON固定のため UI 無し）
         # 自動起動はレジストリの実状態を反映（settings.yaml には持たない）
         self._autostart_check.setChecked(autostart.is_enabled())
-        self._vad_check.setChecked(config.get("vad_filter", True))
-        self._vad_silence_spin.setValue(config.get("vad_min_silence_duration_ms", 500))
-        self._split_parallel_check.setChecked(config.get("split_parallel_enabled", True))
         self._handsfree_input.setText(config.get("handsfree_key", ""))
         self._auto_enter_delay_slider.setValue(config.get("auto_enter_delay_ms", 50))
         self._populate_input_devices()
         self._set_input_device_selection(config.get("audio_input_device", "default"))
-
-        # 音声前処理（音量正規化のみ）
-        preprocess_cfg = config.get("audio_preprocess", {}) or {}
-        self._volume_normalize_check.setChecked(bool(preprocess_cfg.get("volume_normalize", True)))
 
         # LLM テキスト整形モデル（両ホットキー共通）。保存値がリスト外でも選択を保持して表示する
         saved_model = config.get("format_model", "llama-3.1-8b-instant")
@@ -1403,9 +1292,6 @@ class SettingsWindow(QWidget):
         # API キー保存状況
         for service in _BACKEND_TO_SERVICE.values():
             self._refresh_api_key_status(service)
-
-        # ストリーミングの阻害要因診断（チェック・バックエンド・キーが揃ってから行う）
-        self._refresh_streaming_status()
 
     def _on_slot_backend_changed(self, slot_id: int) -> None:
         """
@@ -1434,9 +1320,6 @@ class SettingsWindow(QWidget):
             model_combo.setCurrentIndex(models.index(saved_model))
         elif models:
             model_combo.setCurrentIndex(0)
-
-        # Deepgram の選択有無でストリーミング診断が変わる
-        self._refresh_streaming_status()
 
     def _toggle_theme(self) -> None:
         """ダーク/ライトモードを切り替える。"""
@@ -1468,23 +1351,14 @@ class SettingsWindow(QWidget):
         new_config = {
             # グローバル設定
             "language": self._lang_combo.currentData() or "",
-            "vad_filter": self._vad_check.isChecked(),
-            "vad_min_silence_duration_ms": self._vad_silence_spin.value(),
             "audio_input_device": selected_input_device,
             "auto_enter_delay_ms": self._auto_enter_delay_slider.value(),
 
-            # リアルタイムストリーミング / HUD 表示
-            "streaming_enabled": self._streaming_check.isChecked(),
-            "hud_enabled": self._hud_check.isChecked(),
-
-            # ハンズフリー切替キー / 長文の分割並列送信
+            # ハンズフリー切替キー
             "handsfree_key": self._handsfree_input.text(),
-            "split_parallel_enabled": self._split_parallel_check.isChecked(),
-
-            # 音声前処理（音量正規化のみ）
-            "audio_preprocess": {
-                "volume_normalize": self._volume_normalize_check.isChecked(),
-            },
+            # vad_filter / vad_min_silence_duration_ms / split_parallel_enabled /
+            # streaming_enabled / hud_enabled / audio_preprocess.volume_normalize は
+            # 常時 ON 固定（UI 撤去）。ここでは保存せず config_manager 側で True を強制する
 
             # LLM テキスト整形に使う Groq モデル（両ホットキー共通。値は userData の識別子）
             "format_model": self._format_model_combo.currentData() or "llama-3.1-8b-instant",

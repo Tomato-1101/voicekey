@@ -4,6 +4,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **進行中の長期作業がある場合はまず `HANDOFF.md` を読む**（ベータ配布計画の現在地・恒久要件が書いてある）。
 
+## 最重要: 2 ブランチ運用（main=自分用 / release=製品版）— 絶対に混ぜない（2026-06-17 ユーザー指示）
+
+voicekey は **2 ブランチに分離**して運用する。**この 2 ブランチは絶対に混ざらないように扱う**。
+
+- **`main` = 自分用**: 開発者が自分の API キーで毎日使う版（既定ブランチ）。
+  - 4 プロバイダーすべてを**実プロバイダー名で表示**（OpenAI / Groq / ElevenLabs / Deepgram）＋**モデル名も表示・選択可**。テキスト整形（Groq）はモデル・プロンプトともフル設定可。API キータブ表示。
+- **`release` = 製品版**: 顧客配布版（配布タグ `v*` はこのブランチで打つ）。
+  - 文字起こしは **Deepgram=「高速リアルタイム」/ ElevenLabs=「正確性」の 2 択のみ**（OpenAI 削除・Groq は文字起こし選択肢から除外）。
+  - **モデル非選択**（Deepgram=nova-3 / ElevenLabs=scribe_v1 固定）。**Groq 整形を裏で固定実行**（モデル=llama-3.1-8b-instant 固定・モデル/プロンプト選択 UI 撤去・オンオフトグルのみ残す・既定 ON）。配布ビルドは API キータブ非表示＋埋め込みキー。
+
+**ブランチ運用ルール（厳守）:**
+- **どのブランチに変更を入れるかは毎回ユーザーが指定する。指定が無ければ必ず `AskUserQuestion` で聞く**（main / release / 両方）。推測でどちらかに入れない。
+- 2 ブランチを勝手に荒らさない・混ぜない。一方の変更を勝手にもう一方へ持ち込まない（指示なき cherry-pick / merge 禁止）。
+- 両 OS 同時実装（下節）は**同一ブランチ内**で行う。リリース配布も対象ブランチ（release）を取り違えない。
+
 ## 最重要: コードを変更したら README も更新する（2026-06-14 ユーザー指示）
 
 `README.md` は**ユーザー向けのドキュメント**。機能・使い方・設定項目・対応プラットフォーム・配布状態など、
@@ -20,7 +35,8 @@ Mac（`macos/` Swift）と Windows（`src/` Python）の両方を同じ作業で
 - Mac はビルド＆再起動で、Windows は `py_compile`＋`unittest` で各々検証してから報告。
 - Windows 固有（win32・レジストリ自動起動）/ Mac 固有（launchd・SMAppService・CGEventTap）でしか存在しない要素だけ片方で完結してよい。
 - リリース配布も常に両 OS 同期（バージョンは Claude が semver で決める。範囲・版番号はユーザーに聞かない）。
-- 提供元名は伏せ、バックエンドは特徴名で表示する（`openai`→高精度 / `groq`→高速 / `elevenlabs`→多言語 / `deepgram`→リアルタイム。保存値は不変。API キー欄のみ提供元名）。
+- バックエンド表示名は**ブランチで異なる**（上節）。`main`=実プロバイダー名、`release`=特徴名 2 択（高速リアルタイム / 正確性）。
+- **VAD・長文分割・ストリーミング・録音 HUD は両ブランチとも常時 ON 固定**（設定 UI から撤去済み）。Mac は `ConfigStore` init で true 固定、Windows は `config_manager._force_always_on` が読込・保存時に矯正する。
 
 ## 最重要: Mac 版（macos/ ディレクトリ・Swift）の作業ルール
 

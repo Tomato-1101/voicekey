@@ -98,14 +98,6 @@ private struct GeneralSettingsTab: View {
                     .font(.caption)
                     .foregroundStyle(isDetectingMic ? Color.accentColor : .secondary)
             }
-            Toggle("無音を自動スキップ（VAD）", isOn: $config.vadEnabled)
-
-            Toggle("長文を分割して並列送信", isOn: $config.splitParallelEnabled)
-
-            Toggle("録音中に HUD を表示", isOn: $config.hudEnabled)
-
-            Toggle("リアルタイムストリーミング", isOn: $config.streamingEnabled)
-
             LabeledContent("自動 Enter の遅延") {
                 HStack {
                     TextField(
