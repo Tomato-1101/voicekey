@@ -55,6 +55,7 @@ from .core import text_formatter
 from .core.audio_preprocess import preprocess as preprocess_audio
 from .core.text_utils import join_segments
 from .core.history import HistoryStore
+from .core.stats import StatsStore
 from .platform import get_platform_adapter
 from .ui import Hud, SettingsWindow, SystemTray
 from .utils.logger import get_logger
@@ -185,12 +186,16 @@ class VoicekeyApp(QObject):
         # --- 音声入力履歴（貼り付けたテキストを最大 10 件保持。設定の「履歴」タブで再コピー可） ---
         self._history = HistoryStore()
 
+        # --- 使用実績（節約時間・レベル・連続日数。設定の「実績」タブで表示。貼り付け後に集計する） ---
+        self._stats = StatsStore()
+
         # --- UI ---
         # 設定ウィンドウには本体と同じ ConfigManager を渡す（二重生成を避け保存値を即共有）。
         # 保存完了シグナルで設定変更をその場で適用する（mtime ポーリングの遅延を待たない）
         self._settings_window = SettingsWindow(
             platform_adapter=self._platform,
             history=self._history,
+            stats=self._stats,
             config_manager=self._config,
         )
         self._settings_window.settings_saved.connect(self._apply_config_changes)
@@ -612,6 +617,8 @@ class VoicekeyApp(QObject):
                 logger.info(f"ストリーミング確定: {len(streamed)} 文字 ({total_ms:.0f}ms)")
                 # 貼り付け前の LLM テキスト整形（失敗時は原文のまま）
                 streamed = self._maybe_format(streamed, task.slot_id)
+                # 実績を集計（貼り付け後のローカル処理なので遅延に影響しない）
+                self._record_stats(streamed, task.audio_data)
                 self._insert_and_enter(streamed, task.auto_enter)
                 return
             # 確定が空（接続失敗・無音など）→ 取得済みバッファで REST にフォールバック
@@ -681,6 +688,9 @@ class VoicekeyApp(QObject):
         # 貼り付け前の LLM テキスト整形（失敗時は原文のまま）
         text = self._maybe_format(text, task.slot_id)
 
+        # 実績を集計（貼り付け後のローカル処理なので遅延に影響しない）
+        self._record_stats(text, task.audio_data)
+
         # テキスト挿入（ワーカースレッド上で実行し UI スレッドを塞がない）
         self._insert_and_enter(text, task.auto_enter)
 
@@ -737,6 +747,17 @@ class VoicekeyApp(QObject):
             self._config.get("format_model", "llama-3.1-8b-instant"),
             prompt=self._config.get("format_auto_prompt", ""),
         )
+
+    def _record_stats(self, text: str, audio) -> None:
+        """音声入力 1 回分を実績に記録する（録音長は生の録音バッファ長から算出）。"""
+        if not text:
+            return
+        try:
+            recording_seconds = len(audio) / SAMPLE_RATE
+            self._stats.record_session(len(text), recording_seconds)
+        except Exception as e:
+            # 実績集計の失敗で音声入力本体を止めない（あくまで付随機能）
+            logger.warning(f"実績の集計に失敗: {e}")
 
     def _insert_and_enter(self, text: str, auto_enter: bool) -> None:
         """テキストを貼り付け、ダブルタップ時は遅延後に Enter を送る（ワーカースレッド上）。"""

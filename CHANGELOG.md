@@ -4,6 +4,28 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased]
 
+## [Mac 1.2.0 / Windows 1.2.0] - 2026-06-18
+
+### Added
+- **使用実績（統計＋ゲーミフィケーション）機能を追加**（Mac / Windows 両方・両ブランチ共通）。
+  音声入力を使うほど育つ「実績」を設定ウィンドウの新タブ「実績」に表示する。
+  - **表示項目**: レベルと経験値（累計文字数 = XP）＋次レベルまでの進捗バー、推定節約時間
+    （同じ文章をキーボードで打つ場合との差。タイピング 4.0 字/秒を控えめに仮定し、過大表示を避ける。
+    短い入力でマイナスになる分は 0 に丸める）、累計文字数、音声入力した回数、連続利用日数（最長記録付き）。
+  - **「実績をリセット」ボタン**（確認ダイアログ付き）で全カウントを 0 に戻せる。
+  - **遅延ゼロ設計**: 集計は貼り付け確定「後」のローカル処理のみで、音声 → テキストの経路には
+    一切待ちを足さない（ユーザー指示の最重要制約を順守）。
+  - **永続化**: アプリ再起動後も残るよう小さな JSON（`stats.json`）に保存。
+    Mac は `~/Library/Application Support/voicekey/stats.json`、Windows は `settings.yaml` と同じディレクトリ。
+  - レベル/しきい値/連続日数/節約時間の計算式は Mac（Swift）と Windows（Python）で一致させた。
+  - **Technical Details**:
+    - Mac: `Core/StatsStore.swift`（新規・`StatsData` Codable ＋レベル計算）、`AppController.swift` の
+      確定出力 2 箇所（ストリーミング / REST）で `stats.recordSession(...)` を呼ぶ、
+      `UI/SettingsView.swift` に `StatsTab`（tag 3）を追加、`VoicekeyApp.swift` で `stats` を受け渡し。
+    - Windows: `core/stats.py`（新規・`StatsStore` ＋ `threshold()` / `level_for_xp()`）、`app.py` の
+      `_record_stats()` を文字起こし 2 経路で呼ぶ、`ui/settings_window.py` に「実績」ページ
+      （サイドバー index 3）を追加。`tests/test_stats.py` を新規追加（計算式・永続化・復帰の 14 ケース）。
+
 ## [Mac 1.1.0 / Windows 1.1.0] - 2026-06-18
 
 ### Changed

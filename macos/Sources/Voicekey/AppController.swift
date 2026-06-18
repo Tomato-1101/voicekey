@@ -31,6 +31,8 @@ final class AppController: ObservableObject {
     let hud = HudController()
     /// 音声入力履歴（貼り付けたテキストを最大 10 件保持。設定の「履歴」タブで再コピー可）
     let history = HistoryStore()
+    /// 使用実績（節約時間・レベル・連続日数。設定の「実績」タブで表示。貼り付け後に集計する）
+    let stats = StatsStore()
 
     private let recorder = AudioRecorder()
     private let hotkeys = HotkeyMonitor()
@@ -360,6 +362,11 @@ final class AppController: ObservableObject {
                         : streamed
                     // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する
                     history.add(output)
+                    // 実績を集計（貼り付け後のローカル処理なので遅延に影響しない）
+                    stats.recordSession(
+                        characters: output.count,
+                        recordingSeconds: Double(samples.count) / AudioRecorder.sampleRate
+                    )
                     await Paster.paste(output)
                     if autoEnter {
                         try? await Task.sleep(for: .milliseconds(max(0, delayMs)))
@@ -415,6 +422,8 @@ final class AppController: ObservableObject {
                 : text
             // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する
             history.add(output)
+            // 実績を集計（貼り付け後のローカル処理なので遅延に影響しない）
+            stats.recordSession(characters: output.count, recordingSeconds: duration)
             await Paster.paste(output)
             if autoEnter {
                 try? await Task.sleep(for: .milliseconds(max(0, delayMs)))

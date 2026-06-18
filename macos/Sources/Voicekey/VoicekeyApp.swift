@@ -187,6 +187,7 @@ final class StatusItemController: NSObject {
                 rootView: SettingsView(
                     config: controller.config,
                     history: controller.history,
+                    stats: controller.stats,
                     initialTab: initialTab
                 )
             )

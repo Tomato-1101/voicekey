@@ -9,11 +9,13 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var config: ConfigStore
     @ObservedObject var history: HistoryStore
+    @ObservedObject var stats: StatsStore
     @State private var selectedTab: Int
 
-    init(config: ConfigStore, history: HistoryStore, initialTab: Int = 0) {
+    init(config: ConfigStore, history: HistoryStore, stats: StatsStore, initialTab: Int = 0) {
         self.config = config
         self.history = history
+        self.stats = stats
         _selectedTab = State(initialValue: initialTab)
     }
 
@@ -28,14 +30,17 @@ struct SettingsView: View {
             SlotSettingsTab(title: "ホットキー 2", slot: $config.slot2)
                 .tabItem { Label("ホットキー 2", systemImage: "2.circle") }
                 .tag(2)
+            StatsTab(stats: stats)
+                .tabItem { Label("実績", systemImage: "trophy") }
+                .tag(3)
             HistoryTab(history: history)
                 .tabItem { Label("履歴", systemImage: "clock.arrow.circlepath") }
-                .tag(3)
+                .tag(4)
             // 配布ビルドは埋め込みキーで動くため、API キータブは出さない（テスターの混乱防止）
             if !EmbeddedKeys.isDist {
                 ApiKeysTab()
                     .tabItem { Label("API キー", systemImage: "key") }
-                    .tag(4)
+                    .tag(5)
             }
         }
         // fixedSize() だと NSHostingController 上で高さが潰れて
@@ -219,6 +224,75 @@ private struct SlotSettingsTab: View {
         }
         .formStyle(.grouped)
         .padding(.vertical, 8)
+    }
+}
+
+// MARK: - 実績
+
+/// 使用実績タブ。
+/// 使うほど貯まるレベル・推定節約時間・連続利用日数を表示し、継続利用の動機づけにする。
+/// すべて貼り付け後のローカル集計なので、音声入力の速度には影響しない。
+private struct StatsTab: View {
+    @ObservedObject var stats: StatsStore
+    @State private var confirmingReset = false
+
+    var body: some View {
+        Form {
+            // レベルと次レベルまでの進捗
+            Section {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("レベル \(stats.level)")
+                        .font(.title2).bold()
+                    Spacer()
+                    Text("経験値 \(stats.xp)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                ProgressView(value: stats.levelProgress)
+                Text("あと \(stats.xpToNextLevel) 文字でレベル \(stats.level + 1)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            // 累計の実績
+            Section {
+                LabeledContent("推定節約時間", value: formattedSaved)
+                LabeledContent("累計文字数", value: "\(stats.data.totalCharacters) 文字")
+                LabeledContent("音声入力した回数", value: "\(stats.data.totalSessions) 回")
+                LabeledContent("連続利用日数", value: streakText)
+            }
+            Text("「推定節約時間」は、同じ文章をキーボードで打つ場合と比べて短縮できた時間の目安です（タイピングより遅くなる短い入力は 0 として数えます）。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Button("実績をリセット", role: .destructive) {
+                confirmingReset = true
+            }
+            .confirmationDialog("実績をリセットしますか？", isPresented: $confirmingReset) {
+                Button("リセット", role: .destructive) { stats.reset() }
+                Button("キャンセル", role: .cancel) {}
+            } message: {
+                Text("レベル・節約時間・連続日数がすべて 0 に戻ります。")
+            }
+        }
+        .formStyle(.grouped)
+        .padding(.vertical, 8)
+    }
+
+    /// 累計節約時間を「X 時間 Y 分」等に整形する
+    private var formattedSaved: String {
+        let total = Int(stats.data.savedSeconds.rounded())
+        if total >= 3600 {
+            return "\(total / 3600) 時間 \((total % 3600) / 60) 分"
+        }
+        if total >= 60 {
+            return "\(total / 60) 分 \(total % 60) 秒"
+        }
+        return "\(total) 秒"
+    }
+
+    private var streakText: String {
+        "\(stats.data.currentStreak) 日（最長 \(stats.data.longestStreak) 日）"
     }
 }
 

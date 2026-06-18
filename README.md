@@ -23,8 +23,8 @@
 
 | プラットフォーム | 最新版 | 配布状態 | 入手先 | 備考 |
 |---|---|---|---|---|
-| 🍎 macOS | **v1.1.0** | ✅ **配布中** | [voicekey.vercel.app](https://voicekey.vercel.app) | Apple Development 署名。初回起動のみ Gatekeeper 回避手順あり（サイト／DMG に同梱）。自動更新（Sparkle）対応 |
-| 🪟 Windows | **v1.1.0** | ✅ **配布中** | [voicekey.vercel.app](https://voicekey.vercel.app) | GitHub Actions（`windows-build.yml`）でキー埋め込みビルド。インストーラ（約 268MB）は容量が大きいため公開バイナリ専用リポ（`voicekey-releases`・ソース非公開）の GitHub Releases でホスト。未署名のため初回のみ SmartScreen 回避手順あり。自動更新対応。インストール時にデスクトップ／スタートメニューへショートカット作成 |
+| 🍎 macOS | **v1.2.0** | ✅ **配布中** | [voicekey.vercel.app](https://voicekey.vercel.app) | Apple Development 署名。初回起動のみ Gatekeeper 回避手順あり（サイト／DMG に同梱）。自動更新（Sparkle）対応 |
+| 🪟 Windows | **v1.2.0** | ✅ **配布中** | [voicekey.vercel.app](https://voicekey.vercel.app) | GitHub Actions（`windows-build.yml`）でキー埋め込みビルド。インストーラ（約 268MB）は容量が大きいため公開バイナリ専用リポ（`voicekey-releases`・ソース非公開）の GitHub Releases でホスト。未署名のため初回のみ SmartScreen 回避手順あり。自動更新対応。インストール時にデスクトップ／スタートメニューへショートカット作成 |
 
 **配布の仕組み（テスター向け）**: ダウンロードページは [voicekey.vercel.app](https://voicekey.vercel.app)。Mac の DMG は同サイトから、Windows インストーラは容量が大きいため GitHub Releases（公開バイナリ専用リポ。**ソースは含みません**）から入手します。配布版（DIST ビルド）は API キーがビルド時に埋め込まれており、**テスターはキー入力不要でそのまま使えます**。
 
@@ -72,6 +72,8 @@
 - **🎯 ダブルタップ Auto-Enter**: 連続入力後に自動で Enter（チャットアプリ向け）
 - **🤚 ハンズフリー切替キー**: 切替キー＋ホットキーで「押して開始・もう一度で停止」のトグル録音に
 - **⌨️ JIS（日本語）配列対応**: 記号キーや ¥ / かな / 英数 / 無変換 / 変換 などもホットキーに使える
+- **🏆 使用実績（統計＋レベル）**: 設定の「実績」タブで、使うほど貯まるレベル・経験値と、
+  タイピングと比べた**推定節約時間**・累計文字数・連続利用日数を確認できる（集計は貼り付け後のローカル処理のみ＝音声入力に待ちを足しません）
 
 ---
 

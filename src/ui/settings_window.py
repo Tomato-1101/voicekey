@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSlider,
@@ -45,6 +46,7 @@ from PySide6.QtWidgets import (
 from ..config import ConfigManager, HotkeyMode, TranscriptionBackend
 from ..core.audio_recorder import AudioRecorder
 from ..core.history import MAX_ITEMS as HISTORY_MAX_ITEMS, HistoryStore
+from ..core.stats import StatsStore
 from ..platform import PlatformAdapter, get_platform_adapter
 from ..utils import autostart, secrets
 from .styles import MacTheme
@@ -517,6 +519,7 @@ class SettingsWindow(QWidget):
         self,
         platform_adapter: Optional[PlatformAdapter] = None,
         history: Optional[HistoryStore] = None,
+        stats: Optional[StatsStore] = None,
         config_manager: Optional[ConfigManager] = None,
     ) -> None:
         """
@@ -525,11 +528,13 @@ class SettingsWindow(QWidget):
         Args:
             platform_adapter: プラットフォーム依存処理のアダプタ
             history: 音声入力履歴ストア（「履歴」タブで表示・再コピーする）
+            stats: 使用実績ストア（「実績」タブで表示する）
             config_manager: アプリ本体と共有する設定マネージャ（None なら単体生成）
         """
         super().__init__()
         self._platform = platform_adapter or get_platform_adapter()
         self._history = history
+        self._stats = stats
 
         # DIST ビルドでは API キーページを作らないため、ページ生成前に空で初期化しておく
         # （_load_current_settings が無条件に _refresh_api_key_status を呼ぶ）
@@ -608,15 +613,17 @@ class SettingsWindow(QWidget):
         hh.addWidget(self._theme_toggle)
         rv.addWidget(header)
 
-        # 5 ページ（Mac 版 SettingsView と同じ構成・順序）
+        # 6 ページ（Mac 版 SettingsView と同じ構成・順序）
         self._pages = QStackedWidget()
         page_defs = [
             ("一般", self._create_general_page()),
             ("ホットキー 1", self._create_slot_page(1)),
             ("ホットキー 2", self._create_slot_page(2)),
+            ("実績", self._create_stats_page()),
             ("履歴", self._create_history_page()),
         ]
-        self._history_page_index = 3
+        self._stats_page_index = 3
+        self._history_page_index = 4
         # 配布ビルドは埋め込みキーで動くため、API キーページは出さない（テスターの混乱防止）
         if not secrets.is_dist_build():
             page_defs.append(("API キー", self._create_api_keys_page()))
@@ -871,6 +878,114 @@ class SettingsWindow(QWidget):
     # 履歴ページ（Mac 版 HistoryTab と同構成。クリックでクリップボードにコピー）
     # ------------------------------------------------------------------
 
+    def _create_stats_page(self) -> QWidget:
+        """実績ページを作成する（レベル・推定節約時間・連続日数。Mac 版 StatsTab と同項目）。"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(10)
+        layout.setContentsMargins(24, 8, 24, 24)
+
+        # --- レベルカード（レベル + 経験値 + 次レベルまでの進捗バー） ---
+        level_card, level_layout = _make_card()
+        head = QWidget()
+        head_h = QHBoxLayout(head)
+        head_h.setContentsMargins(_CARD_PAD_X, 9, _CARD_PAD_X, 4)
+        self._stats_level_label = QLabel("レベル 1")
+        # レベルだけ少し大きく見せる（色はテーマの QSS を継承）
+        self._stats_level_label.setStyleSheet("font-size: 20px; font-weight: 600;")
+        self._stats_xp_label = QLabel("経験値 0")
+        self._stats_xp_label.setObjectName("caption")
+        head_h.addWidget(self._stats_level_label)
+        head_h.addStretch()
+        head_h.addWidget(self._stats_xp_label)
+        level_layout.addWidget(head)
+
+        bar_wrap = QWidget()
+        bar_v = QVBoxLayout(bar_wrap)
+        bar_v.setContentsMargins(_CARD_PAD_X, 0, _CARD_PAD_X, 10)
+        bar_v.setSpacing(5)
+        self._stats_progress = QProgressBar()
+        self._stats_progress.setRange(0, 100)
+        self._stats_progress.setTextVisible(False)
+        self._stats_progress.setFixedHeight(8)
+        self._stats_next_label = _make_caption("")
+        bar_v.addWidget(self._stats_progress)
+        bar_v.addWidget(self._stats_next_label)
+        level_layout.addWidget(bar_wrap)
+        layout.addWidget(level_card)
+
+        # --- 累計カード ---
+        stats_card, stats_layout = _make_card()
+        self._stats_saved_value = QLabel("0 秒")
+        self._stats_chars_value = QLabel("0 文字")
+        self._stats_count_value = QLabel("0 回")
+        self._stats_streak_value = QLabel("0 日")
+        _add_row(stats_layout, "推定節約時間", self._stats_saved_value)
+        _add_row(stats_layout, "累計文字数", self._stats_chars_value)
+        _add_row(stats_layout, "音声入力した回数", self._stats_count_value)
+        _add_row(stats_layout, "連続利用日数", self._stats_streak_value)
+        layout.addWidget(stats_card)
+
+        layout.addWidget(_make_caption(
+            "「推定節約時間」は、同じ文章をキーボードで打つ場合と比べて短縮できた時間の目安です"
+            "（タイピングより遅くなる短い入力は 0 として数えます）。実績はこの PC の中だけに保存されます。"
+        ))
+        layout.addStretch()
+
+        footer = QHBoxLayout()
+        footer.addStretch()
+        reset_btn = QPushButton("実績をリセット")
+        reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        reset_btn.clicked.connect(self._reset_stats)
+        footer.addWidget(reset_btn)
+        layout.addLayout(footer)
+
+        self._refresh_stats()
+        return self._wrap_scroll(page)
+
+    def _refresh_stats(self) -> None:
+        """実績表示をストアの現在値で更新する。"""
+        if self._stats is None:
+            return
+        d = self._stats.snapshot()
+        self._stats_level_label.setText(f"レベル {d['level']}")
+        self._stats_xp_label.setText(f"経験値 {d['xp']}")
+        self._stats_progress.setValue(int(round(d["level_progress"] * 100)))
+        self._stats_next_label.setText(
+            f"あと {d['xp_to_next_level']} 文字でレベル {d['level'] + 1}"
+        )
+        self._stats_saved_value.setText(self._format_saved(d["saved_seconds"]))
+        self._stats_chars_value.setText(f"{d['total_characters']} 文字")
+        self._stats_count_value.setText(f"{d['total_sessions']} 回")
+        self._stats_streak_value.setText(
+            f"{d['current_streak']} 日（最長 {d['longest_streak']} 日）"
+        )
+
+    @staticmethod
+    def _format_saved(seconds: float) -> str:
+        """累計節約秒数を「X 時間 Y 分」等に整形する（Mac 版 formattedSaved と同じ規則）。"""
+        total = int(round(seconds))
+        if total >= 3600:
+            return f"{total // 3600} 時間 {(total % 3600) // 60} 分"
+        if total >= 60:
+            return f"{total // 60} 分 {total % 60} 秒"
+        return f"{total} 秒"
+
+    def _reset_stats(self) -> None:
+        """確認の上で実績をリセットする（不可逆なので確認ダイアログを挟む）。"""
+        if self._stats is None:
+            return
+        reply = QMessageBox.question(
+            self,
+            "実績をリセット",
+            "レベル・節約時間・連続日数がすべて 0 に戻ります。よろしいですか？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._stats.reset()
+            self._refresh_stats()
+
     def _create_history_page(self) -> QWidget:
         """履歴ページを作成する（直近の音声入力をクリックで再コピー）。"""
         page = QWidget()
@@ -913,9 +1028,11 @@ class SettingsWindow(QWidget):
             return
         self._pages.setCurrentIndex(row)
         self._page_title.setText(self._nav.item(row).text())
-        # ウィンドウを開いたまま音声入力しても、履歴ページを開いた時点で最新になるように
+        # ウィンドウを開いたまま音声入力しても、各ページを開いた時点で最新になるように
         if row == self._history_page_index:
             self._refresh_history()
+        elif row == self._stats_page_index:
+            self._refresh_stats()
 
     def _refresh_history(self) -> None:
         """履歴一覧をストアの現在の内容で作り直す。"""
@@ -957,9 +1074,10 @@ class SettingsWindow(QWidget):
         self._refresh_history()
 
     def showEvent(self, event) -> None:
-        """ウィンドウを開くたびに履歴一覧を最新化する。"""
+        """ウィンドウを開くたびに履歴・実績を最新化する。"""
         super().showEvent(event)
         self._refresh_history()
+        self._refresh_stats()
 
     def _create_api_keys_page(self) -> QWidget:
         """API キーページを作成する（製品版で使う 3 バックエンド分の保存・削除を 1 カードに収める）。"""
