@@ -1,0 +1,107 @@
+# OVERVIEW — voicekey 全体地図
+
+プロジェクトが大きくなっても全体像を一目で掴むための「地図」。
+**最初にここを読めば、何がどこにあるか・どのドキュメントを見ればいいかが分かる**ようにしてある。
+詳細は重複させず、各専門ドキュメント（README / CHANGELOG / HANDOFF / CLAUDE.md）へのリンクで示す。
+
+> このファイルは `main` / `release` 両ブランチに置き、**内容は同一**（両ブランチの違いも本文内に書く）。
+> 片方だけ更新してドリフトさせない。機能・アーキを変えたら同じコミットで該当行を直す（末尾「更新ルール」）。
+
+---
+
+## 1. voicekey とは
+
+ホットキーを押している間だけ音声を録音し、文字起こし結果を**いま使っているアプリのカーソル位置へ自動入力**する常駐型音声入力ツール。
+Mac はメニューバー常駐、Windows はタスクトレイ常駐。クラウド API で文字起こしする（ローカル GPU 版は Windows の歴史的経緯で残るが、配布の主軸は API）。
+
+## 2. 構成（プラットフォーム二本立て）
+
+| | Mac 版 | Windows 版 |
+|---|---|---|
+| 言語/UI | Swift（AppKit メニューバー + SwiftUI 設定画面） | Python（PySide6 / Qt） |
+| 置き場所 | `macos/Sources/Voicekey/` | `src/` |
+| 設定の保存先 | `UserDefaults`（`ConfigStore`） | `settings.yaml`（`ConfigManager`）+ `QSettings`（フラグ） |
+| ビルド | `macos/scripts/build_app.sh` / 配布は `build_dmg.sh` | `pyinstaller voicekey.spec` / 配布は GitHub Actions |
+
+同じ機能でも別コードベース。**UI 文言・表示名・設定項目・機能挙動など両 OS に同等に存在する要素を変えるときは、両方を同じコミットで直す**（OS 固有 API でしか存在しないものだけ片方で完結）。詳細は `CLAUDE.md` / `AGENTS.md`。
+
+## 3. 2 ブランチの違い（main = 自分用 / release = 製品版）
+
+**この 2 ブランチは絶対に混ぜない。** どちらに変更を入れるかは毎回ユーザーが指定（未指定なら聞く）。
+
+| | `main`（自分用） | `release`（製品版・配布タグ `v*` はこちら） |
+|---|---|---|
+| 文字起こしの選択肢 | 4 プロバイダーを**実名表示**（OpenAI / Groq / ElevenLabs / Deepgram） | **2 択のみ**：高速リアルタイム（Deepgram nova-3）/ 正確性（ElevenLabs scribe_v1） |
+| モデル選択 | あり（フルコントロール） | なし（推奨モデル固定） |
+| テキスト整形（Groq） | トグルあり・既定 OFF・モデル/プロンプト選択可 | **裏で固定実行**（llama-3.1-8b-instant 固定・UI は ON/OFF のみ・既定 ON） |
+| API キータブ | 表示 | 配布ビルドは非表示＋キー埋め込み |
+
+両ブランチ共通: **VAD・長文分割・ストリーミング・録音 HUD は常時 ON 固定**（設定 UI から撤去済み。Mac は `ConfigStore` で true 固定、Windows は `config_manager._force_always_on` が読込・保存時に矯正）。
+
+仕様の根拠と経緯は `CLAUDE.md` 冒頭「2 ブランチ運用」とメモリ `project_voicekey_branch_split`。
+
+## 4. 機能一覧（両 OS 対応）
+
+| 機能 | 概要 | Mac | Win |
+|---|---|:--:|:--:|
+| デュアルホットキー | 2 スロットを独立設定（キー/モード/バックエンド） | ✅ | ✅ |
+| hold / toggle モード | 押している間 / トグルで録音 | ✅ | ✅ |
+| ハンズフリー録音 | 切替キーで開始・停止（録音中は HUD 表示） | ✅ | ✅ |
+| ダブルタップ Enter | ホットキーを素早く 2 回 → 貼り付け後に Enter（送信） | ✅ | ✅ |
+| テキスト整形 | 文字起こし後に Groq で整文（§3 参照・トグルで ON/OFF） | ✅ | ✅ |
+| VAD / 長文分割 / ストリーミング / 録音 HUD | 常時 ON 固定（§3） | ✅ | ✅ |
+| マイク自動検出 | 入力レベルの分散で使用マイクを推定 | ✅ | ✅ |
+| 履歴 | 直近の文字起こし結果を保持 | ✅ | ✅ |
+| 自動更新 | Mac=Sparkle / Win=version.json フィード | ✅ | ✅ |
+| ログイン起動 | OS のログイン時に自動起動 | ✅ | ✅ |
+| ローカル GPU 文字起こし | faster-whisper（Windows の歴史的経緯） | — | ✅ |
+
+## 5. アーキ地図（責務 → ファイル）
+
+主要な責務ごとに Mac / Windows のどのファイルを見ればいいか。
+
+| 責務 | Mac (`macos/Sources/Voicekey/`) | Windows (`src/`) |
+|---|---|---|
+| 起動エントリ | `VoicekeyApp.swift`（AppKit, NSStatusBar） | `main.py` |
+| 中央コントローラ | `AppController.swift` | `app.py`（`VoicekeyApp` / `HotkeySlot`） |
+| 設定モデル・既定値 | `Config/AppConfig.swift`（`ConfigStore`） | `config/config_manager.py` / `constants.py` / `types.py` |
+| ホットキー検出 | `Core/HotkeyMonitor.swift` / `KeyToken.swift` | `app.py` 内 pynput リスナ / `platform/common/keymap.py` |
+| 音声録音 | `Core/AudioRecorder.swift` / `AudioDevices.swift` | `core/audio_recorder.py` / `audio_preprocess.py` / `audio_utils.py` |
+| 文字起こし（REST） | `Core/Transcriber.swift` | `core/api_transcriber.py` |
+| 文字起こし（ストリーミング） | `Core/StreamingTranscriber.swift` | `core/streaming_transcriber.py` |
+| テキスト整形（Groq）/ 後処理 | `Core/TextFormatter.swift` | `core/text_formatter.py` / `text_processor.py` / `text_utils.py` |
+| 文字入力（貼り付け） | `Core/Paster.swift` | `core/input_handler.py` |
+| VAD / マイク自動検出 / 履歴 | `Core/VoiceActivity.swift` / `MicAutoDetector.swift` / `HistoryStore.swift` | `core/vad.py` / `mic_auto_detect.py` / `history.py` |
+| 設定画面 UI | `UI/SettingsView.swift` / `HotkeyRecorderView.swift` | `ui/settings_window.py` / `styles.py` |
+| HUD / オーバーレイ / トレイ | `UI/Hud.swift` / `VoicekeyApp.swift`（メニューバー） | `ui/hud.py` / `overlay.py` / `system_tray.py` |
+| API キー保管 | `Core/Keychain.swift` / `Config/EmbeddedKeys.generated.swift` | `utils/secrets.py` / `.env` |
+| 自動更新 | `Core/UpdaterController.swift`（Sparkle） | `utils/updater.py` |
+| OS 権限 | `AppController.swift`（マイク/入力監視/アクセシビリティ） | — （Windows は OS ゲートなし） |
+| OS 抽象化 / ログイン起動 / ログ | ネイティブ API 直 | `platform/` / `utils/autostart.py` / `utils/logger.py` |
+
+## 6. 配布構成（要点のみ・詳細は HANDOFF.md）
+
+- **Mac**: DMG・自動更新フィード（Sparkle appcast）とも Vercel サイト `voicekey.vercel.app`（ソース `/Users/tomato/Project/voicekey-site/`、`vercel deploy --prod`）。
+- **Windows**: インストーラ（約 270MB）は公開バイナリ専用リポ `voicekey-releases` の GitHub Releases。更新フィード `version.json` / `downloads.json` は Vercel。
+- API キーはコミットせず、ビルド時に XOR 難読化して埋め込み（テスターは入力不要）。**ソース非公開**。
+- リリースは常に Mac/Windows 両 OS 同期。版番号は semver で Claude が決める。手順の全文は `HANDOFF.md`「リリース手順」。
+
+## 7. ドキュメント体系（どれを見ればいいか）
+
+| ファイル | 役割 | 読むタイミング |
+|---|---|---|
+| **OVERVIEW.md**（これ） | 全体地図（機能・アーキ・ブランチ・配布の索引） | まず全体像を掴みたいとき |
+| `README.md` | ユーザー向け（特徴・インストール・使い方・設定・配布ステータス） | 使い方・対外説明 |
+| `HANDOFF.md` | 作業の現在地・恒久要件・フェーズ・リリース手順 | 長期作業の再開時（最初に読む） |
+| `CHANGELOG.md` | 変更履歴（時系列） | 「いつ何を変えたか」 |
+| `CLAUDE.md` | AI 向け開発ルール（ブランチ運用・両 OS 同時実装・README 更新等） | 実装に入る前 |
+| `AGENTS.md` | 他 AI エージェント向けの同趣旨ルール（簡約版） | 同上 |
+| `CONTRIBUTING.md` | コミット規約・バージョニング | コミット時 |
+| `docs/BUILD_WINDOWS.md` | Windows ビルド/実機チェックリスト | Windows 配布時 |
+
+## 8. 更新ルール（重要・README 更新ルールと同じ精神）
+
+**機能・アーキ・ブランチ仕様・配布構成・ドキュメント構成が変わったら、同じコミットで OVERVIEW.md の該当行も直す。**
+- 上の表（機能一覧 §4 / アーキ地図 §5 / ブランチ差 §3）が現状とズレないように保つ。
+- ただし詳細は書かない（重複はドリフトの元）。詳細は各専門ドキュメントに置き、ここはリンクと 1 行要約に留める。
+- `main` / `release` 両ブランチで同一内容を保つ（両 OS 同時実装と同じ要領で両ブランチ同時に直す）。

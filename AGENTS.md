@@ -47,5 +47,6 @@
 - When switching backends, confirm `transcription_backend` and model names in `settings.yaml` align with installed/available services to avoid runtime warnings.
 
 ## Documentation
+- **`OVERVIEW.md` is the project map** (feature list, architecture map, the 2-branch difference, distribution layout, and an index of all docs). Read it first to grasp the whole project. Whenever you change features, architecture, branch spec, distribution layout, or the doc structure, update the relevant line of `OVERVIEW.md` in the **same commit** — but keep it to links + one-line summaries (details live in README/CHANGELOG/HANDOFF; duplication causes drift). Keep `OVERVIEW.md` **identical on `main` and `release`** (branch differences are written inside it); update both branches together.
 - `README.md` is user-facing documentation. Whenever you change behavior users can see — features, usage, settings, supported platforms, or release/distribution status — update the relevant part of `README.md` in the **same commit** as the code change (do not defer it).
 - Keep the "🚦 配布ステータス" table at the top of `README.md` current (latest Mac/Windows version, distribution state, and last-updated date). This rule is also recorded in `CLAUDE.md`.
