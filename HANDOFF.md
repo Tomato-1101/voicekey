@@ -91,11 +91,13 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 
 ## 現在地 / 次の一手
 
-- 現在地: **Mac v1.0.2 / Windows v1.0.1 リリース完了**（2026-06-16。ダブルタップ Enter 自動送信と
-  録音中 UI の約 0.5 秒遅延を両 OS で根治＋コードレビュー指摘の修正）。Phase 0〜6 完了・Phase 7 は
-  販売開始時まで延期。両 OS とも自動更新フィード（Mac=Sparkle appcast.xml / Win=version.json）配信済み。
-  - 既往: Mac v1.0.0/v1.0.1（2026-06-12）、Windows v1.0.0 初公開（2026-06-14、GitHub Actions ビルド →
-    voicekey-releases の GitHub Releases へ公開）。
+- 現在地: **Mac v1.1.0 / Windows v1.1.0 リリース完了**（2026-06-18。release＝製品版ブランチから、
+  製品版2モード化〔高速リアルタイム=Deepgram nova-3 / 正確性=ElevenLabs scribe_v1〕＋ VAD・長文分割・
+  ストリーミング・録音 HUD の常時 ON 固定を正式リリース・両 OS 同期）。Phase 0〜6 完了・Phase 7 は
+  販売開始時まで延期。両 OS とも自動更新フィード（Mac=Sparkle appcast.xml〔build 6・EdDSA 署名〕/
+  Win=version.json〔sha256 検証済み〕）を Vercel 本番（https://voicekey.vercel.app）へ配信済み。
+  - 既往: Mac v1.0.2 / Windows v1.0.1（2026-06-16・遅延根治）、Mac v1.0.0/v1.0.1（2026-06-12）、
+    Windows v1.0.0 初公開（2026-06-14、GitHub Actions ビルド → voicekey-releases の GitHub Releases へ公開）。
   - テスターへの渡し方は https://voicekey.vercel.app を共有するだけ。
   - 注意: macOS 15 では DMG を開く段階でも Gatekeeper 警告が出る（実テスター報告）。
     手順はサイトと DMG 同梱手順書に記載済み（完了 → プライバシーとセキュリティ → このまま開く）。
