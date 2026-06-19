@@ -4,6 +4,33 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased]
 
+### Added
+- **製品版バックエンドへの配線（段階3・並存ガード）を追加**（Mac / Windows 両方・release ブランチ・休眠中）。
+  既存の文字起こし／整形プリミティブが「ログイン済みならサーバー経路、未ログインなら従来の
+  埋め込み／設定キー直叩き」を自分で切り替えるようにした。ログイン UI（段階4）が入るまでは
+  常に未ログイン扱い（`isLoggedIn` が false）のため、**ユーザーから見える挙動は一切変わらない**。
+  - **高速リアルタイム（Deepgram）**: ログイン時は録音時にサーバーから短命 JWT を取得し、
+    WebSocket ストリーミング・REST フォールバックとも `Authorization: Bearer <jwt>` で**直叩き**
+    （低レイテンシ核心を維持）。未ログイン時は従来どおり `Token <キー>`。
+  - **正確性（ElevenLabs）**: ログイン時はサーバープロキシ（multipart）経由（バッチは短命キー非対応）。
+    プロキシ失敗は `TranscriptionError` に写す。
+  - **テキスト整形（Groq）**: ログイン時はサーバープロキシ経由（モデル/プロンプトはサーバー固定）。
+    失敗時は従来どおり原文フォールバック（発話を絶対に失わない）。
+  - Mac の `StreamingTranscriber` に接続前チャンクの退避バッファ（`pending`）と `cancelled` フラグを
+    追加（短命 JWT 取得が非同期なため、接続確立前に届く PCM を取りこぼさない）。
+  - **既知のフォローアップ（段階4/5 で対応）**: 現状は文字起こし呼び出しごとに短命 JWT を取得する。
+    長文分割（並列）では分割数だけ取得しうるため、録音プリウォーム位置での先取得＋キャッシュは段階4/5 で行う。
+  - **Technical Details**:
+    - Windows: `core/backend_client.py` に `is_logged_in()` を追加。`core/streaming_transcriber.py`
+      （`_run(key, logged_in)` で Bearer/Token 分岐）、`core/api_transcriber.py`（ElevenLabs プロキシ／
+      Deepgram `_transcribe_via_jwt`）、`core/text_formatter.py`（整形プロキシ）に配線。
+      回帰テスト 13 件追加（`test_backend_client` / `test_streaming_transcriber` / `test_api_transcriber` /
+      `test_text_formatter`）。直叩きテストは `is_logged_in` を False 固定し実 keyring に触れない。
+    - Mac: `Core/BackendClient.swift` に `isLoggedIn` を追加。`Core/StreamingTranscriber.swift`
+      （`connect(auth:)` 抽出＋ JWT 経路＋退避バッファ）、`Core/Transcriber.swift`
+      （`transcribeElevenLabsViaProxy` / `transcribeDeepgramViaJWT`／`send`・`encodeAudio` 抽出）、
+      `Core/TextFormatter.swift`（整形プロキシ）に配線。
+
 ### Fixed
 - **（Windows）2 回目以降の録音でマイク音声が拾えなくなるバグを修正**。永続ストリームの
   audio callback は「ストリームを開いた時点」の `session_id` に固定されるのに、`_do_start` が

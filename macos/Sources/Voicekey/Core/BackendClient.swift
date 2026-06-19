@@ -59,6 +59,15 @@ enum BackendClient {
 
     // MARK: - 公開 API
 
+    /// 製品版サーバー経由（短命トークン / プロキシ）を使うべきかを返す。
+    ///
+    /// ローカルに認証セッション（access_token）があれば true ＝ ログイン済み。
+    /// 各文字起こし/整形プリミティブはこれが true のときだけサーバー経路に切り替え、
+    /// false のときは従来の埋め込み/設定キーによる直叩きを使う（段階3 の並存ガード）。
+    static var isLoggedIn: Bool {
+        Keychain.authSession() != nil
+    }
+
     /// Deepgram「高速リアルタイム」用の短命 JWT を取得する。
     /// 録音直前に呼び、返ってきた JWT で Deepgram WebSocket を `Bearer` 認証で開く（段階3）。
     static func fetchEphemeralToken() async throws -> EphemeralToken {

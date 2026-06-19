@@ -149,25 +149,90 @@ final class Transcriber: @unchecked Sendable {
     /// - Returns: 文字起こし結果（前後空白除去済み）
     func transcribe(samples: [Float]) async throws -> String {
         guard !samples.isEmpty else { return "" }
+
+        // 製品版（ログイン済み）はサーバー経路で文字起こしする（並存ガード）。
+        // 高速リアルタイム=Deepgram は短命 JWT で直叩き（低レイテンシ核心を維持）、
+        // 正確性=ElevenLabs はサーバープロキシ経由（バッチは短命キー非対応）。
+        // OpenAI/Groq は製品版の文字起こし選択肢に無いため従来の直叩きに委ねる。
+        if BackendClient.isLoggedIn {
+            switch backend {
+            case .elevenlabs: return try await transcribeElevenLabsViaProxy(samples: samples)
+            case .deepgram: return try await transcribeDeepgramViaJWT(samples: samples)
+            case .openai, .groq: break
+            }
+        }
+
         guard let apiKey = Keychain.apiKey(for: backend) else {
             throw TranscriptionError(
                 message: "\(backend.label) の API キーが未設定です（設定画面から保存してください）"
             )
         }
 
-        // FLAC（可逆圧縮）で WAV 比約半分までアップロードサイズを削減。
-        // 量子化は WAV と同じ 16bit のため精度への影響はゼロ。失敗時は WAV
-        let audio: EncodedAudio
-        if let flac = FlacEncoder.encode(samples) {
-            audio = EncodedAudio(data: flac, filename: "audio.flac", contentType: "audio/flac")
-        } else {
-            audio = EncodedAudio(
-                data: WavEncoder.encode(samples), filename: "audio.wav", contentType: "audio/wav"
-            )
+        let request = buildRequest(audio: encodeAudio(samples), apiKey: apiKey)
+        let start = Date()
+        let data = try await send(request)
+        let text = try parseResponse(data)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let elapsed = Int(Date().timeIntervalSince(start) * 1000)
+        log.info("\(self.backend.label, privacy: .public) 文字起こし完了: \(elapsed)ms, \(text.count) 文字")
+        return text
+    }
+
+    // MARK: - 製品版サーバー経路（段階3）
+
+    /// 正確性（ElevenLabs）: サーバープロキシ経由で文字起こしする。
+    /// サーバー契約は WAV を期待するため FLAC ではなく WAV を送る。
+    private func transcribeElevenLabsViaProxy(samples: [Float]) async throws -> String {
+        let start = Date()
+        do {
+            let text = try await BackendClient.transcribeElevenLabs(
+                wav: WavEncoder.encode(samples), language: language
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            let elapsed = Int(Date().timeIntervalSince(start) * 1000)
+            log.info("\(self.backend.label, privacy: .public) 文字起こし完了: \(elapsed)ms, \(text.count) 文字")
+            return text
+        } catch let e as BackendClient.BackendError {
+            throw TranscriptionError(message: e.userMessage)
         }
-        let request = buildRequest(audio: audio, apiKey: apiKey)
+    }
+
+    /// 高速リアルタイム（Deepgram）: 短命 JWT を取得し Bearer で直叩きする。
+    /// クエリ構築は直叩きと共通の deepgramRequest を使い、認証だけ Token→Bearer に差し替える。
+    private func transcribeDeepgramViaJWT(samples: [Float]) async throws -> String {
+        let grant: BackendClient.EphemeralToken
+        do {
+            grant = try await BackendClient.fetchEphemeralToken()
+        } catch let e as BackendClient.BackendError {
+            throw TranscriptionError(message: e.userMessage)
+        }
+        var request = deepgramRequest(audio: encodeAudio(samples), apiKey: "")
+        request.setValue("Bearer \(grant.token)", forHTTPHeaderField: "Authorization")
 
         let start = Date()
+        let data = try await send(request)
+        let text = try parseResponse(data)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let elapsed = Int(Date().timeIntervalSince(start) * 1000)
+        log.info("\(self.backend.label, privacy: .public) 文字起こし完了: \(elapsed)ms, \(text.count) 文字")
+        return text
+    }
+
+    // MARK: - 送信・符号化（直叩き / サーバー経路で共通）
+
+    /// FLAC（可逆圧縮）で WAV 比約半分までアップロードサイズを削減する。
+    /// 量子化は WAV と同じ 16bit のため精度への影響はゼロ。失敗時は WAV。
+    private func encodeAudio(_ samples: [Float]) -> EncodedAudio {
+        if let flac = FlacEncoder.encode(samples) {
+            return EncodedAudio(data: flac, filename: "audio.flac", contentType: "audio/flac")
+        }
+        return EncodedAudio(
+            data: WavEncoder.encode(samples), filename: "audio.wav", contentType: "audio/wav"
+        )
+    }
+
+    /// リクエストを送り、ステータス検査を通過したボディを返す。
+    /// 通信失敗・HTTP エラーはそのままユーザー通知に使える日本語例外へ写す。
+    private func send(_ request: URLRequest) async throws -> Data {
         let data: Data
         let response: URLResponse
         do {
@@ -185,7 +250,6 @@ final class Transcriber: @unchecked Sendable {
         guard let http = response as? HTTPURLResponse else {
             throw TranscriptionError(message: "\(backend.label) API から不正な応答を受信しました")
         }
-
         switch http.statusCode {
         case 200:
             break
@@ -197,12 +261,7 @@ final class Transcriber: @unchecked Sendable {
             let detail = String(data: data.prefix(200), encoding: .utf8) ?? ""
             throw TranscriptionError(message: "\(backend.label) API エラー (HTTP \(http.statusCode)): \(detail)")
         }
-
-        let text = try parseResponse(data)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let elapsed = Int(Date().timeIntervalSince(start) * 1000)
-        log.info("\(self.backend.label, privacy: .public) 文字起こし完了: \(elapsed)ms, \(text.count) 文字")
-        return text
+        return data
     }
 
     // MARK: - リクエスト構築（バックエンド別）

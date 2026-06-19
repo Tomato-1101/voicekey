@@ -29,6 +29,7 @@ from urllib.parse import urlencode
 import numpy as np
 import numpy.typing as npt
 
+from . import backend_client
 from .text_utils import strip_cjk_spaces
 from ..utils import secrets
 from ..utils.logger import get_logger
@@ -117,12 +118,15 @@ class StreamingTranscriber:
         接続前に届いた PCM は send() がバッファし、接続確立後に順序を保って送出する。
 
         Returns:
-            開始できれば True。キー未設定 / websockets 未導入なら False
+            開始できれば True。キー未設定かつ未ログイン / websockets 未導入なら False
             （呼び出し側は REST にフォールバックする）
         """
+        # 製品版（ログイン済み）はサーバーから短命 JWT を取得して接続する。
+        # 未ログインは従来どおり埋め込み/設定キーを使う（並存ガード）。
+        logged_in = backend_client.is_logged_in()
         key = self._resolve_api_key()
-        if not key:
-            logger.warning("Deepgram キーが未設定のためストリーミングを開始できません")
+        if not logged_in and not key:
+            logger.warning("Deepgram キー未設定かつ未ログインのためストリーミングを開始できません")
             return False
 
         try:
@@ -133,7 +137,7 @@ class StreamingTranscriber:
             return False
 
         self._thread = threading.Thread(
-            target=self._run, args=(key,), daemon=True, name="DeepgramStream"
+            target=self._run, args=(key, logged_in), daemon=True, name="DeepgramStream"
         )
         self._thread.start()
         return True
@@ -232,9 +236,29 @@ class StreamingTranscriber:
     # 受信スレッド
     # ------------------------------------------------------------------
 
-    def _run(self, key: str) -> None:
-        """接続 → 退避済み PCM のフラッシュ → 受信ループ（専用スレッド上）。"""
+    def _run(self, key: Optional[str], logged_in: bool) -> None:
+        """接続 → 退避済み PCM のフラッシュ → 受信ループ（専用スレッド上）。
+
+        Args:
+            key: 直叩き用の Deepgram API キー（未ログイン時に使う。ログイン時は None でも可）
+            logged_in: True なら自社サーバーから短命 JWT を取得して Bearer で接続する
+        """
         from websockets.sync.client import connect
+
+        # 製品版（ログイン済み）: サーバーから短命 JWT を取得し Bearer で接続。
+        # 未ログイン: 従来どおり埋め込み/設定キーを Token で使う（並存ガード）。
+        if logged_in:
+            try:
+                grant = backend_client.fetch_ephemeral_token()
+                auth_header = f"Bearer {grant['token']}"
+            except backend_client.BackendError as e:
+                # 短命トークン取得失敗（未ログイン扱い・サブスク無効・通信失敗など）
+                # → finish() を解決し、REST フォールバックに委ねる
+                logger.warning(f"Deepgram 短命トークンの取得に失敗: {e}")
+                self._resolve_finish()
+                return
+        else:
+            auth_header = f"Token {key}"
 
         params = {
             "model": self.model,
@@ -251,7 +275,7 @@ class StreamingTranscriber:
         try:
             ws = connect(
                 url,
-                additional_headers={"Authorization": f"Token {key}"},
+                additional_headers={"Authorization": auth_header},
                 open_timeout=_OPEN_TIMEOUT,
             )
         except Exception as e:

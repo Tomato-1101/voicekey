@@ -22,6 +22,7 @@ import httpx
 import numpy as np
 import numpy.typing as npt
 
+from . import backend_client
 from .audio_utils import numpy_to_wav_bytes
 from .text_utils import strip_cjk_spaces
 from ..config.constants import SAMPLE_RATE
@@ -327,6 +328,15 @@ class ElevenLabsTranscriber(ApiTranscriber):
             return ""
 
         wav_bytes = numpy_to_wav_bytes(audio_data, self.sample_rate)
+
+        # 製品版（ログイン済み）はサーバープロキシ経由で文字起こしする。
+        # ElevenLabs バッチは短命キー非対応のためプロキシを使う（並存ガード）。
+        if backend_client.is_logged_in():
+            try:
+                return backend_client.transcribe_elevenlabs(wav_bytes, self.language or "")
+            except backend_client.BackendError as e:
+                raise TranscriptionError(str(e))
+
         client = self._get_client()
 
         # model ではなく model_id。言語は language_code（空なら自動判定）
@@ -391,12 +401,72 @@ class DeepgramTranscriber(ApiTranscriber):
             return "multi"
         return self.language or "ja"
 
+    def _parse_transcript(self, resp: httpx.Response) -> str:
+        """Deepgram の応答 JSON から本文を取り出し CJK スペースを除去する。"""
+        try:
+            alternatives = resp.json()["results"]["channels"][0]["alternatives"]
+            transcript = alternatives[0]["transcript"] if alternatives else ""
+        except Exception as e:
+            raise TranscriptionError(f"{self.display_name} 応答の解析に失敗しました: {e}")
+        # 日本語の単語間スペースを除去（英単語間は残す）
+        return strip_cjk_spaces(transcript.strip())
+
+    def _transcribe_via_jwt(self, wav_bytes: bytes) -> str:
+        """製品版（ログイン済み）: 短命 JWT を取得し Deepgram を直叩きする。
+
+        低レイテンシ核心を保つため、ElevenLabs と違いプロキシではなく直叩き。
+        キャッシュ済みクライアント（固定 Token ヘッダー）はバイパスし、
+        リクエストごとに Bearer JWT を載せた一発の POST を投げる。
+        """
+        try:
+            grant = backend_client.fetch_ephemeral_token()
+        except backend_client.BackendError as e:
+            raise TranscriptionError(str(e))
+
+        params = {
+            "model": self.model,
+            "language": self._dg_language,
+            "punctuate": "true",
+            "smart_format": "true",
+        }
+        api_start = time.perf_counter()
+        try:
+            resp = httpx.post(
+                f"{self.base_url}/listen",
+                params=params,
+                content=wav_bytes,
+                headers={
+                    "Authorization": f"Bearer {grant['token']}",
+                    "Content-Type": "audio/wav",
+                },
+                timeout=_TIMEOUT,
+            )
+        except httpx.TimeoutException:
+            raise TranscriptionError(
+                f"{self.display_name} API がタイムアウトしました（ネットワークを確認してください）"
+            )
+        except httpx.HTTPError as e:
+            raise TranscriptionError(f"{self.display_name} API への接続に失敗しました: {e}")
+        self.last_api_time = (time.perf_counter() - api_start) * 1000
+        self._raise_for_status(resp)
+
+        text = self._parse_transcript(resp)
+        logger.info(
+            f"{self.display_name} 文字起こし完了: {self.last_api_time:.0f}ms, {len(text)} 文字"
+        )
+        return text
+
     def transcribe(self, audio_data: npt.NDArray[np.float32]) -> str:
         """音声を Deepgram Listen（事前録音）で文字起こしする。"""
         if len(audio_data) == 0:
             return ""
 
         wav_bytes = numpy_to_wav_bytes(audio_data, self.sample_rate)
+
+        # 製品版（ログイン済み）は短命 JWT で直叩きする（並存ガード）。
+        if backend_client.is_logged_in():
+            return self._transcribe_via_jwt(wav_bytes)
+
         client = self._get_client()
 
         params = {
@@ -413,14 +483,7 @@ class DeepgramTranscriber(ApiTranscriber):
             headers={"Content-Type": "audio/wav"},
         )
 
-        try:
-            alternatives = resp.json()["results"]["channels"][0]["alternatives"]
-            transcript = alternatives[0]["transcript"] if alternatives else ""
-        except Exception as e:
-            raise TranscriptionError(f"{self.display_name} 応答の解析に失敗しました: {e}")
-
-        # 日本語の単語間スペースを除去（英単語間は残す）
-        text = strip_cjk_spaces(transcript.strip())
+        text = self._parse_transcript(resp)
         logger.info(
             f"{self.display_name} 文字起こし完了: {self.last_api_time:.0f}ms, {len(text)} 文字"
         )

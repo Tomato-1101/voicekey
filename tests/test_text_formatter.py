@@ -125,6 +125,18 @@ class TestClientReuse(unittest.TestCase):
 class TestFormatText(unittest.TestCase):
     """format_text の API 呼び出しとフォールバック動作を検証する。"""
 
+    def setUp(self):
+        # 段階3: ここは未ログイン（従来の Groq 直叩き）経路の検証。
+        # is_logged_in を False に固定し、実 keyring の認証セッションに触れない
+        # （ログイン経路は TestServerRouting で検証）。
+        self._login_patch = patch.object(
+            text_formatter.backend_client, "is_logged_in", return_value=False
+        )
+        self._login_patch.start()
+
+    def tearDown(self):
+        self._login_patch.stop()
+
     def test_blank_text_skips_api(self):
         """空白のみの入力は API を呼ばずそのまま返る。"""
         client = _mock_client()
@@ -259,6 +271,36 @@ class TestFormatText(unittest.TestCase):
             )
             self.assertEqual(kwargs["headers"]["Authorization"], "Bearer K")
             self.assertEqual(kwargs["timeout"], 10.0)
+
+
+class TestServerRouting(unittest.TestCase):
+    """段階3: ログイン済みはサーバープロキシ経由で整形する（並存ガード）。"""
+
+    def test_logged_in_uses_backend_proxy(self):
+        """ログイン済みなら直叩きせずサーバープロキシ（format_text）を使う。"""
+        with patch.object(text_formatter.backend_client, "is_logged_in", return_value=True), \
+                patch.object(text_formatter.backend_client, "format_text",
+                             return_value="サーバー整形") as proxy, \
+                patch.object(text_formatter, "_get_client") as direct:
+            self.assertEqual(format_text("えーと原文", "m"), "サーバー整形")
+            proxy.assert_called_once_with("えーと原文")
+            direct.assert_not_called()  # 直叩きクライアントは使わない
+
+    def test_backend_error_falls_back_to_original(self):
+        """サーバー整形が失敗しても直叩きに落ちず原文を返す（発話を失わない）。"""
+        from src.core.backend_client import BackendError
+        with patch.object(text_formatter.backend_client, "is_logged_in", return_value=True), \
+                patch.object(text_formatter.backend_client, "format_text",
+                             side_effect=BackendError("失敗", status=403)), \
+                patch.object(text_formatter, "_get_client") as direct:
+            self.assertEqual(format_text("原文", "m"), "原文")
+            direct.assert_not_called()
+
+    def test_blank_text_skips_backend(self):
+        """空白のみの入力はログイン判定より先に弾く（サーバーも叩かない）。"""
+        with patch.object(text_formatter.backend_client, "is_logged_in") as li:
+            self.assertEqual(format_text("   ", "m"), "   ")
+            li.assert_not_called()
 
 
 if __name__ == "__main__":

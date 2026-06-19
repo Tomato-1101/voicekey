@@ -36,6 +36,24 @@ class _Base(unittest.TestCase):
         backend_client._client = None  # 共有クライアントを元に戻す
 
 
+class TestIsLoggedIn(unittest.TestCase):
+    """is_logged_in（並存ガードの分岐条件）を検証する。実 keyring に触れない。"""
+
+    def test_true_with_access_token(self):
+        with mock.patch.object(backend_client.secrets, "get_auth_session",
+                               return_value={"access_token": "t"}):
+            self.assertTrue(backend_client.is_logged_in())
+
+    def test_false_when_no_session(self):
+        with mock.patch.object(backend_client.secrets, "get_auth_session", return_value=None):
+            self.assertFalse(backend_client.is_logged_in())
+
+    def test_false_when_token_missing(self):
+        with mock.patch.object(backend_client.secrets, "get_auth_session",
+                               return_value={"refresh_token": "r"}):
+            self.assertFalse(backend_client.is_logged_in())
+
+
 class TestEphemeral(_Base):
     def test_success_and_headers(self):
         seen = {}

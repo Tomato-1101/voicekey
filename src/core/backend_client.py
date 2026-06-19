@@ -96,6 +96,17 @@ def _post(path: str, *, headers: dict, **kwargs) -> httpx.Response:
     return resp
 
 
+def is_logged_in() -> bool:
+    """製品版サーバー経由（短命トークン / プロキシ）を使うべきかを返す。
+
+    ローカルに認証セッション（access_token）があれば True ＝ ログイン済み。
+    各文字起こし/整形プリミティブはこれが True のときだけサーバー経路に切り替え、
+    False のときは従来の埋め込み/設定キーによる直叩きを使う（段階3 の並存ガード）。
+    """
+    session = secrets.get_auth_session()
+    return bool(session and session.get("access_token"))
+
+
 def fetch_ephemeral_token() -> dict:
     """Deepgram「高速リアルタイム」用の短命 JWT を取得する。
 

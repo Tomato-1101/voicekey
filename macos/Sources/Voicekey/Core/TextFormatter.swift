@@ -116,6 +116,18 @@ final class TextFormatter {
         // 空白のみの入力は API を呼ばずそのまま返す
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return text }
 
+        // 製品版（ログイン済み）はサーバープロキシ経由で整形する（モデル/プロンプトは
+        // サーバー固定。Groq は短命キー非対応のためプロキシ）。失敗は原文フォールバック
+        // ＝整形は「おまけ」であり発話を絶対に失わない（並存ガード）。
+        if BackendClient.isLoggedIn {
+            do {
+                return try await BackendClient.formatText(text)
+            } catch {
+                log.warning("サーバー整形に失敗: \(error.localizedDescription, privacy: .public)（原文を使用）")
+                return text
+            }
+        }
+
         // 整形は Groq 固定。キー未設定なら整形せず原文を返す
         guard let apiKey = Keychain.apiKey(for: .groq) else {
             log.warning("整形スキップ: Groq の API キーが未設定です（原文を使用）")

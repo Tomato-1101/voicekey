@@ -7,6 +7,7 @@ _handle によるメッセージ解析・PCM 変換・言語解決・接続前 f
 import json
 import struct
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -71,6 +72,59 @@ class TestHandle(unittest.TestCase):
         st = StreamingTranscriber("nova-3", "ja")
         st._handle(json.dumps({"is_final": True, "channel": {"alternatives": []}}))
         self.assertEqual(st._finals, [])
+
+
+class TestStartRouting(unittest.TestCase):
+    """段階3: start() のキー/ログイン分岐と _run への引き渡しを検証する。"""
+
+    def test_logged_in_starts_without_key(self):
+        """ログイン済みなら API キーが無くてもストリーミングを開始できる。"""
+        st = StreamingTranscriber("nova-3", "ja")
+        captured = {}
+
+        def fake_thread(target=None, args=(), **kw):
+            captured["args"] = args
+
+            class _T:
+                def start(self_inner):
+                    captured["started"] = True
+
+            return _T()
+
+        with patch.object(stream_mod.backend_client, "is_logged_in", return_value=True), \
+                patch.object(st, "_resolve_api_key", return_value=None), \
+                patch.object(stream_mod.threading, "Thread", side_effect=fake_thread):
+            self.assertTrue(st.start())
+        # _run(key=None, logged_in=True) で起動する（Bearer JWT 経路）
+        self.assertEqual(captured["args"], (None, True))
+        self.assertTrue(captured.get("started"))
+
+    def test_not_logged_in_without_key_fails(self):
+        """未ログインかつキーも無ければ開始しない（呼び出し側は REST フォールバック）。"""
+        st = StreamingTranscriber("nova-3", "ja")
+        with patch.object(stream_mod.backend_client, "is_logged_in", return_value=False), \
+                patch.object(st, "_resolve_api_key", return_value=None):
+            self.assertFalse(st.start())
+
+    def test_not_logged_in_with_key_passes_token_path(self):
+        """未ログインでもキーがあれば従来の Token 経路（logged_in=False）で起動する。"""
+        st = StreamingTranscriber("nova-3", "ja")
+        captured = {}
+
+        def fake_thread(target=None, args=(), **kw):
+            captured["args"] = args
+
+            class _T:
+                def start(self_inner):
+                    pass
+
+            return _T()
+
+        with patch.object(stream_mod.backend_client, "is_logged_in", return_value=False), \
+                patch.object(st, "_resolve_api_key", return_value="dg-key"), \
+                patch.object(stream_mod.threading, "Thread", side_effect=fake_thread):
+            self.assertTrue(st.start())
+        self.assertEqual(captured["args"], ("dg-key", False))
 
 
 class TestFinishWithoutConnection(unittest.TestCase):
