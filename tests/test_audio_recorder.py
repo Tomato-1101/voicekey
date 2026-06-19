@@ -9,6 +9,8 @@ __init__ は sounddevice import と制御スレッド起動を伴うため、停
 """
 
 import queue
+import sys
+import types
 import unittest
 
 import numpy as np
@@ -60,6 +62,95 @@ class TestDoStopTailChunk(unittest.TestCase):
         captured = {}
         rec._do_stop(lambda audio: captured.__setitem__("audio", audio))
         self.assertEqual(len(captured["audio"]), 0)
+
+
+class _FakeStream:
+    """sd.InputStream の最小モック。start/stop は状態フラグのみ、feed で
+    PortAudio コールバックの到来を模擬する（実マイク無しで callback 経路を検証する）。"""
+
+    def __init__(self, **kwargs):
+        self._callback = kwargs.get("callback")
+        self.started = False
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.started = False
+
+    def close(self):
+        pass
+
+    def feed(self, indata):
+        """1 回ぶんの音声 callback を発火させる。"""
+        self._callback(indata, len(indata), None, None)
+
+
+class TestPersistentStreamSession(unittest.TestCase):
+    """永続ストリームで 2 回目以降の録音も音声を拾えること（session_id バグの回帰）。
+
+    バグ: callback の my_session は「ストリームを開いた時点」で固定されるのに、
+    _do_start が録音のたびに session を +1 していた。結果、1 回目は偶然一致するが
+    2 回目以降は session 不一致で callback が全音声を破棄し、無音になっていた。
+    """
+
+    def setUp(self):
+        # _do_start は遅延 import するため、sounddevice をモックに差し替える
+        self._orig_sd = sys.modules.get("sounddevice")
+        fake = types.ModuleType("sounddevice")
+        fake.InputStream = _FakeStream
+        sys.modules["sounddevice"] = fake
+
+    def tearDown(self):
+        if self._orig_sd is not None:
+            sys.modules["sounddevice"] = self._orig_sd
+        else:
+            sys.modules.pop("sounddevice", None)
+
+    def _bare_recorder(self):
+        rec = object.__new__(AudioRecorder)
+        rec.sample_rate = 16000
+        rec._audio_q = queue.Queue()
+        rec._recording = False
+        rec._stream = None
+        rec._stream_device = None
+        rec._input_device = None
+        rec._session_id = 0
+        rec._callback_logged = False
+        rec._pending_stop_cb = None
+        rec._last_record_end = 0.0
+        rec._last_level_time = 0.0
+        rec._level_callback = None
+        rec.chunk_callback = None
+        return rec
+
+    def test_records_on_first_and_second_recording(self):
+        """同じ永続ストリームで 1 回目も 2 回目も音声が回収される。"""
+        rec = self._bare_recorder()
+        indata = np.ones((160, 1), dtype=np.float32)
+
+        # 1 回目
+        rec._do_start(None)
+        stream = rec._stream
+        self.assertIsNotNone(stream)
+        stream.feed(indata)
+        first = rec._drain_audio()
+        self.assertEqual(len(first), 160, "1 回目の録音で音声が拾えていない")
+
+        # 停止しても永続ストリームは閉じない
+        rec._do_stop(lambda audio: None)
+        self.assertIs(rec._stream, stream, "永続ストリームが閉じられてしまった")
+
+        # 2 回目（同じストリーム・同じ callback）
+        rec._do_start(None)
+        self.assertIs(rec._stream, stream, "2 回目で別ストリームになっている")
+        stream.feed(indata)
+        second = rec._drain_audio()
+        # バグがあると session 不一致で callback が全データを捨て、ここが 0 になる
+        self.assertEqual(
+            len(second), 160,
+            "2 回目以降の録音で音声が拾えていない（session_id バグの再発）",
+        )
 
 
 if __name__ == "__main__":

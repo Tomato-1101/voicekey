@@ -70,20 +70,61 @@ final class AudioRecorder {
     private var appliedDefaultID: AudioDeviceID = 0
     /// 実 IO（AudioOutputUnitStart）の初回起動コストを前払い済みか
     private var ioWarmed = false
+    /// 構成変更による再起動のループ防止用カウンタと窓の開始時刻（queue 上からのみ触る）
+    private var recentRestarts = 0
+    private var restartWindowStart: TimeInterval = 0
 
     init() {
         // 録音中のマイク切断・サンプルレート変更等ではエンジンが静かに止まり、
-        // ユーザーが喋り続けても音声が入らない。通知で検知して呼び出し側へ伝える
+        // ユーザーが喋り続けても音声が入らない。通知で検知して継続/再開する。
+        // 注意: この通知は engine.start() 直後やフォーマット確定時にも頻繁に「誤発火」する
+        // （デバイスは何も変わっていない）。そのまま録音を止めると「開始した瞬間に
+        // 『マイク構成が変わった』で止まる」誤動作になるため、ハンドラ側で実際に
+        // 復帰が必要かを判断する（handleConfigurationChange）。
         NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
         ) { [weak self] _ in
-            guard let self else { return }
-            // 構成が変わったので次回 start() でデバイスを解決し直す
-            self.queue.async { self.appliedDeviceUID = nil }
-            if self.recording {
-                self.deviceChangedHandler?()
-            }
+            // 通知は任意スレッドで届く。エンジン操作を直列化する queue 上で処理する
+            self?.queue.async { self?.handleConfigurationChange() }
         }
+    }
+
+    /// AVAudioEngineConfigurationChange を処理する（queue 上）。
+    /// この通知は誤発火が多いため、録音中でもデバイスが生きていれば中断しない。
+    /// エンジンが本当に停止していたら同じデバイスで作り直して録音を継続し、
+    /// 復帰不能なときだけ呼び出し側へ確定通知する。
+    private func handleConfigurationChange() {
+        // 構成が変わった可能性 → 次回 start() ではデバイスを解決し直す
+        appliedDeviceUID = nil
+        guard recording else { return }
+
+        // エンジンがまだ動いている＝音声は途切れていない（最も多い誤発火パターン）。
+        // ここで止めると「デバイス未変更なのに録音が止まる」になるため何もしない。
+        if engine.isRunning { return }
+
+        // エンジンが停止＝音声が途切れた。短時間の再起動回数を数えてループを防ぎつつ、
+        // 現在のフォーマットでタップ・変換器を作り直して録音を継続する（samples は保持）。
+        let now = ProcessInfo.processInfo.systemUptime
+        if now - restartWindowStart > 2.0 {
+            restartWindowStart = now
+            recentRestarts = 0
+        }
+        if recentRestarts >= 3 {
+            recording = false
+            log.warning("オーディオ構成変更が頻発し録音を継続できません")
+            deviceChangedHandler?()
+            return
+        }
+        recentRestarts += 1
+
+        if installTapAndStart() {
+            log.info("構成変更で停止したエンジンを再開しました（録音継続）")
+            return
+        }
+        // 本当にデバイスが使えない（切断等）
+        recording = false
+        log.warning("録音中にオーディオ構成が変化し復帰できませんでした")
+        deviceChangedHandler?()
     }
 
     /// 次回 start() を高速化するウォームアップ。設定デバイスの適用とリソース確保に加え、
@@ -167,51 +208,60 @@ final class AudioRecorder {
             samples.removeAll(keepingCapacity: true)
             samplesLock.unlock()
 
-            let input = engine.inputNode
-
             // 入力デバイス設定の反映（エンジン停止中に行う必要があるが、start は常に
             // stop 後に呼ばれる）。設定が前回から変わっていなければ何もしない
             applyInputDevice()
 
-            let hwFormat = input.inputFormat(forBus: 0)
-            guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
-                // デバイス消失（切断後の再接続で ID が変わる）の可能性があるため次回は再解決する
-                appliedDeviceUID = nil
-                log.error("入力デバイスが見つかりません")
-                completion(false)
-                return
-            }
-
-            // 変換先: 16kHz モノラル Float32
-            guard let outFormat = AVAudioFormat(
-                commonFormat: .pcmFormatFloat32,
-                sampleRate: Self.sampleRate,
-                channels: 1,
-                interleaved: false
-            ), let converter = AVAudioConverter(from: hwFormat, to: outFormat) else {
-                log.error("音声フォーマット変換の初期化に失敗")
-                completion(false)
-                return
-            }
-
-            input.removeTap(onBus: 0)
-            input.installTap(onBus: 0, bufferSize: 2048, format: hwFormat) { [weak self] buffer, _ in
-                self?.handleBuffer(buffer, converter: converter, outFormat: outFormat)
-            }
-
-            do {
-                engine.prepare()
-                try engine.start()
+            if installTapAndStart() {
                 recording = true
-                log.info("録音開始 (HW: \(Int(hwFormat.sampleRate))Hz \(hwFormat.channelCount)ch)")
                 completion(true)
-            } catch {
-                // デバイス起因の失敗に備えて次回はデバイスを解決し直す
-                appliedDeviceUID = nil
-                log.error("録音開始に失敗: \(error.localizedDescription)")
-                input.removeTap(onBus: 0)
+            } else {
                 completion(false)
             }
+        }
+    }
+
+    /// 現在の入力フォーマットでタップと 16kHz 変換器を作り直し、エンジンを開始する。
+    /// queue 上・エンジン停止中に呼ぶ。成功で true（録音開始/継続が可能）。
+    /// samples はクリアしないため、構成変更からの再開でも既存の録音を継続できる。
+    @discardableResult
+    private func installTapAndStart() -> Bool {
+        let input = engine.inputNode
+        let hwFormat = input.inputFormat(forBus: 0)
+        guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
+            // デバイス消失（切断後の再接続で ID が変わる）の可能性があるため次回は再解決する
+            appliedDeviceUID = nil
+            log.error("入力デバイスが見つかりません")
+            return false
+        }
+
+        // 変換先: 16kHz モノラル Float32
+        guard let outFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: Self.sampleRate,
+            channels: 1,
+            interleaved: false
+        ), let converter = AVAudioConverter(from: hwFormat, to: outFormat) else {
+            log.error("音声フォーマット変換の初期化に失敗")
+            return false
+        }
+
+        input.removeTap(onBus: 0)
+        input.installTap(onBus: 0, bufferSize: 2048, format: hwFormat) { [weak self] buffer, _ in
+            self?.handleBuffer(buffer, converter: converter, outFormat: outFormat)
+        }
+
+        do {
+            engine.prepare()
+            try engine.start()
+            log.info("録音開始 (HW: \(Int(hwFormat.sampleRate))Hz \(hwFormat.channelCount)ch)")
+            return true
+        } catch {
+            // デバイス起因の失敗に備えて次回はデバイスを解決し直す
+            appliedDeviceUID = nil
+            input.removeTap(onBus: 0)
+            log.error("録音開始に失敗: \(error.localizedDescription)")
+            return false
         }
     }
 

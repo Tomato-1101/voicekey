@@ -343,9 +343,13 @@ class AudioRecorder:
             if self._stream is None:
                 self._open_stream(sd)
 
-            # ドレイン漏れ対策: セッションを進めてから queue をクリアする
-            # （逆順だと、クリア後にゾンビ callback の旧データが混入し得る）
-            self._session_id += 1
+            # 直前の残データを除去してから録音を始める。
+            # session_id は「ストリーム世代」を表し、ストリームを開くときだけ進める
+            # （_open_stream 参照）。録音のたびには進めない——進めてしまうと、開いた
+            # ときに採番された callback の my_session と食い違い、2 回目以降の録音で
+            # callback が全データを破棄してしまう（永続ストリームの録音不能バグ）。
+            # leak したゾンビ callback は recover() 時の世代繰り上げで弾かれるため、
+            # ここではクリアのみで足りる。
             self._callback_logged = False
             self._drain_audio()
 
@@ -411,7 +415,12 @@ class AudioRecorder:
 
     def _open_stream(self, sd) -> None:
         """ストリームを開く（制御スレッド上）。"""
-        callback = self._make_audio_callback(self._session_id + 1)
+        # 新しいストリーム世代を採番し、その callback だけを有効にする。
+        # この session_id はストリームの寿命の間ずっと有効で、録音の start/stop を
+        # 繰り返しても変わらない。leak した旧ストリームの callback は古い session の
+        # ままなので、recover() で世代が繰り上がった後は自動的に弾かれる。
+        self._session_id += 1
+        callback = self._make_audio_callback(self._session_id)
         stream_kwargs = {
             "samplerate": self.sample_rate,
             "channels": AUDIO_CHANNELS,
