@@ -23,6 +23,17 @@ voicekeyの変更履歴を記録するファイルです。
     - Windows: `config/constants.py` に接続先・パス定数、`utils/secrets.py` に
       `get_server_base_url()` / `get_device_id()` / `get_auth_session()` /
       `save_auth_session()` / `clear_auth_session()` を追加。`tests/test_secrets_auth.py`（9 ケース）追加。
+- **製品版バックエンドクライアントを追加**（Mac / Windows 両方・release ブランチ・段階2・まだ未配線）。
+  Phase 4 で実装済みの自社サーバー API を叩くクライアント。`Authorization: Bearer
+  <Supabase access_token>` ＋ `x-device-id` で認証し、(1) Deepgram 短命 JWT 取得、
+  (2) ElevenLabs 文字起こしプロキシ（multipart）、(3) Groq 整形プロキシ（text のみ・
+  モデル/プロンプトはサーバー固定）を提供する。非 200（401/403/409/429/503）は
+  ユーザー向け日本語メッセージのエラーに写す。既存の文字起こし経路への配線は段階3 で行う。
+  - **Technical Details**:
+    - Mac: `Core/BackendClient.swift`（新規。`fetchEphemeralToken` / `transcribeElevenLabs` /
+      `formatText` ＋ `BackendError`）。
+    - Windows: `core/backend_client.py`（新規。`fetch_ephemeral_token` / `transcribe_elevenlabs` /
+      `format_text` ＋ `BackendError`）。`tests/test_backend_client.py`（9 ケース・httpx.MockTransport）追加。
 - **使用実績（統計＋ゲーミフィケーション）機能を追加**（Mac / Windows 両方・両ブランチ共通）。
   音声入力を使うほど育つ「実績」を設定ウィンドウの新タブ「実績」に表示する。
   - **表示項目**: レベルと経験値（累計文字数 = XP）＋次レベルまでの進捗バー、推定節約時間
