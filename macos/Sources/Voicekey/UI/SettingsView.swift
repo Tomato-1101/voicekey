@@ -234,7 +234,6 @@ private struct SlotSettingsTab: View {
 /// すべて貼り付け後のローカル集計なので、音声入力の速度には影響しない。
 private struct StatsTab: View {
     @ObservedObject var stats: StatsStore
-    @State private var confirmingReset = false
 
     var body: some View {
         Form {
@@ -261,19 +260,9 @@ private struct StatsTab: View {
                 LabeledContent("音声入力した回数", value: "\(stats.data.totalSessions) 回")
                 LabeledContent("連続利用日数", value: streakText)
             }
-            Text("「推定節約時間」は、同じ文章をキーボードで打つ場合と比べて短縮できた時間の目安です（タイピングより遅くなる短い入力は 0 として数えます）。")
+            Text("「推定節約時間」は、同じ文章をキーボードで打つ場合と比べて短縮できた時間の目安です（タイピングより遅くなる短い入力は 0 として数えます）。実績はリセットできません。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-
-            Button("実績をリセット", role: .destructive) {
-                confirmingReset = true
-            }
-            .confirmationDialog("実績をリセットしますか？", isPresented: $confirmingReset) {
-                Button("リセット", role: .destructive) { stats.reset() }
-                Button("キャンセル", role: .cancel) {}
-            } message: {
-                Text("レベル・節約時間・連続日数がすべて 0 に戻ります。")
-            }
         }
         .formStyle(.grouped)
         .padding(.vertical, 8)

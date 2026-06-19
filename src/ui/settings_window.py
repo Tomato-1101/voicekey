@@ -928,17 +928,9 @@ class SettingsWindow(QWidget):
 
         layout.addWidget(_make_caption(
             "「推定節約時間」は、同じ文章をキーボードで打つ場合と比べて短縮できた時間の目安です"
-            "（タイピングより遅くなる短い入力は 0 として数えます）。実績はこの PC の中だけに保存されます。"
+            "（タイピングより遅くなる短い入力は 0 として数えます）。実績はリセットできません。"
         ))
         layout.addStretch()
-
-        footer = QHBoxLayout()
-        footer.addStretch()
-        reset_btn = QPushButton("実績をリセット")
-        reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        reset_btn.clicked.connect(self._reset_stats)
-        footer.addWidget(reset_btn)
-        layout.addLayout(footer)
 
         self._refresh_stats()
         return self._wrap_scroll(page)
@@ -970,21 +962,6 @@ class SettingsWindow(QWidget):
         if total >= 60:
             return f"{total // 60} 分 {total % 60} 秒"
         return f"{total} 秒"
-
-    def _reset_stats(self) -> None:
-        """確認の上で実績をリセットする（不可逆なので確認ダイアログを挟む）。"""
-        if self._stats is None:
-            return
-        reply = QMessageBox.question(
-            self,
-            "実績をリセット",
-            "レベル・節約時間・連続日数がすべて 0 に戻ります。よろしいですか？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply == QMessageBox.StandardButton.Yes:
-            self._stats.reset()
-            self._refresh_stats()
 
     def _create_history_page(self) -> QWidget:
         """履歴ページを作成する（直近の音声入力をクリックで再コピー）。"""
