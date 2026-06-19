@@ -7,6 +7,22 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Mac 1.2.0 / Windows 1.2.0] - 2026-06-18
 
 ### Added
+- **製品版バックエンド接続の基盤を追加**（Mac / Windows 両方・release ブランチ・まだ未配線）。
+  製品版が長期 API キーをアプリに同梱せず、自社サーバー経由で短命トークン／プロキシを使う
+  構成（Phase 5 アプリ統合）の土台。現時点では呼び出し経路が未接続のため、ユーザーから
+  見える挙動は変わらない（段階的コミットの最初の 1 段）。
+  - サーバー接続先の定数（配布 = https://voicekey.vercel.app / 開発 = http://localhost:3000、
+    環境変数 `VOICEKEY_SERVER_URL` で上書き可）と API パス（短命 JWT 発行 / ElevenLabs
+    プロキシ / Groq 整形プロキシ）。
+  - 端末固有 ID（device_id。識別子であって認証子ではない。サーバー側の同時台数上限・
+    悪用検知に使う）を Keychain / Credential Manager に生成・保存。
+  - Supabase 認証セッション（access_token / refresh_token / expires_at）の保存・取得・削除。
+  - **Technical Details**:
+    - Mac: `Config/ServerConfig.swift`（新規）、`Core/Keychain.swift` に `deviceId()` /
+      `AuthSession` / `saveAuthSession` / `authSession` / `clearAuthSession` を追加。
+    - Windows: `config/constants.py` に接続先・パス定数、`utils/secrets.py` に
+      `get_server_base_url()` / `get_device_id()` / `get_auth_session()` /
+      `save_auth_session()` / `clear_auth_session()` を追加。`tests/test_secrets_auth.py`（9 ケース）追加。
 - **使用実績（統計＋ゲーミフィケーション）機能を追加**（Mac / Windows 両方・両ブランチ共通）。
   音声入力を使うほど育つ「実績」を設定ウィンドウの新タブ「実績」に表示する。
   - **表示項目**: レベルと経験値（累計文字数 = XP）＋次レベルまでの進捗バー、推定節約時間

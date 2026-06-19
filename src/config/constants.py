@@ -16,6 +16,21 @@ APP_NAME: str = "voicekey"
 APP_VERSION: str = "1.2.0"
 
 # ============================================
+# 自社バックエンド（製品版: 短命キー発行・プロキシ）
+# ============================================
+# 製品版（release）は長期 API キーをアプリに同梱せず、自社サーバーがサブスク
+# 有効性を検証して Deepgram の短命トークンを発行し、ElevenLabs/Groq はサーバー
+# プロキシ経由で叩く。ここはその接続先定数（ユーザーが変える設定ではないため
+# settings.yaml ではなくコード定数として持つ）。実 URL の解決は環境（配布/開発）
+# 依存のため utils.secrets.get_server_base_url() で行う。
+PRODUCT_SERVER_URL: str = "https://voicekey.vercel.app"  # 配布ビルドの既定接続先
+LOCAL_SERVER_URL: str = "http://localhost:3000"          # 開発ビルドの既定接続先
+# 自社バックエンドの API パス（get_server_base_url() と結合して使う）
+API_EPHEMERAL_PATH: str = "/api/v1/auth/ephemeral"                # Deepgram 短命 JWT 発行
+API_ELEVENLABS_PROXY_PATH: str = "/api/v1/transcribe/elevenlabs"  # 正確性モードのプロキシ
+API_FORMAT_PROXY_PATH: str = "/api/v1/format"                     # Groq テキスト整形プロキシ
+
+# ============================================
 # 音声設定
 # ============================================
 SAMPLE_RATE: int = 16000      # サンプリングレート（Hz）

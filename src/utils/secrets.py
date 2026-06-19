@@ -7,7 +7,10 @@ Manager）へ保存・読み出しするための薄いラッパー。`keyring` 
 （呼び出し側で環境変数フォールバックを使う想定）。
 """
 
+import json
+import os
 import threading
+import uuid
 from typing import Dict, Optional
 
 from .logger import get_logger
@@ -20,6 +23,13 @@ SERVICE_GROQ: str = "voicekey.Groq"
 SERVICE_OPENAI: str = "voicekey.OpenAI"
 SERVICE_ELEVENLABS: str = "voicekey.ElevenLabs"
 SERVICE_DEEPGRAM: str = "voicekey.Deepgram"
+
+# 製品版の認証基盤用エントリ。
+# DeviceId は「端末固有の識別子」（認証子ではない）。台数制限・悪用検知のために使う。
+# Auth は Supabase の認証セッション（access_token / refresh_token / expires_at）を
+# JSON 文字列で 1 エントリに保存する。
+SERVICE_DEVICE_ID: str = "voicekey.DeviceId"
+SERVICE_AUTH: str = "voicekey.Auth"
 
 # ユーザー名は固定。アプリ単一ユーザー前提のため、エントリ識別はサービス名のみで足りる。
 _USERNAME: str = "default"
@@ -161,4 +171,124 @@ def delete_api_key(service: str) -> bool:
         # PasswordDeleteError は「そもそも未登録」の場合にも飛ぶので info に留める
         logger.info(f"keyring からの削除をスキップ ({service}): {e}")
         return True
+    return True
+
+
+# ============================================
+# 製品版バックエンド接続・認証（device_id / Supabase セッション）
+# ============================================
+
+def get_server_base_url() -> str:
+    """
+    自社バックエンド（短命キー発行・プロキシ）のベース URL を返す。
+
+    配布ビルドは本番、開発ビルドは localhost を既定とする。preview 検証などで
+    切り替えたい場合は環境変数 VOICEKEY_SERVER_URL で上書きできる。
+
+    Returns:
+        末尾スラッシュを除いたベース URL（例 "https://voicekey.vercel.app"）
+    """
+    override = os.environ.get("VOICEKEY_SERVER_URL")
+    if override:
+        return override.rstrip("/")
+    # 循環 import を避けるため遅延 import（constants は secrets に依存しない）
+    from ..config.constants import LOCAL_SERVER_URL, PRODUCT_SERVER_URL
+
+    return PRODUCT_SERVER_URL if is_dist_build() else LOCAL_SERVER_URL
+
+
+def get_device_id() -> str:
+    """
+    端末固有 ID を取得する（無ければ生成して保存）。
+
+    これは識別子であって認証子ではない（認証は Supabase JWT で行う）。
+    サーバー側の同時台数上限・悪用検知のために使う。keyring が使えない環境
+    （テスト/ヘッドレス）では永続化できないため、その都度ランダム値を返す。
+
+    Returns:
+        端末固有 ID（UUID4 の 32 桁 hex）
+    """
+    if _keyring_module is not None:
+        try:
+            existing = _keyring_module.get_password(SERVICE_DEVICE_ID, _USERNAME)
+            if existing:
+                return existing
+        except Exception as e:
+            logger.warning(f"device_id 読み込みに失敗: {e}")
+        new_id = uuid.uuid4().hex
+        try:
+            _keyring_module.set_password(SERVICE_DEVICE_ID, _USERNAME, new_id)
+        except Exception as e:
+            logger.warning(f"device_id 保存に失敗（今回限りの値を使用）: {e}")
+        return new_id
+    # keyring 不在: 永続化できないので毎回生成（台数制限に当たり得るが致命ではない）
+    return uuid.uuid4().hex
+
+
+def get_auth_session() -> Optional[dict]:
+    """
+    保存済みの認証セッションを取得する。
+
+    Returns:
+        {"access_token", "refresh_token", "expires_at"} の dict。未保存・破損時は None
+    """
+    if _keyring_module is None:
+        return None
+    try:
+        raw = _keyring_module.get_password(SERVICE_AUTH, _USERNAME)
+    except Exception as e:
+        logger.warning(f"認証セッション読み込みに失敗: {e}")
+        return None
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        # 壊れた JSON は未ログイン扱い（再ログインで上書きされる）
+        return None
+
+
+def save_auth_session(access_token: str, refresh_token: str, expires_at: float) -> bool:
+    """
+    認証セッションを保存する。
+
+    Args:
+        access_token: Supabase の access_token（短命）
+        refresh_token: 失効後の再発行に使う refresh_token
+        expires_at: access_token の失効時刻（UNIX エポック秒）
+
+    Returns:
+        保存に成功した場合 True
+    """
+    if _keyring_module is None:
+        logger.warning("keyring が利用できないため認証セッションを保存できません")
+        return False
+    payload = json.dumps(
+        {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_at": expires_at,
+        }
+    )
+    try:
+        _keyring_module.set_password(SERVICE_AUTH, _USERNAME, payload)
+    except Exception as e:
+        logger.warning(f"認証セッション保存に失敗: {e}")
+        return False
+    return True
+
+
+def clear_auth_session() -> bool:
+    """
+    認証セッションを削除する（ログアウト時）。device_id は識別子なので残す。
+
+    Returns:
+        削除成功または既に未保存の場合 True
+    """
+    if _keyring_module is None:
+        return False
+    try:
+        _keyring_module.delete_password(SERVICE_AUTH, _USERNAME)
+    except Exception as e:
+        logger.info(f"認証セッション削除をスキップ: {e}")
     return True

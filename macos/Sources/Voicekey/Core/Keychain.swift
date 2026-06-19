@@ -9,10 +9,30 @@
 import Foundation
 import Security
 
+/// 保存する認証セッション（Supabase）。
+/// expiresAt は access_token の失効時刻（UNIX エポック秒）。
+/// JSON のフィールド名は Windows 版（secrets.py）と揃える（snake_case）。
+struct AuthSession: Codable {
+    var accessToken: String
+    var refreshToken: String
+    var expiresAt: Double
+
+    enum CodingKeys: String, CodingKey {
+        case accessToken = "access_token"
+        case refreshToken = "refresh_token"
+        case expiresAt = "expires_at"
+    }
+}
+
 enum Keychain {
 
     /// Python 版 keyring と互換のアカウント名
     private static let account = "default"
+
+    /// 端末固有 ID 用サービス（識別子。認証子ではない）
+    private static let deviceIdService = "voicekey.DeviceId"
+    /// 認証セッション（Supabase JWT）用サービス
+    private static let authService = "voicekey.Auth"
 
     /// バックエンドごとのサービス識別子（Python 版と同一）
     static func service(for backend: Backend) -> String {
@@ -99,6 +119,47 @@ enum Keychain {
     /// キーが設定済みかどうか
     static func hasApiKey(for backend: Backend) -> Bool {
         apiKey(for: backend) != nil
+    }
+
+    // MARK: - 製品版バックエンド接続・認証（device_id / Supabase セッション）
+
+    /// 端末固有 ID を取得する（無ければ生成して保存）。
+    /// これは識別子であって認証子ではない（認証は Supabase JWT で行う）。
+    /// サーバー側の同時台数上限・悪用検知のために使う。
+    static func deviceId() -> String {
+        if let existing = read(service: deviceIdService) {
+            return existing
+        }
+        let newId = UUID().uuidString
+        _ = write(service: deviceIdService, value: newId)
+        return newId
+    }
+
+    /// 保存済みの認証セッションを取得する（未保存・破損時は nil）
+    static func authSession() -> AuthSession? {
+        guard let json = read(service: authService),
+              let data = json.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(AuthSession.self, from: data)
+    }
+
+    /// 認証セッションを保存する
+    @discardableResult
+    static func saveAuthSession(_ session: AuthSession) -> Bool {
+        guard let data = try? JSONEncoder().encode(session),
+              let json = String(data: data, encoding: .utf8) else { return false }
+        return write(service: authService, value: json)
+    }
+
+    /// 認証セッションを削除する（ログアウト時）。device_id は識別子なので残す
+    @discardableResult
+    static func clearAuthSession() -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: authService,
+            kSecAttrAccount as String: account,
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        return status == errSecSuccess || status == errSecItemNotFound
     }
 
     // MARK: - 低レベル操作
