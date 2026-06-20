@@ -64,6 +64,16 @@ voicekeyの変更履歴を記録するファイルです。
       `tests/test_auth_client.py` に 11 件追加（実 keyring・実通信に触れない）。
     - Mac: `Core/AuthClient.swift` を新規追加（同名の API・`AuthError` 列挙）。`Config/ServerConfig.swift`
       に `authAppPath` / `exchangePath` / `refreshPath` を追加。
+- **ブラウザ経由ログインの司令塔（deep link 解析・state 照合・交換）を追加（段階4・増分2／両OS・release・休眠中）**。
+  ログイン開始（state 生成 → ログイン URL）と deep link 受信（`voicekey://auth?code=&state=` の解析 →
+  CSRF 用 state 照合 → コード交換）を 1 か所に束ねた。保留 state はログイン開始〜受信の間だけ保持し、
+  戻ってきた state が一致しなければ交換しない／一度使った state は消費して再利用を防ぐ。
+  **URL スキーム登録（Info.plist / レジストリ）と OS からの URL 受信配線・ログイン UI は増分3**。
+  - **Technical Details**:
+    - Windows: `core/login_coordinator.py` を新規追加（`LoginCoordinator`: `begin_login` / `complete_login` /
+      `logout` / `parse_auth_url`）。Qt 非依存（ネットワークを伴う `complete_login` は UI 側でワーカー実行する想定）。
+      `tests/test_login_coordinator.py` に 14 件追加（解析・state 不一致/消費・交換失敗）。
+    - Mac: `Core/LoginCoordinator.swift` を新規追加（`ObservableObject`・`Status` 列挙・`parseAuthURL` 純粋関数）。
 
 ### Fixed
 - **（Windows）2 回目以降の録音でマイク音声が拾えなくなるバグを修正**。永続ストリームの
