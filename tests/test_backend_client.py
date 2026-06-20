@@ -165,5 +165,53 @@ class TestFormat(_Base):
         self.assertEqual(cm.exception.status, 502)
 
 
+class TestSubmitFeedback(_Base):
+    """フィードバック送信（認証は任意）を検証する。"""
+
+    def test_logged_in_attaches_bearer(self):
+        """ログイン済みなら Bearer・device_id・platform を付け、本文＋版を送る。"""
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["path"] = request.url.path
+            seen["method"] = request.method
+            seen["auth"] = request.headers.get("authorization")
+            seen["device"] = request.headers.get("x-device-id")
+            seen["platform"] = request.headers.get("x-platform")
+            seen["body"] = request.content
+            return httpx.Response(200, json={"ok": True})
+
+        _install_mock(handler)
+        backend_client.submit_feedback("不具合の報告です")
+        self.assertEqual(seen["path"], "/api/v1/feedback")
+        self.assertEqual(seen["method"], "POST")
+        self.assertEqual(seen["auth"], "Bearer tok-abc")
+        self.assertEqual(seen["device"], "dev-123")
+        self.assertEqual(seen["platform"], "windows")
+        self.assertIn("不具合の報告です".encode(), seen["body"])
+        self.assertIn(b"app_version", seen["body"])
+
+    def test_not_logged_in_sends_anonymously(self):
+        """未ログインでも Authorization 無しで送信できる（匿名）。"""
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["auth"] = request.headers.get("authorization")
+            seen["device"] = request.headers.get("x-device-id")
+            return httpx.Response(200, json={"ok": True})
+
+        _install_mock(handler)
+        with mock.patch.object(backend_client.secrets, "get_auth_session", return_value=None):
+            backend_client.submit_feedback("匿名の要望")
+        self.assertIsNone(seen["auth"])         # Bearer は付かない
+        self.assertEqual(seen["device"], "dev-123")  # device_id は付く
+
+    def test_failure_raises(self):
+        _install_mock(lambda r: httpx.Response(429, json={"error": "too many"}))
+        with self.assertRaises(backend_client.BackendError) as cm:
+            backend_client.submit_feedback("x")
+        self.assertEqual(cm.exception.status, 429)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -28,6 +28,8 @@ enum ServerConfig {
     static let elevenLabsProxyPath = "/api/v1/transcribe/elevenlabs"
     /// Groq テキスト整形プロキシ
     static let formatProxyPath = "/api/v1/format"
+    /// アプリ内フィードバック送信（認証は任意＝未ログインでも送れる）
+    static let feedbackPath = "/api/v1/feedback"
 
     /// ベース URL とパスを結合した完全な URL を返す
     static func url(_ path: String) -> URL? {

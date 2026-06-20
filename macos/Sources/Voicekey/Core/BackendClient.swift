@@ -108,6 +108,29 @@ enum BackendClient {
         return (try? JSONDecoder().decode(Resp.self, from: data))?.text ?? text
     }
 
+    /// アプリ内フィードバックを自社サーバーへ送る（認証は任意＝未ログインでも送れる）。
+    /// ログイン済みなら Bearer を付けて user_id に紐付ける。サブスク有効性は問わない。
+    /// 失敗は throw で返す（呼び出し側がユーザーに表示する）。
+    static func submitFeedback(_ message: String) async throws {
+        guard let url = ServerConfig.url(ServerConfig.feedbackPath) else {
+            throw BackendError.invalidResponse
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue(Keychain.deviceId(), forHTTPHeaderField: "x-device-id")
+        req.setValue("mac", forHTTPHeaderField: "x-platform")
+        // ログイン済みなら Bearer を付ける（未ログインでも送れるよう必須にしない）
+        if let auth = Keychain.authSession() {
+            req.setValue("Bearer \(auth.accessToken)", forHTTPHeaderField: "Authorization")
+        }
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        req.httpBody = try? JSONSerialization.data(
+            withJSONObject: ["message": message, "app_version": version]
+        )
+        _ = try await send(req)
+    }
+
     // MARK: - 内部
 
     /// 認証ヘッダ（Bearer access_token + device_id + platform）付きリクエストを組み立てる

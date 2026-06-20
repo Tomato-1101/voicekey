@@ -102,6 +102,7 @@ final class StatusItemController: NSObject {
     private weak var controller: AppController?
     private var stateObservation: AnyCancellable?
     private var settingsWindow: NSWindow?
+    private var feedbackWindow: NSWindow?
 
     init(controller: AppController) {
         self.controller = controller
@@ -168,15 +169,31 @@ final class StatusItemController: NSObject {
         UpdaterController.shared.checkForUpdates()
     }
 
-    /// フィードバックをメールで送る（ベータ配布のフィードバック導線。
-    /// 件数が増えたら Google フォーム等の URL に差し替える）
+    /// フィードバック入力フォームを開く（本文を自社サーバーへ送信する）。
+    /// ログイン済みならアカウントに紐づき、未ログインでも匿名で送れる。
     @objc private func sendFeedback() {
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
-        let subject = "voicekey フィードバック (v\(version))"
-            .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        if let url = URL(string: "mailto:zhaounhaku@gmail.com?subject=\(subject)") {
-            NSWorkspace.shared.open(url)
-        }
+        showFeedback()
+    }
+
+    /// フィードバックウィンドウを表示する（開くたびに新規生成して状態をリセットする）
+    private func showFeedback() {
+        // 既存ウィンドウがあれば閉じてから作り直す（前回の送信済み状態を残さない）
+        feedbackWindow?.close()
+        let hosting = NSHostingController(
+            rootView: FeedbackView(onClose: { [weak self] in
+                self?.feedbackWindow?.close()
+                self?.feedbackWindow = nil
+            })
+        )
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "フィードバック"
+        window.styleMask = [.titled, .closable]
+        window.isReleasedWhenClosed = false
+        window.center()
+        feedbackWindow = window
+        // アクセサリアプリはそのままだと前面に出ないため明示的にアクティブ化する
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
     }
 
     /// 設定ウィンドウを表示する

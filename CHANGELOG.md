@@ -30,6 +30,23 @@ voicekeyの変更履歴を記録するファイルです。
       （`connect(auth:)` 抽出＋ JWT 経路＋退避バッファ）、`Core/Transcriber.swift`
       （`transcribeElevenLabsViaProxy` / `transcribeDeepgramViaJWT`／`send`・`encodeAudio` 抽出）、
       `Core/TextFormatter.swift`（整形プロキシ）に配線。
+- **アプリ内フィードバック送信フォームを追加**（Mac / Windows 両方・release ブランチ）。
+  メニュー／トレイの「フィードバックを送る…」を、これまでの `mailto:`（既定メーラー起動）から
+  **アプリ内の入力フォーム → 自社サーバー送信**へ変更した。ログイン済みならアカウントに紐づき、
+  未ログイン（無料ベータ・匿名）でも `device_id` + アプリバージョンで送れる（サブスク有効性は問わない）。
+  送信成功／失敗を画面に明示する（誤送信防止より「送れた確証」を優先）。受信は管理画面のみ
+  （外部通知は付けない）＝サーバーは Supabase の `feedback` テーブルに保存し、`/admin/feedback` で一覧する。
+  - サーバー側は別リポ `voicekey-site`（`feedback` テーブル migration 0013 ／ `POST /api/v1/feedback`
+    ／ 管理一覧 `/admin/feedback`）。**サーバーのデプロイと Supabase への migration 適用が済むまでは
+    実送信は成立しない**（アプリ側のフォーム表示・入力は動作する）。
+  - **Technical Details**:
+    - Windows: `core/backend_client.py` に `submit_feedback()`（認証は任意）。`ui/feedback_dialog.py`
+      （`QDialog` ＋ 送信ワーカー `QThread`）を新規追加し、`ui/system_tray.py` の `_send_feedback`
+      を mailto からダイアログ起動へ変更（不要になった `QUrl` / `QDesktopServices` / `APP_VERSION`
+      の import を削除）。`constants.API_FEEDBACK_PATH` を追加。`test_backend_client` に送信テスト 3 件追加。
+    - Mac: `Core/BackendClient.swift` に `submitFeedback(_:)`（認証は任意）。`UI/FeedbackView.swift`
+      （SwiftUI フォーム）を新規追加し、`VoicekeyApp.swift` の `sendFeedback` を mailto から
+      フィードバックウィンドウ表示へ変更。`Config/ServerConfig.swift` に `feedbackPath` を追加。
 
 ### Fixed
 - **（Windows）2 回目以降の録音でマイク音声が拾えなくなるバグを修正**。永続ストリームの

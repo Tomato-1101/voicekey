@@ -159,3 +159,31 @@ def format_text(text: str) -> str:
     headers = {**_auth_headers(), "Content-Type": "application/json"}
     resp = _post(constants.API_FORMAT_PROXY_PATH, headers=headers, json={"text": text})
     return resp.json().get("text", text) or text
+
+
+def submit_feedback(message: str) -> None:
+    """アプリ内フィードバックを自社サーバーへ送る（認証は任意）。
+
+    ログイン済みなら Bearer を付けて user_id に紐付け、未ログインでも
+    device_id + app_version で送れる（サブスク有効性は問わない＝誰でも要望を出せる）。
+
+    Args:
+        message: フィードバック本文
+
+    Raises:
+        BackendError: 通信失敗・非 200（呼び出し側でユーザーに表示する）
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "x-device-id": secrets.get_device_id(),
+        "x-platform": "windows",
+    }
+    # ログイン済みなら Bearer を付ける（未ログインでも送れるよう必須にしない）
+    session = secrets.get_auth_session()
+    if session and session.get("access_token"):
+        headers["Authorization"] = f"Bearer {session['access_token']}"
+    _post(
+        constants.API_FEEDBACK_PATH,
+        headers=headers,
+        json={"message": message, "app_version": constants.APP_VERSION},
+    )

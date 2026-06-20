@@ -7,11 +7,10 @@
 
 from typing import Optional, Union
 
-from PySide6.QtCore import Signal, Qt, QUrl
+from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import (
     QBrush,
     QColor,
-    QDesktopServices,
     QIcon,
     QPainter,
     QPen,
@@ -20,7 +19,6 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
-from ..config.constants import APP_VERSION
 from ..config.types import AppState
 from ..platform import PlatformAdapter, get_platform_adapter
 
@@ -134,10 +132,15 @@ class SystemTray(QSystemTrayIcon):
         )
 
     def _send_feedback(self) -> None:
-        """フィードバック用のメール作成画面を開く（件数が増えたらフォーム URL に差し替え）。"""
-        QDesktopServices.openUrl(
-            QUrl(f"mailto:zhaounhaku@gmail.com?subject=voicekey フィードバック (Windows v{APP_VERSION})")
-        )
+        """フィードバック入力ダイアログを開く（本文を自社サーバーへ送信する）。
+
+        ログイン済みならアカウントに紐づき、未ログインでも匿名で送れる。
+        遅延 import で起動コスト・循環 import を避ける。
+        """
+        from .feedback_dialog import FeedbackDialog
+
+        dialog = FeedbackDialog()
+        dialog.exec()
 
     def set_status(self, status: Union[str, AppState]) -> None:
         """

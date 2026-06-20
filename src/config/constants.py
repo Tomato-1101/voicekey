@@ -29,6 +29,7 @@ LOCAL_SERVER_URL: str = "http://localhost:3000"          # 開発ビルドの既
 API_EPHEMERAL_PATH: str = "/api/v1/auth/ephemeral"                # Deepgram 短命 JWT 発行
 API_ELEVENLABS_PROXY_PATH: str = "/api/v1/transcribe/elevenlabs"  # 正確性モードのプロキシ
 API_FORMAT_PROXY_PATH: str = "/api/v1/format"                     # Groq テキスト整形プロキシ
+API_FEEDBACK_PATH: str = "/api/v1/feedback"                       # アプリ内フィードバック送信
 
 # ============================================
 # 音声設定
