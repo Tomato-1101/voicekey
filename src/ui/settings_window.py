@@ -53,6 +53,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import ConfigManager, HotkeyMode, TranscriptionBackend
+from ..config.constants import APP_VERSION
 from ..core.audio_recorder import AudioRecorder
 from ..core.history import MAX_ITEMS as HISTORY_MAX_ITEMS, HistoryStore
 from ..core.stats import StatsStore
@@ -530,6 +531,7 @@ class SettingsWindow(QWidget):
         history: Optional[HistoryStore] = None,
         stats: Optional[StatsStore] = None,
         config_manager: Optional[ConfigManager] = None,
+        updater=None,
     ) -> None:
         """
         設定ウィンドウを初期化する。
@@ -539,11 +541,13 @@ class SettingsWindow(QWidget):
             history: 音声入力履歴ストア（「履歴」タブで表示・再コピーする）
             stats: 使用実績ストア（「実績」タブで表示する）
             config_manager: アプリ本体と共有する設定マネージャ（None なら単体生成）
+            updater: 自動アップデータ（「バージョン情報」タブで更新確認/実行に使う。None なら無効表示）
         """
         super().__init__()
         self._platform = platform_adapter or get_platform_adapter()
         self._history = history
         self._stats = stats
+        self._updater = updater
 
         # DIST ビルドでは API キーページを作らないため、ページ生成前に空で初期化しておく
         # （_load_current_settings が無条件に _refresh_api_key_status を呼ぶ）
@@ -635,6 +639,8 @@ class SettingsWindow(QWidget):
         self._history_page_index = 4
         # アカウント（ブラウザ経由ログイン）。製品版の中核機能なので常時表示する。
         page_defs.append(("アカウント", self._create_account_page()))
+        # バージョン情報（現在版表示・更新確認・更新検知時の「今すぐ更新する」）。常時表示。
+        page_defs.append(("バージョン情報", self._create_version_page()))
         # 配布ビルドは埋め込みキーで動くため、API キーページは出さない（テスターの混乱防止）
         if not secrets.is_dist_build():
             page_defs.append(("API キー", self._create_api_keys_page()))
@@ -1302,6 +1308,105 @@ class SettingsWindow(QWidget):
             self._login_btn.setEnabled(True)
             self._logout_btn.setVisible(False)
             self._account_poll.stop()
+
+    # ------------------------------------------------------------------
+    # バージョン情報（自動アップデート）
+    # ------------------------------------------------------------------
+
+    def _create_version_page(self) -> QWidget:
+        """バージョン情報ページを作成する（現在版・更新確認・更新検知時の更新ボタン）。"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(12)
+        layout.setContentsMargins(24, 8, 24, 24)
+
+        card, cl = _make_card()
+        _add_row(cl, "現在のバージョン", QLabel(APP_VERSION))
+        # 更新状態（最新です / 確認中… / 新バージョン利用可能 / 失敗）
+        self._version_status = QLabel("「アップデートを確認」を押すと最新版を確認します")
+        self._version_status.setObjectName("caption")
+        _add_row(cl, "更新状態", self._version_status)
+        layout.addWidget(card)
+
+        # ボタン行（手動確認 + 検知時のみ出る「今すぐ更新する」）
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        self._check_update_btn = QPushButton("アップデートを確認")
+        self._check_update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._check_update_btn.clicked.connect(self._on_check_update_clicked)
+        self._update_now_btn = QPushButton("今すぐ更新する")
+        self._update_now_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._update_now_btn.setProperty("class", "primary")
+        self._update_now_btn.clicked.connect(self._on_update_now_clicked)
+        self._update_now_btn.setVisible(False)  # 新バージョン検知時のみ表示
+        btn_row.addWidget(self._check_update_btn)
+        btn_row.addWidget(self._update_now_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        layout.addWidget(_make_caption(
+            "新しいバージョンが見つかると「今すぐ更新する」ボタンが表示されます。"
+            "更新は起動時と 1 日ごとに自動で確認されます。"
+        ))
+        layout.addStretch()
+
+        # updater のチェック結果を表示へ反映（ウィンドウを開いたまま検知しても更新される）
+        if self._updater is not None:
+            self._updater.update_available.connect(self._on_update_available)
+            self._updater.up_to_date.connect(self._on_up_to_date)
+            self._updater.update_failed.connect(self._on_update_failed)
+        else:
+            # 開発実行などで updater が無い場合は確認ボタンを無効化する
+            self._check_update_btn.setEnabled(False)
+            self._version_status.setText("このビルドでは自動アップデートは利用できません")
+
+        return self._wrap_scroll(page)
+
+    def _on_check_update_clicked(self) -> None:
+        """「アップデートを確認」: 手動チェックを開始し、待機中であることを表示する。"""
+        if self._updater is None:
+            return
+        self._version_status.setText("確認中…")
+        self._version_status.setStyleSheet(MacTheme.status_muted_style())
+        self._updater.check_now(manual=True)
+
+    def _on_update_available(self, version: str) -> None:
+        """新バージョン検知: 状態表示と「今すぐ更新する」ボタンを出す。"""
+        if not hasattr(self, "_version_status"):
+            return
+        self._version_status.setText(f"新しいバージョン {version} が利用可能です")
+        self._version_status.setStyleSheet(MacTheme.status_ok_style(self._is_dark_mode))
+        self._update_now_btn.setVisible(True)
+        self._update_now_btn.setEnabled(True)
+        self._update_now_btn.setText("今すぐ更新する")
+
+    def _on_up_to_date(self) -> None:
+        """最新版だった場合の表示。"""
+        if not hasattr(self, "_version_status"):
+            return
+        self._version_status.setText("最新です")
+        self._version_status.setStyleSheet(MacTheme.status_ok_style(self._is_dark_mode))
+        self._update_now_btn.setVisible(False)
+
+    def _on_update_failed(self, message: str) -> None:
+        """更新確認/ダウンロードの失敗表示。"""
+        if not hasattr(self, "_version_status"):
+            return
+        self._version_status.setText(message or "更新に失敗しました")
+        self._version_status.setStyleSheet(MacTheme.status_warn_style(self._is_dark_mode))
+        # 失敗したら再試行できるよう更新ボタンを戻す
+        self._update_now_btn.setEnabled(True)
+        self._update_now_btn.setText("今すぐ更新する")
+
+    def _on_update_now_clicked(self) -> None:
+        """「今すぐ更新する」: インストーラの DL とサイレント実行を開始する。"""
+        if self._updater is None:
+            return
+        self._update_now_btn.setEnabled(False)
+        self._update_now_btn.setText("更新を準備中…")
+        self._version_status.setText("更新を準備中… 完了するとアプリが再起動します")
+        self._version_status.setStyleSheet(MacTheme.status_muted_style())
+        self._updater.download_and_install()
 
     # ------------------------------------------------------------------
     # 入力デバイス

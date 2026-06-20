@@ -64,11 +64,13 @@ class Updater(QObject):
 
     Signals:
         update_available: 新バージョン検知（引数: バージョン文字列）
+        up_to_date: 最新版だった（手動チェック時に「最新です」と表示するため）
         update_failed: ダウンロード/検証の失敗（引数: エラーメッセージ）
         quit_requested: インストーラ起動後のアプリ終了要求
     """
 
     update_available = Signal(str)
+    up_to_date = Signal()
     update_failed = Signal(str)
     quit_requested = Signal()
 
@@ -88,9 +90,16 @@ class Updater(QObject):
         self._timer.start(CHECK_INTERVAL_MS)
         logger.info("自動アップデートの定期チェックを開始しました")
 
-    def check_now(self) -> None:
-        """バージョンチェックをバックグラウンドで実行する。"""
-        threading.Thread(target=self._check, daemon=True, name="UpdateCheck").start()
+    def check_now(self, manual: bool = False) -> None:
+        """バージョンチェックをバックグラウンドで実行する。
+
+        Args:
+            manual: 設定画面の「アップデートを確認」から手動実行された場合 True。
+                手動時はネットワーク失敗も update_failed で通知する（定期チェック時はログのみ）。
+        """
+        threading.Thread(
+            target=self._check, args=(manual,), daemon=True, name="UpdateCheck"
+        ).start()
 
     def download_and_install(self) -> None:
         """
@@ -106,8 +115,12 @@ class Updater(QObject):
 
     # ----- 内部処理（バックグラウンドスレッド） -----
 
-    def _check(self) -> None:
-        """version.json を取得して現行バージョンと比較する。"""
+    def _check(self, manual: bool = False) -> None:
+        """version.json を取得して現行バージョンと比較する。
+
+        Args:
+            manual: 手動チェック（設定画面）からの実行か。失敗通知の有無を分ける。
+        """
         try:
             with urllib.request.urlopen(VERSION_URL, timeout=15) as res:
                 # version.json は Windows PowerShell が BOM 付き UTF-8 で書き出すことがある。
@@ -121,9 +134,13 @@ class Updater(QObject):
                 self.update_available.emit(latest)
             else:
                 logger.info(f"アップデートなし（最新 {latest} / 現行 {APP_VERSION}）")
+                self.up_to_date.emit()
         except Exception as e:
-            # ネットワーク断やフィード未公開は正常系に近いので警告ログのみ
+            # ネットワーク断やフィード未公開は正常系に近いので、定期チェックでは警告ログのみ。
+            # ただし手動チェックは「押したのに無反応」を避けるため失敗を UI に通知する。
             logger.warning(f"アップデート確認に失敗: {e}")
+            if manual:
+                self.update_failed.emit("更新の確認に失敗しました。ネットワーク接続をご確認ください")
 
     def _install(self) -> None:
         """インストーラを %TEMP% にダウンロードし、検証してサイレント起動する。"""

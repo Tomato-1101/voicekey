@@ -210,6 +210,10 @@ class VoicekeyApp(QObject):
         self._stats = StatsStore()
 
         # --- UI ---
+        # 自動アップデータは設定ウィンドウ（「バージョン情報」タブ）にも渡すため先に生成する。
+        # 配布ビルドのみ定期チェックが動く（start() が is_dist_build を見る）。
+        self._updater = Updater(parent=self)
+
         # 設定ウィンドウには本体と同じ ConfigManager を渡す（二重生成を避け保存値を即共有）。
         # 保存完了シグナルで設定変更をその場で適用する（mtime ポーリングの遅延を待たない）
         self._settings_window = SettingsWindow(
@@ -217,6 +221,7 @@ class VoicekeyApp(QObject):
             history=self._history,
             stats=self._stats,
             config_manager=self._config,
+            updater=self._updater,
         )
         self._settings_window.settings_saved.connect(self._apply_config_changes)
         self._tray = SystemTray(platform_adapter=self._platform)
@@ -225,8 +230,7 @@ class VoicekeyApp(QObject):
         self._tray.quit_app.connect(self._quit_app)
         self.status_changed.connect(self._tray.set_status)
 
-        # 自動アップデート（配布ビルドのみ動作。通知・インストールはトレイ経由）
-        self._updater = Updater(parent=self)
+        # 自動アップデート通知・インストールはトレイ経由（設定タブは settings_window 側で配線済み）
         self._updater.update_available.connect(self._tray.show_update_available)
         self._updater.update_failed.connect(self._tray.show_update_failed)
         self._updater.quit_requested.connect(self._quit_app)

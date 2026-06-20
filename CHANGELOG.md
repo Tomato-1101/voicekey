@@ -5,6 +5,19 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased]
 
 ### Added
+- **設定に「バージョン情報」タブを追加（自動アップデートの可視化・両OS両ブランチ）**。
+  現在のアプリバージョンを表示し、「アップデートを確認」で最新版を手動チェック、新しいバージョンが
+  見つかったときだけ「今すぐ更新する」ボタンを出す。チェック頻度（起動時＋1 日ごと）・フィード URL・
+  署名/インストール処理は変更していない（既存の Sparkle / updater をそのまま利用）。
+  - **Technical Details**:
+    - Windows: `utils/updater.py` に `up_to_date` シグナルを追加し、`check_now(manual=)`/`_check(manual=)` で
+      手動チェック時のみ「最新です」「確認に失敗」を UI へ通知（定期チェックは従来どおりログのみ）。
+      `ui/settings_window.py` に「バージョン情報」ページ（`_create_version_page` ＋確認/更新ハンドラ）を新設し、
+      `SettingsWindow(updater=)` で updater を受け取って配線。`app.py` は updater を設定ウィンドウより先に生成して渡す。
+    - Mac: `Core/UpdaterController.swift` を `ObservableObject` + `SPUUpdaterDelegate` 化し、検知結果を
+      `availableVersionString` に publish（既存の `isAvailable`/`checkForUpdates` は維持）。
+      `UI/SettingsView.swift` に「バージョン情報」タブ（`AboutTab`）を追加。Sparkle 既定の更新ダイアログ・
+      メニュー「アップデートを確認…」導線はそのまま残す。
 - **製品版バックエンドへの配線（段階3・並存ガード）を追加**（Mac / Windows 両方・release ブランチ・休眠中）。
   既存の文字起こし／整形プリミティブが「ログイン済みならサーバー経路、未ログインなら従来の
   埋め込み／設定キー直叩き」を自分で切り替えるようにした。ログイン UI（段階4）が入るまでは

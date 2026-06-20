@@ -39,6 +39,9 @@ struct SettingsView: View {
             AccountTab()
                 .tabItem { Label("アカウント", systemImage: "person.crop.circle") }
                 .tag(6)
+            AboutTab()
+                .tabItem { Label("バージョン情報", systemImage: "info.circle") }
+                .tag(7)
             // 配布ビルドは埋め込みキーで動くため、API キータブは出さない（テスターの混乱防止）
             if !EmbeddedKeys.isDist {
                 ApiKeysTab()
@@ -476,6 +479,59 @@ private struct AccountTab: View {
             EmptyView()  // 処理中は操作させない
         default:
             Button("ログイン") { login.beginLogin() }
+        }
+    }
+}
+
+// MARK: - バージョン情報（自動アップデート）
+
+/// バージョン情報タブ。現在版を表示し、Sparkle の更新確認・更新検知時の「今すぐ更新する」を出す。
+/// 自動アップデート（起動時＋1 日ごと）は配布ビルドのみ有効。Sparkle 既定のダイアログはそのまま使う。
+private struct AboutTab: View {
+    @ObservedObject private var updater = UpdaterController.shared
+
+    /// 現在のアプリバージョン（Info.plist の CFBundleShortVersionString）
+    private var currentVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("現在のバージョン", value: currentVersion)
+                statusRow
+            } header: {
+                Text("バージョン情報")
+            } footer: {
+                Text("新しいバージョンが見つかると「今すぐ更新する」ボタンが表示されます。更新は起動時と 1 日ごとに自動で確認されます。")
+            }
+
+            Section {
+                if updater.isAvailable {
+                    Button("アップデートを確認") { updater.checkForUpdates() }
+                    // 新バージョン検知時のみ「今すぐ更新する」を出す（押すと Sparkle の DL→インストールへ）
+                    if updater.availableVersionString != nil {
+                        Button("今すぐ更新する") { updater.checkForUpdates() }
+                    }
+                } else {
+                    Text("このビルドでは自動アップデートは利用できません")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding(.vertical, 8)
+    }
+
+    /// 更新状態の表示行（新版あり / 最新です）
+    @ViewBuilder private var statusRow: some View {
+        if let version = updater.availableVersionString {
+            Label("新しいバージョン \(version) が利用可能です", systemImage: "arrow.down.circle.fill")
+                .foregroundStyle(.green)
+        } else if updater.isAvailable {
+            Label("最新です", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.secondary)
         }
     }
 }
