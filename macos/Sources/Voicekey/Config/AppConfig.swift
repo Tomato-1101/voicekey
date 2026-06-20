@@ -122,6 +122,31 @@ extension SlotConfig {
     }
 }
 
+/// ユーザー辞書の確定置換ルール 1 件。
+/// 文字起こし・整形が終わった最終テキストに対し、貼り付け直前で
+/// `from` を `to` に機械的に置換する（API を通さないので遅延ゼロ）。
+struct ReplacementRule: Codable, Equatable, Identifiable {
+    /// SwiftUI の List/ForEach 用の安定 ID（永続化もする）
+    var id: UUID = UUID()
+    /// 置換元（誤変換されがちな表記）
+    var from: String = ""
+    /// 置換先（正しい表記）
+    var to: String = ""
+    /// この行を適用するか（一時的に無効化できる）
+    var enabled: Bool = true
+}
+
+extension ReplacementRule {
+    /// 既存データに id が無くても decode できるようにする（無いと配列ごと読み込み失敗する）
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        from = try c.decodeIfPresent(String.self, forKey: .from) ?? ""
+        to = try c.decodeIfPresent(String.self, forKey: .to) ?? ""
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+    }
+}
+
 /// アプリ設定の永続化ストア。
 /// すべての設定変更は @Published プロパティ経由で行い、変更時に自動保存される。
 @MainActor
@@ -151,6 +176,8 @@ final class ConfigStore: ObservableObject {
     @Published var handsfreeKey: [String]
     /// 長文を無音区間で分割し API へ並列送信する（既定オン。Deepgram ストリーミングは対象外）
     @Published var splitParallelEnabled: Bool
+    /// ユーザー辞書の確定置換ルール（貼り付け直前に from→to を機械置換する）
+    @Published var replacements: [ReplacementRule]
 
     private var cancellables: Set<AnyCancellable> = []
     private let defaults: UserDefaults
@@ -168,6 +195,7 @@ final class ConfigStore: ObservableObject {
         static let autoFormatPrompt = "autoFormatPrompt"
         static let handsfreeKey = "handsfreeKey"
         static let splitParallelEnabled = "splitParallelEnabled"
+        static let replacements = "replacements"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -200,6 +228,7 @@ final class ConfigStore: ObservableObject {
             : storedAutoPrompt
         handsfreeKey = (defaults.array(forKey: Keys.handsfreeKey) as? [String]) ?? []
         splitParallelEnabled = true
+        replacements = Self.loadReplacements(defaults) ?? []
 
         // 変更を自動保存（起動直後の初期代入は上で完了しているため安全）
         $slot1.dropFirst().sink { [weak self] in self?.saveSlot($0, key: Keys.slot1) }.store(in: &cancellables)
@@ -220,6 +249,17 @@ final class ConfigStore: ObservableObject {
         }.store(in: &cancellables)
         $handsfreeKey.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.handsfreeKey) }.store(in: &cancellables)
         $splitParallelEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.splitParallelEnabled) }.store(in: &cancellables)
+        $replacements.dropFirst().sink { [weak self] in self?.saveReplacements($0) }.store(in: &cancellables)
+    }
+
+    /// ユーザー辞書の確定置換を最終テキストに適用する。
+    /// 有効・置換元が空でない行を登録順に単純置換する（部分一致。語境界は見ない）。
+    func applyReplacements(_ text: String) -> String {
+        var result = text
+        for rule in replacements where rule.enabled && !rule.from.isEmpty {
+            result = result.replacingOccurrences(of: rule.from, with: rule.to)
+        }
+        return result
     }
 
     /// スロット設定を ID で取得する
@@ -235,6 +275,17 @@ final class ConfigStore: ObservableObject {
     private func saveSlot(_ slot: SlotConfig, key: String) {
         if let data = try? JSONEncoder().encode(slot) {
             defaults.set(data, forKey: key)
+        }
+    }
+
+    private static func loadReplacements(_ defaults: UserDefaults) -> [ReplacementRule]? {
+        guard let data = defaults.data(forKey: Keys.replacements) else { return nil }
+        return try? JSONDecoder().decode([ReplacementRule].self, from: data)
+    }
+
+    private func saveReplacements(_ rules: [ReplacementRule]) {
+        if let data = try? JSONEncoder().encode(rules) {
+            defaults.set(data, forKey: Keys.replacements)
         }
     }
 }

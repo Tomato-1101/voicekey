@@ -357,9 +357,11 @@ final class AppController: ObservableObject {
                 hud.clearCaption()
                 if !streamed.isEmpty {
                     // 整形が有効なら貼り付け前に LLM で整形（失敗時は原文が返る）
-                    let output = formatEnabled
+                    let formatted = formatEnabled
                         ? await formatter.format(streamed, prompt: formatPrompt, model: formatModel)
                         : streamed
+                    // ユーザー辞書の確定置換を適用（API を通さないので遅延ゼロ）
+                    let output = config.applyReplacements(formatted)
                     // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する
                     history.add(output)
                     // 実績を集計（貼り付け後のローカル処理なので遅延に影響しない）
@@ -417,9 +419,11 @@ final class AppController: ObservableObject {
 
             // 4. テキスト貼り付け（+ ダブルタップ時は Enter 自動送信）
             // 整形が有効なら貼り付け前に LLM で整形（失敗時は原文が返る）
-            let output = formatEnabled
+            let formatted = formatEnabled
                 ? await formatter.format(text, prompt: formatPrompt, model: formatModel)
                 : text
+            // ユーザー辞書の確定置換を適用（API を通さないので遅延ゼロ）
+            let output = config.applyReplacements(formatted)
             // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する
             history.add(output)
             // 実績を集計（貼り付け後のローカル処理なので遅延に影響しない）

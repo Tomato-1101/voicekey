@@ -36,6 +36,9 @@ struct SettingsView: View {
             HistoryTab(history: history)
                 .tabItem { Label("履歴", systemImage: "clock.arrow.circlepath") }
                 .tag(4)
+            DictionaryTab(config: config)
+                .tabItem { Label("ユーザー辞書", systemImage: "character.book.closed") }
+                .tag(8)
             AccountTab()
                 .tabItem { Label("アカウント", systemImage: "person.crop.circle") }
                 .tag(6)
@@ -532,6 +535,73 @@ private struct AboutTab: View {
         } else if updater.isAvailable {
             Label("最新です", systemImage: "checkmark.circle.fill")
                 .foregroundStyle(.secondary)
+        }
+    }
+}
+
+// MARK: - ユーザー辞書（確定置換）
+
+/// ユーザー辞書タブ。文字起こし・整形が終わった最終テキストに対し、貼り付け直前で
+/// from→to を機械置換するルールを編集する（API を通さないので遅延ゼロ）。
+private struct DictionaryTab: View {
+    @ObservedObject var config: ConfigStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if config.replacements.isEmpty {
+                // 空状態の案内（待ち/未設定をユーザーが判別できるようにする）
+                VStack(spacing: 8) {
+                    Image(systemName: "character.book.closed")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                    Text("確定置換ルールがありません")
+                        .foregroundStyle(.secondary)
+                    Text("「追加」で、よく誤変換される語の置き換えを登録できます。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List {
+                    // $config.replacements の各行をその場で編集（変更は ConfigStore が自動保存）
+                    ForEach($config.replacements) { $rule in
+                        HStack(spacing: 8) {
+                            Toggle("", isOn: $rule.enabled)
+                                .labelsHidden()
+                                .help("この行を有効/無効にする")
+                            TextField("変換元", text: $rule.from)
+                                .textFieldStyle(.roundedBorder)
+                            Image(systemName: "arrow.right")
+                                .foregroundStyle(.secondary)
+                            TextField("変換先", text: $rule.to)
+                                .textFieldStyle(.roundedBorder)
+                            Button {
+                                config.replacements.removeAll { $0.id == rule.id }
+                            } label: {
+                                Image(systemName: "trash")
+                                    .foregroundStyle(.red)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("この行を削除")
+                        }
+                    }
+                }
+            }
+
+            Divider()
+            HStack {
+                Button {
+                    config.replacements.append(ReplacementRule())
+                } label: {
+                    Label("追加", systemImage: "plus")
+                }
+                Spacer()
+                Text("貼り付け直前に置き換えます（部分一致・登録順）。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(12)
         }
     }
 }

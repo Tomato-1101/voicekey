@@ -637,6 +637,8 @@ class SettingsWindow(QWidget):
         ]
         self._stats_page_index = 3
         self._history_page_index = 4
+        # ユーザー辞書（確定置換）。貼り付け直前に from→to を機械置換する。常時表示。
+        page_defs.append(("ユーザー辞書", self._create_dictionary_page()))
         # アカウント（ブラウザ経由ログイン）。製品版の中核機能なので常時表示する。
         page_defs.append(("アカウント", self._create_account_page()))
         # バージョン情報（現在版表示・更新確認・更新検知時の「今すぐ更新する」）。常時表示。
@@ -1196,6 +1198,111 @@ class SettingsWindow(QWidget):
         self._refresh_api_key_status(service)
 
     # ------------------------------------------------------------------
+    # ユーザー辞書（確定置換）
+    # ------------------------------------------------------------------
+
+    def _create_dictionary_page(self) -> QWidget:
+        """ユーザー辞書ページを作成する（確定置換ルールの追加・編集・削除）。"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(12)
+        layout.setContentsMargins(24, 8, 24, 24)
+
+        layout.addWidget(_make_caption(
+            "文字起こし・整形が終わった文章を貼り付ける直前に、"
+            "「変換元」を「変換先」へ機械置換します（部分一致・登録順・API を通さないので遅延ゼロ）。"
+        ))
+
+        # ルール行を縦に積むコンテナ（追加・削除で動的に増減する）
+        self._rules_container = QWidget()
+        self._rules_layout = QVBoxLayout(self._rules_container)
+        self._rules_layout.setContentsMargins(0, 0, 0, 0)
+        self._rules_layout.setSpacing(6)
+        layout.addWidget(self._rules_container)
+
+        # 既存ルールを読み込んで行を作る
+        self._replacement_rows = []
+        for rule in self._config_manager.get("replacements", []) or []:
+            if isinstance(rule, dict):
+                self._add_replacement_row(rule)
+
+        # 空状態の案内（ルールが無いとき表示）
+        self._dict_empty_label = _make_caption("確定置換ルールがありません。「追加」で登録できます。")
+        layout.addWidget(self._dict_empty_label)
+        self._update_dict_empty_label()
+
+        # 追加ボタン
+        add_btn = QPushButton("追加")
+        add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        add_btn.clicked.connect(lambda: self._add_replacement_row())
+        add_row = QHBoxLayout()
+        add_row.addWidget(add_btn)
+        add_row.addStretch()
+        layout.addLayout(add_row)
+
+        layout.addStretch()
+        return self._wrap_scroll(page)
+
+    def _add_replacement_row(self, rule: Optional[dict] = None) -> None:
+        """確定置換ルール 1 行ぶんのウィジェットを作って一覧に追加する。"""
+        rule = rule or {}
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(8)
+
+        enabled = QCheckBox()
+        enabled.setChecked(bool(rule.get("enabled", True)))
+        enabled.setToolTip("この行を有効/無効にする")
+        from_input = QLineEdit(str(rule.get("from", "")))
+        from_input.setPlaceholderText("変換元")
+        arrow = QLabel("→")
+        to_input = QLineEdit(str(rule.get("to", "")))
+        to_input.setPlaceholderText("変換先")
+        delete_btn = QPushButton("削除")
+        delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        row_layout.addWidget(enabled)
+        row_layout.addWidget(from_input, 1)
+        row_layout.addWidget(arrow)
+        row_layout.addWidget(to_input, 1)
+        row_layout.addWidget(delete_btn)
+
+        entry = {"enabled": enabled, "from": from_input, "to": to_input, "widget": row}
+        self._replacement_rows.append(entry)
+        self._rules_layout.addWidget(row)
+
+        def _remove() -> None:
+            # 行ウィジェットと管理リストの両方から取り除く
+            if entry in self._replacement_rows:
+                self._replacement_rows.remove(entry)
+            row.setParent(None)
+            row.deleteLater()
+            self._update_dict_empty_label()
+
+        delete_btn.clicked.connect(_remove)
+        self._update_dict_empty_label()
+
+    def _update_dict_empty_label(self) -> None:
+        """ルールが無いときだけ空状態の案内を表示する。"""
+        if hasattr(self, "_dict_empty_label"):
+            self._dict_empty_label.setVisible(len(self._replacement_rows) == 0)
+
+    def _collect_replacements(self) -> list:
+        """UI のルール行を settings.yaml 用のリストにまとめる（変換元が空の行は捨てる）。"""
+        rules = []
+        for entry in getattr(self, "_replacement_rows", []):
+            src = entry["from"].text().strip()
+            if not src:
+                continue
+            rules.append({
+                "from": src,
+                "to": entry["to"].text(),
+                "enabled": entry["enabled"].isChecked(),
+            })
+        return rules
+
+    # ------------------------------------------------------------------
     # アカウント（ブラウザ経由ログイン・製品版 段階4）
     # ------------------------------------------------------------------
 
@@ -1570,6 +1677,8 @@ class SettingsWindow(QWidget):
 
             # ハンズフリー切替キー
             "handsfree_key": self._handsfree_input.text(),
+            # ユーザー辞書（確定置換）。貼り付け直前に from→to を機械置換する
+            "replacements": self._collect_replacements(),
             # vad_filter / vad_min_silence_duration_ms / split_parallel_enabled /
             # streaming_enabled / hud_enabled / audio_preprocess.volume_normalize は
             # 常時 ON 固定（UI 撤去）。ここでは保存せず config_manager 側で True を強制する。

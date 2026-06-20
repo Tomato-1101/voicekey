@@ -67,6 +67,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # 整形プロンプト本文（空 = 既定の DEFAULT_FORMAT_PROMPT を使用）
     "format_auto_prompt": "",
 
+    # ユーザー辞書（確定置換）。文字起こし・整形が終わった最終テキストに対し、
+    # 貼り付け直前で from→to を機械置換する（API を通さないので遅延ゼロ）。
+    # 各要素: {"from": 置換元, "to": 置換先, "enabled": 有効か}
+    "replacements": [],
+
     # ホットキー1 設定（製品版の既定: 高速リアルタイム = Deepgram nova-3）
     "hotkey1": {
         "hotkey": "<f2>",

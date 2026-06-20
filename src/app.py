@@ -815,8 +815,33 @@ class VoicekeyApp(QObject):
             # 実績集計の失敗で音声入力本体を止めない（あくまで付随機能）
             logger.warning(f"実績の集計に失敗: {e}")
 
+    def _apply_replacements(self, text: str) -> str:
+        """
+        ユーザー辞書の確定置換を最終テキストに適用する（ワーカースレッド上）。
+
+        有効・置換元が空でない行を登録順に単純置換する（部分一致。語境界は見ない）。
+        API を通さないローカル処理なので音声入力に遅延を足さない。
+
+        Args:
+            text: 整形まで終わった確定テキスト
+
+        Returns:
+            置換適用後のテキスト（ルールが無ければ原文そのまま）
+        """
+        result = text
+        for rule in self._config.get("replacements", []) or []:
+            # 設定ファイルが手編集されていても落ちないよう型を緩く扱う
+            if not isinstance(rule, dict) or not rule.get("enabled", True):
+                continue
+            src = rule.get("from", "")
+            if src:
+                result = result.replace(src, rule.get("to", ""))
+        return result
+
     def _insert_and_enter(self, text: str, auto_enter: bool) -> None:
         """テキストを貼り付け、ダブルタップ時は遅延後に Enter を送る（ワーカースレッド上）。"""
+        # ユーザー辞書の確定置換を貼り付け直前に適用（履歴にも置換後を残す）
+        text = self._apply_replacements(text)
         # 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する
         self._history.add(text)
         self._input_handler.insert_text(text)

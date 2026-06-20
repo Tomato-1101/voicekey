@@ -5,6 +5,18 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased]
 
 ### Added
+- **ユーザー辞書（確定置換）機能を追加（両OS両ブランチ）**。
+  設定の「ユーザー辞書」タブで「変換元 → 変換先」の置換ルールを追加・編集・削除でき、
+  文字起こし・整形が終わった文章を貼り付ける直前にローカルで機械置換する（部分一致・登録順・
+  API を通さないので音声入力に遅延を足さない）。行ごとの有効/無効トグル付き。
+  - **Technical Details**:
+    - Windows: `config/constants.py` の `DEFAULT_CONFIG` に `replacements`（`{from,to,enabled}` のリスト）を追加。
+      `app.py` に `_apply_replacements()` を新設し `_insert_and_enter()` の貼り付け直前で適用（履歴にも置換後を記録）。
+      `ui/settings_window.py` に「ユーザー辞書」ページ（動的な行の追加/削除・`_collect_replacements()` で保存）を追加。
+      回帰テスト `tests/test_replacements.py`（10 ケース）。
+    - Mac: `Config/AppConfig.swift` に `ReplacementRule`（Codable/Identifiable）と `ConfigStore.replacements`＋永続化、
+      `applyReplacements(_:)` を追加。`AppController.swift` が整形後・貼り付け前に適用。
+      `UI/SettingsView.swift` に「ユーザー辞書」タブ（`DictionaryTab`）を追加。
 - **設定に「バージョン情報」タブを追加（自動アップデートの可視化・両OS両ブランチ）**。
   現在のアプリバージョンを表示し、「アップデートを確認」で最新版を手動チェック、新しいバージョンが
   見つかったときだけ「今すぐ更新する」ボタンを出す。チェック頻度（起動時＋1 日ごと）・フィード URL・
