@@ -30,6 +30,10 @@ API_EPHEMERAL_PATH: str = "/api/v1/auth/ephemeral"                # Deepgram 短
 API_ELEVENLABS_PROXY_PATH: str = "/api/v1/transcribe/elevenlabs"  # 正確性モードのプロキシ
 API_FORMAT_PROXY_PATH: str = "/api/v1/format"                     # Groq テキスト整形プロキシ
 API_FEEDBACK_PATH: str = "/api/v1/feedback"                       # アプリ内フィードバック送信
+# ブラウザ経由ログイン（段階4）
+AUTH_APP_PATH: str = "/auth/app"                                  # ブラウザで開くログイン入口（state付き）
+API_AUTH_EXCHANGE_PATH: str = "/api/v1/auth/exchange"            # ワンタイムコード→トークン交換
+API_AUTH_REFRESH_PATH: str = "/api/v1/auth/refresh"             # refresh_token→トークン更新
 
 # ============================================
 # 音声設定

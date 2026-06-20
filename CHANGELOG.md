@@ -47,6 +47,23 @@ voicekeyの変更履歴を記録するファイルです。
     - Mac: `Core/BackendClient.swift` に `submitFeedback(_:)`（認証は任意）。`UI/FeedbackView.swift`
       （SwiftUI フォーム）を新規追加し、`VoicekeyApp.swift` の `sendFeedback` を mailto から
       フィードバックウィンドウ表示へ変更。`Config/ServerConfig.swift` に `feedbackPath` を追加。
+- **ブラウザ経由ログインの認証クライアントを追加（段階4・増分1／Mac・Windows 両方・release・休眠中）**。
+  ログイン UI 配線前の土台として、(1) CSRF 用 state 生成、(2) ブラウザで開くログイン URL
+  （`/auth/app?state=&device_id=&platform=`）の構築、(3) ワンタイムコード→トークン交換
+  （`POST /api/v1/auth/exchange`）、(4) `refresh_token`→トークン更新（`POST /api/v1/auth/refresh`）と
+  失効 60 秒前の自動リフレッシュを実装。トークンは URL に乗せず、ワンタイムコードの交換でのみ取得し、
+  既存の認証セッション保存（Keychain / Credential Manager）に書き込む。`refresh` も失効（401）したら
+  セッションを破棄して再ログインへ誘導する。**URL スキーム登録・deep link 受信・ログイン UI は後続増分**。
+  - サーバー側は別リポ `voicekey-site`：トークン更新エンドポイント `POST /api/v1/auth/refresh` を新規追加
+    （GoTrue 直叩きをサーバーに閉じ込め、アプリに anon キーを埋め込まない）。`exchange`/`refresh` とも
+    `expires_at` を **UNIX 秒(number)** で返す統一契約に変更（アプリは Double/float で保存・parse 不要）。
+  - **Technical Details**:
+    - Windows: `core/auth_client.py` を新規追加（`make_state` / `make_login_url` / `exchange_code` /
+      `refresh` / `ensure_valid_session` / `logout`）。エラー型・HTTP クライアントは `backend_client` と共有。
+      `constants` に `AUTH_APP_PATH` / `API_AUTH_EXCHANGE_PATH` / `API_AUTH_REFRESH_PATH` を追加。
+      `tests/test_auth_client.py` に 11 件追加（実 keyring・実通信に触れない）。
+    - Mac: `Core/AuthClient.swift` を新規追加（同名の API・`AuthError` 列挙）。`Config/ServerConfig.swift`
+      に `authAppPath` / `exchangePath` / `refreshPath` を追加。
 
 ### Fixed
 - **（Windows）2 回目以降の録音でマイク音声が拾えなくなるバグを修正**。永続ストリームの

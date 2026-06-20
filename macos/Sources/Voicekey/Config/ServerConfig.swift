@@ -31,6 +31,14 @@ enum ServerConfig {
     /// アプリ内フィードバック送信（認証は任意＝未ログインでも送れる）
     static let feedbackPath = "/api/v1/feedback"
 
+    // ブラウザ経由ログイン（段階4）
+    /// ブラウザで開くログイン入口（state 付き）
+    static let authAppPath = "/auth/app"
+    /// ワンタイムコード → トークン交換
+    static let exchangePath = "/api/v1/auth/exchange"
+    /// refresh_token → トークン更新
+    static let refreshPath = "/api/v1/auth/refresh"
+
     /// ベース URL とパスを結合した完全な URL を返す
     static func url(_ path: String) -> URL? {
         URL(string: baseURL + path)
