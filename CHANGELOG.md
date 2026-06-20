@@ -90,6 +90,20 @@ voicekeyの変更履歴を記録するファイルです。
       `ui/settings_window.py` に「アカウント」ページを追加（状態ポーリング＋ログイン/ログアウト）。
       `login_coordinator.shared()`（遅延生成シングルトン）を追加。`tests/test_deep_link.py` を新規追加。
       単一インスタンス判定は失敗しても通常起動するよう安全側に倒している（deep link 転送だけ諦める）。
+- **トークン自動更新をバックエンド呼び出しに配線（段階4・増分4／両OS・release・休眠中）**。
+  認証付きのサーバー呼び出し（短命 JWT 取得・ElevenLabs プロキシ・整形プロキシ）で、(1) 送信前に
+  失効間際なら `ensure_valid_session` で先回りリフレッシュ、(2) それでも `401` が返ったら一度だけ
+  `refresh_token` で更新して**同一リクエストを再試行**するようにした。更新も失敗（401）したら
+  再ログインを促すエラーに写す。再試行は一度だけ（無限ループ防止）。認証ヘッダの無い呼び出し
+  （exchange / refresh / 匿名フィードバック）はリフレッシュ対象外＝再帰しない。これにより
+  ログイン済みユーザーは access_token の失効を意識せず使い続けられる（UI からは見えない裏側の改善）。
+  - **Technical Details**:
+    - Windows: `core/backend_client.py` の `_auth_headers()` が送信前に `auth_client.ensure_valid_session()`
+      を呼び、`_post()` に `_allow_refresh` 引数を追加して 401 時に一度だけ `auth_client.refresh()`→再試行。
+      `tests/test_backend_client.py` に 401 リフレッシュ再試行・失敗時非再試行・一度きり・先回りリフレッシュの
+      4 件を追加（フィクスチャの `expires_at` を未来時刻にして既存テストを no-op 化）。
+    - Mac: `Core/BackendClient.swift` の各認証付きメソッドが先頭で `AuthClient.ensureValidSession()` を呼び、
+      `send(_:allowRefresh:)` が 401 時に `AuthClient.refresh()`→新 Bearer で一度だけ再試行する。
 
 ### Fixed
 - **（Windows）2 回目以降の録音でマイク音声が拾えなくなるバグを修正**。永続ストリームの

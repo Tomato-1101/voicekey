@@ -58,9 +58,20 @@ def _get_client() -> httpx.Client:
 def _auth_headers() -> dict:
     """Bearer access_token + device_id + platform のヘッダーを組み立てる。
 
+    失効間際なら送信前にトークンをリフレッシュする（先回り）。
+
     Raises:
         BackendError: ローカルに認証セッションが無い（未ログイン）場合
     """
+    # 失効間際なら先にリフレッシュ（遅延 import で循環回避）。
+    # 未ログイン・リフレッシュ失敗はここでは握り、下の存在チェックで 401 を出す。
+    from . import auth_client
+
+    try:
+        auth_client.ensure_valid_session()
+    except BackendError:
+        pass
+
     session = secrets.get_auth_session()
     if not session or not session.get("access_token"):
         raise BackendError("ログインが必要です", status=401)
@@ -82,8 +93,14 @@ def _message_for_status(status: int) -> str:
     }.get(status, f"サーバーエラー (HTTP {status})")
 
 
-def _post(path: str, *, headers: dict, **kwargs) -> httpx.Response:
-    """指定パスへ POST し、非 200 は BackendError に写す。"""
+def _post(path: str, *, headers: dict, _allow_refresh: bool = True, **kwargs) -> httpx.Response:
+    """指定パスへ POST し、非 200 は BackendError に写す。
+
+    401 かつ Authorization 付きなら、一度だけトークンをリフレッシュして再試行する
+    （失効間際を ensure_valid_session で先回りしきれなかった場合の保険）。
+    Authorization の無い呼び出し（exchange/refresh/匿名フィードバック）は再試行しない
+    ＝リフレッシュの無限再帰も防ぐ。
+    """
     url = secrets.get_server_base_url() + path
     try:
         resp = _get_client().post(url, headers=headers, **kwargs)
@@ -91,6 +108,16 @@ def _post(path: str, *, headers: dict, **kwargs) -> httpx.Response:
         raise BackendError("サーバーへの接続がタイムアウトしました", status=None)
     except httpx.HTTPError as e:
         raise BackendError(f"サーバーへの接続に失敗しました: {e}", status=None)
+    if resp.status_code == 401 and _allow_refresh and "Authorization" in headers:
+        from . import auth_client
+
+        try:
+            new_session = auth_client.refresh()
+        except BackendError:
+            new_session = None
+        if new_session and new_session.get("access_token"):
+            retry_headers = {**headers, "Authorization": f"Bearer {new_session['access_token']}"}
+            return _post(path, headers=retry_headers, _allow_refresh=False, **kwargs)
     if resp.status_code != 200:
         raise BackendError(_message_for_status(resp.status_code), status=resp.status_code)
     return resp

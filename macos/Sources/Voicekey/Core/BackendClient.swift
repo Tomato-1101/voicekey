@@ -71,6 +71,7 @@ enum BackendClient {
     /// Deepgram「高速リアルタイム」用の短命 JWT を取得する。
     /// 録音直前に呼び、返ってきた JWT で Deepgram WebSocket を `Bearer` 認証で開く（段階3）。
     static func fetchEphemeralToken() async throws -> EphemeralToken {
+        try? await AuthClient.ensureValidSession()  // 失効間際なら先にリフレッシュ
         var req = try authorizedRequest(path: ServerConfig.ephemeralPath)
         req.httpMethod = "POST"
         let data = try await send(req)
@@ -86,6 +87,7 @@ enum BackendClient {
 
     /// ElevenLabs「正確性」プロキシで文字起こしする（WAV を multipart 送信）。
     static func transcribeElevenLabs(wav: Data, language: String) async throws -> String {
+        try? await AuthClient.ensureValidSession()  // 失効間際なら先にリフレッシュ
         var req = try authorizedRequest(path: ServerConfig.elevenLabsProxyPath)
         req.httpMethod = "POST"
         let boundary = "vk-\(UUID().uuidString)"
@@ -99,6 +101,7 @@ enum BackendClient {
     /// Groq テキスト整形プロキシ（モデル/プロンプトはサーバー固定。text のみ送る）。
     /// 失敗時は呼び出し側で原文フォールバックする想定なので throw で返す。
     static func formatText(_ text: String) async throws -> String {
+        try? await AuthClient.ensureValidSession()  // 失効間際なら先にリフレッシュ
         var req = try authorizedRequest(path: ServerConfig.formatProxyPath)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -144,8 +147,10 @@ enum BackendClient {
         return req
     }
 
-    /// リクエストを投げ、200 ならボディを返す。非 200 はステータスをエラーへ写す
-    private static func send(_ req: URLRequest) async throws -> Data {
+    /// リクエストを投げ、200 ならボディを返す。非 200 はステータスをエラーへ写す。
+    /// 401 かつ Authorization 付きなら、一度だけトークンをリフレッシュして再試行する
+    /// （失効間際を ensureValidSession で先回りしきれなかった場合の保険）。
+    private static func send(_ req: URLRequest, allowRefresh: Bool = true) async throws -> Data {
         let data: Data
         let resp: URLResponse
         do {
@@ -154,8 +159,18 @@ enum BackendClient {
             throw BackendError.network(error)
         }
         guard let http = resp as? HTTPURLResponse else { throw BackendError.invalidResponse }
-        guard http.statusCode == 200 else { throw mapStatus(http.statusCode) }
-        return data
+        if http.statusCode == 200 { return data }
+        // 認証付きリクエストが 401 のときだけリフレッシュ＋再試行（匿名のフィードバック等は対象外）
+        if http.statusCode == 401,
+           allowRefresh,
+           req.value(forHTTPHeaderField: "Authorization") != nil,
+           (try? await AuthClient.refresh()) != nil,
+           let auth = Keychain.authSession() {
+            var retry = req
+            retry.setValue("Bearer \(auth.accessToken)", forHTTPHeaderField: "Authorization")
+            return try await send(retry, allowRefresh: false)
+        }
+        throw mapStatus(http.statusCode)
     }
 
     private static func mapStatus(_ code: Int) -> BackendError {

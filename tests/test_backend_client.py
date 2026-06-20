@@ -5,6 +5,7 @@ httpx.MockTransport でサーバーを模擬し、実通信・実 keyring に触
 一致していることを検証する。
 """
 
+import time
 import unittest
 from unittest import mock
 
@@ -21,9 +22,12 @@ def _install_mock(handler):
 class _Base(unittest.TestCase):
     def setUp(self):
         # secrets の 3 関数を差し替え（実 keyring に触れない）
+        # expires_at は十分先にしておき、ensure_valid_session を no-op にする
+        # （失効間際の先回りリフレッシュは TestRefreshOn401 で別途検証する）
         self._patches = [
             mock.patch.object(backend_client.secrets, "get_auth_session",
-                              return_value={"access_token": "tok-abc", "refresh_token": "r", "expires_at": 0}),
+                              return_value={"access_token": "tok-abc", "refresh_token": "r",
+                                            "expires_at": time.time() + 3600}),
             mock.patch.object(backend_client.secrets, "get_device_id", return_value="dev-123"),
             mock.patch.object(backend_client.secrets, "get_server_base_url", return_value="http://test.local"),
         ]
@@ -211,6 +215,80 @@ class TestSubmitFeedback(_Base):
         with self.assertRaises(backend_client.BackendError) as cm:
             backend_client.submit_feedback("x")
         self.assertEqual(cm.exception.status, 429)
+
+
+class TestRefreshOn401(_Base):
+    """401 を受けたら一度だけリフレッシュして再試行する（Increment 4 の配線）。"""
+
+    def test_retries_with_new_token_after_refresh(self):
+        """初回 401 → refresh 成功 → 更新後トークンで再試行して 200。"""
+        calls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request.headers.get("authorization"))
+            if len(calls) == 1:
+                return httpx.Response(401, json={"error": "expired"})
+            return httpx.Response(200, json={"provider": "deepgram", "token": "dg-jwt", "expires_in": 60})
+
+        _install_mock(handler)
+        with mock.patch("src.core.auth_client.refresh",
+                        return_value={"access_token": "tok-new", "refresh_token": "r2",
+                                      "expires_at": time.time() + 3600}) as m_refresh:
+            result = backend_client.fetch_ephemeral_token()
+        self.assertEqual(result["token"], "dg-jwt")
+        self.assertEqual(len(calls), 2)                # 初回 + 再試行
+        self.assertEqual(calls[0], "Bearer tok-abc")  # 初回は元トークン
+        self.assertEqual(calls[1], "Bearer tok-new")  # 再試行は更新後トークン
+        m_refresh.assert_called_once()
+
+    def test_no_retry_when_refresh_fails(self):
+        """refresh が失敗（401）したら再試行せず元の 401 を返す。"""
+        calls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(1)
+            return httpx.Response(401, json={"error": "expired"})
+
+        _install_mock(handler)
+        with mock.patch("src.core.auth_client.refresh",
+                        side_effect=backend_client.BackendError("再ログイン", status=401)):
+            with self.assertRaises(backend_client.BackendError) as cm:
+                backend_client.fetch_ephemeral_token()
+        self.assertEqual(cm.exception.status, 401)
+        self.assertEqual(len(calls), 1)  # リフレッシュ失敗 → 再試行しない
+
+    def test_retry_only_once(self):
+        """再試行も 401 なら無限ループせず一度だけで諦める（_allow_refresh=False）。"""
+        calls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(1)
+            return httpx.Response(401, json={})
+
+        _install_mock(handler)
+        with mock.patch("src.core.auth_client.refresh",
+                        return_value={"access_token": "tok-new", "refresh_token": "r2",
+                                      "expires_at": time.time() + 3600}):
+            with self.assertRaises(backend_client.BackendError) as cm:
+                backend_client.fetch_ephemeral_token()
+        self.assertEqual(cm.exception.status, 401)
+        self.assertEqual(len(calls), 2)  # 初回 + 再試行1回のみ
+
+    def test_proactive_refresh_before_expiry(self):
+        """失効間際なら送信前に ensure_valid_session がリフレッシュする（先回り）。"""
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"provider": "deepgram", "token": "t", "expires_in": 60})
+
+        _install_mock(handler)
+        # 失効まで 10 秒（< 60 秒）のセッションに差し替える
+        with mock.patch.object(backend_client.secrets, "get_auth_session",
+                               return_value={"access_token": "tok-old", "refresh_token": "r",
+                                             "expires_at": time.time() + 10}):
+            with mock.patch("src.core.auth_client.refresh",
+                            return_value={"access_token": "tok-fresh", "refresh_token": "r2",
+                                          "expires_at": time.time() + 3600}) as m_refresh:
+                backend_client.fetch_ephemeral_token()
+        m_refresh.assert_called_once()
 
 
 if __name__ == "__main__":
