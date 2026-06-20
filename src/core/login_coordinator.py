@@ -115,3 +115,17 @@ class LoginCoordinator:
         if not code or not state:
             return None
         return code, state
+
+
+# アプリ全体で 1 つの司令塔を共有する（設定 UI のログインボタンと deep link ハンドラが
+# 同じ保留 state を見る必要があるため）。初回アクセス時に生成する（import 時に keyring を
+# 触らないよう遅延生成。Mac 版の LoginCoordinator.shared と対応）。
+_shared: Optional[LoginCoordinator] = None
+
+
+def shared() -> LoginCoordinator:
+    """アプリ共有の LoginCoordinator を返す（遅延生成）。"""
+    global _shared
+    if _shared is None:
+        _shared = LoginCoordinator()
+    return _shared

@@ -36,6 +36,9 @@ struct SettingsView: View {
             HistoryTab(history: history)
                 .tabItem { Label("履歴", systemImage: "clock.arrow.circlepath") }
                 .tag(4)
+            AccountTab()
+                .tabItem { Label("アカウント", systemImage: "person.crop.circle") }
+                .tag(6)
             // 配布ビルドは埋め込みキーで動くため、API キータブは出さない（テスターの混乱防止）
             if !EmbeddedKeys.isDist {
                 ApiKeysTab()
@@ -417,6 +420,62 @@ private struct ApiKeyRow: View {
         }
         .onAppear {
             saved = Keychain.hasApiKey(for: backend)
+        }
+    }
+}
+
+// MARK: - アカウント（ブラウザ経由ログイン）
+
+private struct AccountTab: View {
+    // ログイン状態は司令塔（アプリ全体で 1 つ）を購読する。
+    // deep link でログインが完了するとここの表示も自動更新される。
+    @ObservedObject private var login = LoginCoordinator.shared
+
+    var body: some View {
+        Form {
+            Section {
+                statusRow
+                actionButtons
+            } header: {
+                Text("アカウント")
+            } footer: {
+                Text("ログインすると、サブスクリプションでサーバー経由の文字起こし（高速リアルタイム／正確性）が使えます。ログインはブラウザで行います。")
+            }
+        }
+        .formStyle(.grouped)
+        .padding(.vertical, 8)
+    }
+
+    /// 現在のログイン状態の表示行
+    @ViewBuilder private var statusRow: some View {
+        switch login.status {
+        case .loggedIn:
+            Label("ログイン済み", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        case .waiting:
+            Label("ブラウザでログインを完了してください…", systemImage: "safari")
+                .foregroundStyle(.secondary)
+        case .exchanging:
+            Label("ログイン処理中…", systemImage: "arrow.triangle.2.circlepath")
+                .foregroundStyle(.secondary)
+        case .failed(let msg):
+            Label(msg, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        case .idle:
+            Label("未ログイン", systemImage: "person.crop.circle.badge.xmark")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// 状態に応じたログイン／ログアウトボタン
+    @ViewBuilder private var actionButtons: some View {
+        switch login.status {
+        case .loggedIn:
+            Button("ログアウト") { login.logout() }
+        case .exchanging:
+            EmptyView()  // 処理中は操作させない
+        default:
+            Button("ログイン") { login.beginLogin() }
         }
     }
 }

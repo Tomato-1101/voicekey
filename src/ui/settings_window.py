@@ -19,9 +19,18 @@ from PySide6.QtCore import (
     QPropertyAnimation,
     QRectF,
     QTimer,
+    QUrl,
     Signal,
 )
-from PySide6.QtGui import QKeyEvent, QPainter, QPainterPath, QColor, QPen, QBrush
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QDesktopServices,
+    QKeyEvent,
+    QPainter,
+    QPainterPath,
+    QPen,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -624,6 +633,8 @@ class SettingsWindow(QWidget):
         ]
         self._stats_page_index = 3
         self._history_page_index = 4
+        # アカウント（ブラウザ経由ログイン）。製品版の中核機能なので常時表示する。
+        page_defs.append(("アカウント", self._create_account_page()))
         # 配布ビルドは埋め込みキーで動くため、API キーページは出さない（テスターの混乱防止）
         if not secrets.is_dist_build():
             page_defs.append(("API キー", self._create_api_keys_page()))
@@ -1177,6 +1188,120 @@ class SettingsWindow(QWidget):
         secrets.delete_api_key(service)
         self._api_key_inputs[service].clear()
         self._refresh_api_key_status(service)
+
+    # ------------------------------------------------------------------
+    # アカウント（ブラウザ経由ログイン・製品版 段階4）
+    # ------------------------------------------------------------------
+
+    def _create_account_page(self) -> QWidget:
+        """アカウントページを作成する（ログイン状態の表示・ログイン／ログアウト）。"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(12)
+        layout.setContentsMargins(24, 8, 24, 24)
+
+        card, cl = _make_card()
+        block = QWidget()
+        bl = QVBoxLayout(block)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.setSpacing(8)
+
+        self._account_status = QLabel("")
+        self._account_status.setWordWrap(True)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        self._login_btn = QPushButton("ログイン")
+        self._login_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._login_btn.clicked.connect(self._on_login_clicked)
+        self._logout_btn = QPushButton("ログアウト")
+        self._logout_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._logout_btn.clicked.connect(self._on_logout_clicked)
+        btn_row.addWidget(self._login_btn)
+        btn_row.addWidget(self._logout_btn)
+        btn_row.addStretch()
+
+        bl.addWidget(self._account_status)
+        bl.addLayout(btn_row)
+        _add_block(cl, block)
+
+        layout.addWidget(card)
+        layout.addWidget(_make_caption(
+            "ログインすると、サブスクリプションでサーバー経由の文字起こし"
+            "（高速リアルタイム／正確性）が使えます。ログインはブラウザで行います。"
+        ))
+        layout.addStretch()
+
+        # ログイン待ち/交換中はステータスをポーリングして表示を最新化する
+        # （deep link はブラウザ→OS→アプリと非同期に戻ってくるため）
+        self._account_poll = QTimer(self)
+        self._account_poll.setInterval(800)
+        self._account_poll.timeout.connect(self.refresh_account_status)
+
+        self.refresh_account_status()
+        return self._wrap_scroll(page)
+
+    def _on_login_clicked(self) -> None:
+        """ログイン開始: state を生成し、既定ブラウザでログインページを開く。"""
+        from ..core import login_coordinator
+
+        url = login_coordinator.shared().begin_login()
+        QDesktopServices.openUrl(QUrl(url))
+        self.refresh_account_status()
+        self._account_poll.start()
+
+    def _on_logout_clicked(self) -> None:
+        """ログアウト（セッション破棄）。"""
+        from ..core import login_coordinator
+
+        login_coordinator.shared().logout()
+        self.refresh_account_status()
+
+    def refresh_account_status(self) -> None:
+        """ログイン状態に合わせてアカウントページの表示を更新する。
+
+        deep link 完了後（app.py のワーカー）や、ポーリングタイマーから呼ばれる。
+        アカウントページが未生成のうちは何もしない。
+        """
+        if not hasattr(self, "_account_status"):
+            return
+        from ..core import login_coordinator
+
+        coord = login_coordinator.shared()
+        status = coord.status
+        LC = login_coordinator.LoginCoordinator
+
+        if status == LC.LOGGED_IN:
+            self._account_status.setText("ログイン済み")
+            self._account_status.setStyleSheet(MacTheme.status_ok_style(self._is_dark_mode))
+            self._login_btn.setVisible(False)
+            self._logout_btn.setVisible(True)
+            self._account_poll.stop()
+        elif status == LC.WAITING:
+            self._account_status.setText("ブラウザでログインを完了してください…")
+            self._account_status.setStyleSheet(MacTheme.status_muted_style())
+            self._login_btn.setVisible(True)
+            self._login_btn.setEnabled(True)
+            self._logout_btn.setVisible(False)
+        elif status == LC.EXCHANGING:
+            self._account_status.setText("ログイン処理中…")
+            self._account_status.setStyleSheet(MacTheme.status_muted_style())
+            self._login_btn.setEnabled(False)
+            self._logout_btn.setVisible(False)
+        elif status == LC.FAILED:
+            self._account_status.setText(coord.error or "ログインに失敗しました。")
+            self._account_status.setStyleSheet(MacTheme.status_warn_style(self._is_dark_mode))
+            self._login_btn.setVisible(True)
+            self._login_btn.setEnabled(True)
+            self._logout_btn.setVisible(False)
+            self._account_poll.stop()
+        else:  # IDLE（未ログイン）
+            self._account_status.setText("未ログイン")
+            self._account_status.setStyleSheet(MacTheme.status_muted_style())
+            self._login_btn.setVisible(True)
+            self._login_btn.setEnabled(True)
+            self._logout_btn.setVisible(False)
+            self._account_poll.stop()
 
     # ------------------------------------------------------------------
     # 入力デバイス

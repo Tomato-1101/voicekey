@@ -34,18 +34,40 @@ def main() -> int:
     try:
         # 高DPIディスプレイサポートを設定
         _configure_high_dpi()
-        
+
         # Qtアプリケーションを作成
         app = QApplication(sys.argv)
         app.setQuitOnLastWindowClosed(False)  # システムトレイ動作のため
+
+        # ブラウザ経由ログインの deep link（voicekey://）を扱う（製品版・段階4）。
+        # OS がスキームハンドラとして起動すると argv に URL が載る。2 つ目以降の
+        # インスタンスは URL を稼働中インスタンスへ転送して即終了する（単一インスタンス化）。
+        from .core import deep_link
+
+        deep_url = deep_link.extract_url_from_argv(sys.argv)
+        single = deep_link.SingleInstance()
+        if not single.try_become_primary():
+            # 既に起動済み: deep link があれば転送して終了（無ければ二重起動を防いで終了）
+            if deep_url:
+                single.send_to_primary(deep_url)
+            return 0
 
         # macOS では Dock / Cmd+Tab から隠す（メニューバー常駐アプリとして動作）。
         # Windows / Linux ではアダプタが no-op なので副作用なし。
         get_platform_adapter().configure_app_visibility(hide_from_dock=True)
 
+        # 配布（凍結）ビルドのみ: voicekey:// を OS に登録する（他環境は no-op）
+        deep_link.register_url_scheme()
+
         # メインコントローラーを作成
         controller = VoicekeyApp()
-        
+
+        # 稼働中インスタンスへ転送された deep link をログイン処理へ渡す
+        single.url_received.connect(controller.handle_deep_link)
+        # アプリ未起動の状態でログインから戻ってきた場合（起動引数に URL）
+        if deep_url:
+            controller.handle_deep_link(deep_url)
+
         # イベントループを実行
         return app.exec()
         

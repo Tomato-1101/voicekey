@@ -74,6 +74,22 @@ voicekeyの変更履歴を記録するファイルです。
       `logout` / `parse_auth_url`）。Qt 非依存（ネットワークを伴う `complete_login` は UI 側でワーカー実行する想定）。
       `tests/test_login_coordinator.py` に 14 件追加（解析・state 不一致/消費・交換失敗）。
     - Mac: `Core/LoginCoordinator.swift` を新規追加（`ObservableObject`・`Status` 列挙・`parseAuthURL` 純粋関数）。
+- **ログイン UI と URL スキーム受信を追加（段階4・増分3／両OS・release）**。設定に「アカウント」ページを新設し、
+  ログイン状態（未ログイン／ブラウザで完了待ち／処理中／ログイン済み／失敗）の表示と
+  ログイン・ログアウトボタンを追加。ログインボタンは既定ブラウザでログインページを開き、
+  ブラウザ側で完了すると `voicekey://auth?code=&state=` の deep link でアプリに戻ってトークン交換まで自動で進む。
+  **ログインの成立にはサーバー（voicekey-site）のデプロイが必要**なため、それまでは UI 表示のみ動作する（休眠）。
+  - **Technical Details**:
+    - Mac: `Resources/Info.plist` に `CFBundleURLTypes`（`voicekey` スキーム）を追加し、`VoicekeyApp.swift` で
+      `NSAppleEventManager`（`kAEGetURL`）を受けて `LoginCoordinator.shared.handleDeepLink` へ渡す。
+      `UI/SettingsView.swift` に「アカウント」タブを追加（`LoginCoordinator` を購読）。
+      ビルド済み .app で `voicekey:` スキームが LaunchServices に登録され、deep link がアプリへ届くことを実機確認。
+    - Windows: `core/deep_link.py` を新規追加（`voicekey://` のレジストリ登録〔win32/凍結ビルドのみ〕＋
+      `QLocalServer`/`QLocalSocket` による単一インスタンス化と URL 転送）。`main.py` で 2 つ目以降の起動を
+      稼働中インスタンスへ転送、`app.py` の `VoicekeyApp.handle_deep_link`（ワーカースレッドでコード交換）へ配線。
+      `ui/settings_window.py` に「アカウント」ページを追加（状態ポーリング＋ログイン/ログアウト）。
+      `login_coordinator.shared()`（遅延生成シングルトン）を追加。`tests/test_deep_link.py` を新規追加。
+      単一インスタンス判定は失敗しても通常起動するよう安全側に倒している（deep link 転送だけ諦める）。
 
 ### Fixed
 - **（Windows）2 回目以降の録音でマイク音声が拾えなくなるバグを修正**。永続ストリームの

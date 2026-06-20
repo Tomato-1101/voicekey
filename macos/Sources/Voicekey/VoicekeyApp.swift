@@ -41,6 +41,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // （バンドル時は Info.plist の LSUIElement でも指定するが、
         //  swift run での開発実行でも同じ挙動になるようここでも設定する）
         NSApp.setActivationPolicy(.accessory)
+
+        // voicekey:// の deep link（ブラウザ経由ログインのコールバック）を受け取る。
+        // アクセサリアプリでは application(_:open:) が呼ばれないことがあるため、
+        // 確実な Apple Event（kInternetEventClass/kAEGetURL）で受ける。
+        // 起動完了前に登録する必要がある（起動時に届く URL を取りこぼさないため）。
+        NSAppleEventManager.shared().setEventHandler(
+            self,
+            andSelector: #selector(handleURLEvent(_:withReplyEvent:)),
+            forEventClass: AEEventClass(kInternetEventClass),
+            andEventID: AEEventID(kAEGetURL)
+        )
+    }
+
+    /// 受信した voicekey:// URL をログイン司令塔へ渡す。
+    @objc private func handleURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent: NSAppleEventDescriptor) {
+        guard let str = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
+              let url = URL(string: str) else { return }
+        LoginCoordinator.shared.handleDeepLink(url)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {

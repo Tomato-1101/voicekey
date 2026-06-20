@@ -32,7 +32,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Dict, Optional, Set
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox
 from pynput import keyboard
 
@@ -112,6 +112,26 @@ class HotkeySlot:
     api_prompt: str
     format_enabled: bool
     transcriber: ApiTranscriber
+
+
+class _LoginWorker(QThread):
+    """deep link のコード交換（ログイン）をバックグラウンドで実行するワーカー。
+
+    complete_login は httpx の同期 POST を伴い UI スレッドをブロックするため、
+    別スレッドで実行する。完了は finished シグナル（QThread 標準）で受ける。
+    """
+
+    def __init__(self, url: str, parent=None) -> None:
+        super().__init__(parent)
+        self._url = url
+
+    def run(self) -> None:
+        from .core import login_coordinator
+
+        try:
+            login_coordinator.shared().complete_login(self._url)
+        except Exception as e:  # 想定外も握ってアプリを落とさない
+            logger.warning(f"ログイン処理で予期しないエラー: {e}")
 
 
 class VoicekeyApp(QObject):
@@ -238,6 +258,38 @@ class VoicekeyApp(QObject):
 
         logger.info("アプリケーション準備完了")
         self._emit_state()
+
+    # ------------------------------------------------------------------
+    # ブラウザ経由ログインの deep link 処理（製品版・段階4）
+    # ------------------------------------------------------------------
+
+    def handle_deep_link(self, url: str) -> None:
+        """受信した voicekey:// URL をログイン処理へ渡す。
+
+        コード交換は通信を伴うためワーカースレッドで実行し、完了後に設定画面の
+        アカウント表示を更新する。main.py（起動引数・転送）から呼ばれる。
+
+        Args:
+            url: voicekey://auth?code=&state= 形式の URL
+        """
+        logger.info("deep link を受信しました")
+        worker = _LoginWorker(url, parent=self)
+        # 同時多重起動を避けつつ、複数回ログインしても良いよう参照を保持する
+        if not hasattr(self, "_login_workers"):
+            self._login_workers: list = []
+        self._login_workers.append(worker)
+
+        def _on_finished() -> None:
+            # 完了したら設定画面のアカウント表示を最新化（開いていれば）
+            try:
+                self._settings_window.refresh_account_status()
+            except Exception:
+                pass
+            if worker in self._login_workers:
+                self._login_workers.remove(worker)
+
+        worker.finished.connect(_on_finished)
+        worker.start()
 
     # ------------------------------------------------------------------
     # ホットキースロット構築
