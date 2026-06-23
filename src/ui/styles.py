@@ -234,6 +234,42 @@ class MacTheme:
             color: white;
         }}
 
+        /* サイドバー開閉トグル（☰）。控えめなアイコンボタン */
+        QPushButton#sidebarToggle {{
+            background: transparent;
+            border: none;
+            border-radius: 6px;
+            padding: 0;
+            font-size: 15px;
+            color: {c.SECONDARY_TEXT};
+            min-height: 0;
+        }}
+        QPushButton#sidebarToggle:hover {{
+            background-color: {c.HOVER_BG};
+        }}
+        QPushButton#sidebarToggle:pressed {{
+            background-color: {c.BTN_PRESSED};
+        }}
+
+        /* セグメント風の期間切替ボタン（週 / 月 / 年）。選択でアクセント塗り */
+        QPushButton[class="seg"] {{
+            background-color: {c.BTN_BG};
+            border: 1px solid {c.BTN_BORDER};
+            border-radius: {MacTheme.RADIUS_CONTROL}px;
+            padding: 2px 10px;
+            margin-left: 4px;
+            font-weight: 500;
+            min-height: 0;
+        }}
+        QPushButton[class="seg"]:hover {{
+            background-color: {c.BTN_HOVER};
+        }}
+        QPushButton[class="seg"]:checked {{
+            background-color: {c.ACCENT};
+            color: white;
+            border-color: {c.ACCENT};
+        }}
+
         /* 見出し・補足 */
         QLabel#pageTitle {{
             font-size: {MacTheme.FONT_SIZE_TITLE}px;

@@ -135,5 +135,56 @@ class TestStatsStore(unittest.TestCase):
         self.assertEqual(store.snapshot()["total_characters"], 0)
 
 
+class TestStatsDailySeries(unittest.TestCase):
+    """日次・月次バケット（チャート用）のテスト。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self._tmp.name) / "stats.json"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_daily_series_length_and_zero_fill(self):
+        """指定日数ぶん古い順で返り、記録の無い日は 0 埋めされる。"""
+        store = StatsStore(self.path)
+        series = store.daily_series(7, end_day="2026-06-24")
+        self.assertEqual(len(series), 7)
+        self.assertEqual(series[0]["day"], "2026-06-18")  # 7 日前
+        self.assertEqual(series[-1]["day"], "2026-06-24")  # 末尾=指定日
+        self.assertTrue(all(b["characters"] == 0 for b in series))
+
+    def test_daily_series_counts_today(self):
+        """当日の記録が当日バケットに入る。"""
+        store = StatsStore(self.path)
+        store.record_session(characters=30, recording_seconds=2.0)
+        store.record_session(characters=20, recording_seconds=1.0)
+        from src.core.stats import _day_string
+        from datetime import datetime
+        today = _day_string(datetime.now().astimezone())
+        series = store.daily_series(1, end_day=today)
+        self.assertEqual(series[-1]["characters"], 50)
+        self.assertEqual(series[-1]["sessions"], 2)
+
+    def test_daily_series_persists(self):
+        """日次バケットは保存され、開き直しても残る。"""
+        store = StatsStore(self.path)
+        store.record_session(characters=15, recording_seconds=1.0)
+        from src.core.stats import _day_string
+        from datetime import datetime
+        today = _day_string(datetime.now().astimezone())
+        reopened = StatsStore(self.path)
+        series = reopened.daily_series(1, end_day=today)
+        self.assertEqual(series[-1]["characters"], 15)
+
+    def test_monthly_series_aggregates_and_wraps_year(self):
+        """月次は 12 ヶ月ぶん古い順で返り、年をまたいで連続する。"""
+        store = StatsStore(self.path)
+        series = store.monthly_series(12, end_month="2026-03")
+        self.assertEqual(len(series), 12)
+        self.assertEqual(series[0]["month"], "2025-04")  # 11 ヶ月前（年またぎ）
+        self.assertEqual(series[-1]["month"], "2026-03")
+
+
 if __name__ == "__main__":
     unittest.main()

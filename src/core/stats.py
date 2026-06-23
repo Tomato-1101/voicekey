@@ -87,6 +87,7 @@ class StatsStore:
             self._data["total_recording_seconds"] += rec_sec
             self._data["saved_seconds"] += max(0.0, typing_seconds - rec_sec)
             self._update_streak(now)
+            self._record_daily(now, characters, rec_sec)
             self._save()
 
     def reset(self) -> None:
@@ -125,6 +126,84 @@ class StatsStore:
             int(self._data.get("longest_streak", 0)), self._data["current_streak"]
         )
 
+    def _record_daily(self, now: datetime, characters: int, rec_sec: float) -> None:
+        """日付ごとのバケット（文字数・録音秒・回数）を積み増す。チャート表示用。"""
+        day = _day_string(now)
+        daily = self._data.setdefault("daily", {})
+        bucket = daily.setdefault(
+            day, {"characters": 0, "recording_seconds": 0.0, "sessions": 0}
+        )
+        bucket["characters"] += characters
+        bucket["recording_seconds"] += rec_sec
+        bucket["sessions"] += 1
+        self._prune_daily()
+
+    def _prune_daily(self) -> None:
+        """日次バケットが増えすぎないよう、古い日から落として直近 800 日に保つ。"""
+        daily = self._data.get("daily", {})
+        if len(daily) > 800:
+            for key in sorted(daily.keys())[:-800]:
+                del daily[key]
+
+    def daily_series(self, num_days: int, end_day: Optional[str] = None) -> list:
+        """末尾を end_day（既定=今日）として直近 num_days 日分を古い順で返す（空の日は 0 埋め）。
+
+        各要素: {"day": "yyyy-MM-dd", "characters": int, "recording_seconds": float, "sessions": int}
+        """
+        if end_day:
+            end = datetime.strptime(end_day, "%Y-%m-%d").date()
+        else:
+            end = datetime.now().astimezone().date()
+        with self._lock:
+            daily = dict(self._data.get("daily", {}))
+        out = []
+        for i in range(max(0, num_days) - 1, -1, -1):
+            d = end - timedelta(days=i)
+            key = d.strftime("%Y-%m-%d")
+            b = daily.get(key) or {}
+            out.append({
+                "day": key,
+                "characters": int(b.get("characters", 0)),
+                "recording_seconds": float(b.get("recording_seconds", 0.0)),
+                "sessions": int(b.get("sessions", 0)),
+            })
+        return out
+
+    def monthly_series(self, num_months: int, end_month: Optional[str] = None) -> list:
+        """末尾を end_month（既定=今月）として直近 num_months ヶ月分を古い順で返す（空月は 0 埋め）。
+
+        各要素: {"month": "yyyy-MM", "characters": int, "recording_seconds": float, "sessions": int}
+        """
+        if end_month:
+            ey, em = int(end_month[:4]), int(end_month[5:7])
+        else:
+            today = datetime.now().astimezone().date()
+            ey, em = today.year, today.month
+        with self._lock:
+            daily = dict(self._data.get("daily", {}))
+        # 日次バケットを月キー（yyyy-MM）へ集約する
+        agg: dict = {}
+        for key, b in daily.items():
+            mk = str(key)[:7]
+            a = agg.setdefault(mk, {"characters": 0, "recording_seconds": 0.0, "sessions": 0})
+            a["characters"] += int(b.get("characters", 0))
+            a["recording_seconds"] += float(b.get("recording_seconds", 0.0))
+            a["sessions"] += int(b.get("sessions", 0))
+        out = []
+        end_index = ey * 12 + (em - 1)  # 年月を 0 起点の通し番号にして月の引き算を安全に行う
+        for i in range(max(0, num_months) - 1, -1, -1):
+            j = end_index - i
+            y, m0 = divmod(j, 12)
+            mk = f"{y:04d}-{m0 + 1:02d}"
+            a = agg.get(mk) or {}
+            out.append({
+                "month": mk,
+                "characters": int(a.get("characters", 0)),
+                "recording_seconds": float(a.get("recording_seconds", 0.0)),
+                "sessions": int(a.get("sessions", 0)),
+            })
+        return out
+
     @staticmethod
     def _empty() -> dict:
         return {
@@ -136,6 +215,8 @@ class StatsStore:
             "last_used_day": "",
             "current_streak": 0,
             "longest_streak": 0,
+            # 日付ごとの入力量（チャート用）。{"yyyy-MM-dd": {characters, recording_seconds, sessions}}
+            "daily": {},
         }
 
     def _load(self) -> dict:
@@ -153,6 +234,18 @@ class StatsStore:
                     data["last_used_day"] = str(raw.get("last_used_day", "") or "")
                     data["current_streak"] = int(raw.get("current_streak", 0))
                     data["longest_streak"] = int(raw.get("longest_streak", 0))
+                    # 日次バケット（壊れた要素は捨てて読めるものだけ残す）
+                    raw_daily = raw.get("daily", {})
+                    if isinstance(raw_daily, dict):
+                        clean = {}
+                        for key, value in raw_daily.items():
+                            if isinstance(value, dict):
+                                clean[str(key)] = {
+                                    "characters": int(value.get("characters", 0)),
+                                    "recording_seconds": float(value.get("recording_seconds", 0.0)),
+                                    "sessions": int(value.get("sessions", 0)),
+                                }
+                        data["daily"] = clean
         except Exception as e:
             logger.warning(f"実績の読み込みに失敗（0 から開始します）: {e}")
         return data

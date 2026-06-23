@@ -14,6 +14,24 @@ import os.log
 
 private let statsLog = Logger(subsystem: "com.voicekey.app", category: "stats")
 
+/// 日付ごとの入力量（チャート用の 1 日ぶん）
+struct DayStat: Codable, Equatable {
+    var characters: Int = 0
+    var recordingSeconds: Double = 0
+    var sessions: Int = 0
+}
+
+/// チャートの棒 1 本ぶん（日次・月次で共用）。
+/// label は曜日 / 日 / 月（View 側で期間に応じて整形）、date は並べ替え・整形の基準。
+struct UsagePoint: Identifiable {
+    let id: String       // 一意キー（yyyy-MM-dd または yyyy-MM）
+    let label: String
+    let date: Date
+    let characters: Int
+    let recordingSeconds: Double
+    let sessions: Int
+}
+
 /// 永続化する累計実績（JSON エンコード対象）
 struct StatsData: Codable, Equatable {
     /// 音声入力した回数
@@ -32,6 +50,8 @@ struct StatsData: Codable, Equatable {
     var currentStreak: Int = 0
     /// これまでの最長連続利用日数
     var longestStreak: Int = 0
+    /// 日付ごとの入力量（チャート用）。キーはローカル yyyy-MM-dd
+    var daily: [String: DayStat] = [:]
 }
 
 extension StatsData {
@@ -46,6 +66,7 @@ extension StatsData {
         lastUsedDay = try c.decodeIfPresent(String.self, forKey: .lastUsedDay) ?? ""
         currentStreak = try c.decodeIfPresent(Int.self, forKey: .currentStreak) ?? 0
         longestStreak = try c.decodeIfPresent(Int.self, forKey: .longestStreak) ?? 0
+        daily = try c.decodeIfPresent([String: DayStat].self, forKey: .daily) ?? [:]
     }
 }
 
@@ -91,7 +112,26 @@ final class StatsStore: ObservableObject {
         let typingSeconds = Double(characters) / Self.assumedTypingCharsPerSecond
         data.savedSeconds += max(0, typingSeconds - recSec)
         updateStreak(now: now)
+        recordDaily(now: now, characters: characters, recordingSeconds: recSec)
         save()
+    }
+
+    /// 日付ごとのバケット（文字数・録音秒・回数）を積み増す。チャート表示用
+    private func recordDaily(now: Date, characters: Int, recordingSeconds: Double) {
+        let day = Self.dayString(now)
+        var bucket = data.daily[day] ?? DayStat()
+        bucket.characters += characters
+        bucket.recordingSeconds += recordingSeconds
+        bucket.sessions += 1
+        data.daily[day] = bucket
+        pruneDaily()
+    }
+
+    /// 日次バケットが増えすぎないよう、古い日から落として直近 800 日に保つ
+    private func pruneDaily() {
+        guard data.daily.count > 800 else { return }
+        let keep = Set(data.daily.keys.sorted().suffix(800))
+        data.daily = data.daily.filter { keep.contains($0.key) }
     }
 
     /// 実績をすべてリセットする（テスト用・ユーザーが消したいとき用）
@@ -150,6 +190,72 @@ final class StatsStore: ObservableObject {
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd"
         return f.string(from: date)
+    }
+
+    /// ローカルタイムゾーンでの yyyy-MM 文字列（月次集計のキー）
+    static func monthString(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.calendar = Calendar.current
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM"
+        return f.string(from: date)
+    }
+
+    // MARK: - チャート用の系列（日次 / 月次）
+
+    /// 末尾を end（既定=今日）として直近 numDays 日分を古い順で返す（記録の無い日は 0）
+    func dailySeries(_ numDays: Int, endingAt end: Date = Date()) -> [UsagePoint] {
+        let cal = Calendar.current
+        let startOfEnd = cal.startOfDay(for: end)
+        var out: [UsagePoint] = []
+        for i in stride(from: max(0, numDays) - 1, through: 0, by: -1) {
+            guard let d = cal.date(byAdding: .day, value: -i, to: startOfEnd) else { continue }
+            let key = Self.dayString(d)
+            let b = data.daily[key]
+            out.append(UsagePoint(
+                id: key, label: key, date: d,
+                characters: b?.characters ?? 0,
+                recordingSeconds: b?.recordingSeconds ?? 0,
+                sessions: b?.sessions ?? 0))
+        }
+        return out
+    }
+
+    /// 末尾を end（既定=今月）として直近 numMonths ヶ月分を古い順で返す（記録の無い月は 0）
+    func monthlySeries(_ numMonths: Int, endingAt end: Date = Date()) -> [UsagePoint] {
+        let cal = Calendar.current
+        let comps = cal.dateComponents([.year, .month], from: end)
+        guard let startOfEndMonth = cal.date(from: comps) else { return [] }
+        // 日次バケットを月キー（yyyy-MM）へ集約する
+        var agg: [String: (chars: Int, sec: Double, sess: Int)] = [:]
+        for (key, v) in data.daily {
+            let mk = String(key.prefix(7))
+            var a = agg[mk] ?? (0, 0, 0)
+            a.chars += v.characters; a.sec += v.recordingSeconds; a.sess += v.sessions
+            agg[mk] = a
+        }
+        var out: [UsagePoint] = []
+        for i in stride(from: max(0, numMonths) - 1, through: 0, by: -1) {
+            guard let d = cal.date(byAdding: .month, value: -i, to: startOfEndMonth) else { continue }
+            let mk = Self.monthString(d)
+            let a = agg[mk]
+            out.append(UsagePoint(
+                id: mk, label: mk, date: d,
+                characters: a?.chars ?? 0,
+                recordingSeconds: a?.sec ?? 0,
+                sessions: a?.sess ?? 0))
+        }
+        return out
+    }
+
+    /// 直近 n 日の合計文字数（サマリーの「今日 / 今週」表示用）
+    func charactersInLast(days: Int) -> Int {
+        dailySeries(days).reduce(0) { $0 + $1.characters }
+    }
+
+    /// 直近 n 日の合計録音秒数
+    func recordingSecondsInLast(days: Int) -> Double {
+        dailySeries(days).reduce(0) { $0 + $1.recordingSeconds }
     }
 
     private func save() {

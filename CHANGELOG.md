@@ -4,6 +4,32 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased]
 
+### Added
+- **実績タブにデザイン重視の使用統計チャートを追加（両OS両ブランチ）**。
+  「今日 / 今週 / 累計」の入力量を 0 からカウントアップ表示し、**期間（週・月・年）を切り替えられる棒グラフ**で
+  日ごと・月ごとの入力量を可視化する。開いた瞬間に数字がカウントアップし、棒が下から伸びるアニメーションで
+  「使うほど貯まる」達成感を出す。集計はすべて貼り付け確定後のローカル処理のみで、音声入力に遅延を足さない。
+  - **Technical Details**:
+    - データ層（両OS共通の系列メソッド）: 日付ごとの入力量バケット `daily`（`{characters, recording_seconds, sessions}` を
+      `yyyy-MM-dd` キーで保持・直近 800 日に剪定）を追加。`daily_series(n)` / `monthly_series(n)` / 直近 n 日合計の
+      ヘルパーを実装。Windows=`src/core/stats.py`、Mac=`Core/StatsStore.swift`（`DayStat` / `UsagePoint`）。回帰テスト
+      `tests/test_stats.py` に日次・月次系列の 4 ケースを追加。
+    - Mac: `UI/SettingsView.swift` の `StatsTab` を Swift Charts（`BarMark`）で再構成。`StatsPeriod`（週/月/年）の
+      セグメント Picker、`AnimatedNumber`（`Animatable`）でカウントアップ。依存追加なし（macOS 標準の Charts）。
+    - Windows: `ui/settings_window.py` に自前描画ウィジェット `UsageBarChart`（`QPainter`・`QPropertyAnimation` で棒が
+      伸びる）を追加。サマリーは `QVariantAnimation` でカウントアップ、期間切替は `QButtonGroup` のセグメント風ボタン。
+      QtCharts 等の依存は追加していない。
+- **設定 UI を「開閉できる左サイドバー」に変更（両OS両ブランチ）**。
+  項目が増えても画面外に溢れないよう、設定タブを縦のサイドバーにまとめ、開閉トグルで「アイコン＋ラベル ⇄ アイコンのみの
+  レール」を切り替えられるようにした。ナビは縦スクロール可能で、選択中の項目はアクセント色で塗る。
+  - **Technical Details**:
+    - Mac: 横並び `TabView`（画面外へ溢れていた）を `HStack { sidebar; Divider(); content }` に置換。`sidebarCollapsed`
+      状態で幅 200⇄62 をアニメーション。ナビは `ScrollView` ＋ `NavItem`（SF Symbols アイコン）。
+    - Windows: 既存の `QListWidget` サイドバーに開閉トグル（☰）とアイコンを追加。折りたたみ時は幅 184⇄60 を
+      `QPropertyAnimation` で変化させ、項目ラベルを消してアイコンのみにする（ホバーのツールチップで名称表示）。
+      アイコンは依存追加なしの自前 SVG → `QIcon`（通常色＋選択時白の 2 状態）。`styles.py` にセグメントボタン／
+      トグルの QSS を追加。
+
 ## [1.2.0] - 2026-06-20
 
 ### Added

@@ -9,6 +9,7 @@ Mac 版 SettingsView.swift と同じ 5 ページ構成（一般 / ホットキ�
 
 import importlib.util
 import os
+from datetime import datetime
 from typing import Optional
 
 from PySide6.QtCore import (
@@ -18,21 +19,28 @@ from PySide6.QtCore import (
     QPointF,
     QPropertyAnimation,
     QRectF,
+    QSize,
     QTimer,
     QUrl,
+    QVariantAnimation,
     Signal,
 )
 from PySide6.QtGui import (
     QBrush,
     QColor,
     QDesktopServices,
+    QFont,
+    QIcon,
     QKeyEvent,
     QPainter,
     QPainterPath,
     QPen,
+    QPixmap,
 )
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFrame,
@@ -185,6 +193,200 @@ def _add_row(
     if caption:
         v.addWidget(_make_caption(caption))
     card_layout.addWidget(row)
+
+
+# ----------------------------------------------------------------------
+# サイドバーのアイコン（依存追加なしで自前 SVG → QIcon。Mac 版 SF Symbols に対応）
+# ----------------------------------------------------------------------
+
+# ページタイトル → アイコン名のマッピング
+_NAV_ICON_NAME = {
+    "一般": "general",
+    "ホットキー 1": "hotkey1",
+    "ホットキー 2": "hotkey2",
+    "実績": "stats",
+    "履歴": "history",
+    "ユーザー辞書": "dictionary",
+    "アカウント": "account",
+    "バージョン情報": "version",
+    "API キー": "apikey",
+}
+
+
+def _nav_svg(name: str, color: str) -> str:
+    """ナビ項目のラインアイコン SVG を返す（stroke=指定色）。"""
+    head = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
+        f'stroke="{color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'
+    )
+    bodies = {
+        "general": (
+            '<line x1="3" y1="9" x2="21" y2="9"/><circle cx="8" cy="9" r="2.3"/>'
+            '<line x1="3" y1="15" x2="21" y2="15"/><circle cx="15" cy="15" r="2.3"/>'
+        ),
+        "hotkey1": (
+            '<rect x="3" y="6" width="18" height="12" rx="3"/>'
+            f'<text x="12" y="15.5" text-anchor="middle" font-size="9" '
+            f'font-family="sans-serif" fill="{color}" stroke="none">1</text>'
+        ),
+        "hotkey2": (
+            '<rect x="3" y="6" width="18" height="12" rx="3"/>'
+            f'<text x="12" y="15.5" text-anchor="middle" font-size="9" '
+            f'font-family="sans-serif" fill="{color}" stroke="none">2</text>'
+        ),
+        "stats": (
+            '<polygon points="12 3 14.5 9 21 9.3 16 13.6 17.6 20 12 16.2 6.4 20 8 13.6 3 9.3 9.5 9"/>'
+        ),
+        "history": '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 16 14"/>',
+        "dictionary": (
+            '<path d="M5 4h11a2 2 0 0 1 2 2v14H7a2 2 0 0 1-2-2z"/>'
+            '<line x1="5" y1="16.5" x2="18" y2="16.5"/>'
+        ),
+        "account": '<circle cx="12" cy="8.5" r="3.4"/><path d="M5.5 20a6.5 6.5 0 0 1 13 0"/>',
+        "version": (
+            '<circle cx="12" cy="12" r="9"/><line x1="12" y1="11" x2="12" y2="16.5"/>'
+            f'<circle cx="12" cy="7.7" r="0.7" fill="{color}" stroke="none"/>'
+        ),
+        "apikey": (
+            '<circle cx="8" cy="12" r="4"/><line x1="11.5" y1="12" x2="21" y2="12"/>'
+            '<line x1="18" y1="12" x2="18" y2="15.5"/><line x1="21" y1="12" x2="21" y2="15"/>'
+        ),
+    }
+    return head + bodies.get(name, "") + "</svg>"
+
+
+def _svg_pixmap(svg: str, size: int) -> QPixmap:
+    """SVG 文字列を QPixmap に描画する（hiDPI 用に 2 倍解像度でレンダリング）。"""
+    renderer = QSvgRenderer(bytearray(svg, encoding="utf-8"))
+    dpr = 2
+    pm = QPixmap(size * dpr, size * dpr)
+    pm.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pm)
+    renderer.render(painter)
+    painter.end()
+    pm.setDevicePixelRatio(dpr)
+    return pm
+
+
+def _make_nav_icon(name: str, normal_color: str, size: int = 18) -> QIcon:
+    """通常色＋選択時（白）の 2 状態を持つナビアイコンを作る。"""
+    icon = QIcon()
+    icon.addPixmap(_svg_pixmap(_nav_svg(name, normal_color), size), QIcon.Mode.Normal)
+    icon.addPixmap(_svg_pixmap(_nav_svg(name, "#FFFFFF"), size), QIcon.Mode.Selected)
+    return icon
+
+
+class UsageBarChart(QWidget):
+    """
+    入力量の棒グラフ（依存追加なしの自前描画・アニメーション付き）。
+
+    set_data() でラベルと値を渡すと、棒が 0 から伸びるアニメーションで描画する。
+    色は set_colors() でテーマに追従させる。値は文字数を想定する。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(170)
+        self._bars: list[tuple[str, int]] = []  # [(ラベル, 値)]
+        self._max = 1
+        self._progress = 0.0
+        self._accent = QColor("#0A84FF")
+        self._text = QColor("#9A9AA2")
+        self._grid = QColor(0, 0, 0, 40)
+        self._empty_text = "まだデータがありません。音声入力するとここに表示されます。"
+
+        # 棒の伸びアニメーション（0→1 を progress に流す）
+        self._anim = QPropertyAnimation(self, b"progress")
+        self._anim.setDuration(700)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    def set_colors(self, accent, text, grid) -> None:
+        """テーマ色を設定する（accent/text は #hex 文字列か QColor、grid は QColor 推奨）。"""
+        self._accent = QColor(accent)
+        self._text = QColor(text)
+        self._grid = QColor(grid)
+        self.update()
+
+    def set_data(self, bars) -> None:
+        """棒データ [(ラベル, 値)] を設定し、0 から伸びるアニメーションを開始する。"""
+        self._bars = list(bars)
+        self._max = max([v for _, v in self._bars] + [1])
+        self._anim.stop()
+        self._progress = 0.0
+        self._anim.setStartValue(0.0)
+        self._anim.setEndValue(1.0)
+        self._anim.start()
+        self.update()
+
+    def get_progress(self) -> float:
+        return self._progress
+
+    def set_progress(self, value: float) -> None:
+        self._progress = float(value)
+        self.update()
+
+    # QPropertyAnimation が駆動する Qt プロパティ
+    progress = Property(float, get_progress, set_progress)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        pad_l, pad_r, pad_t, pad_b = 8, 8, 18, 22
+        plot_w = max(1, w - pad_l - pad_r)
+        plot_h = max(1, h - pad_t - pad_b)
+        baseline = pad_t + plot_h
+
+        # ベースライン
+        painter.setPen(QPen(self._grid, 1))
+        painter.drawLine(pad_l, baseline, w - pad_r, baseline)
+
+        n = len(self._bars)
+        has_data = any(v > 0 for _, v in self._bars)
+        if n == 0 or not has_data:
+            painter.setPen(self._text)
+            painter.drawText(
+                QRectF(pad_l, pad_t, plot_w, plot_h),
+                Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
+                self._empty_text,
+            )
+            return
+
+        show_values = n <= 7
+        # ラベルが詰まりすぎないよう間引く（12 本以下は全部、以降は約 6 個）
+        label_step = 1 if n <= 12 else max(1, round(n / 6))
+        slot = plot_w / n
+        bar_w = min(34.0, slot * 0.6)
+        font = QFont(self.font())
+        font.setPointSize(8)
+        painter.setFont(font)
+
+        for i, (label, value) in enumerate(self._bars):
+            cx = pad_l + slot * (i + 0.5)
+            bh = (value / self._max) * plot_h * self._progress if self._max > 0 else 0.0
+            x = cx - bar_w / 2
+            y = baseline - bh
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(self._accent if value > 0 else self._grid)
+            r = min(3.0, bar_w / 2)
+            painter.drawRoundedRect(QRectF(x, y, bar_w, bh), r, r)
+
+            # X 軸ラベル（間引き対象）
+            if i % label_step == 0:
+                painter.setPen(self._text)
+                painter.drawText(
+                    QRectF(cx - slot / 2, baseline + 3, slot, pad_b - 3),
+                    Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
+                    label,
+                )
+            # 値ラベル（棒が少ないときだけ上に出す）
+            if show_values and value > 0:
+                painter.setPen(self._text)
+                painter.drawText(
+                    QRectF(cx - slot / 2, y - 14, slot, 12),
+                    Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom,
+                    str(value),
+                )
 
 
 class ToggleSwitch(QCheckBox):
@@ -584,27 +786,51 @@ class SettingsWindow(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # --- 左サイドバー: ブランド + ナビゲーション ---
-        side = QFrame()
-        side.setObjectName("sidebarPane")
-        side.setFixedWidth(172)
-        sv = QVBoxLayout(side)
-        sv.setContentsMargins(8, 16, 8, 10)
+        # --- 左サイドバー: ブランド + 折りたたみボタン + ナビゲーション ---
+        # 画面が狭くてもタブを全部辿れるよう、開閉（アイコンのみ）＋縦スクロールにする
+        self._SIDE_W = 184           # 展開時の幅
+        self._SIDE_W_COLLAPSED = 60  # 折りたたみ時の幅（アイコンのみ）
+        self._sidebar_collapsed = False
+
+        self._sidebar = QFrame()
+        self._sidebar.setObjectName("sidebarPane")
+        self._sidebar.setFixedWidth(self._SIDE_W)
+        sv = QVBoxLayout(self._sidebar)
+        sv.setContentsMargins(8, 14, 8, 10)
         sv.setSpacing(2)
 
-        brand = QLabel("voicekey")
-        brand.setObjectName("brand")
-        brand_caption = QLabel("設定")
-        brand_caption.setObjectName("brandCaption")
-        sv.addWidget(brand)
-        sv.addWidget(brand_caption)
-        sv.addSpacing(12)
+        # ヘッダー: ブランド名（折りたたみ時は隠す）＋ 開閉トグル（常時表示）
+        brand_row = QHBoxLayout()
+        brand_row.setContentsMargins(6, 0, 0, 0)
+        brand_row.setSpacing(6)
+        brand_box = QVBoxLayout()
+        brand_box.setSpacing(0)
+        self._sidebar_brand = QLabel("voicekey")
+        self._sidebar_brand.setObjectName("brand")
+        self._sidebar_caption = QLabel("設定")
+        self._sidebar_caption.setObjectName("brandCaption")
+        brand_box.addWidget(self._sidebar_brand)
+        brand_box.addWidget(self._sidebar_caption)
+        brand_row.addLayout(brand_box)
+        brand_row.addStretch()
+        self._sidebar_toggle = QPushButton("☰")
+        self._sidebar_toggle.setObjectName("sidebarToggle")
+        self._sidebar_toggle.setFixedSize(30, 30)
+        self._sidebar_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._sidebar_toggle.setToolTip("サイドバーを開閉")
+        self._sidebar_toggle.clicked.connect(self._toggle_sidebar)
+        brand_row.addWidget(self._sidebar_toggle, 0, Qt.AlignmentFlag.AlignTop)
+        sv.addLayout(brand_row)
+        sv.addSpacing(10)
 
         self._nav = QListWidget()
         self._nav.setObjectName("sidebar")
         self._nav.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._nav.setIconSize(QSize(18, 18))
+        # 縦スクロールのみ（横は出さない）。項目が増えても下までスクロールで届く
+        self._nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         sv.addWidget(self._nav, 1)
-        root.addWidget(side)
+        root.addWidget(self._sidebar)
 
         # --- 右コンテンツ: ページタイトル + ページ + 保存/キャンセル ---
         right = QWidget()
@@ -646,10 +872,25 @@ class SettingsWindow(QWidget):
         # 配布ビルドは埋め込みキーで動くため、API キーページは出さない（テスターの混乱防止）
         if not secrets.is_dist_build():
             page_defs.append(("API キー", self._create_api_keys_page()))
+        # ナビ項目のフルタイトルを覚えておく（折りたたみ時はテキストを消してアイコンのみにする）
+        self._nav_titles = [title for title, _ in page_defs]
         for title, page in page_defs:
-            self._nav.addItem(title)
+            item = QListWidgetItem(title)
+            item.setToolTip(title)  # 折りたたみ時にホバーで名前が出るように
+            self._nav.addItem(item)
             self._pages.addWidget(page)
         rv.addWidget(self._pages, 1)
+        # アイコンは色がテーマ依存なので _apply_theme で設定する
+        self._apply_nav_icons()
+
+        # サイドバー開閉の幅アニメーション（カクつかせずスッと動かす）。
+        # min と max を同値に保って正確な幅にする（setFixedWidth と同等を毎フレーム維持）
+        self._sidebar_anim = QPropertyAnimation(self._sidebar, b"maximumWidth")
+        self._sidebar_anim.setDuration(180)
+        self._sidebar_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self._sidebar_anim.valueChanged.connect(
+            lambda w: self._sidebar.setMinimumWidth(int(w))
+        )
 
         # ボタンエリア（保存/キャンセル）。Mac 版は即時反映だが、Windows 版は
         # settings.yaml + ホットリロードのため明示保存とする
@@ -681,6 +922,45 @@ class SettingsWindow(QWidget):
         toggle.set_dark(self._is_dark_mode)
         self._toggles.append(toggle)
         return toggle
+
+    # ------------------------------------------------------------------
+    # サイドバーの開閉（アイコンのみ ⇔ アイコン＋ラベル）
+    # ------------------------------------------------------------------
+
+    def _toggle_sidebar(self) -> None:
+        """サイドバーの開閉を切り替える（幅をアニメーションさせ、ラベル表示を出し入れ）。"""
+        self._sidebar_collapsed = not self._sidebar_collapsed
+        target = self._SIDE_W_COLLAPSED if self._sidebar_collapsed else self._SIDE_W
+        self._sidebar_anim.stop()
+        self._sidebar_anim.setStartValue(self._sidebar.width())
+        self._sidebar_anim.setEndValue(target)
+        self._sidebar_anim.start()
+        self._apply_sidebar_mode()
+
+    def _apply_sidebar_mode(self) -> None:
+        """折りたたみ状態に応じてブランド表示とナビ項目のラベルを切り替える。"""
+        collapsed = self._sidebar_collapsed
+        self._sidebar_brand.setVisible(not collapsed)
+        self._sidebar_caption.setVisible(not collapsed)
+        # 折りたたみ時はテキストを消してアイコンのみ。ホバーのツールチップで名前を出す
+        for i in range(self._nav.count()):
+            item = self._nav.item(i)
+            item.setText("" if collapsed else self._nav_titles[i])
+            item.setTextAlignment(
+                Qt.AlignmentFlag.AlignCenter if collapsed
+                else (Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            )
+
+    def _sidebar_icon_color(self) -> str:
+        """サイドバーアイコンの通常色（テーマに追従）。"""
+        return "#C7C7CC" if self._is_dark_mode else "#6E6E73"
+
+    def _apply_nav_icons(self) -> None:
+        """ナビ各項目に現テーマ色のアイコンを設定する（選択時は白に切り替わる）。"""
+        color = self._sidebar_icon_color()
+        for i in range(self._nav.count()):
+            name = _NAV_ICON_NAME.get(self._nav_titles[i], "general")
+            self._nav.item(i).setIcon(_make_nav_icon(name, color))
 
     @staticmethod
     def _wrap_scroll(page: QWidget) -> QScrollArea:
@@ -933,6 +1213,60 @@ class SettingsWindow(QWidget):
         level_layout.addWidget(bar_wrap)
         layout.addWidget(level_card)
 
+        # --- サマリーカード（今日 / 今週 / 累計。大きな数字をカウントアップして達成感を出す） ---
+        summary_card, summary_layout = _make_card()
+        tiles = QWidget()
+        tiles_h = QHBoxLayout(tiles)
+        tiles_h.setContentsMargins(_CARD_PAD_X, 12, _CARD_PAD_X, 12)
+        tiles_h.setSpacing(0)
+        today_tile, self._tile_today_value, self._tile_today_sub = self._make_summary_tile("今日")
+        week_tile, self._tile_week_value, self._tile_week_sub = self._make_summary_tile("今週")
+        total_tile, self._tile_total_value, self._tile_total_sub = self._make_summary_tile("累計")
+        tiles_h.addWidget(today_tile, 1)
+        tiles_h.addWidget(self._make_vline())
+        tiles_h.addWidget(week_tile, 1)
+        tiles_h.addWidget(self._make_vline())
+        tiles_h.addWidget(total_tile, 1)
+        summary_layout.addWidget(tiles)
+        layout.addWidget(summary_card)
+
+        # --- 入力量チャートカード（期間切替・棒グラフ・伸びるアニメーション） ---
+        chart_card, chart_layout = _make_card()
+        chart_inner = QWidget()
+        chart_v = QVBoxLayout(chart_inner)
+        chart_v.setContentsMargins(_CARD_PAD_X, 10, _CARD_PAD_X, 12)
+        chart_v.setSpacing(10)
+
+        chart_head = QHBoxLayout()
+        chart_head.setContentsMargins(0, 0, 0, 0)
+        chart_title = QLabel("入力量（文字数）")
+        chart_title.setStyleSheet("font-weight: 600;")
+        chart_head.addWidget(chart_title)
+        chart_head.addStretch()
+        # 期間切替（週 / 月 / 年）。排他チェックのセグメント風ボタン
+        self._period_group = QButtonGroup(self)
+        self._period_group.setExclusive(True)
+        for idx, (key, label) in enumerate([("week", "週"), ("month", "月"), ("year", "年")]):
+            btn = QPushButton(label)
+            btn.setObjectName("segButton")
+            btn.setProperty("class", "seg")
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFixedHeight(26)
+            btn.setMinimumWidth(40)
+            if key == "week":
+                btn.setChecked(True)
+            btn.clicked.connect(lambda _checked, k=key: self._set_stats_period(k))
+            self._period_group.addButton(btn, idx)
+            chart_head.addWidget(btn)
+        chart_v.addLayout(chart_head)
+
+        self._stats_period = "week"
+        self._usage_chart = UsageBarChart()
+        chart_v.addWidget(self._usage_chart)
+        chart_layout.addWidget(chart_inner)
+        layout.addWidget(chart_card)
+
         # --- 累計カード ---
         stats_card, stats_layout = _make_card()
         self._stats_saved_value = QLabel("0 秒")
@@ -954,6 +1288,33 @@ class SettingsWindow(QWidget):
         self._refresh_stats()
         return self._wrap_scroll(page)
 
+    def _make_summary_tile(self, title: str) -> tuple[QWidget, QLabel, QLabel]:
+        """サマリー 1 枚（小タイトル + 大きな数字「N 文字」+ 補足）を作って返す。"""
+        tile = QWidget()
+        v = QVBoxLayout(tile)
+        v.setContentsMargins(6, 0, 6, 0)
+        v.setSpacing(2)
+        title_label = QLabel(title)
+        title_label.setObjectName("caption")
+        value_label = QLabel("0 文字")
+        # 大きな数字で達成感を出す（色はテーマ QSS を継承）
+        value_label.setStyleSheet("font-size: 22px; font-weight: 700;")
+        sub_label = QLabel("")
+        sub_label.setObjectName("caption")
+        v.addWidget(title_label)
+        v.addWidget(value_label)
+        v.addWidget(sub_label)
+        return tile, value_label, sub_label
+
+    @staticmethod
+    def _make_vline() -> QFrame:
+        """サマリータイル間の縦区切り線。"""
+        line = QFrame()
+        line.setObjectName("hairline")
+        line.setFrameShape(QFrame.Shape.VLine)
+        line.setFixedWidth(1)
+        return line
+
     def _refresh_stats(self) -> None:
         """実績表示をストアの現在値で更新する。"""
         if self._stats is None:
@@ -972,6 +1333,68 @@ class SettingsWindow(QWidget):
             f"{d['current_streak']} 日（最長 {d['longest_streak']} 日）"
         )
 
+        # サマリー（今日 / 今週 / 累計）。数字は 0→値 にカウントアップ
+        today = self._stats.daily_series(1)[-1]
+        week = self._stats.daily_series(7)
+        week_chars = sum(b["characters"] for b in week)
+        week_rec = sum(b["recording_seconds"] for b in week)
+        self._animate_number(self._tile_today_value, today["characters"], " 文字")
+        self._tile_today_sub.setText(f"{today['sessions']} 回")
+        self._animate_number(self._tile_week_value, week_chars, " 文字")
+        self._tile_week_sub.setText(f"録音 {self._format_minutes(week_rec)}")
+        self._animate_number(self._tile_total_value, d["total_characters"], " 文字")
+        self._tile_total_sub.setText(f"Lv.{d['level']}")
+
+        self._update_chart()
+
+    def _animate_number(self, label: QLabel, target: int, suffix: str) -> None:
+        """ラベルの数字を 0→target にカウントアップする（達成感の演出）。"""
+        anim = QVariantAnimation(self)
+        anim.setStartValue(0)
+        anim.setEndValue(int(target))
+        anim.setDuration(700)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim.valueChanged.connect(lambda v: label.setText(f"{int(v)}{suffix}"))
+        # 末尾を確実に正しい値で締める（端数で止まらないように）
+        anim.finished.connect(lambda: label.setText(f"{int(target)}{suffix}"))
+        anim.start()
+        # GC されると停止するのでラベルに持たせて延命する
+        label._countup_anim = anim
+
+    def _chart_bars(self) -> list:
+        """現在の期間設定に応じた棒データ [(ラベル, 文字数)] を返す。"""
+        if self._stats is None:
+            return []
+        if self._stats_period == "week":
+            wd = ["月", "火", "水", "木", "金", "土", "日"]
+            out = []
+            for b in self._stats.daily_series(7):
+                dt = datetime.strptime(b["day"], "%Y-%m-%d")
+                out.append((wd[dt.weekday()], b["characters"]))
+            return out
+        if self._stats_period == "month":
+            return [
+                (str(int(b["day"][8:10])), b["characters"])
+                for b in self._stats.daily_series(30)
+            ]
+        # year（直近 12 ヶ月）
+        return [
+            (f"{int(b['month'][5:7])}月", b["characters"])
+            for b in self._stats.monthly_series(12)
+        ]
+
+    def _update_chart(self) -> None:
+        """現在の期間でチャートのデータを差し替える（0 から伸びるアニメーション付き）。"""
+        if getattr(self, "_usage_chart", None) is not None:
+            self._usage_chart.set_data(self._chart_bars())
+
+    def _set_stats_period(self, period: str) -> None:
+        """チャートの集計期間（week / month / year）を切り替える。"""
+        if period == self._stats_period:
+            return
+        self._stats_period = period
+        self._update_chart()
+
     @staticmethod
     def _format_saved(seconds: float) -> str:
         """累計節約秒数を「X 時間 Y 分」等に整形する（Mac 版 formattedSaved と同じ規則）。"""
@@ -981,6 +1404,16 @@ class SettingsWindow(QWidget):
         if total >= 60:
             return f"{total // 60} 分 {total % 60} 秒"
         return f"{total} 秒"
+
+    @staticmethod
+    def _format_minutes(seconds: float) -> str:
+        """録音秒数を短く整形する（サマリー補足用。Mac 版 formattedMinutes と同じ規則）。"""
+        total = int(round(seconds))
+        if total >= 3600:
+            return f"{total // 3600}時間{(total % 3600) // 60}分"
+        if total >= 60:
+            return f"{total // 60}分"
+        return f"{total}秒"
 
     def _create_history_page(self) -> QWidget:
         """履歴ページを作成する（直近の音声入力をクリックで再コピー）。"""
@@ -1659,6 +2092,14 @@ class SettingsWindow(QWidget):
         # トグルスイッチは QSS ではなく自前描画のため、テーマを個別に伝える
         for toggle in self._toggles:
             toggle.set_dark(is_dark)
+        # サイドバーアイコンは色がテーマ依存なので作り直す
+        self._apply_nav_icons()
+        # 実績チャートも QSS ではなく自前描画のため、テーマ色を個別に伝える
+        if getattr(self, "_usage_chart", None) is not None:
+            c = MacTheme.Colors(is_dark)
+            # HAIRLINE は rgba() 文字列で QColor が解釈できないため、グリッド色は明示生成する
+            grid = QColor(255, 255, 255, 28) if is_dark else QColor(0, 0, 0, 28)
+            self._usage_chart.set_colors(c.ACCENT, c.SECONDARY_TEXT, grid)
 
     def _save_settings(self) -> None:
         """設定をファイルに保存する。"""
