@@ -34,6 +34,10 @@ jobs:
   build:
     runs-on: windows-latest
     timeout-minutes: 40
+    # 成果物は GitHub Release 資産として置く（Release 資産は Actions の artifact ストレージ
+    # クォータとは別枠。artifact 方式はクォータ超過で upload が落ちるため転送に使えない）。
+    permissions:
+      contents: write
 
     steps:
       - name: バージョン書式の検証
@@ -76,12 +80,17 @@ jobs:
           PYTHONUTF8: "1"
         run: powershell -ExecutionPolicy Bypass -File scripts\build\build_windows_dist.ps1 -Version "${{ inputs.version }}"
 
-      - name: 成果物のアップロード（setup.exe + version.json）
-        uses: actions/upload-artifact@v4
-        with:
-          name: voicekey-windows-installer
-          path: |
-            dist/installer/voicekey-${{ inputs.version }}-setup.exe
-            dist/installer/version.json
-          if-no-files-found: error
-          retention-days: 14
+      - name: 成果物を転送用 GitHub Release（private 本リポ）へ公開
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 既存の同名 Release/タグがあれば消す（再実行を冪等にする）
+          gh release delete "winci-${{ inputs.version }}" --repo ${{ github.repository }} --yes --cleanup-tag 2>&1 | Out-Null
+          # setup.exe + version.json を Release 資産として添付（Mac 側が download → voicekey-releases へ relay）
+          gh release create "winci-${{ inputs.version }}" `
+            --repo ${{ github.repository }} `
+            --title "Windows CI ${{ inputs.version }}（転送用）" `
+            --notes "artifact クォータ回避のための転送用 Release。Mac から download して公開リポ voicekey-releases へ relay 後、これは削除する。" `
+            "dist/installer/voicekey-${{ inputs.version }}-setup.exe" `
+            "dist/installer/version.json"
