@@ -12,7 +12,7 @@ Deepgram は短命 JWT で直叩き（低レイテンシ維持）、ElevenLabs/G
 
 - `/api/v1/me` を本番デプロイ済み（`https://voicekey.vercel.app/api/v1/me` → 未ログインで 401 を確認）。
 - アプリ v1.3.0 を両 OS でビルド済み・配布物を配置済み。
-- **更新フィードは v1.2.0 のまま据え置き**＝既存ユーザーは自動更新されない（v1.3.0 は手動取得のみ）。
+- **更新フィードを v1.3.0 に切替済み**（`downloads.json` / `windows/version.json` / `mac/appcast.xml`）＝ダウンロード・自動更新とも v1.3.0。一般公開済み。
 
 ## 1. 無料アクティベーションキーを発行する（あなた＝管理者の作業）
 
@@ -60,37 +60,16 @@ Deepgram は短命 JWT で直叩き（低レイテンシ維持）、ElevenLabs/G
 - キー登録が 400「使用済み/無効」: 既に redeem 済みキー、または期限切れキー。新しいキーを発行して再試行。
 - 401 が返る: アプリのログインセッションが切れている → 一度ログアウト → 再ログイン。
 
-## まだ「一般公開」ではない（重要）
+## 一般公開済み（2026-06-27 切替完了）
 
-現状は **ステージ公開**。一般ユーザーがサイトのダウンロードボタンから入れるのは引き続き v1.2.0（埋め込みキー版）で、
-更新フィードも v1.2.0 のまま。理由は「self-serve のキー発行導線が未整備」で、いま公開デフォルトを v1.3.0 にすると
-キーを持たない新規ユーザーが使えず、既存ユーザーも自動更新で締め出されるため。
+公開デフォルトを v1.3.0 に切り替え済み。サイトのダウンロードボタン・自動更新フィードとも v1.3.0 を指す。
+- `voicekey-site/public/downloads.json` → mac `1.3.0` / `/downloads/voicekey-1.3.0.dmg`（1958933）、windows `1.3.0` / GitHub Releases（281011424）。
+- `voicekey-site/public/windows/version.json` → `1.3.0`（sha256 `5c7f22cf…4790`、実測一致）。
+- `voicekey-site/public/mac/appcast.xml` → `voicekey-1.3.0.zip`（build 9・EdDSA 署名入り）を最新 item に。
+- `vercel deploy --prod` 実行済み＝既存ユーザーも自動更新で v1.3.0（＝ログイン＋キー必須）に上がる。
 
-**一般公開（公開デフォルトを v1.3.0 に切替）に必要な残作業**:
-1. 新規ユーザーが自分でキーを得る導線（サインアップ時に自動付与 or 「無料キーを発行」ボタン）。
-2. 公開 pointer の切替: `voicekey-site/public/downloads.json`・`windows/version.json`・`mac/appcast.xml` を 1.3.0 に更新して `vercel deploy --prod`。
-   → これを実行すると既存 v1.2.0 ユーザーも自動更新で v1.3.0（要キー）に上がる＝この時点で全員にキーが要る。
-3. 旧埋め込みキーの無効化（親キーローテーション）を同時に計画。
+### 旧版（v1.2.0 以前）の無効化＝提供元キーのローテーション
 
-### 切替時にそのまま使える確定値（v1.3.0 はビルド・公開済み）
-
-公開リポ `voicekey-releases` の v1.3.0 リリース（setup.exe 添付・DL 200 確認済み）と
-Mac の dmg/zip（voicekey-site に配置済み）はすでに用意できている。フィードを差し替えるだけ。
-
-**`public/windows/version.json` をこの内容に置き換える**（CI が生成・SHA256 実測一致を確認済み）:
-
-```json
-{
-    "notes":  "voicekey 1.3.0",
-    "url":  "https://github.com/Tomato-1101/voicekey-releases/releases/download/v1.3.0/voicekey-1.3.0-setup.exe",
-    "version":  "1.3.0",
-    "sha256":  "5c7f22cf3a9c1ccab8b711e8d2224edad6d153016fc7bf5a9f9270c702494790"
-}
-```
-
-**`public/downloads.json`**: mac → `{version:"1.3.0", url:"/downloads/voicekey-1.3.0.dmg", size:1958933}`、
-windows → `{version:"1.3.0", url:"https://github.com/Tomato-1101/voicekey-releases/releases/download/v1.3.0/voicekey-1.3.0-setup.exe", size:281011424}`。
-
-**`public/mac/appcast.xml`**: `voicekey-1.3.0.zip`（build 9・配置済み）の item を追記。
-Sparkle の EdDSA 署名が要るので、再生成するなら `cd macos && ./scripts/build_dmg.sh --version 1.3.0` の
-出力 `dist/releases/appcast.xml` を `public/mac/appcast.xml` にコピーする（今回はコピーしていない）。
+旧版は埋め込みキーを各プロバイダに直叩きするため、サーバー側では止められない。唯一の確実な手段は
+**埋め込みキーの失効（ローテーション）**。手順の全文は別ファイル `KEY_ROTATION_runbook.md` 参照
+（サーバーを新キーへ移してから旧キーを revoke する順序で、v1.3.0 を壊さず旧版だけ無効化する）。

@@ -34,7 +34,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。クラ�
 | 文字起こしの選択肢 | 4 プロバイダーを**実名表示**（OpenAI / Groq / ElevenLabs / Deepgram） | **2 択のみ**：高速リアルタイム（Deepgram nova-3）/ 正確性（ElevenLabs scribe_v1） |
 | モデル選択 | あり（フルコントロール） | なし（推奨モデル固定） |
 | テキスト整形（Groq） | トグルあり・既定 OFF・モデル/プロンプト選択可 | **裏で固定実行**（llama-3.1-8b-instant 固定・UI は ON/OFF のみ・既定 ON） |
-| API キータブ | 表示 | 配布ビルドは非表示＋キー埋め込み |
+| API キータブ | 表示 | 配布ビルドは非表示。**ログイン＋アクティベーションキー必須**（v1.3.0〜・埋め込みキーは休眠） |
 
 両ブランチ共通: **VAD・長文分割・ストリーミング・録音 HUD は常時 ON 固定**（設定 UI から撤去済み。Mac は `ConfigStore` で true 固定、Windows は `config_manager._force_always_on` が読込・保存時に矯正）。
 
@@ -86,7 +86,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。クラ�
 
 - **Mac**: DMG・自動更新フィード（Sparkle appcast）とも Vercel サイト `voicekey.vercel.app`（ソース `/Users/tomato/Project/voicekey-site/`、`vercel deploy --prod`）。
 - **Windows**: インストーラ（約 270MB）は公開バイナリ専用リポ `voicekey-releases` の GitHub Releases。更新フィード `version.json` / `downloads.json` は Vercel。
-- API キーはコミットせず、ビルド時に XOR 難読化して埋め込み（テスターは入力不要）。**ソース非公開**。
+- 配布版（v1.3.0〜）は**ログイン＋アクティベーションキー必須**。文字起こしは自社サーバー（`voicekey.vercel.app`）が利用権を検証し、Deepgram=短命トークン直叩き / ElevenLabs・Groq=サーバープロキシで処理（埋め込みキーは休眠）。旧版（v1.2.0 以前）は提供元キーのローテーションで順次無効化。**ソース非公開**。
 - リリースは常に Mac/Windows 両 OS 同期。版番号は semver で Claude が決める。手順の全文は `HANDOFF.md`「リリース手順」。
 
 ## 7. ドキュメント体系（どれを見ればいいか）

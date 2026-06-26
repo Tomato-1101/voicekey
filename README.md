@@ -16,17 +16,17 @@
 
 ## 🚦 配布ステータス
 
-> このセクションはコード／リリース状態が変わるたびに更新します（最終更新: **2026-06-24**）。
+> このセクションはコード／リリース状態が変わるたびに更新します（最終更新: **2026-06-27**）。
 >
 > **このブランチ（`release`）は製品版**です。文字起こしは「高速リアルタイム / 正確性」の 2 モード・
 > モデル選択なし・テキスト整形は裏で自動（オン/オフのみ）。配布タグ（`v*`）はこのブランチで打ちます。
 
 | プラットフォーム | 最新版 | 配布状態 | 入手先 | 備考 |
 |---|---|---|---|---|
-| 🍎 macOS | **v1.2.0** | ✅ **配布中** | [voicekey.vercel.app](https://voicekey.vercel.app) | Apple Development 署名。初回起動のみ Gatekeeper 回避手順あり（サイト／DMG に同梱）。自動更新（Sparkle）対応 |
-| 🪟 Windows | **v1.2.0** | ✅ **配布中** | [voicekey.vercel.app](https://voicekey.vercel.app) | GitHub Actions（`windows-build.yml`）でキー埋め込みビルド。インストーラ（約 268MB）は容量が大きいため公開バイナリ専用リポ（`voicekey-releases`・ソース非公開）の GitHub Releases でホスト。未署名のため初回のみ SmartScreen 回避手順あり。自動更新対応。インストール時にデスクトップ／スタートメニューへショートカット作成 |
+| 🍎 macOS | **v1.3.0** | ✅ **配布中** | [voicekey.vercel.app](https://voicekey.vercel.app) | Apple Development 署名。初回起動のみ Gatekeeper 回避手順あり（サイト／DMG に同梱）。自動更新（Sparkle）対応 |
+| 🪟 Windows | **v1.3.0** | ✅ **配布中** | [voicekey.vercel.app](https://voicekey.vercel.app) | GitHub Actions（`windows-build.yml`）でビルド。インストーラ（約 268MB）は容量が大きいため公開バイナリ専用リポ（`voicekey-releases`・ソース非公開）の GitHub Releases でホスト。未署名のため初回のみ SmartScreen 回避手順あり。自動更新対応。インストール時にデスクトップ／スタートメニューへショートカット作成 |
 
-**配布の仕組み（テスター向け）**: ダウンロードページは [voicekey.vercel.app](https://voicekey.vercel.app)。Mac の DMG は同サイトから、Windows インストーラは容量が大きいため GitHub Releases（公開バイナリ専用リポ。**ソースは含みません**）から入手します。配布版（DIST ビルド）は API キーがビルド時に埋め込まれており、**テスターはキー入力不要でそのまま使えます**。
+**配布の仕組み**: ダウンロードページは [voicekey.vercel.app](https://voicekey.vercel.app)。Mac の DMG は同サイトから、Windows インストーラは容量が大きいため GitHub Releases（公開バイナリ専用リポ。**ソースは含みません**）から入手します。**v1.3.0 から、配布版はアカウントへのログインと有効なアクティベーションキーが無いと文字起こしできません**（無料配布のアクティベーション制）。自社サーバー（`voicekey.vercel.app`）が利用権を検証し、Deepgram は短命トークンで直叩き・ElevenLabs / Groq はサーバープロキシ経由で処理します。旧版（v1.2.0 以前）の埋め込みキー直叩きは廃止され、**旧版は順次無効化されます**（提供元キーのローテーション）。
 
 ---
 
