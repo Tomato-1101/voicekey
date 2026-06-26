@@ -162,6 +162,33 @@ class ApiTranscriber:
         """API キーが設定されており利用可能かを返す。"""
         return bool(self._resolve_api_key())
 
+    def _dist_guard(self, server_supported: bool) -> None:
+        """配布（DIST）ビルドの無料ゲート: ログイン＋アクティベーション必須にする。
+
+        配布版はアプリに長期キーを埋め込まず、ログイン（＝アカウント）＋有効な
+        アクティベーションキーが無いと文字起こしできない。サブスク/キーの有効性
+        判定はサーバー側（ephemeral/proxy が 403 を返す）で行うため、ここでは
+        「ログイン済みか」と「この方式がサーバー経由に対応しているか」だけを見る。
+
+        開発（dev）ビルドでは何もしない（埋め込み/設定キー直叩きの並存を維持）。
+
+        Args:
+            server_supported: この文字起こし方式がサーバー経由に対応しているか
+                              （Deepgram=短命JWT / ElevenLabs=プロキシ は True、
+                               OpenAI/Groq の文字起こしは配布版で非対応＝False）
+
+        Raises:
+            TranscriptionError: 配布版で未ログイン、または非対応方式を選んだ場合
+        """
+        if not secrets.is_dist_build():
+            return
+        if not backend_client.is_logged_in():
+            raise TranscriptionError(
+                "利用するにはログインとアクティベーションキーが必要です（設定 → アカウント）"
+            )
+        if not server_supported:
+            raise TranscriptionError("この文字起こし方式は配布版では利用できません")
+
     def _get_client(self) -> httpx.Client:
         """
         認証ヘッダー付き httpx クライアントを取得または生成する。
@@ -224,6 +251,9 @@ class ApiTranscriber:
         """
         if len(audio_data) == 0:
             return ""
+
+        # 配布版ゲート: OpenAI/Groq の文字起こしはサーバー非対応＝配布版では使えない
+        self._dist_guard(server_supported=False)
 
         wav_bytes = numpy_to_wav_bytes(audio_data, self.sample_rate)
         client = self._get_client()
@@ -326,6 +356,9 @@ class ElevenLabsTranscriber(ApiTranscriber):
         """音声を ElevenLabs Scribe で文字起こしする。"""
         if len(audio_data) == 0:
             return ""
+
+        # 配布版ゲート: ログイン＋アクティベーション必須（ElevenLabs はプロキシ対応）
+        self._dist_guard(server_supported=True)
 
         wav_bytes = numpy_to_wav_bytes(audio_data, self.sample_rate)
 
@@ -460,6 +493,9 @@ class DeepgramTranscriber(ApiTranscriber):
         """音声を Deepgram Listen（事前録音）で文字起こしする。"""
         if len(audio_data) == 0:
             return ""
+
+        # 配布版ゲート: ログイン＋アクティベーション必須（Deepgram は短命JWT対応）
+        self._dist_guard(server_supported=True)
 
         wav_bytes = numpy_to_wav_bytes(audio_data, self.sample_rate)
 

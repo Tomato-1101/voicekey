@@ -39,6 +39,12 @@ enum ServerConfig {
     /// refresh_token → トークン更新
     static let refreshPath = "/api/v1/auth/refresh"
 
+    // アクティベーションキー（段階5）
+    /// アクティベーションキーの登録（消費）。ログイン中アカウントに利用権を紐付ける
+    static let redeemPath = "/api/v1/activation/redeem"
+    /// ログイン中アカウントの状態（メール・利用権の有無/期限）取得
+    static let mePath = "/api/v1/me"
+
     /// ベース URL とパスを結合した完全な URL を返す
     static func url(_ path: String) -> URL? {
         URL(string: baseURL + path)

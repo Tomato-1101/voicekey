@@ -5,6 +5,33 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased]
 
 ### Added
+- **アクティベーションキーの登録 UI ＋「無料配布はアクティベーション必須」ゲートを追加（両OS・release）**。
+  Stripe 課金は一旦無しで、**ログイン＋アクティベーションキーだけで誰でも無料で使える**配布形態にするための
+  アプリ側実装。設定 → アカウントでログイン後、アクティベーションキーを入力・登録すると、利用権が
+  **アカウントに紐付く**（`redeem_activation_key` がサーバー側で `redeemed_by` に記録）。一度登録すれば
+  別の端末でログインしても同じライセンスで使える（利用権はアカウント単位）。配布（DIST）ビルドでは
+  埋め込みキー直叩きのフォールバックを止め、**ログイン＋有効な利用権が無いと文字起こしできない**ようにした
+  （開発ビルドは従来どおり埋め込み/設定キーの並存を維持）。
+  - **サーバー契約**: ログイン中アカウントの状態を返す `GET /api/v1/me`（`{email, active, active_until}`・未契約でも
+    200 で `active:false`）を `voicekey-site` に追加。キー登録は既存の `POST /api/v1/activation/redeem`
+    （`{ok, active_until}` / 失敗は 400 ＋日本語 `{error}`）に配線。
+  - **Technical Details**:
+    - 接続定数: `API_ME_PATH` / `API_REDEEM_PATH` を追加（Win=`config/constants.py`、Mac=`Config/ServerConfig.swift`）。
+    - バックエンドクライアント: `fetch_account_status()`（GET /me）と `redeem_activation_key()`（POST /redeem・
+      サーバーの日本語エラー本文を優先表示）を追加。403 の案内文を「サブスクリプションが有効ではありません」→
+      「利用するにはアクティベーションキーの登録が必要です（設定 → アカウント）」に変更。
+      Win=`core/backend_client.py`（GET 対応・エラー本文を握れる `_send` に拡張）、Mac=`Core/BackendClient.swift`
+      （`AccountStatus` / `.message(String)` エラー）。
+    - ログイン司令塔に利用権の状態を追加（`unknown/checking/active/none/error` ＋ メール）。ログイン直後に自動確認、
+      `redeem()` 成功で `active` に更新。Win=`core/login_coordinator.py`、Mac=`Core/LoginCoordinator.swift`。
+    - 設定 UI のアカウント画面に「ライセンス（アクティベーションキー）」セクション（利用権の状態表示・キー入力欄・
+      登録ボタン・期限表示）を追加。Win=`ui/settings_window.py`（登録はワーカースレッド＋Signal）、Mac=`UI/SettingsView.swift`。
+    - 無料ゲート: 配布版で未ログインなら文字起こしを `_dist_guard`（Win）/ DIST 分岐（Mac）でブロック。Deepgram の
+      ストリーミングは配布版で埋め込みキーにフォールバックせず、未ログイン時は REST 経由でゲートのメッセージを出す。
+      Win=`core/api_transcriber.py` / `core/streaming_transcriber.py`、Mac=`Core/Transcriber.swift` / `Core/StreamingTranscriber.swift`。
+    - 回帰テスト: `tests/test_backend_client.py`（/me・redeem の成功/エラー/本文表示）、`tests/test_login_coordinator.py`
+      （利用権確認・キー登録・ログアウトでのクリア）、`tests/test_api_transcriber.py`（DIST ゲートの4ケース）を追加。
+      Windows 全 263 テスト・Mac ビルド（`swift build`）ともに通過。
 - **実績タブにデザイン重視の使用統計チャートを追加（両OS両ブランチ）**。
   「今日 / 今週 / 累計」の入力量を 0 からカウントアップ表示し、**期間（週・月・年）を切り替えられる棒グラフ**で
   日ごと・月ごとの入力量を可視化する。開いた瞬間に数字がカウントアップし、棒が下から伸びるアニメーションで

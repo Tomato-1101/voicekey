@@ -150,7 +150,25 @@ final class Transcriber: @unchecked Sendable {
     func transcribe(samples: [Float]) async throws -> String {
         guard !samples.isEmpty else { return "" }
 
-        // 製品版（ログイン済み）はサーバー経路で文字起こしする（並存ガード）。
+        // 配布版（製品版ビルド）は「アクティベーション必須」。埋め込みキーへはフォールバックしない。
+        // 未ログイン＝停止して「設定 → アカウント」でログイン＋キー登録を促す。
+        // 利用権（アクティベーションキー/サブスク）が無い場合はサーバーが 403 を返し、
+        // BackendError.noSubscription（＝キー登録を促すメッセージ）として表面化する。
+        if EmbeddedKeys.isDist {
+            guard BackendClient.isLoggedIn else {
+                throw TranscriptionError(
+                    message: "利用するにはログインとアクティベーションキーが必要です（設定 → アカウント）"
+                )
+            }
+            switch backend {
+            case .elevenlabs: return try await transcribeElevenLabsViaProxy(samples: samples)
+            case .deepgram: return try await transcribeDeepgramViaJWT(samples: samples)
+            case .openai, .groq:
+                throw TranscriptionError(message: "この文字起こし方式は配布版では利用できません")
+            }
+        }
+
+        // 開発ビルド: 従来の並存ガード（ログイン時はサーバー経路、未ログインは設定キー直叩き）。
         // 高速リアルタイム=Deepgram は短命 JWT で直叩き（低レイテンシ核心を維持）、
         // 正確性=ElevenLabs はサーバープロキシ経由（バッチは短命キー非対応）。
         // OpenAI/Groq は製品版の文字起こし選択肢に無いため従来の直叩きに委ねる。

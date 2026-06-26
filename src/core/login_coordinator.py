@@ -31,11 +31,24 @@ class LoginCoordinator:
     LOGGED_IN = "logged_in"  # ログイン済み
     FAILED = "failed"        # 失敗（error にメッセージ）
 
+    # 利用権（アクティベーションキー）の状態
+    ENT_UNKNOWN = "unknown"    # 未確認（未ログイン時など）
+    ENT_CHECKING = "checking"  # 確認中
+    ENT_ACTIVE = "active"      # 有効（active_until に期限。無期限なら None）
+    ENT_NONE = "none"          # ログイン済みだが未登録（キー入力が必要）
+    ENT_ERROR = "error"        # 確認失敗（entitlement_error にメッセージ）
+
     def __init__(self):
         self._pending_state: Optional[str] = None
         # 起動時に保存済みセッションがあればログイン済みから始める
-        self.status: str = self.LOGGED_IN if auth_client.secrets.get_auth_session() else self.IDLE
+        logged_in = bool(auth_client.secrets.get_auth_session())
+        self.status: str = self.LOGGED_IN if logged_in else self.IDLE
         self.error: Optional[str] = None
+        # 利用権の状態（UI 表示用。ネットワーク確認は refresh_entitlement で行う）
+        self.entitlement: str = self.ENT_UNKNOWN
+        self.entitlement_active_until: Optional[str] = None
+        self.entitlement_error: Optional[str] = None
+        self.account_email: Optional[str] = None
 
     def begin_login(self) -> str:
         """ログインを開始する: state を生成し、ブラウザで開くべき URL を返す。
@@ -78,10 +91,63 @@ class LoginCoordinator:
             auth_client.exchange_code(code)
             self.status = self.LOGGED_IN
             self.error = None
+            # ログイン直後に利用権を確認（同じワーカースレッド内で続けて取得）
+            self.refresh_entitlement()
         except BackendError as e:
             self.status = self.FAILED
             self.error = str(e)
         return True
+
+    def refresh_entitlement(self) -> None:
+        """ログイン中アカウントの利用権を再確認する（/api/v1/me を同期で叩く）。
+
+        ネットワーク I/O を伴うため、UI からはワーカースレッドで呼ぶこと。
+        結果は self.entitlement / entitlement_active_until / account_email に反映する。
+        """
+        from . import backend_client
+
+        if not auth_client.secrets.get_auth_session():
+            self.entitlement = self.ENT_UNKNOWN
+            return
+        self.entitlement = self.ENT_CHECKING
+        try:
+            s = backend_client.fetch_account_status()
+            self.account_email = s.get("email")
+            if s.get("active"):
+                self.entitlement = self.ENT_ACTIVE
+                self.entitlement_active_until = s.get("active_until")
+            else:
+                self.entitlement = self.ENT_NONE
+                self.entitlement_active_until = None
+        except BackendError as e:
+            self.entitlement = self.ENT_ERROR
+            self.entitlement_error = str(e)
+
+    def redeem(self, code: str) -> Tuple[bool, str]:
+        """アクティベーションキーを登録する（/api/v1/activation/redeem を同期で叩く）。
+
+        成功すると利用権がアカウントに紐付き、self.entitlement を ACTIVE に更新する。
+        ネットワーク I/O を伴うため、UI からはワーカースレッドで呼ぶこと。
+
+        Args:
+            code: アクティベーションキー
+
+        Returns:
+            (成功か, ユーザー向けメッセージ)
+        """
+        from . import backend_client
+
+        trimmed = (code or "").strip()
+        if not trimmed:
+            return False, "キーを入力してください"
+        try:
+            until = backend_client.redeem_activation_key(trimmed)
+            self.entitlement = self.ENT_ACTIVE
+            self.entitlement_active_until = until
+            self.entitlement_error = None
+            return True, "アクティベーションキーを登録しました"
+        except BackendError as e:
+            return False, str(e)
 
     def logout(self) -> None:
         """ログアウト（セッション破棄）。"""
@@ -89,6 +155,10 @@ class LoginCoordinator:
         self._pending_state = None
         self.status = self.IDLE
         self.error = None
+        self.entitlement = self.ENT_UNKNOWN
+        self.entitlement_active_until = None
+        self.entitlement_error = None
+        self.account_email = None
 
     @staticmethod
     def parse_auth_url(url: str) -> Optional[Tuple[str, str]]:

@@ -122,11 +122,14 @@ class StreamingTranscriber:
             （呼び出し側は REST にフォールバックする）
         """
         # 製品版（ログイン済み）はサーバーから短命 JWT を取得して接続する。
-        # 未ログインは従来どおり埋め込み/設定キーを使う（並存ガード）。
+        # 開発ビルドは従来どおり埋め込み/設定キーを使う（並存ガード）。
+        # 配布版は埋め込みキーへフォールバックしない（無料ゲート＝ログイン必須）。
+        # 配布版で未ログインなら key=None のまま False を返し、呼び出し側の REST
+        # フォールバックへ落とす（そこで _dist_guard がログイン必須メッセージを出す）。
         logged_in = backend_client.is_logged_in()
-        key = self._resolve_api_key()
+        key = None if secrets.is_dist_build() else self._resolve_api_key()
         if not logged_in and not key:
-            logger.warning("Deepgram キー未設定かつ未ログインのためストリーミングを開始できません")
+            logger.warning("Deepgram 未ログイン（配布版）またはキー未設定のためストリーミングを開始できません")
             return False
 
         try:

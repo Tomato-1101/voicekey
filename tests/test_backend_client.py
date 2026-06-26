@@ -79,12 +79,13 @@ class TestEphemeral(_Base):
         self.assertEqual(seen["device"], "dev-123")
         self.assertEqual(seen["platform"], "windows")
 
-    def test_no_subscription_403(self):
-        _install_mock(lambda r: httpx.Response(403, json={"error": "no sub"}))
+    def test_no_entitlement_403(self):
+        _install_mock(lambda r: httpx.Response(403, json={"error": "no entitlement"}))
         with self.assertRaises(backend_client.BackendError) as cm:
             backend_client.fetch_ephemeral_token()
         self.assertEqual(cm.exception.status, 403)
-        self.assertIn("サブスクリプション", str(cm.exception))
+        # 未契約は「アクティベーションキーの登録が必要」を案内する（無料配布ゲート）
+        self.assertIn("アクティベーション", str(cm.exception))
 
     def test_device_limit_409(self):
         _install_mock(lambda r: httpx.Response(409, json={"error": "limit"}))
@@ -215,6 +216,84 @@ class TestSubmitFeedback(_Base):
         with self.assertRaises(backend_client.BackendError) as cm:
             backend_client.submit_feedback("x")
         self.assertEqual(cm.exception.status, 429)
+
+
+class TestAccountStatus(_Base):
+    """/api/v1/me（アカウント状態）の取得を検証する。"""
+
+    def test_active_with_until(self):
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["path"] = request.url.path
+            seen["method"] = request.method
+            seen["auth"] = request.headers.get("authorization")
+            return httpx.Response(200, json={
+                "email": "a@example.com", "active": True,
+                "active_until": "2030-01-01T00:00:00Z",
+            })
+
+        _install_mock(handler)
+        s = backend_client.fetch_account_status()
+        self.assertEqual(seen["path"], "/api/v1/me")
+        self.assertEqual(seen["method"], "GET")
+        self.assertEqual(seen["auth"], "Bearer tok-abc")
+        self.assertEqual(s["email"], "a@example.com")
+        self.assertTrue(s["active"])
+        self.assertEqual(s["active_until"], "2030-01-01T00:00:00Z")
+
+    def test_inactive(self):
+        """未契約でも 200 で active:False が返る（呼び出し側はキー入力を促す）。"""
+        _install_mock(lambda r: httpx.Response(200, json={"email": "b@x.io", "active": False, "active_until": None}))
+        s = backend_client.fetch_account_status()
+        self.assertFalse(s["active"])
+        self.assertIsNone(s["active_until"])
+
+    def test_unauthenticated_raises(self):
+        _install_mock(lambda r: httpx.Response(401, json={"error": "認証が必要です"}))
+        with mock.patch.object(backend_client.secrets, "get_auth_session", return_value=None):
+            with self.assertRaises(backend_client.BackendError) as cm:
+                backend_client.fetch_account_status()
+        self.assertEqual(cm.exception.status, 401)
+
+
+class TestRedeem(_Base):
+    """/api/v1/activation/redeem（キー登録）を検証する。"""
+
+    def test_success_returns_active_until(self):
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["path"] = request.url.path
+            seen["method"] = request.method
+            seen["auth"] = request.headers.get("authorization")
+            seen["body"] = request.content
+            return httpx.Response(200, json={"ok": True, "active_until": "2031-06-01T00:00:00Z"})
+
+        _install_mock(handler)
+        until = backend_client.redeem_activation_key("  KEY-1234  ")
+        self.assertEqual(seen["path"], "/api/v1/activation/redeem")
+        self.assertEqual(seen["method"], "POST")
+        self.assertEqual(seen["auth"], "Bearer tok-abc")
+        self.assertIn(b"KEY-1234", seen["body"])          # 送信前に trim される
+        self.assertNotIn(b"  KEY-1234  ", seen["body"])
+        self.assertEqual(until, "2031-06-01T00:00:00Z")
+
+    def test_server_error_message_surfaced(self):
+        """400 でもサーバーの日本語 {error} 本文をそのままメッセージにする。"""
+        _install_mock(lambda r: httpx.Response(400, json={"error": "このキーは使用済みです"}))
+        with self.assertRaises(backend_client.BackendError) as cm:
+            backend_client.redeem_activation_key("USED")
+        self.assertEqual(cm.exception.status, 400)
+        self.assertIn("使用済み", str(cm.exception))
+
+    def test_error_without_body_falls_back_to_status_message(self):
+        """本文が空でもステータスから既定メッセージを引く。"""
+        _install_mock(lambda r: httpx.Response(500, text=""))
+        with self.assertRaises(backend_client.BackendError) as cm:
+            backend_client.redeem_activation_key("X")
+        self.assertEqual(cm.exception.status, 500)
+        self.assertTrue(str(cm.exception))
 
 
 class TestRefreshOn401(_Base):

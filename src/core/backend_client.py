@@ -86,24 +86,35 @@ def _message_for_status(status: int) -> str:
     """HTTP ステータスをユーザー向け日本語メッセージへ写す。"""
     return {
         401: "ログインの有効期限が切れました。再度ログインしてください",
-        403: "サブスクリプションが有効ではありません",
+        403: "利用するにはアクティベーションキーの登録が必要です（設定 → アカウント）",
         409: "利用できるデバイス数の上限に達しました",
         429: "リクエストが多すぎます。少し待ってからお試しください",
         503: "サーバー側の設定エラーです。時間をおいてお試しください",
     }.get(status, f"サーバーエラー (HTTP {status})")
 
 
-def _post(path: str, *, headers: dict, _allow_refresh: bool = True, **kwargs) -> httpx.Response:
-    """指定パスへ POST し、非 200 は BackendError に写す。
+def _send(
+    method: str,
+    path: str,
+    *,
+    headers: dict,
+    _allow_refresh: bool = True,
+    raise_on_error: bool = True,
+    **kwargs,
+) -> httpx.Response:
+    """指定メソッドでパスへ送信する。既定では非 200 を BackendError に写す。
 
     401 かつ Authorization 付きなら、一度だけトークンをリフレッシュして再試行する
     （失効間際を ensure_valid_session で先回りしきれなかった場合の保険）。
     Authorization の無い呼び出し（exchange/refresh/匿名フィードバック）は再試行しない
     ＝リフレッシュの無限再帰も防ぐ。
+
+    raise_on_error=False のときは非 200 でも例外にせず Response を返す
+    （redeem のようにサーバーが返す日本語の {error} 本文を呼び出し側で読みたい場合）。
     """
     url = secrets.get_server_base_url() + path
     try:
-        resp = _get_client().post(url, headers=headers, **kwargs)
+        resp = _get_client().request(method, url, headers=headers, **kwargs)
     except httpx.TimeoutException:
         raise BackendError("サーバーへの接続がタイムアウトしました", status=None)
     except httpx.HTTPError as e:
@@ -117,10 +128,22 @@ def _post(path: str, *, headers: dict, _allow_refresh: bool = True, **kwargs) ->
             new_session = None
         if new_session and new_session.get("access_token"):
             retry_headers = {**headers, "Authorization": f"Bearer {new_session['access_token']}"}
-            return _post(path, headers=retry_headers, _allow_refresh=False, **kwargs)
-    if resp.status_code != 200:
+            return _send(
+                method,
+                path,
+                headers=retry_headers,
+                _allow_refresh=False,
+                raise_on_error=raise_on_error,
+                **kwargs,
+            )
+    if raise_on_error and resp.status_code != 200:
         raise BackendError(_message_for_status(resp.status_code), status=resp.status_code)
     return resp
+
+
+def _post(path: str, *, headers: dict, _allow_refresh: bool = True, **kwargs) -> httpx.Response:
+    """指定パスへ POST し、非 200 は BackendError に写す（_send の薄いラッパ）。"""
+    return _send("POST", path, headers=headers, _allow_refresh=_allow_refresh, **kwargs)
 
 
 def is_logged_in() -> bool:
@@ -132,6 +155,59 @@ def is_logged_in() -> bool:
     """
     session = secrets.get_auth_session()
     return bool(session and session.get("access_token"))
+
+
+def fetch_account_status() -> dict:
+    """ログイン中アカウントの状態（email / active / active_until）を取得する。
+
+    Returns:
+        {"email": Optional[str], "active": bool, "active_until": Optional[str]}
+        active は entitlements が有効（active_until が未来）かどうか。未契約でも
+        200 で active:False が返る（呼び出し側はこれで「キー入力が必要」を出す）。
+
+    Raises:
+        BackendError: 未ログイン・通信失敗など
+    """
+    resp = _send("GET", constants.API_ME_PATH, headers=_auth_headers())
+    data = resp.json()
+    return {
+        "email": data.get("email"),
+        "active": bool(data.get("active")),
+        "active_until": data.get("active_until"),
+    }
+
+
+def redeem_activation_key(code: str) -> Optional[str]:
+    """アクティベーションキーを登録（消費）する。成功で利用権がアカウントに紐付く。
+
+    Args:
+        code: アクティベーションキー（前後空白は除去して送る）
+
+    Returns:
+        利用権の期限（ISO 文字列。サーバーが返さなければ None）
+
+    Raises:
+        BackendError: 失敗。サーバーが返す日本語の {error} 本文を優先してメッセージにする
+                      （無ければステータスから既定メッセージを引く）
+    """
+    code = (code or "").strip()
+    headers = {**_auth_headers(), "Content-Type": "application/json"}
+    # 400 等でもサーバーの {error}（無効なキー / 使用済み 等）を読むため握らない
+    resp = _send(
+        "POST",
+        constants.API_REDEEM_PATH,
+        headers=headers,
+        json={"code": code},
+        raise_on_error=False,
+    )
+    try:
+        body = resp.json()
+    except Exception:
+        body = {}
+    if resp.status_code == 200 and body.get("ok"):
+        return body.get("active_until")
+    msg = body.get("error") if isinstance(body, dict) else None
+    raise BackendError(msg or _message_for_status(resp.status_code), status=resp.status_code)
 
 
 def fetch_ephemeral_token() -> dict:

@@ -34,6 +34,9 @@ API_FEEDBACK_PATH: str = "/api/v1/feedback"                       # アプリ内
 AUTH_APP_PATH: str = "/auth/app"                                  # ブラウザで開くログイン入口（state付き）
 API_AUTH_EXCHANGE_PATH: str = "/api/v1/auth/exchange"            # ワンタイムコード→トークン交換
 API_AUTH_REFRESH_PATH: str = "/api/v1/auth/refresh"             # refresh_token→トークン更新
+# アクティベーションキー（段階5）
+API_ME_PATH: str = "/api/v1/me"                                   # ログイン中アカウントの状態（email/active/active_until）
+API_REDEEM_PATH: str = "/api/v1/activation/redeem"               # アクティベーションキー登録（アカウントに紐付け）
 
 # ============================================
 # 音声設定

@@ -26,18 +26,20 @@ enum BackendClient {
         case server(Int)          // その他の非 200
         case network(Error)       // 通信失敗
         case invalidResponse      // レスポンス解釈不能
+        case message(String)      // サーバーが返した日本語メッセージをそのまま表示する
 
         var userMessage: String {
             switch self {
             case .unauthenticated: return "ログインが必要です"
             case .unauthorized: return "ログインの有効期限が切れました。再度ログインしてください"
-            case .noSubscription: return "サブスクリプションが有効ではありません"
+            case .noSubscription: return "利用するにはアクティベーションキーの登録が必要です（設定 → アカウント）"
             case .deviceLimit: return "利用できるデバイス数の上限に達しました"
             case .rateLimited: return "リクエストが多すぎます。少し待ってからお試しください"
             case .providerUnavailable: return "サーバー側の設定エラーです。時間をおいてお試しください"
             case .server(let code): return "サーバーエラー (HTTP \(code))"
             case .network(let e): return "通信に失敗しました: \(e.localizedDescription)"
             case .invalidResponse: return "サーバー応答を解釈できませんでした"
+            case .message(let m): return m
             }
         }
     }
@@ -46,6 +48,13 @@ enum BackendClient {
     struct EphemeralToken {
         let token: String
         let expiresAt: Date
+    }
+
+    /// ログイン中アカウントの状態（メール・利用権の有無/期限）
+    struct AccountStatus {
+        let email: String?
+        let active: Bool          // 有効な利用権（アクティベーションキー or サブスク）があるか
+        let activeUntil: Date?    // 利用権の期限（active=true のとき）
     }
 
     /// 短い接続タイムアウトの専用セッション（録音直前に叩くため待たせない）
@@ -83,6 +92,44 @@ enum BackendClient {
             token: r.token,
             expiresAt: Date().addingTimeInterval(TimeInterval(r.expires_in))
         )
+    }
+
+    /// ログイン中アカウントの状態（メール・利用権の有無/期限）を取得する。
+    /// 設定画面の表示・ゲート判定の事前確認に使う（200 固定＝未契約でも 200 で active:false）。
+    static func fetchAccountStatus() async throws -> AccountStatus {
+        try? await AuthClient.ensureValidSession()
+        let req = try authorizedRequest(path: ServerConfig.mePath)  // GET（httpMethod 未設定）
+        let data = try await send(req)
+        struct Resp: Decodable { let email: String?; let active: Bool?; let active_until: String? }
+        guard let r = try? JSONDecoder().decode(Resp.self, from: data) else {
+            throw BackendError.invalidResponse
+        }
+        return AccountStatus(
+            email: r.email,
+            active: r.active ?? false,
+            activeUntil: r.active_until.flatMap(Self.parseISO)
+        )
+    }
+
+    /// アクティベーションキーを登録（消費）する。成功すると利用権がアカウントに紐付く。
+    /// 戻り値は利用権の期限（サーバーが返した場合）。失敗はサーバーの日本語メッセージ付きで throw。
+    @discardableResult
+    static func redeemActivationKey(_ code: String) async throws -> Date? {
+        try? await AuthClient.ensureValidSession()
+        var req = try authorizedRequest(path: ServerConfig.redeemPath)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["code": trimmed])
+        let (data, status) = try await sendStatus(req)
+        struct Resp: Decodable { let ok: Bool?; let active_until: String?; let error: String? }
+        let r = try? JSONDecoder().decode(Resp.self, from: data)
+        if status == 200, r?.ok == true {
+            return r?.active_until.flatMap(Self.parseISO)
+        }
+        // サーバーの日本語メッセージ（「キーが見つかりません」等）を優先表示する。
+        if let msg = r?.error, !msg.isEmpty { throw BackendError.message(msg) }
+        throw mapStatus(status)
     }
 
     /// ElevenLabs「正確性」プロキシで文字起こしする（WAV を multipart 送信）。
@@ -173,6 +220,30 @@ enum BackendClient {
         throw mapStatus(http.statusCode)
     }
 
+    /// 認証付きで送信し (body, statusCode) を返す。非 200 でも throw しない
+    /// （呼び出し側がレスポンス本文の error メッセージを使えるようにするため）。
+    /// 401 のときだけ一度リフレッシュして再試行する。
+    private static func sendStatus(_ req: URLRequest, allowRefresh: Bool = true) async throws -> (Data, Int) {
+        let data: Data
+        let resp: URLResponse
+        do {
+            (data, resp) = try await session.data(for: req)
+        } catch {
+            throw BackendError.network(error)
+        }
+        guard let http = resp as? HTTPURLResponse else { throw BackendError.invalidResponse }
+        if http.statusCode == 401,
+           allowRefresh,
+           req.value(forHTTPHeaderField: "Authorization") != nil,
+           (try? await AuthClient.refresh()) != nil,
+           let auth = Keychain.authSession() {
+            var retry = req
+            retry.setValue("Bearer \(auth.accessToken)", forHTTPHeaderField: "Authorization")
+            return try await sendStatus(retry, allowRefresh: false)
+        }
+        return (data, http.statusCode)
+    }
+
     private static func mapStatus(_ code: Int) -> BackendError {
         switch code {
         case 401: return .unauthorized
@@ -182,6 +253,15 @@ enum BackendClient {
         case 503: return .providerUnavailable
         default: return .server(code)
         }
+    }
+
+    /// ISO8601（小数秒あり/なし両対応）を Date へ。解釈不能なら nil。
+    private static func parseISO(_ s: String) -> Date? {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = f.date(from: s) { return d }
+        f.formatOptions = [.withInternetDateTime]
+        return f.date(from: s)
     }
 
     /// ElevenLabs プロキシ用の multipart ボディ（field: language, file=audio.wav）

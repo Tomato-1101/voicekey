@@ -139,5 +139,62 @@ class TestServerRouting(unittest.TestCase):
                 t.transcribe(self._audio())
 
 
+class TestDistGate(unittest.TestCase):
+    """配布版の無料ゲート: ログイン＋アクティベーション必須（_dist_guard）。"""
+
+    @staticmethod
+    def _audio():
+        return np.full(1600, 0.1, dtype=np.float32)
+
+    def test_dist_not_logged_in_blocks_deepgram(self):
+        """配布版で未ログインなら、直叩きせず「ログイン必須」を出す。"""
+        t = DeepgramTranscriber("nova-3", "ja")
+        with patch.object(api_transcriber.secrets, "is_dist_build", return_value=True), \
+                patch.object(api_transcriber.backend_client, "is_logged_in", return_value=False), \
+                patch.object(t, "_get_client") as direct:
+            with self.assertRaises(TranscriptionError) as cm:
+                t.transcribe(self._audio())
+            direct.assert_not_called()  # 埋め込みキー直叩きへ落ちない
+        self.assertIn("ログイン", str(cm.exception))
+
+    def test_dist_not_logged_in_blocks_elevenlabs(self):
+        t = ElevenLabsTranscriber("scribe_v1", "ja")
+        with patch.object(api_transcriber.secrets, "is_dist_build", return_value=True), \
+                patch.object(api_transcriber.backend_client, "is_logged_in", return_value=False), \
+                patch.object(t, "_get_client") as direct:
+            with self.assertRaises(TranscriptionError):
+                t.transcribe(self._audio())
+            direct.assert_not_called()
+
+    def test_dist_openai_groq_unsupported(self):
+        """配布版では OpenAI/Groq の文字起こし（サーバー非対応）は使えない。"""
+        t = OpenAITranscriber("gpt-4o-mini-transcribe", "ja")
+        with patch.object(api_transcriber.secrets, "is_dist_build", return_value=True), \
+                patch.object(api_transcriber.backend_client, "is_logged_in", return_value=True), \
+                patch.object(t, "_get_client") as direct:
+            with self.assertRaises(TranscriptionError) as cm:
+                t.transcribe(self._audio())
+            direct.assert_not_called()
+        self.assertIn("配布版", str(cm.exception))
+
+    def test_dev_build_no_gate(self):
+        """開発ビルドはゲートしない（埋め込み/設定キー直叩きの並存を維持）。"""
+        t = DeepgramTranscriber("nova-3", "ja")
+        captured = {}
+
+        def fake_post(client, path, **kwargs):
+            captured["path"] = path
+            return httpx.Response(
+                200, json={"results": {"channels": [{"alternatives": [{"transcript": "開発"}]}]}}
+            )
+
+        with patch.object(api_transcriber.secrets, "is_dist_build", return_value=False), \
+                patch.object(api_transcriber.backend_client, "is_logged_in", return_value=False), \
+                patch.object(t, "_get_client", return_value=object()), \
+                patch.object(t, "_post", side_effect=fake_post):
+            self.assertEqual(t.transcribe(self._audio()), "開発")
+            self.assertEqual(captured["path"], "/listen")
+
+
 if __name__ == "__main__":
     unittest.main()

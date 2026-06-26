@@ -7,7 +7,7 @@ deep link の解析・state 照合・コード交換の呼び分けを検証す�
 import unittest
 from unittest import mock
 
-from src.core import auth_client
+from src.core import auth_client, backend_client
 from src.core.backend_client import BackendError
 from src.core.login_coordinator import LoginCoordinator
 
@@ -118,6 +118,72 @@ class TestCompleteLogin(unittest.TestCase):
         ex.assert_not_called()
 
 
+class TestEntitlement(unittest.TestCase):
+    """利用権（アクティベーションキー）の確認・登録を検証する。"""
+
+    def setUp(self):
+        # ログイン済み（セッションあり）で初期化する
+        self._p = mock.patch.object(auth_client.secrets, "get_auth_session",
+                                    return_value={"access_token": "a"})
+        self._p.start()
+        self.coord = LoginCoordinator()
+
+    def tearDown(self):
+        self._p.stop()
+
+    def test_refresh_active(self):
+        with mock.patch.object(backend_client, "fetch_account_status",
+                               return_value={"email": "u@x.io", "active": True,
+                                             "active_until": "2030-01-01T00:00:00Z"}):
+            self.coord.refresh_entitlement()
+        self.assertEqual(self.coord.entitlement, LoginCoordinator.ENT_ACTIVE)
+        self.assertEqual(self.coord.account_email, "u@x.io")
+        self.assertEqual(self.coord.entitlement_active_until, "2030-01-01T00:00:00Z")
+
+    def test_refresh_none(self):
+        with mock.patch.object(backend_client, "fetch_account_status",
+                               return_value={"email": "u@x.io", "active": False, "active_until": None}):
+            self.coord.refresh_entitlement()
+        self.assertEqual(self.coord.entitlement, LoginCoordinator.ENT_NONE)
+
+    def test_refresh_error(self):
+        with mock.patch.object(backend_client, "fetch_account_status",
+                               side_effect=BackendError("確認失敗", status=500)):
+            self.coord.refresh_entitlement()
+        self.assertEqual(self.coord.entitlement, LoginCoordinator.ENT_ERROR)
+        self.assertIn("確認失敗", self.coord.entitlement_error)
+
+    def test_refresh_skips_when_logged_out(self):
+        """未ログインなら通信せず UNKNOWN にする。"""
+        with mock.patch.object(auth_client.secrets, "get_auth_session", return_value=None), \
+             mock.patch.object(backend_client, "fetch_account_status") as f:
+            self.coord.refresh_entitlement()
+        f.assert_not_called()
+        self.assertEqual(self.coord.entitlement, LoginCoordinator.ENT_UNKNOWN)
+
+    def test_redeem_success_sets_active(self):
+        with mock.patch.object(backend_client, "redeem_activation_key",
+                               return_value="2031-06-01T00:00:00Z") as r:
+            ok, msg = self.coord.redeem("  KEY-1  ")
+        r.assert_called_once_with("KEY-1")  # trim して渡す
+        self.assertTrue(ok)
+        self.assertEqual(self.coord.entitlement, LoginCoordinator.ENT_ACTIVE)
+        self.assertEqual(self.coord.entitlement_active_until, "2031-06-01T00:00:00Z")
+
+    def test_redeem_empty_returns_error_without_call(self):
+        with mock.patch.object(backend_client, "redeem_activation_key") as r:
+            ok, msg = self.coord.redeem("   ")
+        r.assert_not_called()
+        self.assertFalse(ok)
+
+    def test_redeem_failure_surfaces_message(self):
+        with mock.patch.object(backend_client, "redeem_activation_key",
+                               side_effect=BackendError("このキーは使用済みです", status=400)):
+            ok, msg = self.coord.redeem("USED")
+        self.assertFalse(ok)
+        self.assertIn("使用済み", msg)
+
+
 class TestLogout(unittest.TestCase):
     def test_logout_clears_status(self):
         with mock.patch.object(auth_client.secrets, "get_auth_session", return_value={"access_token": "a"}):
@@ -127,6 +193,9 @@ class TestLogout(unittest.TestCase):
             coord.logout()
         lo.assert_called_once()
         self.assertEqual(coord.status, LoginCoordinator.IDLE)
+        # 利用権の状態もクリアされる
+        self.assertEqual(coord.entitlement, LoginCoordinator.ENT_UNKNOWN)
+        self.assertIsNone(coord.account_email)
 
 
 if __name__ == "__main__":

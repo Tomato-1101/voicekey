@@ -680,9 +680,31 @@ private struct ApiKeyRow: View {
 // MARK: - アカウント（ブラウザ経由ログイン）
 
 private struct AccountTab: View {
-    // ログイン状態は司令塔（アプリ全体で 1 つ）を購読する。
-    // deep link でログインが完了するとここの表示も自動更新される。
+    // ログイン状態・利用権は司令塔（アプリ全体で 1 つ）を購読する。
+    // deep link でログインが完了／キー登録するとここの表示も自動更新される。
     @ObservedObject private var login = LoginCoordinator.shared
+    /// アクティベーションキーの入力欄
+    @State private var keyInput: String = ""
+
+    /// 期限表示用の日付フォーマッタ
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .none
+        return f
+    }()
+
+    /// 利用権が有効か（有効ならキー入力欄を隠す）
+    private var isActive: Bool {
+        if case .active = login.entitlement { return true }
+        return false
+    }
+
+    /// ログイン済みか
+    private var isLoggedIn: Bool {
+        if case .loggedIn = login.status { return true }
+        return false
+    }
 
     var body: some View {
         Form {
@@ -692,18 +714,37 @@ private struct AccountTab: View {
             } header: {
                 Text("アカウント")
             } footer: {
-                Text("ログインすると、サブスクリプションでサーバー経由の文字起こし（高速リアルタイム／正確性）が使えます。ログインはブラウザで行います。")
+                Text("ログインし、アクティベーションキーを登録すると文字起こし（高速リアルタイム／正確性）が使えます。ログインはブラウザで行います。")
+            }
+
+            // ログイン済みのときだけライセンス（アクティベーションキー）欄を出す
+            if isLoggedIn {
+                Section {
+                    entitlementRow
+                    if !isActive {
+                        activationKeyField
+                    }
+                } header: {
+                    Text("ライセンス（アクティベーションキー）")
+                } footer: {
+                    Text("配布されたアクティベーションキーを入力して登録してください。一度登録するとアカウントに紐付き、別の端末でもログインすれば使えます。")
+                }
             }
         }
         .formStyle(.grouped)
         .padding(.vertical, 8)
+        // キー登録が成功して有効になったら入力欄をクリアする
+        .onChange(of: login.entitlement) { _, new in
+            if case .active = new { keyInput = "" }
+        }
     }
 
     /// 現在のログイン状態の表示行
     @ViewBuilder private var statusRow: some View {
         switch login.status {
         case .loggedIn:
-            Label("ログイン済み", systemImage: "checkmark.circle.fill")
+            Label(login.accountEmail.map { "ログイン済み（\($0)）" } ?? "ログイン済み",
+                  systemImage: "checkmark.circle.fill")
                 .foregroundStyle(.green)
         case .waiting:
             Label("ブラウザでログインを完了してください…", systemImage: "safari")
@@ -729,6 +770,57 @@ private struct AccountTab: View {
             EmptyView()  // 処理中は操作させない
         default:
             Button("ログイン") { login.beginLogin() }
+        }
+    }
+
+    /// 利用権（アクティベーションキー）の状態表示行
+    @ViewBuilder private var entitlementRow: some View {
+        switch login.entitlement {
+        case .active(let until):
+            if let until {
+                Label("有効（期限: \(Self.dateFormatter.string(from: until))）",
+                      systemImage: "checkmark.seal.fill")
+                    .foregroundStyle(.green)
+            } else {
+                Label("有効", systemImage: "checkmark.seal.fill")
+                    .foregroundStyle(.green)
+            }
+        case .checking:
+            Label("確認中…", systemImage: "arrow.triangle.2.circlepath")
+                .foregroundStyle(.secondary)
+        case .none:
+            Label("未登録（キーを入力してください）", systemImage: "key.slash")
+                .foregroundStyle(.orange)
+        case .error(let msg):
+            HStack {
+                Label(msg, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                Spacer()
+                Button("再確認") { login.refreshEntitlement() }
+            }
+        case .unknown:
+            Button("状態を確認") { login.refreshEntitlement() }
+        }
+    }
+
+    /// アクティベーションキーの入力欄＋登録ボタン
+    @ViewBuilder private var activationKeyField: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                TextField("アクティベーションキー", text: $keyInput)
+                    .textFieldStyle(.roundedBorder)
+                    .disableAutocorrection(true)
+                Button(login.redeeming ? "登録中…" : "登録") {
+                    login.redeem(code: keyInput)
+                }
+                .disabled(login.redeeming
+                          || keyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            if let err = login.redeemError {
+                Text(err)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
         }
     }
 }

@@ -28,14 +28,33 @@ final class LoginCoordinator: ObservableObject {
         case failed(String) // 失敗（ユーザー向けメッセージ）
     }
 
+    /// 利用権（アクティベーションキー or サブスク）の状態（UI バインド用）
+    enum Entitlement: Equatable {
+        case unknown            // 未確認（未ログイン時など）
+        case checking           // 確認中
+        case active(Date?)      // 有効（期限。無期限なら nil）
+        case none               // ログイン済みだが未登録（キー入力が必要）
+        case error(String)      // 確認失敗
+    }
+
     @Published private(set) var status: Status
+    /// ログイン中アカウントの利用権の状態
+    @Published private(set) var entitlement: Entitlement = .unknown
+    /// ログイン中アカウントのメール（取得できれば）
+    @Published private(set) var accountEmail: String?
+    /// アクティベーションキー登録中フラグ（UI のボタン無効化用）
+    @Published private(set) var redeeming = false
+    /// 直近のキー登録エラー（成功時は nil）
+    @Published private(set) var redeemError: String?
 
     /// CSRF 用の保留 state（ログイン開始〜deep link 受信の間だけ保持）
     private var pendingState: String?
 
     private init() {
         // 起動時に保存済みセッションがあればログイン済みから始める
-        status = (Keychain.authSession() != nil) ? .loggedIn : .idle
+        let loggedIn = (Keychain.authSession() != nil)
+        status = loggedIn ? .loggedIn : .idle
+        if loggedIn { refreshEntitlement() }
     }
 
     /// ログインを開始する: state を生成し、既定ブラウザでログインページを開く。
@@ -67,6 +86,7 @@ final class LoginCoordinator: ObservableObject {
             do {
                 _ = try await AuthClient.exchange(code: parsed.code)
                 status = .loggedIn
+                refreshEntitlement()  // ログイン直後に利用権を確認
             } catch {
                 let msg = (error as? AuthClient.AuthError)?.userMessage ?? "ログインに失敗しました"
                 status = .failed(msg)
@@ -80,6 +100,46 @@ final class LoginCoordinator: ObservableObject {
         AuthClient.logout()
         pendingState = nil
         status = .idle
+        entitlement = .unknown
+        accountEmail = nil
+        redeemError = nil
+    }
+
+    // MARK: - 利用権（アクティベーションキー）
+
+    /// ログイン中アカウントの利用権を再確認する（/api/v1/me）。
+    func refreshEntitlement() {
+        guard Keychain.authSession() != nil else { entitlement = .unknown; return }
+        entitlement = .checking
+        Task { @MainActor in
+            do {
+                let s = try await BackendClient.fetchAccountStatus()
+                accountEmail = s.email
+                entitlement = s.active ? .active(s.activeUntil) : .none
+            } catch {
+                let msg = (error as? BackendClient.BackendError)?.userMessage ?? "状態を確認できませんでした"
+                entitlement = .error(msg)
+            }
+        }
+    }
+
+    /// アクティベーションキーを登録する。成功すると利用権がアカウントに紐付き、表示も更新される。
+    func redeem(code: String) {
+        let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { redeemError = "キーを入力してください"; return }
+        guard !redeeming else { return }
+        redeeming = true
+        redeemError = nil
+        Task { @MainActor in
+            defer { redeeming = false }
+            do {
+                let until = try await BackendClient.redeemActivationKey(trimmed)
+                entitlement = .active(until)
+                accountEmail = accountEmail  // 変化なし（表示維持）
+            } catch {
+                redeemError = (error as? BackendClient.BackendError)?.userMessage ?? "キーを登録できませんでした"
+            }
+        }
     }
 
     /// voicekey://auth?code=&state= を解析する（純粋関数）。
