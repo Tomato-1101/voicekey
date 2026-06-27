@@ -91,21 +91,20 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 
 ## 現在地 / 次の一手
 
-- 現在地: **v1.5.0 実装完了・配布は GO 待ち**（2026-06-27。release＝製品版ブランチ。
+- 現在地: **Mac v1.5.0 / Windows v1.5.0 リリース完了**（2026-06-27。release＝製品版ブランチ。
   **アカウントごとに無料体験枠 200 回**を付与。これまで「ログイン＋有効キー必須」で一切試せなかったのを、
   ログインすれば無料で 200 回まで文字起こしを試せるようにし、使い切ったら従来どおりアクティベーションキー登録へ誘導
   〔課金は未実装＝当面はキー登録のみが解放手段〕。数え方は「文字起こし 1 回＝1 消費・累計一度きり・整形は消費なし」。
   サーバーだけが見える本物の呼び出し回数で数えるためクライアント申告では突破不可。サーバーで原子的にカウント
   〔`entitlements.free_quota`(既定200)/`free_used` ＋ `consume_free_quota(uuid)` RPC＝条件付き UPDATE・残枠ゼロは 402〕。
-  **DB マイグレーション `free_quota_count_based` は本番 Supabase に適用・検証済み**（free_used 0→1→reset 0 を実測）。
-  サーバーコード〔`lib/apiAuth.ts` の `authorizeUsable`・ephemeral/elevenlabs〔consume〕・format〔no-consume〕・me〔残量返却〕〕
-  は編集済み・`tsc --noEmit` 通過。**ただし未デプロイ**（`vercel deploy --prod` が GO 待ち）。
-  アプリ側は Mac〔BackendClient/LoginCoordinator/SettingsView・build 12〕・Windows〔backend_client/login_coordinator/settings_window〕
-  実装済み、Mac ビルド＆起動 OK・Windows 53 テスト〔無料体験分岐含む〕パス。後方互換: 旧サーバー応答（free_* 無し）でも 0 扱いで従来挙動。
-  - **次の不可逆 GO（要ユーザー承認）**: ①`voicekey-site` を `vercel deploy --prod`〔無料体験がサーバー全体で有効化〕、
-    ②Mac DMG ビルド〔`build_dmg.sh --version 1.5.0`〕、③Windows CI〔`windows-build.yml -f version=1.5.0`〕、
-    ④GitHub Release 公開＝既存ユーザーへ自動更新配信。①を先に出さないと旧アプリが 200/402 の新挙動を受ける前に
-    新アプリが残量表示を期待してしまうため、**①→②③④の順**。
+  **DB マイグレーション（リポでは `voicekey-site/supabase/migrations/0015_free_quota.sql`）は本番 Supabase に適用・検証済み**
+  （free_used 0→1→reset 0 を実測）。サーバーコード〔`lib/apiAuth.ts` の `authorizeUsable`・ephemeral/elevenlabs〔consume〕・
+  format〔no-consume〕・me〔残量返却〕〕は **本番デプロイ済み**（`/me`・`/ephemeral` が 401 で健全稼働を確認）。
+  上限200は DB の `free_quota` 既定値で再配布なしに調整可。後方互換: 旧サーバー応答（free_* 無し）でも 0 扱いで従来挙動。
+  - 配布物（**全て本番反映済み・全 200 確認**）: Mac=DMG＋Sparkle appcast〔build 12・EdDSA 署名・build 11→12 delta・鍵平文 0 件確認〕、
+    Windows=setup.exe〔268MB・公開リポ `voicekey-releases` の Release `v1.5.0`・sha256 `0b00a3…c305`・DL URL 200〕＋
+    `windows/version.json`。`downloads.json` は mac/windows とも 1.5.0。転送用 Release `winci-1.5.0`（本リポ private）は relay 後に削除済み。
+  - コミット: 本体 release=`a9297d3`（コード）、voicekey-site main=`dfe1252`（サーバー）＋`f0023a5`（配布物）。
   - 既往: Mac/Windows v1.4.0（2026-06-27・使用実績のアカウント連携〔#10〕。`usage_stats` に紐付き複数端末合算・
     再インストール後も引き継ぎ。自動更新フィード Mac build 11 / Win version.json を配信済み）、
     Mac/Windows v1.3.1（2026-06-27・ログイン誤失効バグ修正＋レイテンシ短縮）、
@@ -120,9 +119,9 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
   再起動まで実施）。ベータ版の動作確認は `macos/scripts/run_beta.sh`（dist/ の最新 DMG を
   マウントして一時起動・終わったら run_dev.sh で戻る）。dist/voicekey.app はビルドごとに
   dev/dist で上書きされるため常用しない。見分け方: 設定画面に API キータブがあれば開発版。
-- 次の一手: **v1.5.0（無料体験）の配布 GO 待ち**（上記「次の不可逆 GO」①→②③④）。その後の残るユーザー作業は
-  **各 API ダッシュボードで利用上限・アラート設定**のみ（保険）。無料体験 200 回の上限値は `entitlements.free_quota`
-  の既定値（DB 側）で調整可能＝コード変更・再配布なしに将来見直せる。
+- 次の一手: **v1.5.0（無料体験）は配布完了**。残るユーザー作業は **各 API ダッシュボードで利用上限・アラート設定**のみ（保険）。
+  無料体験 200 回の上限値は `entitlements.free_quota` の既定値（DB 側）で調整可能＝コード変更・再配布なしに将来見直せる。
+  なお無料体験が広く使われ始めるため、各 API ダッシュボードの利用上限・コストアラート設定は早めにやっておくと安全。
 - **リリース手順（Mac/Windows は常に両方を同じ修正内容で同期リリースする・版番号は Claude が semver で決める）**:
   - Mac: `cd macos && ./scripts/build_dmg.sh --version X.Y.Z`（Info.plist 自動 bump・署名・zip/DMG/appcast 生成）
     → DMG を `voicekey-site/downloads/`、`voicekey-X.Y.Z.zip`＋`voicekeyN-M.delta`＋`appcast.xml` を
