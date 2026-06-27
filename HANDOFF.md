@@ -91,12 +91,15 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 
 ## 現在地 / 次の一手
 
-- 現在地: **Mac v1.1.0 / Windows v1.1.0 リリース完了**（2026-06-18。release＝製品版ブランチから、
-  製品版2モード化〔高速リアルタイム=Deepgram nova-3 / 正確性=ElevenLabs scribe_v1〕＋ VAD・長文分割・
-  ストリーミング・録音 HUD の常時 ON 固定を正式リリース・両 OS 同期）。Phase 0〜6 完了・Phase 7 は
-  販売開始時まで延期。両 OS とも自動更新フィード（Mac=Sparkle appcast.xml〔build 6・EdDSA 署名〕/
+- 現在地: **Mac v1.3.1 / Windows v1.3.1 リリース完了**（2026-06-27。release＝製品版ブランチ。
+  ログイン誤失効バグ修正〔トークン更新の競合を直列化＋サーバーが 409 を返しアプリがセッションを消さない〕
+  ＋レイテンシ短縮〔Vercel 関数を東京 hnd1 へ・`x-vercel-id: hnd1::hnd1::` で実証／短命トークンを
+  アプリ側キャッシュ〕＋サーバー堅牢性修正を両 OS 同期リリース）。Phase 0〜6 完了・Phase 7 は
+  販売開始時まで延期。両 OS とも自動更新フィード（Mac=Sparkle appcast.xml〔build 10・EdDSA 署名〕/
   Win=version.json〔sha256 検証済み〕）を Vercel 本番（https://voicekey.vercel.app）へ配信済み。
-  - 既往: Mac v1.0.2 / Windows v1.0.1（2026-06-16・遅延根治）、Mac v1.0.0/v1.0.1（2026-06-12）、
+  本番 DB に `activation_keys.code_plain` 列・`usage_stats` テーブルを適用済み（#10 のバッキング・admin キーコピー）。
+  - 既往: Mac/Windows v1.3.0（2026-06-26・アクティベーションキー版）、v1.1.0（2026-06-18・製品版2モード化）、
+    Mac v1.0.2 / Windows v1.0.1（2026-06-16・遅延根治）、Mac v1.0.0/v1.0.1（2026-06-12）、
     Windows v1.0.0 初公開（2026-06-14、GitHub Actions ビルド → voicekey-releases の GitHub Releases へ公開）。
   - テスターへの渡し方は https://voicekey.vercel.app を共有するだけ。
   - 注意: macOS 15 では DMG を開く段階でも Gatekeeper 警告が出る（実テスター報告）。
@@ -119,3 +122,14 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
   - 仕上げ: `cd voicekey-site && vercel deploy --prod`（既存ユーザーへ自動更新が配信される）→
     アプリ本体リポで Info.plist/CHANGELOG/README のコミット。
   - 詳細は docs/BUILD_WINDOWS.md。
+
+## 将来の強化（既知の設計課題・優先度低）
+
+- **claim_login_code のセッション共有（潜在設計課題）**: 現状アプリのログインはブラウザ経由のワンタイム
+  コード交換で、ブラウザと同一の Supabase セッションを共有する設計。同一 refresh_token を
+  ブラウザとアプリが同時にローテーションすると GoTrue の reuse 検知で全セッションが失効しうる。
+  v1.3.1 でリフレッシュ直列化＋サーバー 409（アプリ側でセッションを消さない）により**観測された
+  バグは解消済み**だが、根治はアプリ独立セッション化（`generateLink` + `verifyOtp` で
+  アプリ専用セッションを発行し、`claim_login_code` の RPC を変更）。規模が大きいため将来対応。
+- **Leaked Password Protection**: Supabase Auth で無効（任意のセキュリティ強化）。ダッシュボードの
+  Auth 設定で有効化できる（HaveIBeenPwned 照合）。SQL ではなく設定トグル。
