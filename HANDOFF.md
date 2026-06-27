@@ -91,14 +91,18 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 
 ## 現在地 / 次の一手
 
-- 現在地: **Mac v1.3.1 / Windows v1.3.1 リリース完了**（2026-06-27。release＝製品版ブランチ。
-  ログイン誤失効バグ修正〔トークン更新の競合を直列化＋サーバーが 409 を返しアプリがセッションを消さない〕
-  ＋レイテンシ短縮〔Vercel 関数を東京 hnd1 へ・`x-vercel-id: hnd1::hnd1::` で実証／短命トークンを
-  アプリ側キャッシュ〕＋サーバー堅牢性修正を両 OS 同期リリース）。Phase 0〜6 完了・Phase 7 は
-  販売開始時まで延期。両 OS とも自動更新フィード（Mac=Sparkle appcast.xml〔build 10・EdDSA 署名〕/
-  Win=version.json〔sha256 検証済み〕）を Vercel 本番（https://voicekey.vercel.app）へ配信済み。
+- 現在地: **Mac v1.4.0 / Windows v1.4.0 リリース完了**（2026-06-27。release＝製品版ブランチ。
+  使用実績のアカウント連携〔#10〕を両 OS 同期リリース。ログイン中は日次の入力量・連続利用日数などの実績が
+  サーバー `usage_stats`（user_id × device_id × day の絶対値 upsert）に紐付き、複数端末で合算・再インストール後も
+  引き継がれる。未ログイン時は従来どおりローカルのみ。実装は両 OS とも account∪local の field-wise max マージで
+  ローカル実績が下がらない設計、Windows は `enable_account_sync()` を app.py からのみ呼びテストで keyring に
+  触れない〔パスワードダイアログ防止〕）。Phase 0〜6 完了・Phase 7 は
+  販売開始時まで延期。両 OS とも自動更新フィード（Mac=Sparkle appcast.xml〔build 11・EdDSA 署名〕/
+  Win=version.json〔sha256: 23965d…c9b 検証済み〕）を Vercel 本番（https://voicekey.vercel.app）へ配信済み（全 200 確認）。
   本番 DB に `activation_keys.code_plain` 列・`usage_stats` テーブルを適用済み（#10 のバッキング・admin キーコピー）。
-  - 既往: Mac/Windows v1.3.0（2026-06-26・アクティベーションキー版）、v1.1.0（2026-06-18・製品版2モード化）、
+  サーバー側の #10 ルート（`/api/v1/stats`・`/api/v1/stats/sync`）はデプロイ済み（401＝要認証で稼働確認）。
+  - 既往: Mac/Windows v1.3.1（2026-06-27・ログイン誤失効バグ修正＋レイテンシ短縮）、
+    v1.3.0（2026-06-26・アクティベーションキー版）、v1.1.0（2026-06-18・製品版2モード化）、
     Mac v1.0.2 / Windows v1.0.1（2026-06-16・遅延根治）、Mac v1.0.0/v1.0.1（2026-06-12）、
     Windows v1.0.0 初公開（2026-06-14、GitHub Actions ビルド → voicekey-releases の GitHub Releases へ公開）。
   - テスターへの渡し方は https://voicekey.vercel.app を共有するだけ。
