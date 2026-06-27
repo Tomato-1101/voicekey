@@ -190,6 +190,68 @@ enum BackendClient {
         throw mapStatus(status)
     }
 
+    // MARK: - 使用実績のアカウント連携（#10）
+
+    /// 1 日分の実績（サーバーへ送る形＝この端末の絶対値）。録音時間はミリ秒で送る。
+    struct StatsDayPayload: Encodable {
+        let day: String          // yyyy-MM-dd
+        let chars: Int
+        let sessions: Int
+        let duration_ms: Int
+    }
+
+    /// この端末の日次実績をサーバーへ送る（POST /api/v1/stats/sync）。
+    /// サーバーは (user_id, device_id, day) で絶対値 upsert するので、同じ値を再送しても
+    /// 二重計上されない（冪等）。最大 60 日。失敗は throw（呼び出し側はだいたい無視する）。
+    static func syncStats(days: [StatsDayPayload]) async throws {
+        guard !days.isEmpty else { return }
+        try? await AuthClient.ensureValidSession()
+        var req = try authorizedRequest(path: ServerConfig.statsSyncPath)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        struct Body: Encodable { let days: [StatsDayPayload] }
+        req.httpBody = try? JSONEncoder().encode(Body(days: Array(days.prefix(60))))
+        _ = try await send(req)
+    }
+
+    /// アカウント横断の使用実績スナップショット（日次＋累計）。
+    struct AccountStats {
+        /// day(yyyy-MM-dd) → 端末横断で合算した 1 日分
+        let daily: [String: DayStat]
+        /// 累計文字数（端末横断）
+        let totalCharacters: Int
+        /// 累計回数（端末横断）
+        let totalSessions: Int
+        /// 累計録音秒数（端末横断）
+        let totalRecordingSeconds: Double
+    }
+
+    /// アカウント横断の使用実績を取得する（GET /api/v1/stats）。
+    /// サーバーが端末横断で日ごとに合算した daily と累計 totals を返す。ミリ秒は秒へ戻す。
+    static func fetchStats() async throws -> AccountStats {
+        try? await AuthClient.ensureValidSession()
+        let req = try authorizedRequest(path: ServerConfig.statsPath)  // GET
+        let data = try await send(req)
+        struct Day: Decodable { let day: String; let chars: Int?; let sessions: Int?; let duration_ms: Int? }
+        struct Totals: Decodable { let chars: Int?; let sessions: Int?; let duration_ms: Int? }
+        struct Resp: Decodable { let daily: [Day]?; let totals: Totals? }
+        guard let r = try? JSONDecoder().decode(Resp.self, from: data) else {
+            throw BackendError.invalidResponse
+        }
+        var daily: [String: DayStat] = [:]
+        for d in r.daily ?? [] {
+            daily[d.day] = DayStat(
+                characters: d.chars ?? 0,
+                recordingSeconds: Double(d.duration_ms ?? 0) / 1000.0,
+                sessions: d.sessions ?? 0)
+        }
+        return AccountStats(
+            daily: daily,
+            totalCharacters: r.totals?.chars ?? 0,
+            totalSessions: r.totals?.sessions ?? 0,
+            totalRecordingSeconds: Double(r.totals?.duration_ms ?? 0) / 1000.0)
+    }
+
     /// ElevenLabs「正確性」プロキシで文字起こしする（WAV を multipart 送信）。
     static func transcribeElevenLabs(wav: Data, language: String) async throws -> String {
         try? await AuthClient.ensureValidSession()  // 失効間際なら先にリフレッシュ

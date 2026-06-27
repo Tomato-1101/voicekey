@@ -186,5 +186,87 @@ class TestStatsDailySeries(unittest.TestCase):
         self.assertEqual(series[-1]["month"], "2026-03")
 
 
+class TestStatsAccountLinking(unittest.TestCase):
+    """アカウント連携（#10）の派生・取り込み・連携OFF時の無副作用テスト。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self._tmp.name) / "stats.json"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_account_sync_disabled_by_default_no_side_effect(self):
+        """既定で連携 OFF。record_session が backend_client を一切呼ばない（keyring 非接触）。"""
+        from unittest import mock
+        from src.core import backend_client
+        store = StatsStore(self.path)
+        with mock.patch.object(backend_client, "is_logged_in") as m:
+            store.record_session(characters=10, recording_seconds=1.0)
+            m.assert_not_called()  # 連携 OFF なら is_logged_in すら呼ばない
+
+    def test_snapshot_uses_account_totals_when_higher(self):
+        """ログイン中（account_* 取り込み済み）は端末横断の累計を表示する。"""
+        store = StatsStore(self.path)
+        store.record_session(characters=100, recording_seconds=5.0)  # ローカル 100
+        # 端末横断の取り込みを模擬（別端末分を含む合算）
+        store._data["account_daily"] = {}
+        store._data["account_total_characters"] = 500
+        store._data["account_total_sessions"] = 9
+        store._data["account_total_recording_seconds"] = 40.0
+        snap = store.snapshot()
+        self.assertEqual(snap["total_characters"], 500)  # 端末横断が勝つ
+        self.assertEqual(snap["total_sessions"], 9)
+        self.assertEqual(snap["xp"], 500)
+        self.assertEqual(snap["level"], 2)  # XP も端末横断で算出
+
+    def test_local_is_floor_for_totals(self):
+        """端末横断がローカルより小さくても、ローカルを下限に保つ（実績が下がらない）。"""
+        store = StatsStore(self.path)
+        store.record_session(characters=1000, recording_seconds=5.0)
+        store._data["account_daily"] = {}
+        store._data["account_total_characters"] = 200  # ローカルより小さい
+        snap = store.snapshot()
+        self.assertEqual(snap["total_characters"], 1000)  # ローカルが下限
+
+    def test_effective_daily_merges_account_into_series(self):
+        """daily_series はログイン中、端末横断の合算（account_daily）を field-wise max で反映する。"""
+        store = StatsStore(self.path)
+        # ローカルには 2026-06-26 が 10 文字
+        store._data["daily"] = {"2026-06-26": {"characters": 10, "recording_seconds": 1.0, "sessions": 1}}
+        # サーバー合算は同日 30 文字（別端末分を含む）＋ 別日
+        store._data["account_daily"] = {
+            "2026-06-26": {"characters": 30, "recording_seconds": 4.0, "sessions": 3},
+            "2026-06-25": {"characters": 5, "recording_seconds": 0.5, "sessions": 1},
+        }
+        series = store.daily_series(2, end_day="2026-06-26")
+        by_day = {b["day"]: b for b in series}
+        self.assertEqual(by_day["2026-06-26"]["characters"], 30)  # max(10, 30)
+        self.assertEqual(by_day["2026-06-25"]["characters"], 5)   # account のみの日も出る
+
+    def test_clear_account_reverts_to_local(self):
+        """clear_account 後はローカル値に戻る（ログアウト相当）。"""
+        store = StatsStore(self.path)
+        store.record_session(characters=100, recording_seconds=5.0)
+        store._data["account_total_characters"] = 999
+        store._data["account_daily"] = {}
+        self.assertEqual(store.snapshot()["total_characters"], 999)
+        store.clear_account()
+        self.assertEqual(store.snapshot()["total_characters"], 100)
+
+    def test_account_daily_persists(self):
+        """取り込んだ端末横断データは保存され、開き直しても残る（再取得前の表示が消えない）。"""
+        store = StatsStore(self.path)
+        store._data["account_daily"] = {"2026-06-26": {"characters": 30, "recording_seconds": 4.0, "sessions": 3}}
+        store._data["account_total_characters"] = 30
+        store._data["account_total_sessions"] = 3
+        store._data["account_total_recording_seconds"] = 4.0
+        with store._lock:
+            store._save()
+        reopened = StatsStore(self.path)
+        self.assertEqual(reopened._data["account_daily"]["2026-06-26"]["characters"], 30)
+        self.assertEqual(reopened.snapshot()["total_characters"], 30)
+
+
 if __name__ == "__main__":
     unittest.main()

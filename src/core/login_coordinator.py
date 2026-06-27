@@ -20,6 +20,33 @@ from .backend_client import BackendError
 
 logger = get_logger(__name__)
 
+# ログイン/ログアウトを各ストア（実績など）へ伝える観測者（Mac 版の
+# NotificationCenter .voicekeyDidLogin/.voicekeyDidLogout に相当）。
+# Qt 非依存のまま疎結合にするため、コールバックを登録して発火する。
+_login_observers: list = []
+_logout_observers: list = []
+
+
+def add_login_observer(callback) -> None:
+    """ログイン成立時に呼ぶコールバックを登録する（多重登録は無視）。"""
+    if callback not in _login_observers:
+        _login_observers.append(callback)
+
+
+def add_logout_observer(callback) -> None:
+    """ログアウト時に呼ぶコールバックを登録する（多重登録は無視）。"""
+    if callback not in _logout_observers:
+        _logout_observers.append(callback)
+
+
+def _notify(observers: list) -> None:
+    """観測者を順に呼ぶ。1 つ落ちても他へ波及させない。"""
+    for cb in list(observers):
+        try:
+            cb()
+        except Exception as e:  # 通知失敗は本筋（ログイン/アウト）を妨げない
+            logger.warning(f"ログイン状態の通知に失敗: {e}")
+
 
 class LoginCoordinator:
     """ブラウザ経由ログインの進行を管理する（保留 state の保持・state 照合・交換）。"""
@@ -93,6 +120,9 @@ class LoginCoordinator:
             self.error = None
             # ログイン直後に利用権を確認（同じワーカースレッド内で続けて取得）
             self.refresh_entitlement()
+            # 各ストア（実績など）にログインを通知して端末横断同期を促す（#10）。
+            # このワーカースレッド内で呼ばれるので、同期の HTTP は UI を止めない。
+            _notify(_login_observers)
         except BackendError as e:
             self.status = self.FAILED
             self.error = str(e)
@@ -159,6 +189,8 @@ class LoginCoordinator:
         self.entitlement_active_until = None
         self.entitlement_error = None
         self.account_email = None
+        # 各ストアにログアウトを通知して端末横断の取り込み結果を破棄させる（#10）
+        _notify(_logout_observers)
 
     @staticmethod
     def parse_auth_url(url: str) -> Optional[Tuple[str, str]]:

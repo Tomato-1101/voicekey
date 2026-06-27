@@ -378,7 +378,7 @@ private struct StatsTab: View {
                     statTile(title: "今週", value: weekChars,
                              sub: "録音 \(formattedMinutes(stats.recordingSecondsInLast(days: 7)))")
                     Divider()
-                    statTile(title: "累計", value: stats.data.totalCharacters,
+                    statTile(title: "累計", value: stats.totalCharacters,
                              sub: "Lv.\(stats.level)")
                 }
                 .frame(height: 58)
@@ -408,8 +408,8 @@ private struct StatsTab: View {
             // 累計の実績
             Section {
                 LabeledContent("推定節約時間", value: formattedSaved)
-                LabeledContent("累計文字数", value: "\(stats.data.totalCharacters) 文字")
-                LabeledContent("音声入力した回数", value: "\(stats.data.totalSessions) 回")
+                LabeledContent("累計文字数", value: "\(stats.totalCharacters) 文字")
+                LabeledContent("音声入力した回数", value: "\(stats.totalSessions) 回")
                 LabeledContent("連続利用日数", value: streakText)
             }
             Text("「推定節約時間」は、同じ文章をキーボードで打つ場合と比べて短縮できた時間の目安です（タイピングより遅くなる短い入力は 0 として数えます）。実績はリセットできません。")
@@ -506,7 +506,7 @@ private struct StatsTab: View {
 
     /// 累計節約時間を「X 時間 Y 分」等に整形する
     private var formattedSaved: String {
-        let total = Int(stats.data.savedSeconds.rounded())
+        let total = Int(stats.savedSeconds.rounded())
         if total >= 3600 {
             return "\(total / 3600) 時間 \((total % 3600) / 60) 分"
         }
@@ -525,7 +525,7 @@ private struct StatsTab: View {
     }
 
     private var streakText: String {
-        "\(stats.data.currentStreak) 日（最長 \(stats.data.longestStreak) 日）"
+        "\(stats.currentStreak) 日（最長 \(stats.longestStreak) 日）"
     }
 }
 

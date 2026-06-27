@@ -51,7 +51,29 @@ struct StatsData: Codable, Equatable {
     /// これまでの最長連続利用日数
     var longestStreak: Int = 0
     /// 日付ごとの入力量（チャート用）。キーはローカル yyyy-MM-dd
+    /// ★これは「この端末で記録した分」だけを保持する＝サーバーへ送る送信元。
+    ///   端末横断の表示には accountDaily を使う（二重計上を避けるため別管理）。
     var daily: [String: DayStat] = [:]
+
+    // MARK: - アカウント連携（#10。ログイン中のみ・端末横断の取り込み結果を保持）
+
+    /// サーバーから取り込んだ端末横断の日次合算（day(yyyy-MM-dd)→合算値）。
+    /// nil = 未取り込み（未ログイン or 取得前）。再起動後も表示が消えないよう永続化する。
+    var accountDaily: [String: DayStat]?
+    /// 端末横断の累計文字数（サーバー totals）。レベル/XP の算出に使う
+    var accountTotalCharacters: Int?
+    /// 端末横断の累計回数（サーバー totals）
+    var accountTotalSessions: Int?
+    /// 端末横断の累計録音秒数（サーバー totals）
+    var accountTotalRecordingSeconds: Double?
+}
+
+/// ログイン/ログアウトを各ストアへ伝えるための通知（LoginCoordinator が発火する）
+extension Notification.Name {
+    /// ブラウザ経由ログインのトークン交換が成功した直後
+    static let voicekeyDidLogin = Notification.Name("com.voicekey.didLogin")
+    /// ログアウトした直後
+    static let voicekeyDidLogout = Notification.Name("com.voicekey.didLogout")
 }
 
 extension StatsData {
@@ -67,6 +89,10 @@ extension StatsData {
         currentStreak = try c.decodeIfPresent(Int.self, forKey: .currentStreak) ?? 0
         longestStreak = try c.decodeIfPresent(Int.self, forKey: .longestStreak) ?? 0
         daily = try c.decodeIfPresent([String: DayStat].self, forKey: .daily) ?? [:]
+        accountDaily = try c.decodeIfPresent([String: DayStat].self, forKey: .accountDaily)
+        accountTotalCharacters = try c.decodeIfPresent(Int.self, forKey: .accountTotalCharacters)
+        accountTotalSessions = try c.decodeIfPresent(Int.self, forKey: .accountTotalSessions)
+        accountTotalRecordingSeconds = try c.decodeIfPresent(Double.self, forKey: .accountTotalRecordingSeconds)
     }
 }
 
@@ -97,6 +123,22 @@ final class StatsStore: ObservableObject {
                 data = loaded
             }
         }
+
+        // ログイン/ログアウトに追従して端末横断の実績を取り込む/破棄する（#10）
+        NotificationCenter.default.addObserver(
+            forName: .voicekeyDidLogin, object: nil, queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in await self?.syncOnLogin() }
+        }
+        NotificationCenter.default.addObserver(
+            forName: .voicekeyDidLogout, object: nil, queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in self?.clearAccount() }
+        }
+        // すでにログイン済みで起動した場合は、起動時に一度だけ同期する
+        if BackendClient.isLoggedIn {
+            Task { @MainActor in await self.syncOnLogin() }
+        }
     }
 
     /// 音声入力 1 回分を記録する（貼り付け確定後に呼ぶ）。空入力は無視する。
@@ -114,6 +156,8 @@ final class StatsStore: ObservableObject {
         updateStreak(now: now)
         recordDaily(now: now, characters: characters, recordingSeconds: recSec)
         save()
+        // ログイン中なら当日分（この端末の絶対値）をサーバーへ送る（音声経路には乗らない）
+        syncTodayInBackground()
     }
 
     /// 日付ごとのバケット（文字数・録音秒・回数）を積み増す。チャート表示用
@@ -151,10 +195,99 @@ final class StatsStore: ObservableObject {
         data.longestStreak = max(data.longestStreak, data.currentStreak)
     }
 
+    // MARK: - アカウント横断の派生値（#10。未ログイン時はローカルにフォールバック）
+
+    /// 表示用の日次（チャート用）。ログイン中はサーバー合算（端末横断）にこの端末の
+    /// 未送信分を field-wise max で重ねる＝二重計上せずに最新も拾う。未ログインはローカルのみ。
+    var effectiveDaily: [String: DayStat] {
+        guard let acc = data.accountDaily else { return data.daily }
+        var out = acc
+        for (key, local) in data.daily {
+            var merged = out[key] ?? DayStat()
+            merged.characters = max(merged.characters, local.characters)
+            merged.recordingSeconds = max(merged.recordingSeconds, local.recordingSeconds)
+            merged.sessions = max(merged.sessions, local.sessions)
+            out[key] = merged
+        }
+        return out
+    }
+
+    /// 表示用の累計文字数。ログイン中は端末横断の累計とローカル累計の大きい方
+    /// （古い端末履歴で XP が下がらないよう下限をローカルに保つ）。
+    var totalCharacters: Int { max(data.totalCharacters, data.accountTotalCharacters ?? 0) }
+
+    /// 表示用の累計回数（同上）
+    var totalSessions: Int { max(data.totalSessions, data.accountTotalSessions ?? 0) }
+
+    /// 表示用の累計録音秒数（同上）
+    var totalRecordingSeconds: Double {
+        max(data.totalRecordingSeconds, data.accountTotalRecordingSeconds ?? 0)
+    }
+
+    /// 表示用の推定節約秒数。未ログインはローカル精密値、ログイン中は端末横断の日次から再計算。
+    /// （サーバーは節約秒を持たないため日次の文字数・録音秒から同じ式で復元する）
+    var savedSeconds: Double {
+        guard data.accountDaily != nil else { return data.savedSeconds }
+        let fromDaily = effectiveDaily.values.reduce(0.0) { acc, d in
+            acc + max(0, Double(d.characters) / Self.assumedTypingCharsPerSecond - d.recordingSeconds)
+        }
+        return max(data.savedSeconds, fromDaily)  // 古い実績で下がらないようローカルを下限にする
+    }
+
+    /// 利用のあった日付キー集合（端末横断・表示用）
+    private var activeDayKeys: Set<String> {
+        Set(effectiveDaily.compactMap { $0.value.characters > 0 || $0.value.sessions > 0 ? $0.key : nil })
+    }
+
+    /// 表示用の現在の連続利用日数。未ログインはローカル、ログイン中は端末横断の日付集合から算出。
+    var currentStreak: Int {
+        guard data.accountDaily != nil else { return data.currentStreak }
+        let days = activeDayKeys
+        guard !days.isEmpty else { return data.currentStreak }
+        let cal = Calendar.current
+        var cursor = cal.startOfDay(for: Date())
+        // 今日まだ記録が無くても、昨日まで連続していれば途切れさせない
+        if !days.contains(Self.dayString(cursor)) {
+            cursor = cal.date(byAdding: .day, value: -1, to: cursor) ?? cursor
+        }
+        var streak = 0
+        while days.contains(Self.dayString(cursor)) {
+            streak += 1
+            guard let prev = cal.date(byAdding: .day, value: -1, to: cursor) else { break }
+            cursor = prev
+        }
+        return max(streak, data.currentStreak)
+    }
+
+    /// 表示用の最長連続利用日数（同上）
+    var longestStreak: Int {
+        guard data.accountDaily != nil else { return data.longestStreak }
+        let keys = activeDayKeys.sorted()
+        guard !keys.isEmpty else { return data.longestStreak }
+        let cal = Calendar.current
+        let f = DateFormatter()
+        f.calendar = cal
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        var longest = 1, run = 1
+        var prev = f.date(from: keys[0])
+        for k in keys.dropFirst() {
+            guard let cur = f.date(from: k) else { continue }
+            if let p = prev, (cal.dateComponents([.day], from: p, to: cur).day ?? 0) == 1 {
+                run += 1
+            } else {
+                run = 1
+            }
+            longest = max(longest, run)
+            prev = cur
+        }
+        return max(longest, data.longestStreak)
+    }
+
     // MARK: - 派生値（レベル・XP）
 
-    /// 経験値（= 累計文字数）
-    var xp: Int { data.totalCharacters }
+    /// 経験値（= 累計文字数。ログイン中は端末横断）
+    var xp: Int { totalCharacters }
 
     /// 現在レベル
     var level: Int { Self.level(forXP: xp) }
@@ -207,11 +340,12 @@ final class StatsStore: ObservableObject {
     func dailySeries(_ numDays: Int, endingAt end: Date = Date()) -> [UsagePoint] {
         let cal = Calendar.current
         let startOfEnd = cal.startOfDay(for: end)
+        let source = effectiveDaily
         var out: [UsagePoint] = []
         for i in stride(from: max(0, numDays) - 1, through: 0, by: -1) {
             guard let d = cal.date(byAdding: .day, value: -i, to: startOfEnd) else { continue }
             let key = Self.dayString(d)
-            let b = data.daily[key]
+            let b = source[key]
             out.append(UsagePoint(
                 id: key, label: key, date: d,
                 characters: b?.characters ?? 0,
@@ -228,7 +362,7 @@ final class StatsStore: ObservableObject {
         guard let startOfEndMonth = cal.date(from: comps) else { return [] }
         // 日次バケットを月キー（yyyy-MM）へ集約する
         var agg: [String: (chars: Int, sec: Double, sess: Int)] = [:]
-        for (key, v) in data.daily {
+        for (key, v) in effectiveDaily {
             let mk = String(key.prefix(7))
             var a = agg[mk] ?? (0, 0, 0)
             a.chars += v.characters; a.sec += v.recordingSeconds; a.sess += v.sessions
@@ -256,6 +390,70 @@ final class StatsStore: ObservableObject {
     /// 直近 n 日の合計録音秒数
     func recordingSecondsInLast(days: Int) -> Double {
         dailySeries(days).reduce(0) { $0 + $1.recordingSeconds }
+    }
+
+    // MARK: - アカウント同期（#10）
+
+    /// 当日分（この端末の絶対値）をサーバーへ送る。ログイン中のみ・撃ちっぱなし。
+    /// 録音のたびに呼ばれるが、(user_id,device_id,day) の絶対値 upsert なので冪等。
+    func syncTodayInBackground() {
+        guard BackendClient.isLoggedIn else { return }
+        let key = Self.dayString(Date())
+        guard let b = data.daily[key] else { return }
+        let payload = BackendClient.StatsDayPayload(
+            day: key,
+            chars: b.characters,
+            sessions: b.sessions,
+            duration_ms: Int((b.recordingSeconds * 1000).rounded()))
+        Task.detached {
+            try? await BackendClient.syncStats(days: [payload])
+        }
+    }
+
+    /// ログイン直後/起動時に呼ぶ。まずこの端末の直近分を押し上げ、続いて端末横断の集計を取り込む。
+    func syncOnLogin() async {
+        let recent = recentOwnDays(60)
+        if !recent.isEmpty {
+            try? await BackendClient.syncStats(days: recent)
+        }
+        await refreshAccount()
+    }
+
+    /// 端末横断の集計をサーバーから取り込む（accountDaily / account累計を更新して永続化）。
+    func refreshAccount() async {
+        guard let snap = try? await BackendClient.fetchStats() else { return }
+        data.accountDaily = snap.daily
+        data.accountTotalCharacters = snap.totalCharacters
+        data.accountTotalSessions = snap.totalSessions
+        data.accountTotalRecordingSeconds = snap.totalRecordingSeconds
+        save()
+    }
+
+    /// ログアウト時に端末横断の取り込み結果を破棄し、ローカル表示へ戻す。
+    func clearAccount() {
+        data.accountDaily = nil
+        data.accountTotalCharacters = nil
+        data.accountTotalSessions = nil
+        data.accountTotalRecordingSeconds = nil
+        save()
+    }
+
+    /// この端末で記録した直近 numDays 日分を送信形（絶対値）で返す（記録の無い日は除外）。
+    private func recentOwnDays(_ numDays: Int) -> [BackendClient.StatsDayPayload] {
+        let cal = Calendar.current
+        let start = cal.startOfDay(for: Date())
+        var out: [BackendClient.StatsDayPayload] = []
+        for i in 0..<max(0, numDays) {
+            guard let d = cal.date(byAdding: .day, value: -i, to: start) else { continue }
+            let key = Self.dayString(d)
+            guard let b = data.daily[key] else { continue }
+            out.append(BackendClient.StatsDayPayload(
+                day: key,
+                chars: b.characters,
+                sessions: b.sessions,
+                duration_ms: Int((b.recordingSeconds * 1000).rounded())))
+        }
+        return out
     }
 
     private func save() {

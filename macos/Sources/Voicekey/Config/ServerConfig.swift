@@ -45,6 +45,12 @@ enum ServerConfig {
     /// ログイン中アカウントの状態（メール・利用権の有無/期限）取得
     static let mePath = "/api/v1/me"
 
+    // 使用実績のアカウント連携（#10）
+    /// 実績の送信（この端末の日次・絶対値を upsert）
+    static let statsSyncPath = "/api/v1/stats/sync"
+    /// 実績の取得（アカウント横断の日次集計）
+    static let statsPath = "/api/v1/stats"
+
     /// ベース URL とパスを結合した完全な URL を返す
     static func url(_ path: String) -> URL? {
         URL(string: baseURL + path)

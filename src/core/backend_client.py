@@ -293,6 +293,56 @@ def format_text(text: str) -> str:
     return resp.json().get("text", text) or text
 
 
+def sync_stats(days: list) -> None:
+    """この端末の日次実績（絶対値）をサーバーへ送る（POST /api/v1/stats/sync）。
+
+    サーバーは (user_id, device_id, day) で絶対値 upsert するので、同じ値を再送しても
+    二重計上されない（冪等）。最大 60 日。
+
+    Args:
+        days: [{"day": "yyyy-MM-dd", "chars": int, "sessions": int, "duration_ms": int}, ...]
+
+    Raises:
+        BackendError: 認証・通信エラー（呼び出し側はだいたい握りつぶす）
+    """
+    if not days:
+        return
+    headers = {**_auth_headers(), "Content-Type": "application/json"}
+    _post(constants.API_STATS_SYNC_PATH, headers=headers, json={"days": days[:60]})
+
+
+def fetch_stats() -> dict:
+    """アカウント横断の使用実績を取得する（GET /api/v1/stats）。
+
+    Returns:
+        {"daily": {"yyyy-MM-dd": {characters, recording_seconds, sessions}},
+         "total_characters": int, "total_sessions": int, "total_recording_seconds": float}
+        （サーバーのミリ秒は秒へ戻す）
+
+    Raises:
+        BackendError: 認証・通信エラー
+    """
+    resp = _send("GET", constants.API_STATS_PATH, headers=_auth_headers())
+    body = resp.json() if resp.content else {}
+    daily: dict = {}
+    for d in body.get("daily") or []:
+        day = d.get("day")
+        if not day:
+            continue
+        daily[day] = {
+            "characters": int(d.get("chars") or 0),
+            "recording_seconds": float(d.get("duration_ms") or 0) / 1000.0,
+            "sessions": int(d.get("sessions") or 0),
+        }
+    totals = body.get("totals") or {}
+    return {
+        "daily": daily,
+        "total_characters": int(totals.get("chars") or 0),
+        "total_sessions": int(totals.get("sessions") or 0),
+        "total_recording_seconds": float(totals.get("duration_ms") or 0) / 1000.0,
+    }
+
+
 def submit_feedback(message: str) -> None:
     """アプリ内フィードバックを自社サーバーへ送る（認証は任意）。
 

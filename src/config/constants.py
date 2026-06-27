@@ -13,7 +13,7 @@ from .types import HotkeyMode
 # アプリケーションメタデータ
 # ============================================
 APP_NAME: str = "voicekey"
-APP_VERSION: str = "1.3.1"
+APP_VERSION: str = "1.4.0"
 
 # ============================================
 # 自社バックエンド（製品版: 短命キー発行・プロキシ）
@@ -37,6 +37,9 @@ API_AUTH_REFRESH_PATH: str = "/api/v1/auth/refresh"             # refresh_token�
 # アクティベーションキー（段階5）
 API_ME_PATH: str = "/api/v1/me"                                   # ログイン中アカウントの状態（email/active/active_until）
 API_REDEEM_PATH: str = "/api/v1/activation/redeem"               # アクティベーションキー登録（アカウントに紐付け）
+# 使用実績のアカウント連携（#10）
+API_STATS_SYNC_PATH: str = "/api/v1/stats/sync"                   # この端末の日次・絶対値を upsert
+API_STATS_PATH: str = "/api/v1/stats"                            # アカウント横断の日次集計を取得
 
 # ============================================
 # 音声設定

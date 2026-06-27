@@ -60,6 +60,85 @@ class TestIsLoggedIn(unittest.TestCase):
             self.assertFalse(backend_client.is_logged_in())
 
 
+class TestSyncStats(_Base):
+    """sync_stats（実績の送信）の契約を検証する。"""
+
+    def test_posts_days_with_headers(self):
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["path"] = request.url.path
+            seen["method"] = request.method
+            seen["auth"] = request.headers.get("authorization")
+            seen["device"] = request.headers.get("x-device-id")
+            import json as _json
+            seen["body"] = _json.loads(request.content)
+            return httpx.Response(200, json={"ok": True, "upserted": 1})
+
+        _install_mock(handler)
+        backend_client.sync_stats([{"day": "2026-06-27", "chars": 50, "sessions": 2, "duration_ms": 3000}])
+        self.assertEqual(seen["path"], "/api/v1/stats/sync")
+        self.assertEqual(seen["method"], "POST")
+        self.assertEqual(seen["auth"], "Bearer tok-abc")
+        self.assertEqual(seen["device"], "dev-123")
+        self.assertEqual(seen["body"]["days"][0]["chars"], 50)
+
+    def test_empty_days_no_request(self):
+        """空リストは通信せず即 return（無駄打ちしない）。"""
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("空リストで通信してはいけない")
+
+        _install_mock(handler)
+        backend_client.sync_stats([])  # 例外が出なければ OK
+
+    def test_caps_at_60_days(self):
+        """61 日以上送っても 60 日に切り詰める（サーバー上限に合わせる）。"""
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            import json as _json
+            seen["body"] = _json.loads(request.content)
+            return httpx.Response(200, json={"ok": True})
+
+        _install_mock(handler)
+        days = [{"day": f"2026-01-{i:02d}", "chars": 1, "sessions": 1, "duration_ms": 1} for i in range(1, 32)]
+        days += [{"day": f"2026-02-{i:02d}", "chars": 1, "sessions": 1, "duration_ms": 1} for i in range(1, 32)]
+        backend_client.sync_stats(days)  # 62 日
+        self.assertEqual(len(seen["body"]["days"]), 60)
+
+
+class TestFetchStats(_Base):
+    """fetch_stats（実績の取得）の解釈を検証する（ms→秒変換含む）。"""
+
+    def test_parses_daily_and_totals(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.url.path, "/api/v1/stats")
+            self.assertEqual(request.method, "GET")
+            return httpx.Response(200, json={
+                "ok": True,
+                "daily": [
+                    {"day": "2026-06-26", "chars": 100, "sessions": 3, "duration_ms": 12000},
+                    {"day": "2026-06-27", "chars": 40, "sessions": 1, "duration_ms": 5000},
+                ],
+                "totals": {"chars": 140, "sessions": 4, "duration_ms": 17000, "days_active": 2},
+            })
+
+        _install_mock(handler)
+        r = backend_client.fetch_stats()
+        self.assertEqual(r["total_characters"], 140)
+        self.assertEqual(r["total_sessions"], 4)
+        self.assertAlmostEqual(r["total_recording_seconds"], 17.0)  # 17000ms→17s
+        self.assertAlmostEqual(r["daily"]["2026-06-26"]["recording_seconds"], 12.0)
+        self.assertEqual(r["daily"]["2026-06-27"]["characters"], 40)
+
+    def test_empty_response(self):
+        """daily/totals が無くても落ちず 0 で返す。"""
+        _install_mock(lambda r: httpx.Response(200, json={"ok": True}))
+        r = backend_client.fetch_stats()
+        self.assertEqual(r["total_characters"], 0)
+        self.assertEqual(r["daily"], {})
+
+
 class TestEphemeral(_Base):
     def test_success_and_headers(self):
         seen = {}

@@ -87,6 +87,8 @@ final class LoginCoordinator: ObservableObject {
                 _ = try await AuthClient.exchange(code: parsed.code)
                 status = .loggedIn
                 refreshEntitlement()  // ログイン直後に利用権を確認
+                // 各ストア（実績など）にログインを通知して端末横断同期を促す（#10）
+                NotificationCenter.default.post(name: .voicekeyDidLogin, object: nil)
             } catch {
                 let msg = (error as? AuthClient.AuthError)?.userMessage ?? "ログインに失敗しました"
                 status = .failed(msg)
@@ -103,6 +105,8 @@ final class LoginCoordinator: ObservableObject {
         entitlement = .unknown
         accountEmail = nil
         redeemError = nil
+        // 各ストアにログアウトを通知して端末横断の取り込み結果を破棄させる（#10）
+        NotificationCenter.default.post(name: .voicekeyDidLogout, object: nil)
     }
 
     // MARK: - 利用権（アクティベーションキー）
