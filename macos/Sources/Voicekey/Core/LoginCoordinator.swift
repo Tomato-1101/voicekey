@@ -30,11 +30,12 @@ final class LoginCoordinator: ObservableObject {
 
     /// 利用権（アクティベーションキー or サブスク）の状態（UI バインド用）
     enum Entitlement: Equatable {
-        case unknown            // 未確認（未ログイン時など）
-        case checking           // 確認中
-        case active(Date?)      // 有効（期限。無期限なら nil）
-        case none               // ログイン済みだが未登録（キー入力が必要）
-        case error(String)      // 確認失敗
+        case unknown                        // 未確認（未ログイン時など）
+        case checking                       // 確認中
+        case active(Date?)                  // 有効（期限。無期限なら nil）
+        case free(remaining: Int, quota: Int) // 無料体験中（残量あり。使い切るとキー入力が必要）
+        case none                           // 無料体験を使い切り・未登録（キー入力が必要）
+        case error(String)                  // 確認失敗
     }
 
     @Published private(set) var status: Status
@@ -119,7 +120,14 @@ final class LoginCoordinator: ObservableObject {
             do {
                 let s = try await BackendClient.fetchAccountStatus()
                 accountEmail = s.email
-                entitlement = s.active ? .active(s.activeUntil) : .none
+                if s.active {
+                    entitlement = .active(s.activeUntil)
+                } else if s.freeRemaining > 0 {
+                    // 無料体験中（まだ残量あり）。使い切ると .none に落ちてキー入力が要る。
+                    entitlement = .free(remaining: s.freeRemaining, quota: s.freeQuota)
+                } else {
+                    entitlement = .none
+                }
             } catch {
                 let msg = (error as? BackendClient.BackendError)?.userMessage ?? "状態を確認できませんでした"
                 entitlement = .error(msg)

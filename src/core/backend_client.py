@@ -87,6 +87,7 @@ def _message_for_status(status: int) -> str:
     """HTTP ステータスをユーザー向け日本語メッセージへ写す。"""
     return {
         401: "ログインの有効期限が切れました。再度ログインしてください",
+        402: "無料体験を使い切りました。続けて使うにはアクティベーションキーの登録が必要です（設定 → アカウント）",
         403: "利用するにはアクティベーションキーの登録が必要です（設定 → アカウント）",
         409: "利用できるデバイス数の上限に達しました",
         429: "リクエストが多すぎます。少し待ってからお試しください",
@@ -159,12 +160,14 @@ def is_logged_in() -> bool:
 
 
 def fetch_account_status() -> dict:
-    """ログイン中アカウントの状態（email / active / active_until）を取得する。
+    """ログイン中アカウントの状態（email / active / active_until / 無料体験残量）を取得する。
 
     Returns:
-        {"email": Optional[str], "active": bool, "active_until": Optional[str]}
+        {"email": Optional[str], "active": bool, "active_until": Optional[str],
+         "free_used": int, "free_quota": int, "free_remaining": int}
         active は entitlements が有効（active_until が未来）かどうか。未契約でも
-        200 で active:False が返る（呼び出し側はこれで「キー入力が必要」を出す）。
+        200 で active:False が返る。active:False かつ free_remaining>0 なら無料体験中、
+        free_remaining=0 なら使い切り（呼び出し側はこれで「キー入力が必要」を出す）。
 
     Raises:
         BackendError: 未ログイン・通信失敗など
@@ -175,6 +178,9 @@ def fetch_account_status() -> dict:
         "email": data.get("email"),
         "active": bool(data.get("active")),
         "active_until": data.get("active_until"),
+        "free_used": int(data.get("free_used") or 0),
+        "free_quota": int(data.get("free_quota") or 0),
+        "free_remaining": int(data.get("free_remaining") or 0),
     }
 
 

@@ -140,7 +140,26 @@ class TestEntitlement(unittest.TestCase):
         self.assertEqual(self.coord.account_email, "u@x.io")
         self.assertEqual(self.coord.entitlement_active_until, "2030-01-01T00:00:00Z")
 
-    def test_refresh_none(self):
+    def test_refresh_free(self):
+        """未契約でも無料体験の残量があれば ENT_FREE（残量を保持）。"""
+        with mock.patch.object(backend_client, "fetch_account_status",
+                               return_value={"email": "u@x.io", "active": False, "active_until": None,
+                                             "free_used": 12, "free_quota": 200, "free_remaining": 188}):
+            self.coord.refresh_entitlement()
+        self.assertEqual(self.coord.entitlement, LoginCoordinator.ENT_FREE)
+        self.assertEqual(self.coord.entitlement_free_remaining, 188)
+        self.assertEqual(self.coord.entitlement_free_quota, 200)
+
+    def test_refresh_none_when_free_exhausted(self):
+        """無料体験を使い切り（free_remaining=0）かつ未契約なら ENT_NONE。"""
+        with mock.patch.object(backend_client, "fetch_account_status",
+                               return_value={"email": "u@x.io", "active": False, "active_until": None,
+                                             "free_used": 200, "free_quota": 200, "free_remaining": 0}):
+            self.coord.refresh_entitlement()
+        self.assertEqual(self.coord.entitlement, LoginCoordinator.ENT_NONE)
+
+    def test_refresh_none_legacy_response(self):
+        """free_* を返さない旧サーバー応答でも 0 扱いで ENT_NONE（後方互換）。"""
         with mock.patch.object(backend_client, "fetch_account_status",
                                return_value={"email": "u@x.io", "active": False, "active_until": None}):
             self.coord.refresh_entitlement()

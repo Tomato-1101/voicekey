@@ -19,6 +19,7 @@ enum BackendClient {
     enum BackendError: Error {
         case unauthenticated      // ローカルに認証セッションが無い（未ログイン）
         case unauthorized         // 401: トークン無効/期限切れ（要再ログイン・リフレッシュ）
+        case freeQuotaExhausted   // 402: 無料体験を使い切った（要アクティベーション）
         case noSubscription       // 403: サブスク無効
         case deviceLimit          // 409: 同時利用デバイス上限
         case rateLimited          // 429: 発行/利用が多すぎる
@@ -32,6 +33,7 @@ enum BackendClient {
             switch self {
             case .unauthenticated: return "ログインが必要です"
             case .unauthorized: return "ログインの有効期限が切れました。再度ログインしてください"
+            case .freeQuotaExhausted: return "無料体験を使い切りました。続けて使うにはアクティベーションキーの登録が必要です（設定 → アカウント）"
             case .noSubscription: return "利用するにはアクティベーションキーの登録が必要です（設定 → アカウント）"
             case .deviceLimit: return "利用できるデバイス数の上限に達しました"
             case .rateLimited: return "リクエストが多すぎます。少し待ってからお試しください"
@@ -50,11 +52,14 @@ enum BackendClient {
         let expiresAt: Date
     }
 
-    /// ログイン中アカウントの状態（メール・利用権の有無/期限）
+    /// ログイン中アカウントの状態（メール・利用権の有無/期限・無料体験の残量）
     struct AccountStatus {
         let email: String?
         let active: Bool          // 有効な利用権（アクティベーションキー or サブスク）があるか
         let activeUntil: Date?    // 利用権の期限（active=true のとき）
+        let freeUsed: Int         // 無料体験の消費済み回数
+        let freeQuota: Int        // 無料体験の上限回数
+        let freeRemaining: Int    // 無料体験の残り回数（active=false のとき意味を持つ）
     }
 
     /// 短い接続タイムアウトの専用セッション（録音直前に叩くため待たせない）
@@ -158,14 +163,20 @@ enum BackendClient {
         try? await AuthClient.ensureValidSession()
         let req = try authorizedRequest(path: ServerConfig.mePath)  // GET（httpMethod 未設定）
         let data = try await send(req)
-        struct Resp: Decodable { let email: String?; let active: Bool?; let active_until: String? }
+        struct Resp: Decodable {
+            let email: String?; let active: Bool?; let active_until: String?
+            let free_used: Int?; let free_quota: Int?; let free_remaining: Int?
+        }
         guard let r = try? JSONDecoder().decode(Resp.self, from: data) else {
             throw BackendError.invalidResponse
         }
         return AccountStatus(
             email: r.email,
             active: r.active ?? false,
-            activeUntil: r.active_until.flatMap(Self.parseISO)
+            activeUntil: r.active_until.flatMap(Self.parseISO),
+            freeUsed: r.free_used ?? 0,
+            freeQuota: r.free_quota ?? 0,
+            freeRemaining: r.free_remaining ?? 0
         )
     }
 
@@ -367,6 +378,7 @@ enum BackendClient {
     private static func mapStatus(_ code: Int) -> BackendError {
         switch code {
         case 401: return .unauthorized
+        case 402: return .freeQuotaExhausted
         case 403: return .noSubscription
         case 409: return .deviceLimit
         case 429: return .rateLimited

@@ -1821,9 +1821,10 @@ class SettingsWindow(QWidget):
         layout.addWidget(lic_card)
 
         layout.addWidget(_make_caption(
-            "ログインしてアクティベーションキーを登録すると、サーバー経由の文字起こし"
-            "（高速リアルタイム／正確性）が使えます。キーはこのアカウントに紐付き、"
-            "別の端末でログインしても同じライセンスで使えます。ログインはブラウザで行います。"
+            "ログインすると無料体験でサーバー経由の文字起こし（高速リアルタイム／正確性）が"
+            "使えます。無料体験を使い切ったら、アクティベーションキーを登録すると続けて使えます。"
+            "キーはこのアカウントに紐付き、別の端末でログインしても同じライセンスで使えます。"
+            "ログインはブラウザで行います。"
         ))
         layout.addStretch()
 
@@ -1913,6 +1914,17 @@ class SettingsWindow(QWidget):
             # 有効になったら入力欄は不要
             self._activation_key_input.setVisible(False)
             self._redeem_btn.setVisible(False)
+        elif ent == LC.ENT_FREE:
+            remaining = coord.entitlement_free_remaining
+            quota = coord.entitlement_free_quota
+            self._entitlement_status.setText(
+                f"無料体験中（残り {remaining} / {quota} 回）。"
+                "使い切ったらアクティベーションキーの登録が必要です。"
+            )
+            self._entitlement_status.setStyleSheet(MacTheme.status_ok_style(self._is_dark_mode))
+            # 無料体験中でも先にキーを登録できるよう入力欄は出す
+            self._activation_key_input.setVisible(True)
+            self._redeem_btn.setVisible(True)
         elif ent == LC.ENT_CHECKING:
             self._entitlement_status.setText("ライセンスを確認中…")
             self._entitlement_status.setStyleSheet(MacTheme.status_muted_style())
@@ -1925,9 +1937,16 @@ class SettingsWindow(QWidget):
             self._entitlement_status.setStyleSheet(MacTheme.status_warn_style(self._is_dark_mode))
             self._activation_key_input.setVisible(True)
             self._redeem_btn.setVisible(True)
-        else:  # ENT_NONE / ENT_UNKNOWN
+        elif ent == LC.ENT_NONE:
             self._entitlement_status.setText(
-                "ライセンス未登録です。アクティベーションキーを入力してください。"
+                "無料体験を使い切りました。続けて使うにはアクティベーションキーを入力してください。"
+            )
+            self._entitlement_status.setStyleSheet(MacTheme.status_warn_style(self._is_dark_mode))
+            self._activation_key_input.setVisible(True)
+            self._redeem_btn.setVisible(True)
+        else:  # ENT_UNKNOWN
+            self._entitlement_status.setText(
+                "ログインするとライセンスの状態を確認できます。"
             )
             self._entitlement_status.setStyleSheet(MacTheme.status_muted_style())
             self._activation_key_input.setVisible(True)

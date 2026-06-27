@@ -714,7 +714,7 @@ private struct AccountTab: View {
             } header: {
                 Text("アカウント")
             } footer: {
-                Text("ログインし、アクティベーションキーを登録すると文字起こし（高速リアルタイム／正確性）が使えます。ログインはブラウザで行います。")
+                Text("ログインすると無料体験で文字起こし（高速リアルタイム／正確性）が使えます。無料体験を使い切ったら、アクティベーションキーを登録すると続けて使えます。ログインはブラウザで行います。")
             }
 
             // ログイン済みのときだけライセンス（アクティベーションキー）欄を出す
@@ -785,11 +785,14 @@ private struct AccountTab: View {
                 Label("有効", systemImage: "checkmark.seal.fill")
                     .foregroundStyle(.green)
             }
+        case .free(let remaining, let quota):
+            Label("無料体験中（残り \(remaining) / \(quota) 回）", systemImage: "gift.fill")
+                .foregroundStyle(.blue)
         case .checking:
             Label("確認中…", systemImage: "arrow.triangle.2.circlepath")
                 .foregroundStyle(.secondary)
         case .none:
-            Label("未登録（キーを入力してください）", systemImage: "key.slash")
+            Label("無料体験を使い切りました（キーを入力してください）", systemImage: "key.slash")
                 .foregroundStyle(.orange)
         case .error(let msg):
             HStack {

@@ -62,7 +62,8 @@ class LoginCoordinator:
     ENT_UNKNOWN = "unknown"    # 未確認（未ログイン時など）
     ENT_CHECKING = "checking"  # 確認中
     ENT_ACTIVE = "active"      # 有効（active_until に期限。無期限なら None）
-    ENT_NONE = "none"          # ログイン済みだが未登録（キー入力が必要）
+    ENT_FREE = "free"          # 無料体験中（残量あり。使い切るとキー入力が必要）
+    ENT_NONE = "none"          # 無料体験を使い切り・未登録（キー入力が必要）
     ENT_ERROR = "error"        # 確認失敗（entitlement_error にメッセージ）
 
     def __init__(self):
@@ -76,6 +77,9 @@ class LoginCoordinator:
         self.entitlement_active_until: Optional[str] = None
         self.entitlement_error: Optional[str] = None
         self.account_email: Optional[str] = None
+        # 無料体験の残量（ENT_FREE のとき意味を持つ。UI 表示用）
+        self.entitlement_free_remaining: int = 0
+        self.entitlement_free_quota: int = 0
 
     def begin_login(self) -> str:
         """ログインを開始する: state を生成し、ブラウザで開くべき URL を返す。
@@ -143,9 +147,16 @@ class LoginCoordinator:
         try:
             s = backend_client.fetch_account_status()
             self.account_email = s.get("email")
+            free_remaining = int(s.get("free_remaining") or 0)
             if s.get("active"):
                 self.entitlement = self.ENT_ACTIVE
                 self.entitlement_active_until = s.get("active_until")
+            elif free_remaining > 0:
+                # 無料体験中（まだ残量あり）。使い切ると ENT_NONE に落ちてキー入力が要る。
+                self.entitlement = self.ENT_FREE
+                self.entitlement_active_until = None
+                self.entitlement_free_remaining = free_remaining
+                self.entitlement_free_quota = int(s.get("free_quota") or 0)
             else:
                 self.entitlement = self.ENT_NONE
                 self.entitlement_active_until = None
@@ -189,6 +200,8 @@ class LoginCoordinator:
         self.entitlement_active_until = None
         self.entitlement_error = None
         self.account_email = None
+        self.entitlement_free_remaining = 0
+        self.entitlement_free_quota = 0
         # 各ストアにログアウトを通知して端末横断の取り込み結果を破棄させる（#10）
         _notify(_logout_observers)
 

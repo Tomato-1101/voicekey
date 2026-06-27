@@ -2,6 +2,33 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
+## [1.5.0] - 2026-06-27
+
+### Added
+- **アカウントごとに無料体験枠を付与（使い切るとアクティベーションキーが必要／両OS・release ＋ サーバー）**。
+  これまでは「ログイン＋有効なアクティベーションキー」が無いと一切文字起こしできなかったが、
+  **ログインすれば各アカウントにつき無料で 200 回まで文字起こしを試せる**ようにした。無料体験を使い切ると、
+  従来どおりアクティベーションキーの登録が必要になる（課金は未実装のため、当面はキー登録のみが解放手段）。
+  - **数え方**: 文字起こし 1 回（＝短命トークン発行 or ElevenLabs プロキシ呼び出し 1 回）につき 1 消費。
+    **累計で一度きり**（月次リセットなし）。テキスト整形（後処理）は消費しない。
+    サーバーだけが見える本物の呼び出し回数で数えるため、クライアント申告の使用量では突破できない。
+  - **整合性**: サーバー側で原子的にカウント（`consume_free_quota` RPC＝`free_used < free_quota` のときだけ
+    +1 する条件付き UPDATE）。残枠ゼロの呼び出しは **402** を返し、アプリは「無料体験を使い切りました。
+    続けて使うにはアクティベーションキーの登録が必要です（設定 → アカウント）」と表示する。
+  - **UI（設定 → アカウント）**: 無料体験中は「無料体験中（残り N / 200 回）」、使い切ると
+    「無料体験を使い切りました。…キーを入力してください」を表示。無料体験中でも先にキーを登録できる。
+  - **サーバー**: `entitlements` に `free_quota`（既定 200）・`free_used` を追加、`consume_free_quota(uuid)` RPC、
+    `authorizeUsable(request,{consume})` を追加。`GET /api/v1/me` は `free_quota / free_used / free_remaining` を返す。
+    短命トークン発行（Deepgram）と ElevenLabs プロキシは消費あり、テキスト整形（Groq）は消費なし。
+  - **実装**: サーバー=`voicekey-site`（`lib/apiAuth.ts`・`app/api/v1/{auth/ephemeral,transcribe/elevenlabs,format,me}`・
+    DB マイグレーション `free_quota_count_based`）、Mac=`Core/BackendClient.swift`・`Core/LoginCoordinator.swift`・
+    `UI/SettingsView.swift`、Windows=`core/backend_client.py`・`core/login_coordinator.py`・`ui/settings_window.py`。
+
+### Technical Details
+- アプリのバージョンを **1.5.0** に更新（Win=`config/constants.py`、Mac=`Resources/Info.plist`：
+  `CFBundleShortVersionString=1.5.0` / `CFBundleVersion=12`）。後方互換の機能追加のため MINOR を更新。
+- 後方互換: 旧サーバー応答（`free_*` 無し）でも 0 扱いで従来挙動（未契約＝キー要求）になる。
+
 ## [1.4.0] - 2026-06-27
 
 ### Added

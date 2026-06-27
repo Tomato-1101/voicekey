@@ -91,17 +91,24 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 
 ## 現在地 / 次の一手
 
-- 現在地: **Mac v1.4.0 / Windows v1.4.0 リリース完了**（2026-06-27。release＝製品版ブランチ。
-  使用実績のアカウント連携〔#10〕を両 OS 同期リリース。ログイン中は日次の入力量・連続利用日数などの実績が
-  サーバー `usage_stats`（user_id × device_id × day の絶対値 upsert）に紐付き、複数端末で合算・再インストール後も
-  引き継がれる。未ログイン時は従来どおりローカルのみ。実装は両 OS とも account∪local の field-wise max マージで
-  ローカル実績が下がらない設計、Windows は `enable_account_sync()` を app.py からのみ呼びテストで keyring に
-  触れない〔パスワードダイアログ防止〕）。Phase 0〜6 完了・Phase 7 は
-  販売開始時まで延期。両 OS とも自動更新フィード（Mac=Sparkle appcast.xml〔build 11・EdDSA 署名〕/
-  Win=version.json〔sha256: 23965d…c9b 検証済み〕）を Vercel 本番（https://voicekey.vercel.app）へ配信済み（全 200 確認）。
-  本番 DB に `activation_keys.code_plain` 列・`usage_stats` テーブルを適用済み（#10 のバッキング・admin キーコピー）。
-  サーバー側の #10 ルート（`/api/v1/stats`・`/api/v1/stats/sync`）はデプロイ済み（401＝要認証で稼働確認）。
-  - 既往: Mac/Windows v1.3.1（2026-06-27・ログイン誤失効バグ修正＋レイテンシ短縮）、
+- 現在地: **v1.5.0 実装完了・配布は GO 待ち**（2026-06-27。release＝製品版ブランチ。
+  **アカウントごとに無料体験枠 200 回**を付与。これまで「ログイン＋有効キー必須」で一切試せなかったのを、
+  ログインすれば無料で 200 回まで文字起こしを試せるようにし、使い切ったら従来どおりアクティベーションキー登録へ誘導
+  〔課金は未実装＝当面はキー登録のみが解放手段〕。数え方は「文字起こし 1 回＝1 消費・累計一度きり・整形は消費なし」。
+  サーバーだけが見える本物の呼び出し回数で数えるためクライアント申告では突破不可。サーバーで原子的にカウント
+  〔`entitlements.free_quota`(既定200)/`free_used` ＋ `consume_free_quota(uuid)` RPC＝条件付き UPDATE・残枠ゼロは 402〕。
+  **DB マイグレーション `free_quota_count_based` は本番 Supabase に適用・検証済み**（free_used 0→1→reset 0 を実測）。
+  サーバーコード〔`lib/apiAuth.ts` の `authorizeUsable`・ephemeral/elevenlabs〔consume〕・format〔no-consume〕・me〔残量返却〕〕
+  は編集済み・`tsc --noEmit` 通過。**ただし未デプロイ**（`vercel deploy --prod` が GO 待ち）。
+  アプリ側は Mac〔BackendClient/LoginCoordinator/SettingsView・build 12〕・Windows〔backend_client/login_coordinator/settings_window〕
+  実装済み、Mac ビルド＆起動 OK・Windows 53 テスト〔無料体験分岐含む〕パス。後方互換: 旧サーバー応答（free_* 無し）でも 0 扱いで従来挙動。
+  - **次の不可逆 GO（要ユーザー承認）**: ①`voicekey-site` を `vercel deploy --prod`〔無料体験がサーバー全体で有効化〕、
+    ②Mac DMG ビルド〔`build_dmg.sh --version 1.5.0`〕、③Windows CI〔`windows-build.yml -f version=1.5.0`〕、
+    ④GitHub Release 公開＝既存ユーザーへ自動更新配信。①を先に出さないと旧アプリが 200/402 の新挙動を受ける前に
+    新アプリが残量表示を期待してしまうため、**①→②③④の順**。
+  - 既往: Mac/Windows v1.4.0（2026-06-27・使用実績のアカウント連携〔#10〕。`usage_stats` に紐付き複数端末合算・
+    再インストール後も引き継ぎ。自動更新フィード Mac build 11 / Win version.json を配信済み）、
+    Mac/Windows v1.3.1（2026-06-27・ログイン誤失効バグ修正＋レイテンシ短縮）、
     v1.3.0（2026-06-26・アクティベーションキー版）、v1.1.0（2026-06-18・製品版2モード化）、
     Mac v1.0.2 / Windows v1.0.1（2026-06-16・遅延根治）、Mac v1.0.0/v1.0.1（2026-06-12）、
     Windows v1.0.0 初公開（2026-06-14、GitHub Actions ビルド → voicekey-releases の GitHub Releases へ公開）。
@@ -113,7 +120,9 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
   再起動まで実施）。ベータ版の動作確認は `macos/scripts/run_beta.sh`（dist/ の最新 DMG を
   マウントして一時起動・終わったら run_dev.sh で戻る）。dist/voicekey.app はビルドごとに
   dev/dist で上書きされるため常用しない。見分け方: 設定画面に API キータブがあれば開発版。
-- 次の一手: 残るユーザー作業は **各 API ダッシュボードで利用上限・アラート設定**のみ（保険）。
+- 次の一手: **v1.5.0（無料体験）の配布 GO 待ち**（上記「次の不可逆 GO」①→②③④）。その後の残るユーザー作業は
+  **各 API ダッシュボードで利用上限・アラート設定**のみ（保険）。無料体験 200 回の上限値は `entitlements.free_quota`
+  の既定値（DB 側）で調整可能＝コード変更・再配布なしに将来見直せる。
 - **リリース手順（Mac/Windows は常に両方を同じ修正内容で同期リリースする・版番号は Claude が semver で決める）**:
   - Mac: `cd macos && ./scripts/build_dmg.sh --version X.Y.Z`（Info.plist 自動 bump・署名・zip/DMG/appcast 生成）
     → DMG を `voicekey-site/downloads/`、`voicekey-X.Y.Z.zip`＋`voicekeyN-M.delta`＋`appcast.xml` を
