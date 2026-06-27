@@ -2,6 +2,51 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
+## [1.3.1] - 2026-06-27
+
+### Fixed
+- **音声入力後に「ログインが必要です」と誤表示される不具合を修正（両OS・release）**。
+  ログイン＋アクティベーションキー登録済みでも、音声入力のたびにセッションが破棄され再ログインを
+  求められることがあった。原因は **同じ refresh_token を同時に複数回使うとサーバー（Supabase GoTrue）の
+  トークンローテーションで `refresh_token_already_used` となり、再利用検知で全セッションが revoke** される点。
+  - **アプリ側**: トークン更新（refresh）を直列化し、同時に来た更新要求を進行中の 1 本に集約して
+    refresh_token を二重使用しないようにした。Mac=`Core/AuthClient.swift`（進行中 Task の共有）、
+    Windows=`core/auth_client.py`（`RLock` ＋ `ensure_valid_session` のロック下再確認）。
+  - **サーバー側**: 一時的な競合（`refresh_token_already_used`）は 401 ではなく **409（復帰可能）** で返すように変更。
+    アプリはこれを「現在のセッションは有効」と解釈し、セッションを破棄しない。`voicekey-site`
+    `app/api/v1/auth/refresh/route.ts`。**この修正はデプロイだけで既存版（v1.3.0）のユーザーにも有効**。
+
+### Changed
+- **音声入力のレイテンシ（毎回の遅延）を大幅短縮（両OS・release ＋ サーバー）**。
+  - **サーバーのリージョンを東京（`hnd1`）に固定**（`voicekey-site/vercel.json`）。従来は Vercel 関数が
+    米国東部（`iad1`）で動き、東京の Supabase DB へ**毎回 6 往復の太平洋横断**（各 ~150ms ≒ 約 1 秒）＋
+    コールドスタートが発生していた。同一リージョン化で DB 往復が数 ms に短縮される。
+  - **短命トークン発行 API の監査書き込みを `after()` でレスポンス後に回す**（`token_grants` 記録・利用ログ・
+    デバイス最終アクセス更新）。トークン発行のクリティカルパスから DB 書き込みを外した。`app/api/v1/auth/ephemeral/route.ts`。
+  - **アプリ側に短命トークンのキャッシュを追加**。TTL（60 秒）内は録音をまたいで同じトークンを再利用し、
+    2 回目以降の録音はトークン取得のネットワーク往復ゼロで開始する。同時取得は 1 本に集約。
+    Mac=`Core/BackendClient.swift`、Windows=`core/backend_client.py`。ログアウト時はキャッシュを破棄。
+
+### Fixed (サーバー堅牢性・`voicekey-site`)
+- **Stripe Webhook の書き込み失敗を握り潰していた不具合を修正**。`subscriptions` upsert・`profiles` の customer
+  紐付け・`entitlements` の再集計（取得/upsert/`recompute_entitlement`）でエラーを throw するようにし、
+  失敗時は冪等記録を消して Stripe に再送させる。従来は「課金されたのに利用権が付かない」事故が無言で起こり得た。
+  `app/api/v1/webhooks/stripe/route.ts`、`lib/entitlements.ts`。
+- **短命トークン API の `device_id` 長さ上限（200 文字）を追加**（巨大値で DB を汚されないように）。
+- **コード交換（exchange）でトークン欠落時に空のセッションを返さないよう null チェックを追加**（アプリが
+  「ログイン成功」と誤認するのを防ぐ）。`app/api/v1/auth/exchange/route.ts`。
+- **利用ログ（`logUsage`）の DB エラーを `console.error` で観測可能に**（`insert` は例外を投げず `{error}` を
+  返すため従来は完全に握り潰されていた）。`lib/apiAuth.ts`。
+- **Checkout のプロフィール取得を `.single()`→`.maybeSingle()` に変更**（行が無いとき不要なエラーを出さない）。
+  `app/api/v1/billing/checkout/route.ts`。
+
+### Technical Details
+- アプリのバージョンを **1.3.1** に更新（Win=`config/constants.py`、Mac=`Resources/Info.plist`：
+  `CFBundleShortVersionString` 1.3.1 / `CFBundleVersion` 10）。
+- 回帰テスト: `tests/test_backend_client.py` にトークンキャッシュのテスト分離（`clear_token_cache`）を追加。
+  並行リフレッシュ直列化に伴い先回りリフレッシュのテストを `_perform_refresh` パッチに更新。
+  Windows 全 263 テスト通過・Mac ビルド（0 警告）通過。
+
 ## [1.3.0] - 2026-06-26
 
 ### Added

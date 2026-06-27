@@ -93,10 +93,44 @@ enum AuthClient {
         return s
     }
 
+    /// 進行中のリフレッシュを共有するためのゲート（並行リフレッシュ競合を防ぐ）。
+    /// 同じ refresh_token を同時に複数回使うと GoTrue の rotation で
+    /// `refresh_token_already_used` となり、reuse 検知で全セッションが revoke される
+    /// （＝ログイン済みでも「ログインが必要です」になる）。それを避けるため、
+    /// 同時に来た refresh は 1 本の Task に集約して結果を共有する。
+    private static let refreshLock = NSLock()
+    private static var inFlightRefresh: Task<AuthSession, Error>?
+
     /// 保存済み refresh_token で access_token を更新し、Keychain に保存する。
-    /// refresh_token も失効していれば（401）セッションを破棄して .sessionExpired を投げる。
+    /// 並行呼び出しは進行中の 1 本に集約する（同じ refresh_token の二重使用を防ぐ）。
     @discardableResult
     static func refresh() async throws -> AuthSession {
+        // ロック操作は同期ヘルパに閉じ込める（async コンテキストで NSLock を直接触らない）。
+        try await sharedRefreshTask().value
+    }
+
+    /// 進行中の更新があればそれを、無ければ新規に作って共有する（同期・ロック下で完結）。
+    private static func sharedRefreshTask() -> Task<AuthSession, Error> {
+        refreshLock.lock(); defer { refreshLock.unlock() }
+        if let existing = inFlightRefresh { return existing }
+        let task = Task {
+            defer { clearInFlightRefresh() }  // 完了時に自分でクリア（次の更新を新規に作らせる）
+            return try await performRefresh()
+        }
+        inFlightRefresh = task
+        return task
+    }
+
+    /// 進行中フラグを下ろす（refresh Task の完了時に一度だけ呼ぶ）。
+    private static func clearInFlightRefresh() {
+        refreshLock.lock(); defer { refreshLock.unlock() }
+        inFlightRefresh = nil
+    }
+
+    /// 実際のリフレッシュ処理（refresh() からのみ呼ぶ。直列化はラッパー側で保証する）。
+    /// refresh_token も失効していれば（401）セッションを破棄して .sessionExpired を投げる。
+    /// 409（refresh 競合）は他が更新済み＝セッションは有効なので破棄しない。
+    private static func performRefresh() async throws -> AuthSession {
         guard let current = Keychain.authSession() else { throw AuthError.notLoggedIn }
         guard let url = ServerConfig.url(ServerConfig.refreshPath) else {
             throw AuthError.invalidResponse
@@ -131,6 +165,7 @@ enum AuthClient {
     /// ログアウト（セッション破棄）。device_id は識別子なので残す。
     static func logout() {
         _ = Keychain.clearAuthSession()
+        BackendClient.clearTokenCache()  // 別アカウントでの短命トークン再利用を防ぐ
     }
 
     // MARK: - 内部

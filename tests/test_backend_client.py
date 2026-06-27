@@ -33,11 +33,13 @@ class _Base(unittest.TestCase):
         ]
         for p in self._patches:
             p.start()
+        backend_client.clear_token_cache()  # 短命トークンのモジュールキャッシュをテスト間で持ち越さない
 
     def tearDown(self):
         for p in self._patches:
             p.stop()
         backend_client._client = None  # 共有クライアントを元に戻す
+        backend_client.clear_token_cache()  # 次テストにキャッシュを残さない
 
 
 class TestIsLoggedIn(unittest.TestCase):
@@ -363,7 +365,9 @@ class TestRefreshOn401(_Base):
         with mock.patch.object(backend_client.secrets, "get_auth_session",
                                return_value={"access_token": "tok-old", "refresh_token": "r",
                                              "expires_at": time.time() + 10}):
-            with mock.patch("src.core.auth_client.refresh",
+            # ensure_valid_session は並行リフレッシュ競合を避けるため、ロック保持下で
+            # 実体ワーカー _perform_refresh を直接呼ぶ（公開 refresh は経由しない）。
+            with mock.patch("src.core.auth_client._perform_refresh",
                             return_value={"access_token": "tok-fresh", "refresh_token": "r2",
                                           "expires_at": time.time() + 3600}) as m_refresh:
                 backend_client.fetch_ephemeral_token()

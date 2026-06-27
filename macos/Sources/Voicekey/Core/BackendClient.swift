@@ -77,9 +77,60 @@ enum BackendClient {
         Keychain.authSession() != nil
     }
 
+    /// 短命トークンのキャッシュと取得の集約（録音ごとの往復を省く）。
+    /// TTL(60秒)内なら録音をまたいで同じ JWT を再利用する。Deepgram は接続確立時にのみ
+    /// トークンを検証し、確立後の長い録音中は再検証しないため、残時間が短くても接続には十分。
+    /// 同時取得は 1 本の Task に集約し、二重発行（＝サーバーのレート/台数枠の浪費）を防ぐ。
+    private static let tokenLock = NSLock()
+    private static var cachedToken: EphemeralToken?
+    private static var inFlightToken: Task<EphemeralToken, Error>?
+
     /// Deepgram「高速リアルタイム」用の短命 JWT を取得する。
     /// 録音直前に呼び、返ってきた JWT で Deepgram WebSocket を `Bearer` 認証で開く（段階3）。
+    /// 十分な残時間のキャッシュがあればネットワーク往復ゼロで即返す（2回目以降の録音を高速化）。
     static func fetchEphemeralToken() async throws -> EphemeralToken {
+        // ロック操作は同期ヘルパに閉じ込める（async コンテキストで NSLock を直接触らない）。
+        let (cached, task) = cachedOrInFlightToken()
+        if let cached { return cached }  // 往復ゼロ
+        return try await task!.value     // cached が nil なら task は必ず非 nil
+    }
+
+    /// キャッシュ確認と取得の集約を同期・ロック下で行う。
+    /// 戻り値はちょうど一方が非 nil（有効キャッシュ or 取得 Task）。
+    private static func cachedOrInFlightToken() -> (EphemeralToken?, Task<EphemeralToken, Error>?) {
+        tokenLock.lock(); defer { tokenLock.unlock() }
+        // 1) 残 15 秒超のキャッシュがあれば即返す
+        if let c = cachedToken, c.expiresAt.timeIntervalSinceNow > 15 {
+            return (c, nil)
+        }
+        // 2) 進行中の取得があれば相乗りする（録音開始の二重呼び出しを 1 往復に集約）
+        if let existing = inFlightToken {
+            return (nil, existing)
+        }
+        let task = Task {
+            defer { clearInFlightToken() }  // 完了時に自分でクリア
+            let tok = try await performFetchEphemeralToken()
+            storeToken(tok)  // クリアより前にキャッシュへ（取得直後の呼び出しを取りこぼさない）
+            return tok
+        }
+        inFlightToken = task
+        return (nil, task)
+    }
+
+    /// 進行中フラグを下ろす（取得 Task の完了時に一度だけ呼ぶ）。
+    private static func clearInFlightToken() {
+        tokenLock.lock(); defer { tokenLock.unlock() }
+        inFlightToken = nil
+    }
+
+    /// 取得したトークンをキャッシュへ保存する（同期・ロック下）。
+    private static func storeToken(_ tok: EphemeralToken) {
+        tokenLock.lock(); defer { tokenLock.unlock() }
+        cachedToken = tok
+    }
+
+    /// 実際のトークン取得（fetchEphemeralToken からのみ呼ぶ。集約はラッパー側で保証する）。
+    private static func performFetchEphemeralToken() async throws -> EphemeralToken {
         try? await AuthClient.ensureValidSession()  // 失効間際なら先にリフレッシュ
         var req = try authorizedRequest(path: ServerConfig.ephemeralPath)
         req.httpMethod = "POST"
@@ -92,6 +143,13 @@ enum BackendClient {
             token: r.token,
             expiresAt: Date().addingTimeInterval(TimeInterval(r.expires_in))
         )
+    }
+
+    /// 短命トークンのキャッシュを破棄する（ログアウト時。別アカウントでの再利用を防ぐ）。
+    static func clearTokenCache() {
+        tokenLock.lock()
+        cachedToken = nil
+        tokenLock.unlock()
     }
 
     /// ログイン中アカウントの状態（メール・利用権の有無/期限）を取得する。

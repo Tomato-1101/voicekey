@@ -11,6 +11,7 @@ streaming_transcriber / text_formatter への配線は段階3 で行う。
 """
 
 import threading
+import time
 from typing import Optional
 
 import httpx
@@ -210,8 +211,18 @@ def redeem_activation_key(code: str) -> Optional[str]:
     raise BackendError(msg or _message_for_status(resp.status_code), status=resp.status_code)
 
 
+# 短命トークンのキャッシュと取得の集約（録音ごとの往復を省く）。
+# TTL(60秒)内なら録音をまたいで同じ JWT を再利用する。Deepgram は接続確立時にのみ
+# トークンを検証し、確立後の長い録音中は再検証しないため、残時間が短くても接続には十分。
+# ロック保持中に取得することで、同時呼び出しは待って同じトークンを共有する（二重発行を防ぐ）。
+_token_lock = threading.Lock()
+_cached_token: Optional[dict] = None  # 値に _expires_monotonic（time.monotonic 基準の失効時刻）を持たせる
+
+
 def fetch_ephemeral_token() -> dict:
     """Deepgram「高速リアルタイム」用の短命 JWT を取得する。
+
+    残時間が十分なキャッシュがあればネットワーク往復ゼロで即返す（2回目以降の録音を高速化）。
 
     Returns:
         {"token", "expires_in", "expires_at", "provider"} の dict
@@ -219,8 +230,26 @@ def fetch_ephemeral_token() -> dict:
     Raises:
         BackendError: 未ログイン・サブスク無効・台数上限・通信失敗など
     """
-    resp = _post(constants.API_EPHEMERAL_PATH, headers=_auth_headers())
-    return resp.json()
+    global _cached_token
+    with _token_lock:
+        c = _cached_token
+        # 残 15 秒超のキャッシュがあれば即返す（往復ゼロ）
+        if c and (c.get("_expires_monotonic", 0.0) - time.monotonic()) > 15:
+            return c
+        # キャッシュ無効 → 取得（ロック保持中＝同時呼び出しは待って新トークンを共有する）
+        resp = _post(constants.API_EPHEMERAL_PATH, headers=_auth_headers())
+        data = resp.json()
+        expires_in = data.get("expires_in") or 60
+        data["_expires_monotonic"] = time.monotonic() + float(expires_in)
+        _cached_token = data
+        return data
+
+
+def clear_token_cache() -> None:
+    """短命トークンのキャッシュを破棄する（ログアウト時。別アカウントでの再利用を防ぐ）。"""
+    global _cached_token
+    with _token_lock:
+        _cached_token = None
 
 
 def transcribe_elevenlabs(wav_bytes: bytes, language: str = "") -> str:
