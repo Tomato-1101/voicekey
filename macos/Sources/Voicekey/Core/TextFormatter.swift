@@ -75,8 +75,15 @@ final class TextFormatter {
     }
 
     /// TLS 接続を事前確立して整形リクエストの往復を短縮する（録音開始時に呼ぶ）。
-    /// 文字起こし用の Transcriber.prewarm と同じパターン。失敗しても整形には影響しない
+    /// 文字起こし用の Transcriber.prewarm と同じパターン。失敗しても整形には影響しない。
     func prewarm() {
+        // 製品版（ログイン済み）は整形がサーバープロキシ経由なので、プロキシ側を温める
+        // （直 Groq を温めても release では使わないため無駄になる）。
+        if BackendClient.isLoggedIn {
+            Task { await BackendClient.warmFormatProxy() }
+            return
+        }
+        // 非ログイン（自前キー直叩き＝主に main/自分用）は従来どおり Groq の TLS を温める
         guard let apiKey = Keychain.apiKey(for: .groq) else { return }
         var request = URLRequest(url: URL(string: "https://api.groq.com/openai/v1/models")!)
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")

@@ -93,19 +93,21 @@ class TestClientReuse(unittest.TestCase):
             mock_cls.assert_called_once()
 
     def test_prewarm_without_key_does_nothing(self):
-        """キー未設定なら prewarm は接続を張らない。"""
+        """未ログインかつキー未設定なら prewarm は接続を張らない。"""
         env = {k: v for k, v in os.environ.items() if k != "GROQ_API_KEY"}
         client = _mock_client()
-        with patch.object(text_formatter.secrets, "get_api_key", return_value=None), \
+        with patch.object(text_formatter.backend_client, "is_logged_in", return_value=False), \
+                patch.object(text_formatter.secrets, "get_api_key", return_value=None), \
                 patch.dict(text_formatter.os.environ, env, clear=True), \
                 patch.object(text_formatter, "_get_client", return_value=client) as mock_get:
             text_formatter.prewarm()
             mock_get.assert_not_called()
 
     def test_prewarm_with_key_opens_connection(self):
-        """キーがあれば models エンドポイントへ GET して接続を温める。"""
+        """未ログインでキーがあれば models エンドポイントへ GET して直 Groq を温める。"""
         client = _mock_client()
-        with patch.object(text_formatter.secrets, "get_api_key", return_value="K"), \
+        with patch.object(text_formatter.backend_client, "is_logged_in", return_value=False), \
+                patch.object(text_formatter.secrets, "get_api_key", return_value="K"), \
                 patch.object(text_formatter, "_get_client", return_value=client):
             text_formatter.prewarm()
             client.get.assert_called_once()
@@ -113,11 +115,22 @@ class TestClientReuse(unittest.TestCase):
                 client.get.call_args.kwargs["headers"]["Authorization"], "Bearer K"
             )
 
+    def test_prewarm_logged_in_warms_proxy(self):
+        """製品版（ログイン済み）は整形プロキシを温め、直 Groq は叩かない。"""
+        client = _mock_client()
+        with patch.object(text_formatter.backend_client, "is_logged_in", return_value=True), \
+                patch.object(text_formatter.backend_client, "warm_format_proxy") as warm, \
+                patch.object(text_formatter, "_get_client", return_value=client) as mock_get:
+            text_formatter.prewarm()
+            warm.assert_called_once()      # プロキシ暖機を呼ぶ
+            mock_get.assert_not_called()   # 直 Groq は温めない
+
     def test_prewarm_swallows_exceptions(self):
         """prewarm 中の通信エラーは外に出さない（整形には影響しない）。"""
         client = _mock_client()
         client.get.side_effect = httpx.ConnectError("connect")
-        with patch.object(text_formatter.secrets, "get_api_key", return_value="K"), \
+        with patch.object(text_formatter.backend_client, "is_logged_in", return_value=False), \
+                patch.object(text_formatter.secrets, "get_api_key", return_value="K"), \
                 patch.object(text_formatter, "_get_client", return_value=client):
             text_formatter.prewarm()  # 例外が出なければ OK
 

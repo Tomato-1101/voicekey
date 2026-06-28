@@ -20,6 +20,17 @@ voicekeyの変更履歴を記録するファイルです。
     Deepgram ストリーミング。既存の `fetchAccountStatus()`／`fetchEphemeralToken()`
     （60 秒 TTL キャッシュ＋同時取得集約）をそのまま再利用。
   - `main`（自分用）は各プロバイダを直叩きしサーバー往復が無く既に最速のため変更なし。
+- **テキスト整形の往復を短縮（暖機先を実際の経路に修正／両OS・release）**。
+  録音開始時の `prewarm()` は整形用 TLS を温めていたが、**温める先が `api.groq.com`（直叩き）固定**で、
+  製品版（ログイン済み）の整形が通る **サーバープロキシ `/api/v1/format` を温めていなかった**。ログイン時は
+  プロキシ側を温めるよう修正し、録音後の整形の往復（特に最初の cold start）を短縮した。
+  - 暖機は空テキストの POST で行う（サーバーは空を **400 で短絡**＝Groq を呼ばず lambda・TLS・認証だけ
+    温まる。`/format` は `consume:false` なので**無料枠も消費しない**）。
+  - **実装**: Mac=`BackendClient.warmFormatProxy()`＋`TextFormatter.prewarm()`、
+    Windows=`backend_client.warm_format_proxy()`＋`text_formatter.prewarm()`。未ログイン（`main`/自分用）は
+    従来どおり直 Groq を温める。テスト追加（暖機の分岐・空 POST・未ログイン no-op）。
+  - 注: 整形の主たる所要時間は Groq の推論（≒355ms・US）で、これは暖機では縮まない。本変更が消すのは
+    接続確立・サーバー関数の cold start 分。
 
 ## [1.5.0] - 2026-06-27
 

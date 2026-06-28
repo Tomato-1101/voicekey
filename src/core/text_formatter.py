@@ -60,6 +60,12 @@ def prewarm() -> None:
     文字起こし側（api_transcriber.prewarm）と同じパターン。
     キー未設定なら何もしない。失敗しても整形には影響しないため例外は出さない。
     """
+    # 製品版（ログイン済み）は整形がサーバープロキシ経由なので、プロキシ側を温める
+    # （直 Groq を温めても release では使わないため無駄になる）。
+    if backend_client.is_logged_in():
+        backend_client.warm_format_proxy()
+        return
+    # 非ログイン（自前キー直叩き＝主に main/自分用）は従来どおり Groq の TLS を温める
     api_key = secrets.get_api_key(secrets.SERVICE_GROQ) or os.environ.get("GROQ_API_KEY")
     if not api_key:
         return

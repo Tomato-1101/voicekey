@@ -157,6 +157,21 @@ enum BackendClient {
         tokenLock.unlock()
     }
 
+    /// 整形プロキシ（/api/v1/format）の接続を温める（録音開始時に呼ぶ）。
+    /// 製品版の整形はこのプロキシ経由なので、TLS・接続・サーバー関数（lambda）を先に温めて
+    /// おくと、録音後の整形の往復（特に最初の cold start）が短くなる。空テキストはサーバーで
+    /// 400 になる＝Groq を呼ばず lambda・認証だけ温まる（無料枠の消費もない＝consume:false）。
+    /// 失敗（400 含む）は無視。未ログインなら何もしない。
+    static func warmFormatProxy() async {
+        guard isLoggedIn else { return }
+        try? await AuthClient.ensureValidSession()
+        guard var req = try? authorizedRequest(path: ServerConfig.formatProxyPath) else { return }
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["text": ""])
+        _ = try? await send(req)  // 空テキストは 400。throw は握る（暖機が目的）。
+    }
+
     /// ログイン中アカウントの状態（メール・利用権の有無/期限）を取得する。
     /// 設定画面の表示・ゲート判定の事前確認に使う（200 固定＝未契約でも 200 で active:false）。
     static func fetchAccountStatus() async throws -> AccountStatus {

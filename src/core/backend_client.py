@@ -258,6 +258,29 @@ def clear_token_cache() -> None:
         _cached_token = None
 
 
+def warm_format_proxy() -> None:
+    """整形プロキシ（/api/v1/format）の接続を温める（録音開始時に呼ぶ）。
+
+    製品版の整形はこのプロキシ経由なので、TLS・接続・サーバー関数（lambda）を先に温めて
+    おくと、録音後の整形の往復（特に最初の cold start）が短くなる。空テキストはサーバーで
+    400 になる＝Groq を呼ばず lambda・認証だけ温まる（無料枠の消費もない＝consume:false）。
+    失敗（400 含む）は無視。未ログインなら何もしない。ブロッキング I/O のため呼び出し側は
+    バックグラウンドスレッドで呼ぶ（既存の prewarm と同じ）。
+    """
+    if not is_logged_in():
+        return
+    try:
+        _send(
+            "POST",
+            constants.API_FORMAT_PROXY_PATH,
+            headers={**_auth_headers(), "Content-Type": "application/json"},
+            json={"text": ""},
+            raise_on_error=False,  # 空テキストは 400。暖機が目的なので例外にしない。
+        )
+    except Exception:
+        pass
+
+
 def transcribe_elevenlabs(wav_bytes: bytes, language: str = "") -> str:
     """ElevenLabs「正確性」プロキシで文字起こしする（WAV を multipart 送信）。
 

@@ -251,6 +251,39 @@ class TestFormat(_Base):
         self.assertEqual(cm.exception.status, 502)
 
 
+class TestWarmFormatProxy(_Base):
+    """整形プロキシ暖機（録音開始時の cold start 対策）を検証する。"""
+
+    def test_logged_in_posts_empty_text(self):
+        """ログイン済みなら /api/v1/format へ空テキストを POST して温める。"""
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["path"] = request.url.path
+            seen["method"] = request.method
+            seen["body"] = request.content
+            return httpx.Response(400, json={"error": "text がありません"})  # 空は 400
+
+        _install_mock(handler)
+        backend_client.warm_format_proxy()  # 400 でも例外を出さない（暖機が目的）
+        self.assertEqual(seen["path"], "/api/v1/format")
+        self.assertEqual(seen["method"], "POST")
+        self.assertIn(b"text", seen["body"])
+
+    def test_not_logged_in_does_nothing(self):
+        """未ログインなら何も送らない（実 keyring にも触れない）。"""
+        called = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            called["n"] += 1
+            return httpx.Response(200, json={})
+
+        _install_mock(handler)
+        with mock.patch.object(backend_client, "is_logged_in", return_value=False):
+            backend_client.warm_format_proxy()
+        self.assertEqual(called["n"], 0)
+
+
 class TestSubmitFeedback(_Base):
     """フィードバック送信（認証は任意）を検証する。"""
 
