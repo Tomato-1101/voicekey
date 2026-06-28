@@ -141,7 +141,7 @@ final class AppController: ObservableObject {
             // 暖機で枠を減らさない。失敗は無視（録音時に通常経路で再取得される）。背景ループは張らない。
             if BackendClient.isLoggedIn {
                 let warmTokenToo = config.streamingEnabled
-                    && (config.slot(0).backend == .deepgram || config.slot(1).backend == .deepgram)
+                    && (config.slot(1).backend == .deepgram || config.slot(2).backend == .deepgram)
                 Task {
                     guard let status = try? await BackendClient.fetchAccountStatus() else { return }
                     if status.active, warmTokenToo {
