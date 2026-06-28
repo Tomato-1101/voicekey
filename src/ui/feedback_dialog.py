@@ -56,6 +56,9 @@ class FeedbackDialog(QDialog):
         self.setWindowTitle("フィードバックを送る")
         self.setMinimumWidth(420)
         self._worker: _SubmitWorker | None = None
+        # 送信中フラグ。送信中はキャンセル/クローズで実行中のワーカー QThread を
+        # 巻き込み破棄しないよう、reject/closeEvent をガードする
+        self._sending = False
 
         layout = QVBoxLayout(self)
 
@@ -107,25 +110,58 @@ class FeedbackDialog(QDialog):
         message = self._editor.toPlainText().strip()
         if not message:
             return
+        self._sending = True
         self._send_button.setEnabled(False)
+        # 送信中はキャンセルも無効化する。実行中に閉じるとワーカー QThread を
+        # 巻き込み破棄してクラッシュするため（item 16）
+        self._cancel_button.setEnabled(False)
         self._editor.setReadOnly(True)
         self._status.setStyleSheet("color: #8E8E93;")
         self._status.setText("送信中…")
 
-        self._worker = _SubmitWorker(message, self)
+        # ワーカーをダイアログに parent しない＝ダイアログ破棄で QThread を道連れにしない
+        # （寿命を分離）。完了後は finished→deleteLater で C++ 側を解放し、参照も外す。
+        self._worker = _SubmitWorker(message)
         self._worker.result_ready.connect(self._on_result)
+        self._worker.finished.connect(self._worker.deleteLater)
+        self._worker.finished.connect(self._clear_worker)
         self._worker.start()
+
+    def _clear_worker(self) -> None:
+        """ワーカー終了後に参照を外す（deleteLater 済みの C++ オブジェクトを触らないため）。"""
+        self._worker = None
 
     def _on_result(self, ok: bool, error: str) -> None:
         """送信結果を反映する。成功なら完了表示、失敗なら再入力を許可する。"""
+        self._sending = False
         if ok:
             # 成功通知（誤送信防止より「送れた確証」を優先＝lessons の送信系UI 方針）
             self._status.setStyleSheet("color: #34C759;")
             self._status.setText("送信しました。ありがとうございます！")
             self._send_button.setVisible(False)
             self._cancel_button.setText("閉じる")
+            self._cancel_button.setEnabled(True)
         else:
             self._status.setStyleSheet("color: #FF453A;")
             self._status.setText(error or "送信に失敗しました。")
             self._editor.setReadOnly(False)
             self._send_button.setEnabled(True)
+            self._cancel_button.setEnabled(True)
+
+    def reject(self) -> None:
+        """キャンセル/Esc。送信中は閉じさせない（実行中ワーカーの巻き込み破棄を防ぐ）。"""
+        if self._sending:
+            return
+        super().reject()
+
+    def closeEvent(self, event) -> None:
+        """閉じる際、送信中ワーカーが残っていれば完了を待ってから破棄する。
+
+        通常は送信中の close をボタン無効＋reject 無視で防ぐが、アプリ終了など
+        強制的に閉じられる経路の安全網。submit_feedback には HTTP タイムアウトが
+        あるため wait() は有限時間で返る。
+        """
+        worker = self._worker
+        if worker is not None and worker.isRunning():
+            worker.wait()
+        super().closeEvent(event)
