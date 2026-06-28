@@ -137,10 +137,10 @@ class TestAccountSwitchDuringTokenFetch(_AuthBase):
         self.assertIsNone(backend_client._cached_token)
 
     def test_ephemeral_token_cached_when_no_switch(self):
-        """対照: 割り込みが無ければ通常どおり取得・キャッシュする。"""
+        """対照: 割り込みが無く cacheable（=利用権あり）なら取得・キャッシュする。"""
         secrets.save_auth_session("acc", "ref", time.time() + 3600)
         self._install_mock(
-            lambda r: httpx.Response(200, json={"token": "dg-1", "expires_in": 60})
+            lambda r: httpx.Response(200, json={"token": "dg-1", "expires_in": 60, "cacheable": True})
         )
         result = backend_client.fetch_ephemeral_token()
         self.assertEqual(result["token"], "dg-1")

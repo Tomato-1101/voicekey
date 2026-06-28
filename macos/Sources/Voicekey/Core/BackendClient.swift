@@ -50,6 +50,9 @@ enum BackendClient {
     struct EphemeralToken {
         let token: String
         let expiresAt: Date
+        /// 録音をまたいでキャッシュ再利用してよいか（サーバーが返す。利用権あり=true）。
+        /// 無料体験は発行ごとに 1 消費するため false＝毎録音で取り直す（1録音=1消費の保証）。
+        let cacheable: Bool
     }
 
     /// ログイン中アカウントの状態（メール・利用権の有無/期限・無料体験の残量）
@@ -83,8 +86,10 @@ enum BackendClient {
     }
 
     /// 短命トークンのキャッシュと取得の集約（録音ごとの往復を省く）。
-    /// TTL(60秒)内なら録音をまたいで同じ JWT を再利用する。Deepgram は接続確立時にのみ
-    /// トークンを検証し、確立後の長い録音中は再検証しないため、残時間が短くても接続には十分。
+    /// キャッシュ再利用は、サーバーが cacheable:true（=利用権あり paid＝発行で無料枠を消費しない）
+    /// と返したときだけ。無料体験（cacheable:false）・不明（旧サーバー）は録音ごとに取り直す＝
+    /// 「1録音=1消費」を保証する（同じ JWT を使い回すと無料枠が 1 回しか減らない）。
+    /// Deepgram は接続確立時にのみトークンを検証するため、TTL(60秒)内の再利用は接続に十分。
     /// 同時取得は 1 本の Task に集約し、二重発行（＝サーバーのレート/台数枠の浪費）を防ぐ。
     private static let tokenLock = NSLock()
     private static var cachedToken: EphemeralToken?
@@ -92,7 +97,8 @@ enum BackendClient {
 
     /// Deepgram「高速リアルタイム」用の短命 JWT を取得する。
     /// 録音直前に呼び、返ってきた JWT で Deepgram WebSocket を `Bearer` 認証で開く（段階3）。
-    /// 十分な残時間のキャッシュがあればネットワーク往復ゼロで即返す（2回目以降の録音を高速化）。
+    /// 利用権あり（paid）でキャッシュ有効なら往復ゼロで即返す（2回目以降の録音を高速化）。
+    /// 無料体験は録音ごとに新トークンを発行する（1録音=1消費の保証・キャッシュしない）。
     static func fetchEphemeralToken() async throws -> EphemeralToken {
         // ロック操作は同期ヘルパに閉じ込める（async コンテキストで NSLock を直接触らない）。
         let (cached, task) = cachedOrInFlightToken()
@@ -119,7 +125,14 @@ enum BackendClient {
             // 取得中にログアウト/別アカウントのログインが割り込んでいたら、旧アカウントの
             // トークンをキャッシュ・返却しない（別アカウントでの再利用を防ぐ）。
             guard gen == AuthClient.generation else { throw BackendError.unauthenticated }
-            storeToken(tok)  // クリアより前にキャッシュへ（取得直後の呼び出しを取りこぼさない）
+            // 録音をまたいだキャッシュ再利用は、サーバーが cacheable（=利用権あり paid＝
+            // 発行で無料枠を消費しない）と返したときだけ許す。無料体験・不明時はキャッシュ
+            // しない＝毎録音で取り直す（1録音=1消費を保証）。旧 paid キャッシュは消す。
+            if tok.cacheable {
+                storeToken(tok)  // クリアより前にキャッシュへ（取得直後の呼び出しを取りこぼさない）
+            } else {
+                clearCachedTokenValue()
+            }
             return tok
         }
         inFlightToken = task
@@ -138,19 +151,27 @@ enum BackendClient {
         cachedToken = tok
     }
 
+    /// キャッシュ値だけを破棄する（進行中の取得 Task は cancel しない＝取得中から呼ぶ用）。
+    /// cacheable=false のトークンを取得したときに、残っている旧 paid キャッシュを消す。
+    private static func clearCachedTokenValue() {
+        tokenLock.lock(); defer { tokenLock.unlock() }
+        cachedToken = nil
+    }
+
     /// 実際のトークン取得（fetchEphemeralToken からのみ呼ぶ。集約はラッパー側で保証する）。
     private static func performFetchEphemeralToken() async throws -> EphemeralToken {
         try? await AuthClient.ensureValidSession()  // 失効間際なら先にリフレッシュ
         var req = try authorizedRequest(path: ServerConfig.ephemeralPath)
         req.httpMethod = "POST"
         let data = try await send(req)
-        struct Resp: Decodable { let token: String; let expires_in: Int }
+        struct Resp: Decodable { let token: String; let expires_in: Int; let cacheable: Bool? }
         guard let r = try? JSONDecoder().decode(Resp.self, from: data) else {
             throw BackendError.invalidResponse
         }
         return EphemeralToken(
             token: r.token,
-            expiresAt: Date().addingTimeInterval(TimeInterval(r.expires_in))
+            expiresAt: Date().addingTimeInterval(TimeInterval(r.expires_in)),
+            cacheable: r.cacheable ?? false  // 不明（旧サーバー）はキャッシュ不可＝毎録音で取り直す
         )
     }
 

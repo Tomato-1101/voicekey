@@ -181,6 +181,71 @@ class TestEphemeral(_Base):
         self.assertEqual(cm.exception.status, 429)
 
 
+class TestEphemeralCacheConsume(_Base):
+    """項目10: 無料枠「1録音=1消費」。サーバーの cacheable に従って録音間キャッシュを制御する。"""
+
+    def test_free_user_fetches_every_recording(self):
+        """無料体験（cacheable:false）は録音ごとに新トークンを取る＝60秒以内2録音で2消費。
+
+        サーバーの無料枠消費は token 発行ごとに 1 回。発行 = サーバー往復の回数なので、
+        2 録音で発行が 2 回起きること（＝無料枠が 2 回減ること）を発行回数で検証する。
+        """
+        hits = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            hits["n"] += 1
+            return httpx.Response(200, json={
+                "provider": "deepgram", "token": f"dg-{hits['n']}",
+                "expires_in": 60, "cacheable": False,
+            })
+
+        _install_mock(handler)
+        # 1 回目の録音
+        r1 = backend_client.fetch_ephemeral_token()
+        # キャッシュしていない（次録音で取り直す）
+        self.assertIsNone(backend_client._cached_token)
+        # 60 秒以内の 2 回目の録音（同一プロセス・時間を進めない）
+        r2 = backend_client.fetch_ephemeral_token()
+        self.assertEqual(hits["n"], 2)            # 発行 2 回＝無料枠 2 消費
+        self.assertEqual(r1["token"], "dg-1")
+        self.assertEqual(r2["token"], "dg-2")     # 使い回しでなく新トークン
+        self.assertIsNone(backend_client._cached_token)
+
+    def test_paid_user_reuses_cache_within_ttl(self):
+        """利用権あり（cacheable:true）は発行で消費しないので 60 秒以内は使い回す（往復ゼロ）。"""
+        hits = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            hits["n"] += 1
+            return httpx.Response(200, json={
+                "provider": "deepgram", "token": "dg-paid",
+                "expires_in": 60, "cacheable": True,
+            })
+
+        _install_mock(handler)
+        r1 = backend_client.fetch_ephemeral_token()
+        r2 = backend_client.fetch_ephemeral_token()
+        self.assertEqual(hits["n"], 1)            # 2 回目はキャッシュ再利用＝発行は 1 回
+        self.assertEqual(r1["token"], r2["token"])
+        self.assertIsNotNone(backend_client._cached_token)
+
+    def test_missing_cacheable_defaults_to_no_cache(self):
+        """cacheable を返さない旧サーバーは安全側（キャッシュしない＝毎録音取得）。"""
+        hits = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            hits["n"] += 1
+            return httpx.Response(200, json={
+                "provider": "deepgram", "token": f"dg-{hits['n']}", "expires_in": 60,
+            })
+
+        _install_mock(handler)
+        backend_client.fetch_ephemeral_token()
+        backend_client.fetch_ephemeral_token()
+        self.assertEqual(hits["n"], 2)
+        self.assertIsNone(backend_client._cached_token)
+
+
 class TestUnauthenticated(_Base):
     def test_no_session_raises_before_request(self):
         """ローカルに認証セッションが無ければ通信せず 401 相当で弾く。"""

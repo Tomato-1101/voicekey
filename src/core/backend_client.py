@@ -218,8 +218,10 @@ def redeem_activation_key(code: str) -> Optional[str]:
 
 
 # 短命トークンのキャッシュと取得の集約（録音ごとの往復を省く）。
-# TTL(60秒)内なら録音をまたいで同じ JWT を再利用する。Deepgram は接続確立時にのみ
-# トークンを検証し、確立後の長い録音中は再検証しないため、残時間が短くても接続には十分。
+# キャッシュ再利用は、サーバーが cacheable:true（=利用権あり paid＝発行で無料枠を消費しない）
+# と返したときだけ行う。無料体験（cacheable:false）・cacheable 不明（旧サーバー）は録音ごとに
+# 取り直す＝「1録音=1消費」を保証する（同じ JWT を使い回すと無料枠が 1 回しか減らない）。
+# Deepgram は接続確立時にのみトークンを検証するため、TTL(60秒)内の再利用は接続に十分。
 # ロック保持中に取得することで、同時呼び出しは待って同じトークンを共有する（二重発行を防ぐ）。
 _token_lock = threading.Lock()
 _cached_token: Optional[dict] = None  # 値に _expires_monotonic（time.monotonic 基準の失効時刻）を持たせる
@@ -228,7 +230,8 @@ _cached_token: Optional[dict] = None  # 値に _expires_monotonic（time.monoton
 def fetch_ephemeral_token() -> dict:
     """Deepgram「高速リアルタイム」用の短命 JWT を取得する。
 
-    残時間が十分なキャッシュがあればネットワーク往復ゼロで即返す（2回目以降の録音を高速化）。
+    利用権あり（paid）でキャッシュ有効なら往復ゼロで即返す（2回目以降の録音を高速化）。
+    無料体験は録音ごとに新トークンを発行する（1録音=1消費の保証・キャッシュしない）。
 
     Returns:
         {"token", "expires_in", "expires_at", "provider"} の dict
@@ -254,7 +257,11 @@ def fetch_ephemeral_token() -> dict:
             raise BackendError("ログアウトしました。再度ログインしてください", status=401)
         expires_in = data.get("expires_in") or 60
         data["_expires_monotonic"] = time.monotonic() + float(expires_in)
-        _cached_token = data
+        # 録音をまたいでキャッシュ再利用すると、サーバーの無料枠消費が token 発行時 1 回
+        # のため「1録音=1消費」が崩れる。サーバーが明示する cacheable（=利用権あり paid＝
+        # 発行で消費しない）のときだけキャッシュする。無料体験・cacheable 不明（旧サーバー）の
+        # ときは毎録音で取り直す（正確性優先）。旧 paid キャッシュが残っていれば破棄する。
+        _cached_token = data if data.get("cacheable") is True else None
         return data
 
 
