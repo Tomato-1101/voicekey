@@ -622,8 +622,16 @@ class VoicekeyApp(QObject):
         if ok:
             return
         logger.warning("録音を開始できませんでした")
+        # 開始失敗時は、この録音セッションのストリーミング接続・送出フックも確実に破棄する。
+        # 残すと chunk_callback（= 古い streamer.send）が次回録音の音声を前回の Deepgram
+        # WebSocket へ送ってしまう。ハング復帰（_monitor_loop）と同じ不変条件に揃える。
         with self._state_lock:
             self._recording_slot = None
+            streamer = self._active_streamer
+            self._active_streamer = None
+        self._recorder.chunk_callback = None
+        if streamer is not None:
+            streamer.cancel()  # 受信ループ停止・WebSocket close・短命トークン破棄
         self.notice.emit("録音を開始できませんでした（マイクを確認してください）")
         self._emit_state()
 

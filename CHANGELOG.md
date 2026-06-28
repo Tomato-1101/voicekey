@@ -5,6 +5,14 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased]
 
 ### Fixed
+- **録音開始失敗時に古い Deepgram ストリーミング接続を確実に破棄（両ブランチ）**。
+  `_on_record_started(False)` が録音スロットだけを消し、`_active_streamer` と
+  `chunk_callback`（= 古い `streamer.send`）を残していた。その結果、次回に別バックエンドで
+  録音しても音声が前回の Deepgram WebSocket へ送られ得た（別バックエンドの録音に Deepgram の
+  結果が混ざる）。開始失敗時に streamer を `cancel()`（受信ループ停止・WebSocket close・短命
+  トークン破棄）し、`chunk_callback` を解除、状態をクリアする。ハング復帰（`_monitor_loop`）や
+  Mac 版 `AppController` の既存後始末と同じ不変条件に揃えた。回帰テスト追加
+  （`tests/test_record_start_failure.py`：次回録音の音声が前回接続へ 1 チャンクも送られない）。
 - **録音停止のハング復帰（recover）でコールバックが二重発火する不具合を修正（両ブランチ・両OS相当ロジック）**。
   `stream.stop()` がハングして watchdog の `recover()` が完了コールバックを代行発火した後、
   古い停止スレッドが復帰すると同じ録音で完了コールバックがもう一度呼ばれ（再現で callback_count==2）、
