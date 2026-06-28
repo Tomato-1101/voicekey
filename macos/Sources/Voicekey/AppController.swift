@@ -132,6 +132,24 @@ final class AppController: ObservableObject {
                 recorder.prewarm()
             }
 
+            // 製品版（ログイン済み）なら、起動時にサーバー接続を 1 回だけ暖機して初回の
+            // サーバー往復（serverless cold start を含む最大数秒）を前払いする。暖機は
+            // GET /me（無料枠を消費しない read）で TLS・接続・認証経路を温める。さらに
+            // 有料ユーザーかつ Deepgram ストリーミング設定のときだけ、短命トークンも先取りする
+            // （有料は consume 前に return＝消費ゼロ・トークンキャッシュも温まる）。無料体験
+            // ユーザーはトークンを取得しない＝/ephemeral は無料枠を 1 消費するため、録音前の
+            // 暖機で枠を減らさない。失敗は無視（録音時に通常経路で再取得される）。背景ループは張らない。
+            if BackendClient.isLoggedIn {
+                let warmTokenToo = config.streamingEnabled
+                    && (config.slot(0).backend == .deepgram || config.slot(1).backend == .deepgram)
+                Task {
+                    guard let status = try? await BackendClient.fetchAccountStatus() else { return }
+                    if status.active, warmTokenToo {
+                        _ = try? await BackendClient.fetchEphemeralToken()
+                    }
+                }
+            }
+
             // 入力監視・アクセシビリティ権限の確認と監視開始
             let tapOK = hotkeys.start()
             checkPermissions(micGranted: micOK, tapCreated: tapOK)

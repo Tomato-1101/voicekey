@@ -2,6 +2,25 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
+## [Unreleased]
+
+### Changed
+- **製品版の初回録音を高速化（起動時にサーバー接続を暖機／両OS・release）**。
+  ログイン後の最初の文字起こしは、サーバー（`voicekey.vercel.app`）への往復に加えて serverless 関数の
+  cold start（最大数秒）を初回に払っていた。**アプリ起動時にサーバー接続を 1 回だけ暖機**して
+  TLS・接続・認証経路を温めることで、初回録音のサーバー往復を体感から消した。背景での定期取得
+  （API の無駄打ち）は行わず、起動時 1 回限り。
+  - **無料枠を消費しない設計**: 暖機は `GET /api/v1/me`（無料体験枠を消費しない read）で行う。
+    短命トークンの先取り（`/api/v1/auth/ephemeral`）は**有料ユーザーのときだけ**実行する
+    （有料は consume 前に return＝消費ゼロ。トークンキャッシュも温まる）。**無料体験ユーザーは
+    トークンを取得しない**ため、起動のたびに無料枠を 1 消費してしまう事故が起きない。
+  - 記事 https://zenn.dev/catnose99/articles/nani-translate の「起動時プリフライトで cold start を消す」を応用。
+  - **実装**: Mac=`AppController.startup()`、Windows=`app.py VoicekeyApp._prewarm_backend`。
+    ガード＝ログイン済み（製品版）。トークン先取りの追加条件＝`active`（有料）かつ既定が
+    Deepgram ストリーミング。既存の `fetchAccountStatus()`／`fetchEphemeralToken()`
+    （60 秒 TTL キャッシュ＋同時取得集約）をそのまま再利用。
+  - `main`（自分用）は各プロバイダを直叩きしサーバー往復が無く既に最速のため変更なし。
+
 ## [1.5.0] - 2026-06-27
 
 ### Added

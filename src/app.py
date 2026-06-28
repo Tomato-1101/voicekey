@@ -52,6 +52,7 @@ from .core import (
     TranscriptionError,
 )
 from .core import text_formatter
+from .core import backend_client
 from .core.audio_preprocess import preprocess as preprocess_audio
 from .core.text_utils import join_segments
 from .core.history import HistoryStore
@@ -260,11 +261,46 @@ class VoicekeyApp(QObject):
         # VAD モデルを事前ロード（初回録音時の数十 ms 遅延を回避）
         threading.Thread(target=self._vad.preload, daemon=True).start()
 
+        # 製品版（ログイン済み）なら、起動時にサーバー接続を 1 回だけ暖機して初回のサーバー
+        # 往復（serverless cold start を含む最大数秒）を前払いする。is_logged_in は keyring を
+        # 読むため最後に評価する。実際の暖機内容（/me だけか短命トークンまでか）は別スレッドで
+        # アカウント状態（有料/無料）を見て決める（無料体験ユーザーの枠を消費しないため）。
+        if backend_client.is_logged_in():
+            threading.Thread(target=self._prewarm_backend, daemon=True).start()
+
         # macOS の権限不足は「ホットキーが無言で効かない」となるため起動時に明示
         self._check_permissions()
 
         logger.info("アプリケーション準備完了")
         self._emit_state()
+
+    def _prewarm_backend(self) -> None:
+        """起動時にサーバー接続を 1 回暖機し、初回のサーバー往復・cold start を前払いする。
+
+        GET /me（無料枠を消費しない read）で TLS・接続・認証経路を温める。さらに有料
+        ユーザーかつ Deepgram ストリーミング設定なら、短命トークンも先取りする（有料は
+        consume 前に return＝消費ゼロ・トークンキャッシュも温まる）。無料体験ユーザーは
+        トークンを取得しない＝/ephemeral は無料枠を 1 消費するため、録音前の暖機で枠を
+        減らさない。失敗は無視（録音時に通常経路で再取得される）。
+        """
+        try:
+            status = backend_client.fetch_account_status()
+        except Exception:
+            return
+        # 有料ユーザーのみ実トークンを先取り（消費ゼロ）。無料体験は枠を守るため取得しない。
+        if not status.get("active"):
+            return
+        if not self._config.get("streaming_enabled", True):
+            return
+        if not any(
+            s.backend == TranscriptionBackend.DEEPGRAM.value
+            for s in self._slots.values()
+        ):
+            return
+        try:
+            backend_client.fetch_ephemeral_token()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # ブラウザ経由ログインの deep link 処理（製品版・段階4）
