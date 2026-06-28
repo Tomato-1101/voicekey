@@ -5,6 +5,15 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased]
 
 ### Fixed
+- **Keychain 書き込み（delete→add）の add 失敗で旧資格情報を失わないようにした（製品版・Mac）**。
+  `Keychain.write` は所有権確保のため delete→add 方式を採る（`SecItemUpdate` は他アプリ/旧署名所有の
+  項目が ACL ごと残り承認ダイアログが再発するため・2026-06-12 実測）。ただし delete 後に add が失敗すると
+  旧値まで消えるため、書き込み前に旧値を控え、add 失敗時は旧値の復元を試みるようにした（所有権と
+  資格情報の保全を両立）。SecItem 操作を `Keychain.Ops` として注入可能にし、実 Keychain に触れない
+  単体テストを追加（`macos/Tests/VoicekeyTests/KeychainWriteTests.swift`: 成功時の格納/失敗時の旧値復元/
+  新規保存失敗時は復元しない）。あわせて Swift テストターゲット（`voicekeyTests`）を新設。
+  注: レビュー提案の `SecItemUpdate` は上記の承認ダイアログ回帰を招くため採用せず、目的（資格情報の
+  消失防止）のみを満たす実装にした。
 - **フィードバック送信中のダイアログ破棄でワーカー QThread を巻き込むクラッシュを防止（製品版・Windows）**。
   送信ワーカー（QThread）をダイアログに parent していたうえ、送信中もキャンセル可能だったため、
   送信中に閉じる/キャンセルすると `dialog.exec()` が戻ってダイアログが破棄され、実行中の QThread が

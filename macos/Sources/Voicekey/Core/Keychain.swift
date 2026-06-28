@@ -186,20 +186,61 @@ enum Keychain {
         return value
     }
 
+    /// Keychain の低レベル操作（read/delete/add）。テスト容易性のため注入可能にする
+    /// （本物の Security 関数に触れずに write の手順を検証できる＝テストでパスワード
+    /// ダイアログを出さない）。
+    struct Ops {
+        var read: (String) -> String?
+        var delete: (String) -> Void
+        var add: (String, String) -> Bool
+    }
+
+    /// 本番用 SecItem 操作
+    private static let realOps = Ops(
+        read: { read(service: $0) },
+        delete: { svc in
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: svc,
+                kSecAttrAccount as String: account,
+            ]
+            SecItemDelete(query as CFDictionary)
+        },
+        add: { svc, val in
+            var query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: svc,
+                kSecAttrAccount as String: account,
+            ]
+            query[kSecValueData as String] = Data(val.utf8)
+            return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
+        }
+    )
+
     private static func write(service: String, value: String) -> Bool {
-        let data = Data(value.utf8)
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-        // SecItemUpdate だと他アプリ（Python 版 keyring・旧署名ビルド）所有の項目が
-        // ACL ごと残り、現アプリは読み取りのたびに承認を求められる。
-        // 削除 → 新規追加にすることで項目を常に現アプリが作成して所有権を取る
-        SecItemDelete(query as CFDictionary)
-        var add = query
-        add[kSecValueData as String] = data
-        let status = SecItemAdd(add as CFDictionary, nil)
-        return status == errSecSuccess
+        write(service: service, value: value, ops: realOps)
+    }
+
+    /// テスト可能な write 本体（ops を注入）。
+    ///
+    /// SecItemUpdate ではなく delete→add を使う: SecItemUpdate だと他アプリ
+    /// （Python 版 keyring・旧署名ビルド）所有の項目が ACL ごと残り、現アプリは読み取りの
+    /// たびに承認ダイアログを求められる（2026-06-12 実測）。delete→add で項目を常に現アプリが
+    /// 作成して所有権を取る。
+    ///
+    /// ただし delete 後に add が失敗すると旧資格情報まで失う（#17）ため、書き込み前に旧値を
+    /// 控え、add 失敗時は旧値の復元を試みる（ベストエフォート）。所有権（delete→add）と
+    /// 資格情報の保全を両立させる。
+    static func write(service: String, value: String, ops: Ops) -> Bool {
+        let previous = ops.read(service)
+        ops.delete(service)
+        if ops.add(service, value) {
+            return true
+        }
+        // 追加失敗: 旧値があれば復元して資格情報の消失を防ぐ
+        if let previous {
+            _ = ops.add(service, previous)
+        }
+        return false
     }
 }
