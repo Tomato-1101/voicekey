@@ -40,6 +40,10 @@ _USERNAME: str = "default"
 _cache: Dict[str, Optional[str]] = {}
 _cache_lock = threading.Lock()
 
+# device_id の初回生成を直列化する（同時呼び出しで別々の ID を生成し、サーバーの
+# 同時利用台数上限に誤って当たるのを防ぐ）。
+_device_id_lock = threading.Lock()
+
 
 # keyring 遅延インポート。テスト環境やヘッドレス Linux で keyring が無いケースでも
 # アプリ起動を阻害しないよう、ImportError は握って機能を縮退させる。
@@ -203,18 +207,21 @@ def get_device_id() -> str:
         端末固有 ID（UUID4 の 32 桁 hex）
     """
     if _keyring_module is not None:
-        try:
-            existing = _keyring_module.get_password(SERVICE_DEVICE_ID, _USERNAME)
-            if existing:
-                return existing
-        except Exception as e:
-            logger.warning(f"device_id 読み込みに失敗: {e}")
-        new_id = uuid.uuid4().hex
-        try:
-            _keyring_module.set_password(SERVICE_DEVICE_ID, _USERNAME, new_id)
-        except Exception as e:
-            logger.warning(f"device_id 保存に失敗（今回限りの値を使用）: {e}")
-        return new_id
+        # ロック保持下で「読み直し → 無ければ生成」を直列化する。同時に複数スレッドが
+        # 入っても、最初の1本だけが生成・保存し、後続はその値を読み直して共有する。
+        with _device_id_lock:
+            try:
+                existing = _keyring_module.get_password(SERVICE_DEVICE_ID, _USERNAME)
+                if existing:
+                    return existing
+            except Exception as e:
+                logger.warning(f"device_id 読み込みに失敗: {e}")
+            new_id = uuid.uuid4().hex
+            try:
+                _keyring_module.set_password(SERVICE_DEVICE_ID, _USERNAME, new_id)
+            except Exception as e:
+                logger.warning(f"device_id 保存に失敗（今回限りの値を使用）: {e}")
+            return new_id
     # keyring 不在: 永続化できないので毎回生成（台数制限に当たり得るが致命ではない）
     return uuid.uuid4().hex
 

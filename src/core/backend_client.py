@@ -237,6 +237,9 @@ def fetch_ephemeral_token() -> dict:
         BackendError: 未ログイン・サブスク無効・台数上限・通信失敗など
     """
     global _cached_token
+    from . import auth_client
+
+    gen = auth_client.auth_generation()  # 取得開始時の認証世代を控える
     with _token_lock:
         c = _cached_token
         # 残 15 秒超のキャッシュがあれば即返す（往復ゼロ）
@@ -245,6 +248,10 @@ def fetch_ephemeral_token() -> dict:
         # キャッシュ無効 → 取得（ロック保持中＝同時呼び出しは待って新トークンを共有する）
         resp = _post(constants.API_EPHEMERAL_PATH, headers=_auth_headers())
         data = resp.json()
+        # 取得中にログアウト/別アカウントのログインが割り込んでいたら、旧アカウントの
+        # トークンをキャッシュ・返却しない（別アカウントでの再利用を防ぐ）。
+        if auth_client.auth_generation() != gen:
+            raise BackendError("ログアウトしました。再度ログインしてください", status=401)
         expires_in = data.get("expires_in") or 60
         data["_expires_monotonic"] = time.monotonic() + float(expires_in)
         _cached_token = data

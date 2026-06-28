@@ -49,6 +49,10 @@ enum Keychain {
     private static var cache: [String: String] = [:]
     private static let lock = NSLock()
 
+    /// device_id の初回生成を直列化する（同時呼び出しで別々の ID を生成し、サーバーの
+    /// 同時利用台数上限に誤って当たるのを防ぐ）。
+    private static let deviceIdLock = NSLock()
+
     /// API キーを取得する（Keychain → 環境変数の順。未設定なら nil）
     static func apiKey(for backend: Backend) -> String? {
         let svc = service(for: backend)
@@ -123,6 +127,9 @@ enum Keychain {
     /// これは識別子であって認証子ではない（認証は Supabase JWT で行う）。
     /// サーバー側の同時台数上限・悪用検知のために使う。
     static func deviceId() -> String {
+        // ロック保持下で「読み直し → 無ければ生成」を直列化する。同時に複数スレッドが
+        // 入っても、最初の 1 本だけが生成・保存し、後続はその値を読み直して共有する。
+        deviceIdLock.lock(); defer { deviceIdLock.unlock() }
         if let existing = read(service: deviceIdService) {
             return existing
         }

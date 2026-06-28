@@ -82,9 +82,18 @@ def exchange_code(code: str) -> dict:
         },
     )
     session = _decode_session(resp.json())
-    secrets.save_auth_session(
-        session["access_token"], session["refresh_token"], session["expires_at"]
-    )
+    # 新規ログイン/別アカウント切替。先に世代を +1 して旧アカウントの進行中処理
+    # （リフレッシュ/短命トークン取得）を無効化してから保存する（旧結果での上書き防止）。
+    global _auth_generation
+    with _generation_lock:
+        _auth_generation += 1
+        ok = secrets.save_auth_session(
+            session["access_token"], session["refresh_token"], session["expires_at"]
+        )
+    if not ok:
+        # 保存失敗を握りつぶさない（成功扱いで「ログイン済み」を見せない）
+        raise BackendError("認証情報の保存に失敗しました", status=None)
+    backend_client.clear_token_cache()  # 旧アカウントの短命トークンを破棄
     return session
 
 
@@ -93,6 +102,38 @@ def exchange_code(code: str) -> dict:
 # revoke される（＝ログイン済みでも「ログインが必要です」になる）。RLock にして
 # ensure_valid_session() からの再入（ロック下で refresh）を許す。
 _refresh_lock = threading.RLock()
+
+# 認証世代。ログアウト/別アカウントのログインで +1 する。非同期に進行中だった
+# リフレッシュ/短命トークン取得が「開始時の世代」と違う世代で完了したら、その結果を
+# 保存・採用しない＝ログアウト後のセッション復活・別アカウントのトークン混入を防ぐ。
+# _generation_lock は「世代の +1」と「セッションの保存/破棄」を不可分にする専用ロック。
+# refresh のネットワーク I/O はこのロックの外で行うため、logout はネットワーク完了を待たない。
+_generation_lock = threading.Lock()
+_auth_generation = 0
+
+
+def auth_generation() -> int:
+    """現在の認証世代を返す（非同期処理の開始時に控え、保存直前に再確認する）。"""
+    with _generation_lock:
+        return _auth_generation
+
+
+def _save_session_if_current(gen: int, session: dict) -> bool:
+    """開始時 gen が現行世代と一致するときだけセッションを保存する（不可分）。
+
+    一致して保存できたら True。世代が進んでいたら（ログアウト/別ログインが割り込んだ）
+    保存せず False を返す。保存自体に失敗したら BackendError を投げる
+    （成功扱いで「ログイン済み」を見せない）。
+    """
+    with _generation_lock:
+        if gen != _auth_generation:
+            return False
+        ok = secrets.save_auth_session(
+            session["access_token"], session["refresh_token"], session["expires_at"]
+        )
+    if not ok:
+        raise BackendError("認証情報の保存に失敗しました", status=None)
+    return True
 
 
 def refresh() -> dict:
@@ -117,6 +158,7 @@ def _perform_refresh() -> dict:
 
     409（refresh 競合）は他スレッドが更新済み＝セッションは有効なので破棄しない。
     """
+    gen = auth_generation()  # 開始時の世代を控える（完了時に変わっていたら保存しない）
     current = secrets.get_auth_session()
     if not current or not current.get("refresh_token"):
         raise BackendError("ログインが必要です", status=401)
@@ -131,9 +173,9 @@ def _perform_refresh() -> dict:
             secrets.clear_auth_session()  # 復帰不能 → 再ログインへ
         raise
     session = _decode_session(resp.json())
-    secrets.save_auth_session(
-        session["access_token"], session["refresh_token"], session["expires_at"]
-    )
+    if not _save_session_if_current(gen, session):
+        # 取得中にログアウト/別アカウントのログインが割り込んだ → セッションを復活させない
+        raise BackendError("ログアウトしました。再度ログインしてください", status=401)
     return session
 
 
@@ -156,8 +198,15 @@ def ensure_valid_session() -> None:
 
 
 def logout() -> None:
-    """ログアウト（セッション破棄）。device_id は識別子なので残す。"""
-    secrets.clear_auth_session()
+    """ログアウト（セッション破棄）。device_id は識別子なので残す。
+
+    世代を +1 してから破棄することで、進行中のリフレッシュ/短命トークン取得が
+    後から完了してもセッションを保存し直さない（ログアウト後の復活防止）。
+    """
+    global _auth_generation
+    with _generation_lock:
+        _auth_generation += 1
+        secrets.clear_auth_session()
     backend_client.clear_token_cache()  # 別アカウントでの短命トークン再利用を防ぐ
 
 

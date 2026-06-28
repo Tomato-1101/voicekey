@@ -22,6 +22,7 @@ enum AuthClient {
         case notLoggedIn        // リフレッシュするセッションが無い（未ログイン）
         case codeInvalid        // 410: ワンタイムコード失効/使用済み/不正
         case sessionExpired     // 401: refresh_token も失効 → 要再ログイン
+        case saveFailed         // 認証情報の Keychain 保存に失敗（ログイン済みにしない）
         case server(Int)        // その他の非 200
         case network(Error)     // 通信失敗
         case invalidResponse    // レスポンス解釈不能
@@ -31,6 +32,7 @@ enum AuthClient {
             case .notLoggedIn: return "ログインしていません"
             case .codeInvalid: return "ログインコードが無効か期限切れです。もう一度お試しください"
             case .sessionExpired: return "ログインの有効期限が切れました。再度ログインしてください"
+            case .saveFailed: return "認証情報の保存に失敗しました。もう一度お試しください"
             case .server(let code): return "サーバーエラー (HTTP \(code))"
             case .network(let e): return "通信に失敗しました: \(e.localizedDescription)"
             case .invalidResponse: return "サーバー応答を解釈できませんでした"
@@ -89,7 +91,11 @@ enum AuthClient {
         ])
         let data = try await send(req)
         let s = try decodeSession(data)
-        _ = Keychain.saveAuthSession(s)
+        // 新規ログイン/別アカウント切替。先に世代を +1 して旧アカウントの進行中処理を
+        // 無効化してから保存する（旧リフレッシュ結果での上書きを防ぐ）。
+        bumpGeneration()
+        guard Keychain.saveAuthSession(s) else { throw AuthError.saveFailed }
+        BackendClient.clearTokenCache()  // 旧アカウントの短命トークンを破棄
         return s
     }
 
@@ -100,6 +106,34 @@ enum AuthClient {
     /// 同時に来た refresh は 1 本の Task に集約して結果を共有する。
     private static let refreshLock = NSLock()
     private static var inFlightRefresh: Task<AuthSession, Error>?
+
+    /// 認証世代。ログアウト/別アカウントのログインで +1 する。開始時の世代と違う世代で
+    /// 完了したリフレッシュ/短命トークン取得は結果を保存・採用しない＝ログアウト後の
+    /// セッション復活・別アカウントのトークン混入を防ぐ。refreshLock で直列化する。
+    private static var generationValue = 0
+
+    /// 現在の認証世代を返す（非同期処理の開始時に控える）。
+    static var generation: Int {
+        refreshLock.lock(); defer { refreshLock.unlock() }
+        return generationValue
+    }
+
+    /// 認証世代を +1 し、進行中のリフレッシュを無効化する（ログアウト/別ログイン時）。
+    private static func bumpGeneration() {
+        refreshLock.lock(); defer { refreshLock.unlock() }
+        generationValue += 1
+        inFlightRefresh?.cancel()
+        inFlightRefresh = nil
+    }
+
+    /// 開始時 gen が現行世代と一致するときだけセッションを保存する（不可分）。
+    /// 一致して保存できたら true。世代が進んでいた（ログアウト/別ログイン割り込み）か
+    /// 保存に失敗したら false（呼び出し側はセッションを復活させない/ログイン済みにしない）。
+    private static func saveIfCurrent(_ gen: Int, _ s: AuthSession) -> Bool {
+        refreshLock.lock(); defer { refreshLock.unlock() }
+        guard gen == generationValue else { return false }
+        return Keychain.saveAuthSession(s)
+    }
 
     /// 保存済み refresh_token で access_token を更新し、Keychain に保存する。
     /// 並行呼び出しは進行中の 1 本に集約する（同じ refresh_token の二重使用を防ぐ）。
@@ -131,6 +165,7 @@ enum AuthClient {
     /// refresh_token も失効していれば（401）セッションを破棄して .sessionExpired を投げる。
     /// 409（refresh 競合）は他が更新済み＝セッションは有効なので破棄しない。
     private static func performRefresh() async throws -> AuthSession {
+        let gen = generation  // 開始時の世代を控える（完了時に変わっていたら保存しない）
         guard let current = Keychain.authSession() else { throw AuthError.notLoggedIn }
         guard let url = ServerConfig.url(ServerConfig.refreshPath) else {
             throw AuthError.invalidResponse
@@ -149,7 +184,8 @@ enum AuthClient {
             throw AuthError.sessionExpired
         }
         let s = try decodeSession(data)
-        _ = Keychain.saveAuthSession(s)
+        // 取得中にログアウト/別アカウントのログインが割り込んでいたら復活させない
+        guard saveIfCurrent(gen, s) else { throw AuthError.sessionExpired }
         return s
     }
 
@@ -163,9 +199,12 @@ enum AuthClient {
     }
 
     /// ログアウト（セッション破棄）。device_id は識別子なので残す。
+    /// 世代を +1 してから破棄することで、進行中のリフレッシュ/短命トークン取得が
+    /// 後から完了してもセッションを保存し直さない（ログアウト後の復活防止）。
     static func logout() {
+        bumpGeneration()                 // 進行中のリフレッシュを無効化（復活防止）
         _ = Keychain.clearAuthSession()
-        BackendClient.clearTokenCache()  // 別アカウントでの短命トークン再利用を防ぐ
+        BackendClient.clearTokenCache()  // 別アカウントでの短命トークン再利用を防ぐ（in-flight も cancel）
     }
 
     // MARK: - 内部

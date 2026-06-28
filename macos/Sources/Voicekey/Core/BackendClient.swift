@@ -103,6 +103,7 @@ enum BackendClient {
     /// キャッシュ確認と取得の集約を同期・ロック下で行う。
     /// 戻り値はちょうど一方が非 nil（有効キャッシュ or 取得 Task）。
     private static func cachedOrInFlightToken() -> (EphemeralToken?, Task<EphemeralToken, Error>?) {
+        let gen = AuthClient.generation  // 取得開始時の認証世代（ロック取得前に控える＝ネスト回避）
         tokenLock.lock(); defer { tokenLock.unlock() }
         // 1) 残 15 秒超のキャッシュがあれば即返す
         if let c = cachedToken, c.expiresAt.timeIntervalSinceNow > 15 {
@@ -115,6 +116,9 @@ enum BackendClient {
         let task = Task {
             defer { clearInFlightToken() }  // 完了時に自分でクリア
             let tok = try await performFetchEphemeralToken()
+            // 取得中にログアウト/別アカウントのログインが割り込んでいたら、旧アカウントの
+            // トークンをキャッシュ・返却しない（別アカウントでの再利用を防ぐ）。
+            guard gen == AuthClient.generation else { throw BackendError.unauthenticated }
             storeToken(tok)  // クリアより前にキャッシュへ（取得直後の呼び出しを取りこぼさない）
             return tok
         }
@@ -154,6 +158,8 @@ enum BackendClient {
     static func clearTokenCache() {
         tokenLock.lock()
         cachedToken = nil
+        inFlightToken?.cancel()  // 進行中の取得も無効化（旧アカウント token をキャッシュへ戻させない）
+        inFlightToken = nil
         tokenLock.unlock()
     }
 

@@ -5,6 +5,25 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased]
 
 ### Fixed
+- **ログアウト後のセッション復活を防止（認証世代の導入・in-flight 取得の無効化・製品版のみ・両OS）**。
+  ログアウトやアカウント切替が、進行中のトークンリフレッシュ／短命トークン取得の往復に割り込んだとき、
+  後から完了したそれらの処理が破棄済みのセッションや旧アカウントのトークンを保存・採用し直し得た
+  （＝ログアウトしたのに復活する／別アカウントのトークンが残る）。
+  - 「認証世代（generation）」を導入。リフレッシュ／短命トークン取得は開始時の世代を控え、
+    保存・キャッシュの直前に世代を再確認する。ログアウト／別アカウントのログインで世代を +1 し、
+    世代が変わっていたら結果を保存・採用しない（Python `auth_client._save_session_if_current` ＋
+    `backend_client.fetch_ephemeral_token` の世代チェック、Mac `AuthClient.saveIfCurrent` ＋
+    `BackendClient` 取得 Task の世代チェック）。世代の +1 とセッション保存／破棄は専用ロックで
+    不可分化し、リフレッシュのネットワーク I/O はロック外で行うのでログアウトは往復完了を待たない。
+  - ログアウト時に進行中のリフレッシュ／短命トークン取得を cancel する（Mac `AuthClient.bumpGeneration`
+    が `inFlightRefresh` を、`BackendClient.clearTokenCache` が `inFlightToken` を cancel）。
+  - 認証情報の保存失敗を握りつぶさない。ログイン（コード交換）で Keychain/keyring 保存に失敗したら
+    例外にして「ログイン済み」を見せない（Python は `BackendError`、Mac は `AuthError.saveFailed`）。
+  - device_id の初回生成を直列化（Python `secrets._device_id_lock` / Mac `Keychain.deviceIdLock`）。
+    同時呼び出しで別々の ID を生成してサーバーの同時利用台数上限に誤って当たるのを防ぐ。
+  - 回帰テスト追加（Python `tests/test_auth_generation.py`）: ログアウトがリフレッシュ往復に割り込んでも
+    復活しない・別アカウントのログインが短命トークン取得に割り込んでも旧トークンをキャッシュしない・
+    device_id の同時生成が 1 本に直列化される。
 - **処理キューへ可変設定を持ち込まない（録音開始時に処理コンテキストを不変スナップショット化・両ブランチ・両OS）**。
   録音終了後にキューへ積んだタスクが、処理開始時点の「現在の」slot / model / transcriber を
   参照していた。設定の hot-reload やスロット変更が録音終了〜処理開始の間に挟まると、録音開始時とは
