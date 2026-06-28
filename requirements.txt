@@ -40,5 +40,8 @@ python-dotenv>=1.0.0
 # Secret storage (macOS Keychain / Windows Credential Manager)
 keyring>=24.0
 
+# 自動アップデートの Ed25519 署名検証（Windows 配布版の改竄対策）
+cryptography>=42.0
+
 # macOS native APIs (Dock 非表示制御で AppKit を使用)
 pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"

@@ -28,6 +28,13 @@ hiddenimports += collect_submodules('websockets')
 # 起きないよう全サブモジュールを PYZ へ確実に収集する
 hiddenimports += collect_submodules('src')
 
+# cryptography（自動アップデートの Ed25519 署名検証）。Rust 拡張バイナリと
+# サブモジュールを確実に同梱する（取りこぼすと配布版で更新検証が import エラーになる）
+tmp_ret = collect_all('cryptography')
+datas += tmp_ret[0]
+binaries += tmp_ret[1]
+hiddenimports += tmp_ret[2]
+
 # Collect silero_vad with all its data files
 tmp_ret = collect_all('silero_vad')
 datas += tmp_ret[0]

@@ -5,6 +5,22 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased]
 
 ### Security
+- **Windows の自動更新を固定公開鍵の Ed25519 署名で検証（SHA256 だけを信頼しない・release）**。
+  これまで Windows 版は version.json の SHA256 だけでインストーラを検証していたが、SHA256 は
+  フィード（version.json / exe のホスティング）を改竄・MITM されると攻撃者が exe と SHA256 を
+  整合させられるため改竄に無力だった。配布物を開発者だけが持つ Ed25519 秘密鍵で署名し、
+  アプリに埋め込んだ固定公開鍵で検証するようにした（Mac 版 Sparkle EdDSA と同方針）。
+  秘密鍵を持たない第三者は正規署名を作れないため、不正な更新を実行できない。
+  - 検証ユーティリティ `src/utils/update_signing.py`（sign / verify / 公開鍵導出）。検証は
+    どんな失敗でも例外を投げず False を返し「信頼しない」に倒す。
+  - `src/utils/updater.py` の `_install` を署名検証 → SHA256 の二段検証に変更。公開鍵が
+    設定されていれば署名必須（無ければ更新拒否）。未設定ビルド（移行期の保険）は警告のみで
+    SHA256 のみにフォールバック。
+  - 公開鍵を `src/config/constants.py` の `UPDATE_PUBLIC_KEY_ED25519` に埋め込み。
+  - 鍵運用は Sparkle に倣う: 秘密鍵は `~/.voicekey/voicekey_update_ed25519` に置き git に
+    入れない。署名は CI ではなく秘密鍵が手元にある Mac でリリース relay 時に行う
+    （`scripts/build/generate_update_key.py` で鍵生成・`scripts/build/sign_update.py` で署名）。
+  - 依存に `cryptography>=42.0` を追加し、`voicekey.spec` で配布版へ同梱。
 - **配布バイナリへの長期プロバイダーキー埋め込みを撤去（release・両OS）**。
   これまで配布版は開発者の OpenAI / Groq / ElevenLabs / Deepgram のキーを XOR 難読化して
   バイナリに焼き込んでいたが、XOR は暗号化ではなく（マスクも同じバイナリに同梱され復元可能）

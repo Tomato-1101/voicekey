@@ -3,8 +3,10 @@
 
 voicekey-releases リポジトリの version.json を定期チェックし、新しいバージョンが
 あればトレイ通知とメニュー項目で知らせる。インストールはユーザーがメニューを
-選んだときに、インストーラをダウンロード（SHA256 検証付き）→ サイレント実行
-→ アプリ終了、の順で行う（Inno Setup が旧プロセスを閉じて上書きし、新版を再起動する）。
+選んだときに、インストーラをダウンロード → 固定公開鍵による Ed25519 署名検証
+＋ SHA256 検証 → サイレント実行 → アプリ終了、の順で行う（Inno Setup が旧プロセスを
+閉じて上書きし、新版を再起動する）。署名検証により、フィードが改竄・MITM されても
+秘密鍵を持たない第三者は不正な更新を実行できない（Mac 版 Sparkle EdDSA と同方針）。
 
 設計方針:
 - 配布（DIST）ビルドのみ動作する（開発環境では start() が何もしない）
@@ -24,9 +26,10 @@ from typing import Optional
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from ..config.constants import APP_VERSION
+from ..config.constants import APP_VERSION, UPDATE_PUBLIC_KEY_ED25519
 from . import secrets
 from .logger import get_logger
+from .update_signing import verify_ed25519
 
 logger = get_logger(__name__)
 
@@ -149,9 +152,10 @@ class Updater(QObject):
             url = info.get("url")
             version = info.get("version", "")
             expected = str(info.get("sha256", "")).lower()
+            signature = info.get("ed25519")
             if not url:
                 raise ValueError("version.json に url がありません")
-            # sha256 が無いと改ざん検証ができないので、その場合はインストールしない
+            # sha256 が無いと破損検証ができないので、その場合はインストールしない
             if not expected:
                 raise ValueError("version.json に sha256 がないため検証できません")
             path = os.path.join(tempfile.gettempdir(), f"voicekey-setup-{version}.exe")
@@ -162,12 +166,25 @@ class Updater(QObject):
             with urllib.request.urlopen(url, timeout=30) as res, open(path, "wb") as f:
                 shutil.copyfileobj(res, f)
 
-            # 改ざん・破損対策: version.json の SHA256 と一致しなければ実行しない
-            digest = hashlib.sha256()
+            # 配布物の検証はメモリに 1 回読み込んだバイト列に対して行う（SHA256・署名で共用）。
+            # Ed25519 検証は全メッセージを必要とするため（標準 Ed25519 はストリーミング不可）。
             with open(path, "rb") as f:
-                for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                    digest.update(chunk)
-            if digest.hexdigest().lower() != expected:
+                data = f.read()
+
+            # 1) 固定公開鍵による Ed25519 署名検証 = 改竄・MITM 対策の主防御。
+            #    フィード（version.json / exe）を改竄されても、秘密鍵を持たない第三者は
+            #    正規署名を作れない。SHA256 はフィードを信頼できる場合の破損検出にすぎない。
+            if UPDATE_PUBLIC_KEY_ED25519:
+                if not signature:
+                    raise ValueError("version.json に署名(ed25519)がないため検証できません")
+                if not verify_ed25519(UPDATE_PUBLIC_KEY_ED25519, signature, data):
+                    raise ValueError("インストーラの署名が検証できません（改竄の可能性）")
+            else:
+                # 公開鍵が未設定のビルド（移行期の保険）。署名検証ができないため警告だけ残す。
+                logger.warning("更新の公開鍵が未設定のため署名検証をスキップします（SHA256 のみ）")
+
+            # 2) SHA256（破損検出の補助）。署名検証済みでも壊れたファイルは弾く
+            if hashlib.sha256(data).hexdigest().lower() != expected:
                 raise ValueError("インストーラの SHA256 が version.json と一致しません")
 
             # サイレント更新: Inno Setup が実行中の旧プロセスを閉じて上書きし、

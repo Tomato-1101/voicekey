@@ -4,6 +4,7 @@
 Qt のイベントループは使わず、シグナルの直接接続（同期発火）で検証する。
 """
 
+import base64
 import hashlib
 import io
 import json
@@ -11,7 +12,23 @@ import tempfile
 import unittest
 from unittest import mock
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from src.utils.update_signing import sign_ed25519
 from src.utils.updater import Updater, parse_version
+
+
+def _make_test_keypair():
+    """テスト用 Ed25519 鍵を生成し (秘密 seed の base64, 公開鍵の base64) を返す。"""
+    key = Ed25519PrivateKey.generate()
+    seed = key.private_bytes(
+        serialization.Encoding.Raw, serialization.PrivateFormat.Raw, serialization.NoEncryption()
+    )
+    pub = key.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    )
+    return base64.b64encode(seed).decode("ascii"), base64.b64encode(pub).decode("ascii")
 
 
 class TestParseVersion(unittest.TestCase):
@@ -115,6 +132,10 @@ class TestUpdaterInstall(unittest.TestCase):
         self.sha256 = hashlib.sha256(self.installer_bytes).hexdigest()
         self._tmp = tempfile.TemporaryDirectory()
 
+        # テスト用 Ed25519 鍵で偽インストーラを署名（本物の秘密鍵には触れない）
+        self.seed_b64, self.pub_b64 = _make_test_keypair()
+        self.signature = sign_ed25519(self.seed_b64, self.installer_bytes)
+
     def tearDown(self):
         self._tmp.cleanup()
 
@@ -130,13 +151,24 @@ class TestUpdaterInstall(unittest.TestCase):
 
         return mock.MagicMock(return_value=_Response(self.installer_bytes))
 
-    def test_valid_sha256_launches_installer_and_quits(self):
-        """SHA256 が一致すればサイレントインストーラを起動してアプリ終了を要求する。"""
-        self.updater._info = {"version": "9.9.9", "url": "http://example/s.exe", "sha256": self.sha256}
-        with mock.patch("urllib.request.urlopen", self._fake_install_urlopen()), \
+    def _run_install(self, info, pubkey):
+        """指定した _info と公開鍵設定で _install を実行する共通ヘルパ。"""
+        self.updater._info = info
+        self.updater._installing = True
+        with mock.patch("src.utils.updater.UPDATE_PUBLIC_KEY_ED25519", pubkey), \
+             mock.patch("urllib.request.urlopen", self._fake_install_urlopen()), \
              mock.patch("subprocess.Popen") as popen, \
              mock.patch("tempfile.gettempdir", return_value=self._tmp.name):
             self.updater._install()
+        return popen
+
+    def test_valid_signature_launches_installer_and_quits(self):
+        """署名と SHA256 が両方一致すればサイレントインストーラを起動してアプリ終了を要求する。"""
+        info = {
+            "version": "9.9.9", "url": "http://example/s.exe",
+            "sha256": self.sha256, "ed25519": self.signature,
+        }
+        popen = self._run_install(info, self.pub_b64)
 
         popen.assert_called_once()
         args = popen.call_args[0][0]
@@ -146,14 +178,56 @@ class TestUpdaterInstall(unittest.TestCase):
         self.assertEqual(self.quit_requests, [True])
         self.assertEqual(self.failed, [])
 
+    def test_missing_signature_fails_without_launch(self):
+        """公開鍵が設定されているのに署名が無ければ起動せず失敗にする。"""
+        info = {"version": "9.9.9", "url": "http://example/s.exe", "sha256": self.sha256}
+        popen = self._run_install(info, self.pub_b64)
+
+        popen.assert_not_called()
+        self.assertEqual(self.quit_requests, [])
+        self.assertEqual(len(self.failed), 1)
+        self.assertIn("署名", self.failed[0])
+        self.assertFalse(self.updater._installing)
+
+    def test_tampered_installer_with_matching_sha256_fails(self):
+        """MITM 対策の核心: SHA256 を改竄に合わせても、正規署名が無ければ弾く。
+
+        フィードを掌握した攻撃者は exe と sha256 を整合させられるが、秘密鍵を
+        持たないため署名は作れない。別バイト列に対する正規署名を載せても失敗する。
+        """
+        wrong_sig = sign_ed25519(self.seed_b64, b"malicious-installer")
+        info = {
+            "version": "9.9.9", "url": "http://example/s.exe",
+            "sha256": self.sha256, "ed25519": wrong_sig,
+        }
+        popen = self._run_install(info, self.pub_b64)
+
+        popen.assert_not_called()
+        self.assertEqual(self.quit_requests, [])
+        self.assertEqual(len(self.failed), 1)
+        self.assertIn("署名", self.failed[0])
+        self.assertFalse(self.updater._installing)
+
+    def test_signature_from_other_key_fails(self):
+        """別の鍵で署名されていれば（公開鍵不一致）起動しない。"""
+        other_seed, _ = _make_test_keypair()
+        info = {
+            "version": "9.9.9", "url": "http://example/s.exe",
+            "sha256": self.sha256, "ed25519": sign_ed25519(other_seed, self.installer_bytes),
+        }
+        popen = self._run_install(info, self.pub_b64)
+
+        popen.assert_not_called()
+        self.assertEqual(len(self.failed), 1)
+        self.assertIn("署名", self.failed[0])
+
     def test_sha256_mismatch_fails_without_launch(self):
-        """SHA256 不一致なら起動せず update_failed を出し、再試行可能な状態に戻る。"""
-        self.updater._info = {"version": "9.9.9", "url": "http://example/s.exe", "sha256": "0" * 64}
-        self.updater._installing = True  # download_and_install 経由のフラグを再現
-        with mock.patch("urllib.request.urlopen", self._fake_install_urlopen()), \
-             mock.patch("subprocess.Popen") as popen, \
-             mock.patch("tempfile.gettempdir", return_value=self._tmp.name):
-            self.updater._install()
+        """署名が通っても SHA256 不一致なら起動せず失敗にする（破損検出の補助）。"""
+        info = {
+            "version": "9.9.9", "url": "http://example/s.exe",
+            "sha256": "0" * 64, "ed25519": self.signature,
+        }
+        popen = self._run_install(info, self.pub_b64)
 
         popen.assert_not_called()
         self.assertEqual(self.quit_requests, [])
@@ -161,6 +235,15 @@ class TestUpdaterInstall(unittest.TestCase):
         self.assertIn("SHA256", self.failed[0])
         # フラグが戻り、次回のインストール試行が可能なこと
         self.assertFalse(self.updater._installing)
+
+    def test_no_pubkey_falls_back_to_sha256_only(self):
+        """公開鍵が未設定（移行期）なら署名検証をスキップし SHA256 のみで起動する。"""
+        info = {"version": "9.9.9", "url": "http://example/s.exe", "sha256": self.sha256}
+        popen = self._run_install(info, "")
+
+        popen.assert_called_once()
+        self.assertEqual(self.quit_requests, [True])
+        self.assertEqual(self.failed, [])
 
     def test_download_and_install_ignores_double_call(self):
         """インストール中の二重呼び出しは無視される。"""
