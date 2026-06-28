@@ -91,22 +91,22 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 
 ## 現在地 / 次の一手
 
-- 現在地: **Mac v1.5.1 / Windows v1.5.1 リリース完了**（2026-06-28。release＝製品版ブランチ。
-  **製品版の初回録音・初回整形を高速化**。ログイン後の最初の文字起こし／整形は、サーバー往復に加えて
-  serverless 関数の **cold start（最大数秒）** を初回に払っていた。**アプリ起動時にサーバー接続を 1 回だけ暖機**して
-  TLS・接続・認証経路を温め、初回の往復を体感から消した（記事 nani-translate の「起動時プリフライト」応用）。
-  **無料枠を消費しない設計**: 暖機は `GET /api/v1/me`（消費なし read）で行い、短命トークンの先取りは**有料ユーザー
-  かつ Deepgram 設定時のみ**（有料は consume 前 return＝消費ゼロ）。整形側は録音開始時に `/api/v1/format` を空 POST で
-  暖機（サーバーが空を 400 で短絡＝Groq を呼ばず・`consume:false` で無料枠も不消費）。背景の定期取得は張らない。
-  - 実装（両OS同期）: Mac=`AppController.startup()`＋`BackendClient.warmFormatProxy()`＋`TextFormatter.prewarm()`、
-    Windows=`app.py _prewarm_backend`＋`backend_client.warm_format_proxy()`＋`text_formatter.prewarm()`。
-    既存の `fetchAccountStatus()`／`fetchEphemeralToken()`（60 秒 TTL キャッシュ）を再利用。`main`（自分用）は
-    サーバー往復が無く既に最速のため変更なし。テスト追加（暖機の分岐・空 POST・未ログイン no-op）＝unittest 56 件 pass。
-  - 配布物（**全て本番反映済み・全 200 確認**）: Mac=DMG＋Sparkle appcast〔build 13・EdDSA 署名・delta 13→8..12・鍵平文 0 件確認（実バイナリ・zip）〕、
-    Windows=setup.exe〔281MB・公開リポ `voicekey-releases` の Release `v1.5.1`・sha256 `1bff3a…b15a`・DL URL 200〕＋
-    `windows/version.json`。`downloads.json` は mac/windows とも 1.5.1。転送用 Release `winci-1.5.1`（本リポ private）は relay 後に削除済み。
-  - コミット: 本体 release=`a824811`/`32fe6bc`/`e42ee50`（暖機コード）＋`6daea9b`（版+docs）＋本コミット（Info.plist build13・本 HANDOFF）、voicekey-site=`7b4ce03`（配布物）。
-  - 既往: **Mac/Windows v1.5.0**（2026-06-27・アカウントごとに無料体験枠 200 回〔#11〕。`entitlements.free_quota/free_used` ＋
+- 現在地: **Mac v1.6.0 / Windows v1.6.0 リリース完了**（2026-06-29。release＝製品版ブランチ。
+  **Windows 配布版で VAD（無音圧縮・長文分割）が実際に効くように修正**＋**コードレビュー31項目の反映**。
+  配布ビルドに `onnxruntime` が同梱されておらず（`silero-vad` の optional extra でしか入らず `requirements.txt` 未宣言）、
+  `vad.py` の遅延 `import onnxruntime` が失敗 → `analyze()` が安全側の `(True, None)` を返し **VAD が常時無効**だった潜在バグを解消。
+  `requirements.txt` に `onnxruntime>=1.16.1`、`voicekey.spec` に `collect_all('onnxruntime')`、`build_windows_dist.ps1` に
+  「PyInstaller 後に `onnxruntime_pybind11_state*` が dist にあるか」の自己チェック（未同梱なら CI 失敗）を追加。
+  setup.exe が 281MB→293MB に増えたのが onnxruntime 同梱の裏付け。あわせて未ログイン時ゲート文言を無料体験仕様に統一・
+  CI ユニットテスト自動実行（`.github/workflows/tests.yml`）・lint クリーンアップ・ドキュメント整合も反映。
+  - 実装（両OS/両ブランチ同期）: spec/ps 修正は release・main 両方へ。Mac 版 VAD はエネルギー RMS のため onnxruntime 無関係（実害は Windows のみ）。
+    テスト: release Python 370／Swift 22、main Python 223 すべて pass。バージョン整合（constants/Info.plist/README）OK。
+  - 配布物（**全て本番反映済み・全 200 確認**）: Mac=DMG（1,981,144B）＋Sparkle appcast〔build 14・EdDSA 署名・delta 14→9..13・鍵平文 0 件確認〕、
+    Windows=setup.exe〔293MB・公開リポ `voicekey-releases` の Release `v1.6.0`（Latest）・sha256 `ec3315…b445`・DL URL 200〕＋
+    `windows/version.json`（sha256 一致）。`downloads.json` は mac/windows とも 1.6.0。転送用 Release `winci-1.6.0`（本リポ private）は relay 後に削除済み。
+  - コミット: 本体 release=`3ee499d`（版+spec+ps+CHANGELOG+Info.plist build14）、main=`46fd3f3`（spec+ps+CHANGELOG）、voicekey-site=`34b2983`（配布フィード・remote 無し）。レビュー31項目本体は既コミット（〜`dbe1cd7`）。
+  - 既往: **Mac/Windows v1.5.1**（2026-06-28・製品版の初回録音・初回整形を高速化＝アプリ起動時にサーバー接続を 1 回暖機して cold start を体感から除去・無料枠不消費設計）、
+    **Mac/Windows v1.5.0**（2026-06-27・アカウントごとに無料体験枠 200 回〔#11〕。`entitlements.free_quota/free_used` ＋
     `consume_free_quota` RPC・残枠ゼロは 402。本番 Supabase 適用・検証済み）、
     Mac/Windows v1.4.0（2026-06-27・使用実績のアカウント連携〔#10〕。`usage_stats` に紐付き複数端末合算・
     再インストール後も引き継ぎ。自動更新フィード Mac build 11 / Win version.json を配信済み）、
@@ -122,8 +122,9 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
   再起動まで実施）。ベータ版の動作確認は `macos/scripts/run_beta.sh`（dist/ の最新 DMG を
   マウントして一時起動・終わったら run_dev.sh で戻る）。dist/voicekey.app はビルドごとに
   dev/dist で上書きされるため常用しない。見分け方: 設定画面に API キータブがあれば開発版。
-- 次の一手: **v1.5.1（初回録音・整形の高速化）は配布完了**（無料体験は v1.5.0 で配布済み）。残るユーザー作業は
-  **各 API ダッシュボードで利用上限・アラート設定**のみ（保険）。無料体験 200 回の上限値は `entitlements.free_quota` の
+- 次の一手: **v1.6.0（Windows VAD 修正＋レビュー31項目）は両 OS 配布完了**（2026-06-29・全フィード 200 検証済み）。
+  残るユーザー作業は (1) **v1.2.0 以前に配布した埋め込み済み旧プロバイダーキーのローテーション**（各プロバイダーのダッシュボードで失効・再発行＝本人のみ可能・キー値は Claude が扱わない）、
+  (2) **各 API ダッシュボードで利用上限・アラート設定**（保険）。無料体験 200 回の上限値は `entitlements.free_quota` の
   既定値（DB 側）で調整可能＝コード変更・再配布なしに将来見直せる。なお無料体験が広く使われ始めるため、
   各 API ダッシュボードの利用上限・コストアラート設定は早めにやっておくと安全。
 - **リリース手順（Mac/Windows は常に両方を同じ修正内容で同期リリースする・版番号は Claude が semver で決める）**:
