@@ -27,14 +27,38 @@ enum Paster {
     /// Return キーのキーコード（kVK_Return）
     private static let keyReturn: CGKeyCode = 36
 
+    /// 貼り付けごとに増える世代番号。古い復元タスクを無効化する（連続貼り付けの世代分離）
+    @MainActor private static var generation = 0
+    /// 直近に自分がコピーしたテキスト（復元可否の判定に使う）
+    @MainActor private static var injected: String?
+    /// 復元すべきユーザーの真のクリップボード内容
+    @MainActor private static var savedOriginal: String?
+
     /// アクティブウィンドウにテキストを貼り付ける。
-    /// 待機を含むため async（スレッドはブロックしない）
+    /// 待機を含むため async（スレッドはブロックしない）。
+    /// 復元状態を直列化するため MainActor 隔離（呼び出し側 AppController も MainActor）
+    @MainActor
     static func paste(_ text: String) async {
         guard !text.isEmpty else { return }
 
         let pasteboard = NSPasteboard.general
         // ユーザーのクリップボード内容を退避（テキストのみ）
-        let saved = pasteboard.string(forType: .string)
+        let current = pasteboard.string(forType: .string)
+
+        // 世代を採番し、復元すべき「真のオリジナル」を確定する。
+        // 連続貼り付け（前回の復元がまだ終わっていない）でクリップボードが自分の挿入
+        // テキストのままなら、それを原本と誤認せず前回保存したオリジナルを引き継ぐ。
+        // こうしないと最後の復元で自分の挿入テキストを書き戻してしまう。
+        generation += 1
+        let gen = generation
+        let original: String?
+        if let inj = injected, current == inj, savedOriginal != nil {
+            original = savedOriginal
+        } else {
+            original = current
+        }
+        savedOriginal = original
+        injected = text
 
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
@@ -47,16 +71,22 @@ enum Paster {
 
         // クリップボード復元は呼び出し側を待たせない（Enter 自動送信・HUD 非表示を即時化する）。
         // 貼り付け先が読み終えてから復元したいので restoreDelay は別タスクで待つ。
-        // 待っている間にユーザーや他アプリが新たにコピーしていたら（changeCount 変化）、
-        // それを壊さないよう復元しない
-        if let saved, !saved.isEmpty {
-            Task {
-                try? await Task.sleep(for: .seconds(restoreDelay))
-                if pasteboard.changeCount == ourChangeCount {
-                    pasteboard.clearContents()
-                    pasteboard.setString(saved, forType: .string)
-                }
+        guard let original, !original.isEmpty else { return }
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(restoreDelay))
+            // より新しい貼り付けが復元を担当する → 何もしない（世代分離）
+            guard generation == gen else { return }
+            // 待っている間にユーザーや他アプリが新たにコピーしていたら（changeCount 変化）、
+            // それを壊さないよう復元しない
+            guard pasteboard.changeCount == ourChangeCount else {
+                injected = nil
+                savedOriginal = nil
+                return
             }
+            pasteboard.clearContents()
+            pasteboard.setString(original, forType: .string)
+            injected = nil
+            savedOriginal = nil
         }
     }
 

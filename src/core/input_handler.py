@@ -38,6 +38,15 @@ class InputHandler:
         """キーボードコントローラーを初期化する。"""
         self._keyboard = Controller()
         self._platform = platform_adapter or get_platform_adapter()
+        # クリップボード復元の世代管理。listener / Timer / 呼び出し元の複数スレッドから
+        # 触れるためロックで保護する。
+        # - _paste_gen: 貼り付けごとに増える世代番号。古い Timer の復元を無効化する
+        # - _injected_text: 直近に自分がコピーしたテキスト（復元可否の判定に使う）
+        # - _saved_original: 復元すべきユーザーの真のクリップボード内容
+        self._clip_lock = threading.Lock()
+        self._paste_gen = 0
+        self._injected_text: Optional[str] = None
+        self._saved_original: Optional[str] = None
 
     def insert_text(self, text: str) -> bool:
         """
@@ -59,11 +68,24 @@ class InputHandler:
 
         try:
             # ユーザーのクリップボード内容を退避
-            old_clipboard = ""
             try:
-                old_clipboard = pyperclip.paste() or ""
+                current = pyperclip.paste() or ""
             except Exception:
-                pass  # 退避失敗は復元を諦めるだけで、挿入自体は続行する
+                current = ""  # 退避失敗は復元を諦めるだけで、挿入自体は続行する
+
+            # 世代を採番し、復元すべき「真のオリジナル」を確定する。
+            # 連続貼り付け（前回の復元がまだ終わっていない）でクリップボードが自分の
+            # 挿入テキストのままなら、それを原本と誤認せず前回保存したオリジナルを
+            # 引き継ぐ。こうしないと最後の復元で自分の挿入テキストを書き戻してしまう。
+            with self._clip_lock:
+                self._paste_gen += 1
+                gen = self._paste_gen
+                if self._saved_original is not None and current == self._injected_text:
+                    original = self._saved_original
+                else:
+                    original = current
+                self._saved_original = original
+                self._injected_text = text
 
             # クリップボードにコピー
             pyperclip.copy(text)
@@ -89,10 +111,9 @@ class InputHandler:
             # 復元待ち（RESTORE_DELAY）でこのスレッドを塞ぐと、呼び出し元の Enter 自動送信や
             # 録音中 UI の非表示がその分（実測 0.3 秒）遅れる。待機と復元はバックグラウンド
             # スレッドに逃がし、insert_text は貼り付け直後に返す
-            if old_clipboard:
-                threading.Timer(
-                    RESTORE_DELAY, self._restore_clipboard, args=(old_clipboard,)
-                ).start()
+            threading.Timer(
+                RESTORE_DELAY, self._restore_clipboard, args=(gen,)
+            ).start()
 
             logger.debug(f"テキスト挿入: {text[:50]}...")
             return True
@@ -101,11 +122,35 @@ class InputHandler:
             logger.error(f"テキスト挿入エラー: {e}")
             return False
 
-    @staticmethod
-    def _restore_clipboard(content: str) -> None:
-        """退避したクリップボード内容を復元する（貼り付け完了後にバックグラウンドで遅延実行）。"""
+    def _restore_clipboard(self, gen: int) -> None:
+        """退避したクリップボード内容を復元する（貼り付け完了後にバックグラウンドで遅延実行）。
+
+        復元待ちの間にユーザーが新しくコピーした場合や、より新しい貼り付けが
+        発生した場合は、その内容を壊さないために復元しない。
+
+        Args:
+            gen: この復元に対応する貼り付け世代。現在の世代と一致しなければ無効
+        """
         try:
-            pyperclip.copy(content)
+            with self._clip_lock:
+                # より新しい貼り付けが復元を担当する → 何もしない（世代分離）
+                if gen != self._paste_gen:
+                    return
+                try:
+                    current = pyperclip.paste() or ""
+                except Exception:
+                    return
+                # ユーザー/他アプリが新規コピーした → ユーザーの内容を上書きしない
+                if current != self._injected_text:
+                    self._injected_text = None
+                    self._saved_original = None
+                    return
+                original = self._saved_original
+                self._injected_text = None
+                self._saved_original = None
+            # クリップボードが空（退避対象なし）なら、自分の挿入テキストをそのまま残す
+            if original:
+                pyperclip.copy(original)
         except Exception as e:
             logger.warning(f"クリップボード復元に失敗: {e}")
 
