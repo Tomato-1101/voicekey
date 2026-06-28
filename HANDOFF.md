@@ -104,7 +104,7 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
     サーバー往復が無く既に最速のため変更なし。テスト追加（暖機の分岐・空 POST・未ログイン no-op）＝unittest 56 件 pass。
   - 配布物（**全て本番反映済み・全 200 確認**）: Mac=DMG＋Sparkle appcast〔build 13・EdDSA 署名・delta 13→8..12・鍵平文 0 件確認（実バイナリ・zip）〕、
     Windows=setup.exe〔281MB・公開リポ `voicekey-releases` の Release `v1.5.1`・sha256 `1bff3a…b15a`・DL URL 200〕＋
-    `windows/version.json`。`downloads.json` は mac/windows とも 1.5.1。転送用 Release `winci-1.5.1`（本リポ private）は残置。
+    `windows/version.json`。`downloads.json` は mac/windows とも 1.5.1。転送用 Release `winci-1.5.1`（本リポ private）は relay 後に削除済み。
   - コミット: 本体 release=`a824811`/`32fe6bc`/`e42ee50`（暖機コード）＋`6daea9b`（版+docs）＋本コミット（Info.plist build13・本 HANDOFF）、voicekey-site=`7b4ce03`（配布物）。
   - 既往: **Mac/Windows v1.5.0**（2026-06-27・アカウントごとに無料体験枠 200 回〔#11〕。`entitlements.free_quota/free_used` ＋
     `consume_free_quota` RPC・残枠ゼロは 402。本番 Supabase 適用・検証済み）、
