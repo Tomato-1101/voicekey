@@ -64,6 +64,9 @@ class TranscriptionTask:
                   ワーカーが finish() を呼んで確定テキストを取得する。型は循環参照を
                   避けるため Any（実体は core.streaming_transcriber.StreamingTranscriber）
         quiet_if_no_speech: 無音時の通知を抑制するか（誤タップの可能性が高い録音用）
+        context: 録音開始時に確定した不変の処理コンテキスト（app.TaskContext）。
+                 キュー処理はライブ設定でなくこの snapshot だけを使う。型は循環参照を
+                 避けるため Any
     """
     audio_data: Any
     slot_id: int
@@ -71,6 +74,7 @@ class TranscriptionTask:
     auto_enter: bool = False
     streamer: Any = None
     quiet_if_no_speech: bool = False
+    context: Any = None
 
 
 @dataclass

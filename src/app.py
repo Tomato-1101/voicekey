@@ -115,6 +115,33 @@ class HotkeySlot:
     transcriber: ApiTranscriber
 
 
+@dataclass
+class TaskContext:
+    """録音開始時に確定する不変の処理コンテキスト（スナップショット）。
+
+    設定の hot-reload やスロット変更が「録音中〜処理開始」の間に挟まっても、
+    録音開始時点で選ばれた slot / provider / model / language / transcriber と
+    処理フラグだけで文字起こしを完遂させるために使う。これが無いと、
+    キュー滞留中に設定が変わると別プロバイダーへ音声を送ってしまう。
+
+    Attributes:
+        slot: 録音開始時のホットキースロット（transcriber・backend・model・整形可否を内包）
+        language: 録音開始時の言語設定
+        vad_on: VAD フィルタ有効か
+        split_on: 長文分割並列送信が有効か
+        volume_normalize: 音量正規化を行うか
+        format_model: テキスト整形に使うモデル名
+        format_auto_prompt: テキスト整形プロンプト
+    """
+    slot: HotkeySlot
+    language: str
+    vad_on: bool
+    split_on: bool
+    volume_normalize: bool
+    format_model: str
+    format_auto_prompt: str
+
+
 class _LoginWorker(QThread):
     """deep link のコード交換（ログイン）をバックグラウンドで実行するワーカー。
 
@@ -179,6 +206,8 @@ class VoicekeyApp(QObject):
         self._outstanding = 0                       # 未完了の文字起こしタスク数
         # ストリーミング録音中の Deepgram セッション（非ストリーミング時は None）
         self._active_streamer: Optional[StreamingTranscriber] = None
+        # 録音開始時に確定する処理コンテキストのスナップショット（_finish_recording で task へ移す）
+        self._active_context: Optional[TaskContext] = None
 
         # ダブルタップ検出（hold モードのみ。listener スレッドからのみ更新）
         self._last_release_time: float = 0.0
@@ -376,6 +405,23 @@ class VoicekeyApp(QObject):
             )
             logger.info(f"ホットキー{slot_id}: {hotkey} ({mode}) -> {backend}/{model}")
         return slots
+
+    def _snapshot_context(self, slot: HotkeySlot) -> TaskContext:
+        """録音開始時点の処理コンテキストを不変スナップショットとして返す。
+
+        ここで読んだライブ設定（VAD・分割・正規化・整形）以降、設定が変わっても
+        この録音の処理結果には影響させない（キュー処理はこの snapshot だけを使う）。
+        """
+        preprocess_cfg = self._config.get("audio_preprocess", {}) or {}
+        return TaskContext(
+            slot=slot,
+            language=self._config.get("language", "ja"),
+            vad_on=bool(self._config.get("vad_filter", True)),
+            split_on=bool(self._config.get("split_parallel_enabled", True)),
+            volume_normalize=bool(preprocess_cfg.get("volume_normalize", True)),
+            format_model=self._config.get("format_model", "llama-3.1-8b-instant"),
+            format_auto_prompt=self._config.get("format_auto_prompt", ""),
+        )
 
     @staticmethod
     def _parse_hotkey(hotkey_str: str) -> Set[str]:
@@ -584,6 +630,9 @@ class VoicekeyApp(QObject):
             self._recording_effective_mode = effective_mode
             self._recording_started = time.monotonic()
             self._auto_enter = auto_enter
+            # 録音開始時点の slot/provider/model/language/処理フラグを不変スナップショット化する。
+            # 設定 hot-reload やスロット変更が録音中〜処理開始に挟まっても開始時の設定で完遂する
+            self._active_context = self._snapshot_context(self._slots[slot_id])
 
         slot = self._slots[slot_id]
         logger.info(
@@ -630,6 +679,7 @@ class VoicekeyApp(QObject):
             self._recording_slot = None
             streamer = self._active_streamer
             self._active_streamer = None
+            self._active_context = None
         self._recorder.set_chunk_callback(None)
         if streamer is not None:
             streamer.cancel()  # 受信ループ停止・WebSocket close・短命トークン破棄
@@ -649,9 +699,11 @@ class VoicekeyApp(QObject):
                 return
             auto_enter = self._auto_enter
             streamer = self._active_streamer  # ストリーミング録音なら確定待ちをワーカーへ託す
+            context = self._active_context  # 録音開始時に確定した処理コンテキスト
             self._recording_slot = None
             self._auto_enter = False
             self._active_streamer = None
+            self._active_context = None
             self._outstanding += 1  # 音声確定前から「変換中」を表示する
             # ダブルタップ待ちが残っていれば破棄（failsafe 等の別経路からの停止に備える）
             if self._pending_tap_timer is not None:
@@ -674,6 +726,7 @@ class VoicekeyApp(QObject):
                     auto_enter=auto_enter,
                     streamer=streamer,
                     quiet_if_no_speech=quiet_if_no_speech,
+                    context=context,
                 )
             )
 
@@ -709,7 +762,12 @@ class VoicekeyApp(QObject):
                 self._emit_state()
 
     def _process_task(self, task: TranscriptionTask) -> None:
-        """ストリーミング確定 →（空なら）正規化 → VAD → API → テキスト挿入を実行する。"""
+        """ストリーミング確定 →（空なら）正規化 → VAD → API → テキスト挿入を実行する。
+
+        設定のライブ値は読まず、録音開始時に確定した task.context のみを使う
+        （キュー滞留中に設定が変わっても別プロバイダーへ送らないため）。
+        """
+        ctx: TaskContext = task.context
         # --- ストリーミング経路: Deepgram の確定テキストを受け取って貼り付け ---
         streamer = task.streamer
         if streamer is not None:
@@ -722,7 +780,7 @@ class VoicekeyApp(QObject):
                 total_ms = (time.perf_counter() - task.timestamp) * 1000
                 logger.info(f"ストリーミング確定: {len(streamed)} 文字 ({total_ms:.0f}ms)")
                 # 貼り付け前の LLM テキスト整形（失敗時は原文のまま）
-                streamed = self._maybe_format(streamed, task.slot_id)
+                streamed = self._maybe_format(streamed, ctx)
                 # 実績を集計（貼り付け後のローカル処理なので遅延に影響しない）
                 self._record_stats(streamed, task.audio_data)
                 self._insert_and_enter(streamed, task.auto_enter)
@@ -737,13 +795,10 @@ class VoicekeyApp(QObject):
             logger.info(f"録音が短すぎるためスキップ ({duration:.2f}s)")
             return
 
-        slot = self._slots.get(task.slot_id)
-        if slot is None:
-            return
+        slot = ctx.slot
 
         # 音量正規化（ゲイン上限 +20dB。ノイズフロアの過剰増幅 = 幻覚を防ぐ）
-        preprocess_cfg = self._config.get("audio_preprocess", {}) or {}
-        if bool(preprocess_cfg.get("volume_normalize", True)):
+        if ctx.volume_normalize:
             try:
                 audio = preprocess_audio(audio, sample_rate=SAMPLE_RATE)
             except Exception as e:
@@ -751,8 +806,8 @@ class VoicekeyApp(QObject):
 
         # 長文の分割並列送信（既定オン）。無音区間で区切り API へ並列送信して待ち時間を短縮する。
         # 区切りは無音の中だけなので語の途中では切れない。VAD 有効・長文時のみ発動する
-        vad_on = bool(self._config.get("vad_filter", True))
-        split_on = bool(self._config.get("split_parallel_enabled", True))
+        vad_on = ctx.vad_on
+        split_on = ctx.split_on
         segments = None
         if vad_on and split_on and duration >= _SPLIT_MIN_SEC:
             segments = self._vad.segment(audio)
@@ -792,7 +847,7 @@ class VoicekeyApp(QObject):
         logger.info(f"文字起こし完了: 音声 {duration:.1f}s → {len(text)} 文字 ({total_ms:.0f}ms)")
 
         # 貼り付け前の LLM テキスト整形（失敗時は原文のまま）
-        text = self._maybe_format(text, task.slot_id)
+        text = self._maybe_format(text, ctx)
 
         # 実績を集計（貼り付け後のローカル処理なので遅延に影響しない）
         self._record_stats(text, task.audio_data)
@@ -832,26 +887,26 @@ class VoicekeyApp(QObject):
             return None
         return join_segments([r for r in results if r])
 
-    def _maybe_format(self, text: str, slot_id: int) -> str:
+    def _maybe_format(self, text: str, ctx: TaskContext) -> str:
         """
-        スロットで整形が有効なら LLM テキスト整形を適用する（ワーカースレッド上）。
+        録音開始時のコンテキストで整形が有効なら LLM テキスト整形を適用する（ワーカースレッド上）。
 
         format_text は失敗時に必ず原文を返すため、ここでは例外処理は不要。
+        整形可否・モデル・プロンプトはライブ設定でなく snapshot（ctx）を使う。
 
         Args:
             text: 文字起こし確定テキスト
-            slot_id: 使用したホットキースロット ID
+            ctx: 録音開始時に確定した処理コンテキスト
 
         Returns:
             整形後テキスト。整形が無効・失敗時は原文そのまま
         """
-        slot = self._slots.get(slot_id)
-        if slot is None or not slot.format_enabled:
+        if not ctx.slot.format_enabled:
             return text
         return text_formatter.format_text(
             text,
-            self._config.get("format_model", "llama-3.1-8b-instant"),
-            prompt=self._config.get("format_auto_prompt", ""),
+            ctx.format_model,
+            prompt=ctx.format_auto_prompt,
         )
 
     def _record_stats(self, text: str, audio) -> None:
@@ -978,6 +1033,7 @@ class VoicekeyApp(QObject):
                 self._recording_slot = None
                 streamer = self._active_streamer
                 self._active_streamer = None
+                self._active_context = None
             # ハング時もストリーミング接続を確実に破棄する
             self._recorder.set_chunk_callback(None)
             if streamer is not None:

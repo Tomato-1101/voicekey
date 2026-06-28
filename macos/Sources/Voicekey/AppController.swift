@@ -49,6 +49,8 @@ final class AppController: ObservableObject {
     private var autoEnter = false
     /// ストリーミング録音中の Deepgram セッション（非ストリーミング時は nil）
     private var streamer: StreamingTranscriber?
+    /// 録音開始時に確定した不変の処理コンテキスト（finishRecording で処理タスクへ引き継ぐ）
+    private var recordContext: RecordContext?
     /// 未完了の文字起こしタスク数
     private var outstanding = 0
     /// 録音の最大時間の保険タイマー
@@ -255,6 +257,24 @@ final class AppController: ObservableObject {
 
     // MARK: - 録音制御
 
+    /// 録音開始時に確定する不変の処理コンテキスト（スナップショット）。
+    ///
+    /// 設定の hot-reload やスロット変更が「録音中〜処理開始」の間に挟まっても、
+    /// 録音開始時点で選ばれた transcriber（＝プロバイダー）と処理フラグだけで
+    /// 文字起こしを完遂させるために使う。これが無いと、滞留中に backend が変わると
+    /// 録音開始時とは別プロバイダーへ音声を送ってしまう。transcriber は参照を固定する
+    /// （backend 変更時は rebuildTranscribers が新インスタンスを作るため、開始時の
+    /// プロバイダーが確実に保持される）。
+    private struct RecordContext {
+        let transcriber: Transcriber?
+        let vadEnabled: Bool
+        let splitEnabled: Bool
+        let autoEnterDelayMs: Int
+        let formatEnabled: Bool
+        let formatPrompt: String
+        let formatModel: String
+    }
+
     private func beginRecording(slotId: Int, autoEnter: Bool, effectiveMode: HotkeyMode = .hold) {
         guard recordingSlot == nil else { return }
         recordingSlot = slotId
@@ -265,6 +285,18 @@ final class AppController: ObservableObject {
 
         let slot = config.slot(slotId)
         log.info("録音開始 (スロット\(slotId), \(slot.backend.rawValue, privacy: .public)\(autoEnter ? ", auto_enter" : "", privacy: .public))")
+
+        // 録音開始時点の transcriber（プロバイダー）と処理フラグを不変スナップショット化する。
+        // 設定 hot-reload やスロット変更が録音中〜処理開始に挟まっても開始時の設定で完遂する
+        recordContext = RecordContext(
+            transcriber: transcribers[slotId],
+            vadEnabled: config.vadEnabled,
+            splitEnabled: config.splitParallelEnabled,
+            autoEnterDelayMs: config.autoEnterDelayMs,
+            formatEnabled: slot.formatEnabled,
+            formatPrompt: config.autoFormatPrompt,
+            formatModel: config.formatModel
+        )
 
         // 設定された入力デバイスを反映（変更がなければ recorder 側では何もしない）
         recorder.inputDeviceUID = config.inputDeviceUID
@@ -293,6 +325,7 @@ final class AppController: ObservableObject {
                 // 旧 WS に流れ、別バックエンドの録音に Deepgram の結果が混ざる）
                 self.streamer?.cancel()
                 self.streamer = nil
+                self.recordContext = nil
                 self.recorder.chunkHandler = nil
                 self.recordingSlot = nil
                 self.emitState()
@@ -319,11 +352,13 @@ final class AppController: ObservableObject {
     }
 
     private func finishRecording(quietIfNoSpeech: Bool = false) {
-        guard let slotId = recordingSlot else { return }
+        guard recordingSlot != nil else { return }
         let useAutoEnter = autoEnter
         // ストリーミング送信を打ち切り、確定待ちはパイプライン側で行う
         let activeStreamer = streamer
+        let context = recordContext  // 録音開始時に確定した処理コンテキスト
         streamer = nil
+        recordContext = nil
         recorder.chunkHandler = nil
         recordingSlot = nil
         autoEnter = false
@@ -336,7 +371,7 @@ final class AppController: ObservableObject {
         recorder.stop { [weak self] samples in
             // audio キューから呼ばれる。メインへホップしてタスク起動
             DispatchQueue.main.async {
-                self?.processAudio(samples, slotId: slotId,
+                self?.processAudio(samples, context: context,
                                    autoEnter: useAutoEnter, streamer: activeStreamer,
                                    quietIfNoSpeech: quietIfNoSpeech)
             }
@@ -346,22 +381,22 @@ final class AppController: ObservableObject {
     // MARK: - 文字起こしパイプライン
 
     private func processAudio(
-        _ samples: [Float], slotId: Int, autoEnter: Bool, streamer: StreamingTranscriber?,
-        quietIfNoSpeech: Bool = false
+        _ samples: [Float], context: RecordContext?, autoEnter: Bool,
+        streamer: StreamingTranscriber?, quietIfNoSpeech: Bool = false
     ) {
-        let vadEnabled = config.vadEnabled
-        let splitEnabled = config.splitParallelEnabled
-        let delayMs = config.autoEnterDelayMs
-        // 整形設定もタスク実行中の設定変更に影響されないよう Task の外で捕捉する
-        let slot = config.slot(slotId)
-        let formatEnabled = slot.formatEnabled
-        let formatPrompt = config.autoFormatPrompt
-        let formatModel = config.formatModel
-        guard let transcriber = transcribers[slotId] else {
+        // ライブ設定でなく録音開始時の snapshot だけを使う
+        // （滞留中に設定が変わっても別プロバイダーへ送らないため）
+        guard let context, let transcriber = context.transcriber else {
             streamer?.cancel()
             taskFinished()
             return
         }
+        let vadEnabled = context.vadEnabled
+        let splitEnabled = context.splitEnabled
+        let delayMs = context.autoEnterDelayMs
+        let formatEnabled = context.formatEnabled
+        let formatPrompt = context.formatPrompt
+        let formatModel = context.formatModel
 
         // 直前のタスク完了を待ってから処理する（録音順のテキスト挿入を保証）
         let previous = pipelineTail

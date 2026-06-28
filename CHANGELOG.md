@@ -5,6 +5,19 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased]
 
 ### Fixed
+- **処理キューへ可変設定を持ち込まない（録音開始時に処理コンテキストを不変スナップショット化・両ブランチ・両OS）**。
+  録音終了後にキューへ積んだタスクが、処理開始時点の「現在の」slot / model / transcriber を
+  参照していた。設定の hot-reload やスロット変更が録音終了〜処理開始の間に挟まると、録音開始時とは
+  別プロバイダーへ音声を送り得た（Python はワーカースレッドが `self._slots` を引き直していた）。
+  - Python: 録音開始時に slot / language / VAD / 分割 / 正規化 / 整形設定を不変の `TaskContext` へ
+    snapshot し、`TranscriptionTask.context` で持ち回る。`_process_task` / `_maybe_format` は
+    ライブ設定（`self._slots` / `self._config`）を一切読まず snapshot だけを使う。
+  - Mac: 録音開始時に transcriber 参照（＝プロバイダー）と処理フラグを `RecordContext` へ snapshot し、
+    `processAudio` へ引き継ぐ。backend 変更時は `rebuildTranscribers` が新インスタンスを作るため、
+    参照固定で録音開始時のプロバイダーが確実に保持される（捕捉点を録音終了→録音開始へ前倒し）。
+  - 回帰テスト追加（Python `tests/test_task_context_snapshot.py`）: 録音終了と処理開始の間にスロットを
+    別プロバイダーへ差し替えても、音声が録音開始時のプロバイダーへ届き差し替え後へは送られない・
+    スロットが消えても snapshot で完遂する。
 - **連続録音間の音声混入を防止（chunk_callback / chunkHandler を録音世代に束縛・両ブランチ・両OS）**。
   前回録音の stop が完了する前に次の録音を開始すると、共有の送出フック（Python
   `chunk_callback` / Mac `chunkHandler`）が次録音の streamer へ差し替わり、前回録音末尾の
