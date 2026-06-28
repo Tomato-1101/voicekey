@@ -10,6 +10,7 @@ __init__ は sounddevice import と制御スレッド起動を伴うため、停
 
 import queue
 import sys
+import threading
 import types
 import unittest
 
@@ -151,6 +152,88 @@ class TestPersistentStreamSession(unittest.TestCase):
             len(second), 160,
             "2 回目以降の録音で音声が拾えていない（session_id バグの再発）",
         )
+
+
+class TestRecoverDoubleCompletion(unittest.TestCase):
+    """停止ハング→recover→新規録音→旧stop復帰でコールバックが二重発火しない回帰。
+
+    バグ: stream.stop() がハングして recover() が完了コールバックを代行発火した後、
+    古い停止スレッドが復帰すると同じコールバックを再度呼べた（callback_count==2）。
+    さらに古いスレッドが新世代の _recording / バッファを破壊し得た。
+    """
+
+    def _bare_recorder(self):
+        rec = object.__new__(AudioRecorder)
+        rec.sample_rate = 16000
+        rec._audio_q = queue.Queue()
+        rec._recording = True
+        rec._stream = None
+        rec._stream_device = None
+        rec._pending_stop_cb = None
+        rec._session_id = 1
+        rec._generation = 0
+        rec._busy_op = None
+        rec._busy_since = 0.0
+        rec._thread = None
+        rec._commands = queue.Queue()
+        rec._last_record_end = 0.0
+        rec._state_lock = threading.Lock()
+        # recover() が実制御スレッドを起動しないように差し替える（PortAudio に触れない）
+        rec._start_control_thread = lambda: None
+        return rec
+
+    def test_hang_recover_new_recording_old_stop_resume(self):
+        rec = self._bare_recorder()
+
+        entered_stop = threading.Event()   # 旧 stop が stream.stop() に入った
+        release_stop = threading.Event()   # テストがハングを解除する
+
+        class _HangStream:
+            def stop(self_inner):
+                entered_stop.set()
+                # ハングを模擬: テストが解除するまで戻らない（制御スレッドだけがブロック）
+                release_stop.wait(timeout=5)
+
+        rec._stream = _HangStream()
+
+        # 録音済みの旧世代音声（recover が代行発火で配るべきデータ）
+        rec._audio_q.put(np.ones((160, 1), dtype=np.float32))
+
+        callbacks = []  # 完了コールバックの呼び出し履歴（音声長を記録）
+
+        def on_audio(audio):
+            callbacks.append(len(audio))
+
+        # 旧制御スレッド（世代0）で停止 → stream.stop() でハングする
+        t_old = threading.Thread(
+            target=rec._do_stop, args=(on_audio, 0), name="OldStop", daemon=True
+        )
+        t_old.start()
+        self.assertTrue(entered_stop.wait(timeout=5), "stop() に入らなかった")
+
+        # ハング中に recover()。世代を進め、pending を代行発火し、新世代に別バッファを割り当てる
+        rec.recover()
+        self.assertEqual(rec._generation, 1)
+        self.assertEqual(callbacks, [160], "recover が旧世代の音声を 1 回配っていない")
+
+        # 新世代の録音を模擬: 新しいバッファ（recover が差し替えたもの）へ音声を積む
+        self.assertTrue(rec._recording is False)
+        rec._recording = True
+        new_q = rec._audio_q
+        new_q.put(np.full((320, 1), 0.5, dtype=np.float32))
+
+        # 旧 stop のハングを解除 → 旧スレッドが復帰して finally まで走る
+        release_stop.set()
+        t_old.join(timeout=5)
+        self.assertFalse(t_old.is_alive(), "旧 stop スレッドが終了しない")
+
+        # 二重発火していない（コールバックは合計 1 回だけ）
+        self.assertEqual(callbacks, [160], "完了コールバックが二重発火した")
+        # 旧スレッドは新世代の _recording を False に戻していない
+        self.assertTrue(rec._recording, "古い世代が新世代の録音状態を破壊した")
+        # 旧スレッドは新世代のバッファをドレインしていない（新音声がそのまま残る）
+        remaining = rec._drain_queue(new_q)
+        self.assertEqual(len(remaining), 320, "古い世代が新世代の音声を奪った")
 
 
 if __name__ == "__main__":

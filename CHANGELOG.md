@@ -4,6 +4,20 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased]
 
+### Fixed
+- **録音停止のハング復帰（recover）でコールバックが二重発火する不具合を修正（両ブランチ・両OS相当ロジック）**。
+  `stream.stop()` がハングして watchdog の `recover()` が完了コールバックを代行発火した後、
+  古い停止スレッドが復帰すると同じ録音で完了コールバックがもう一度呼ばれ（再現で callback_count==2）、
+  さらに古いスレッドが新世代のストリーム・録音状態・音声バッファを破壊し得た。
+  - 録音世代ごとに音声バッファ（キュー）を分離し、`recover()` は新世代へ別キューを割り当てる。
+  - 完了コールバックを `_StopCompletion`（ワンショット）に閉じ込め、通常停止と recover 代行が
+    競合しても各録音で **exactly once** だけドレイン＆発火する。
+  - 古い世代の停止スレッドは、世代が進んでいたら新世代の `_recording` / `_stream` に触れない。
+  - App 側の未完了タスク数（`_outstanding`）はデクリメントを 0 で下限クランプし、万一の二重発火でも
+    負数化（HUD が「変換中」に張り付く）を防ぐ。
+  - 回帰テスト追加: ハング→recover→新規録音→旧stop復帰でコールバック 1 回・新世代バッファ不可侵
+    （`tests/test_audio_recorder.py`）、未完了数の非負（`tests/test_outstanding_count.py`）。
+
 ### Security
 - **Windows の自動更新を固定公開鍵の Ed25519 署名で検証（SHA256 だけを信頼しない・release）**。
   これまで Windows 版は version.json の SHA256 だけでインストーラを検証していたが、SHA256 は

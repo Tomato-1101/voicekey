@@ -694,7 +694,9 @@ class VoicekeyApp(QObject):
                 self.notice.emit("文字起こし中にエラーが発生しました（ログを確認してください）")
             finally:
                 with self._state_lock:
-                    self._outstanding -= 1
+                    # 万一コールバック経路が二重発火しても未完了数を負数にしない
+                    # （表示が「変換中」に張り付くのを防ぐ防御。本来は録音側で exactly once）
+                    self._outstanding = max(0, self._outstanding - 1)
                 self._emit_state()
 
     def _process_task(self, task: TranscriptionTask) -> None:

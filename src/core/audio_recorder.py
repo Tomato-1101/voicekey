@@ -50,6 +50,42 @@ _IDLE_CLOSE_SEC: float = 30.0
 _LEVEL_INTERVAL_SEC: float = 0.033
 
 
+class _StopCompletion:
+    """録音停止の完了コールバックを録音ごとに exactly once 発火させるワンショットガード。
+
+    通常停止（_do_stop）とハング時の代行発火（recover）が競合しても、最初の 1 回だけ
+    バッファをドレインして実コールバックを呼ぶ。これにより、停止がハングして recover が
+    代行発火した後に古い停止スレッドが復帰しても、同じ録音でコールバックが 2 回呼ばれて
+    App 側の未完了タスク数（_outstanding）が負数になる不具合を防ぐ。
+
+    確定音声はこのガード内でドレインするため、勝った側が必ず実データを配り、負けた側は
+    何もしない（空音声で上書きしない）。
+    """
+
+    def __init__(
+        self,
+        callback: Callable[[npt.NDArray[np.float32]], None],
+        drain: Callable[[], npt.NDArray[np.float32]],
+    ) -> None:
+        self._callback = callback
+        self._drain = drain
+        self._fired = False
+        self._lock = threading.Lock()
+
+    def fire(self) -> Optional[npt.NDArray[np.float32]]:
+        """未発火なら drain→callback を 1 回だけ実行し確定音声を返す。発火済みなら None。"""
+        with self._lock:
+            if self._fired:
+                return None
+            self._fired = True
+            callback, drain = self._callback, self._drain
+            self._callback = None  # 参照を切って二重実行と GC 滞留を避ける
+            self._drain = None
+        audio = drain()
+        callback(audio)
+        return audio
+
+
 class AudioRecorder:
     """
     永続ストリーム + 専用制御スレッドによる音声録音管理。
@@ -195,17 +231,24 @@ class AudioRecorder:
             self._recording = False
             self._busy_op = None
 
-            # 完了待ちだった stop コールバックには「ここまでに取れた音声」を渡す
+            # 完了待ちだった stop コールバックには「ここまでに取れた音声」を渡す。
+            # _StopCompletion はこの時点までの旧キューを束縛済みなので、下で新世代に
+            # 別キューを割り当てても旧録音の確定音声は失われない。
             pending = self._pending_stop_cb
             self._pending_stop_cb = None
 
+            # 新世代には別バッファを割り当て、旧世代のドレインと干渉させない
+            # （古い停止スレッドが復帰しても新世代の音声を奪えない）
+            self._audio_q = queue.Queue()
             # コマンドキューを作り直す（旧スレッドが復帰しても新コマンドを食わせない）
             self._commands = queue.Queue()
             self._start_control_thread()
 
+        # 完了発火はロック外で行う（コールバック内で再入しても自己デッドロックしない）。
+        # fire() はワンショットなので、復帰した古い _do_stop と競合しても 1 回だけ実行される。
         if pending is not None:
             try:
-                pending(self._drain_audio())
+                pending.fire()
             except Exception as e:
                 logger.error(f"recover 時の stop コールバックでエラー: {e}")
 
@@ -313,7 +356,7 @@ class AudioRecorder:
                 if cmd == "start":
                     self._do_start(arg)
                 elif cmd == "stop":
-                    self._do_stop(arg)
+                    self._do_stop(arg, my_generation)
                 elif cmd == "reopen_if_idle":
                     self._do_reopen_if_idle()
             except Exception as e:
@@ -370,10 +413,25 @@ class AudioRecorder:
                 except Exception as e:
                     logger.error(f"録音開始コールバックでエラー: {e}")
 
-    def _do_stop(self, on_audio: Callable[[npt.NDArray[np.float32]], None]) -> None:
-        """録音を停止して音声データを確定する（制御スレッド上）。"""
-        self._pending_stop_cb = on_audio
-        audio = np.array([], dtype=np.float32)
+    def _do_stop(
+        self,
+        on_audio: Callable[[npt.NDArray[np.float32]], None],
+        my_generation: Optional[int] = None,
+    ) -> None:
+        """録音を停止して音声データを確定する（制御スレッド上）。
+
+        Args:
+            on_audio: 確定音声を受け取るコールバック（この録音で exactly once 呼ばれる）。
+            my_generation: 呼び出し元制御スレッドの世代。停止処理中（stream.stop() の
+                ハング中など）に recover() が世代を進めた場合、新世代の録音状態・ストリームを
+                破壊しないために使う。None なら世代チェックを省く（単体テスト用）。
+        """
+        # この録音世代のバッファを束縛する。recover() は新世代に別キューを割り当てるため、
+        # ハングから復帰した本スレッドが新世代の音声を奪う/汚すことはない。完了発火と
+        # ドレインを _StopCompletion に閉じ込め、recover の代行発火と競合しても exactly once。
+        q = self._audio_q
+        completion = _StopCompletion(on_audio, lambda: self._drain_queue(q))
+        self._pending_stop_cb = completion
         try:
             if self._recording:
                 self._last_record_end = time.monotonic()
@@ -381,24 +439,31 @@ class AudioRecorder:
                 if stream is not None:
                     # stop() は内部バッファの callback 完了を待つ。録音末尾の取りこぼしを防ぐため
                     # _recording は stop() の後で False にする（待っている間に届く最後のチャンクも
-                    # callback が拾えるようにする）。ハング中のゾンビ callback はセッション ID 不一致で
-                    # 弾かれるためメモリは増えない（ブロックするのは制御スレッドのみ。ハングは watchdog が回収）。
+                    # callback が拾えるようにする）。ブロックするのは制御スレッドのみ（ハングは
+                    # watchdog → recover() が回収）。
                     stream.stop()
-                self._recording = False
-            audio = self._drain_audio()
-            duration = len(audio) / self.sample_rate if self.sample_rate else 0.0
-            logger.info(f"録音停止 (samples={len(audio)}, duration={duration:.2f}s)")
+                # ハング中に recover() が世代を進めていたら、新世代の _recording / _stream へ
+                # 触れずに撤退する（自分のバッファ q からの確定は finally の completion が行う）
+                if my_generation is None or self._generation == my_generation:
+                    self._recording = False
         except Exception as e:
             logger.error(f"録音停止でエラー: {e}")
-            # ストリームが不調なら捨てて次回作り直す
-            self._close_stream()
-            audio = self._drain_audio()
+            # ストリームが不調なら捨てて次回作り直す。ただし自世代のときだけ
+            # （recover 後なら新世代のストリームを閉じてはならない）
+            if my_generation is None or self._generation == my_generation:
+                self._close_stream()
         finally:
-            self._pending_stop_cb = None
+            # 自分が積んだガードだけを片付ける（recover 後に新世代が積んだものは消さない）
+            if self._pending_stop_cb is completion:
+                self._pending_stop_cb = None
+            audio = None
             try:
-                on_audio(audio)
+                audio = completion.fire()  # recover が先に発火済みなら None（二重発火しない）
             except Exception as e:
                 logger.exception(f"録音停止コールバックでエラー: {e}")
+            if audio is not None:
+                duration = len(audio) / self.sample_rate if self.sample_rate else 0.0
+                logger.info(f"録音停止 (samples={len(audio)}, duration={duration:.2f}s)")
 
     def _do_reopen_if_idle(self) -> None:
         """録音中でなければストリームを閉じる（デバイス変更の即時反映用）。"""
@@ -513,11 +578,19 @@ class AudioRecorder:
         return _callback
 
     def _drain_audio(self) -> npt.NDArray[np.float32]:
-        """キューに溜まった音声チャンクをすべて回収して 1 本の配列にする。"""
+        """現在のキューに溜まった音声チャンクを回収する（_do_start のクリア等で使用）。"""
+        return self._drain_queue(self._audio_q)
+
+    def _drain_queue(self, q: queue.Queue) -> npt.NDArray[np.float32]:
+        """指定キューに溜まった音声チャンクをすべて回収して 1 本の配列にする。
+
+        録音世代ごとに別キューを束縛できるよう、対象キューを引数で受け取る
+        （recover() 後に古い停止スレッドが新世代のキューを誤ってドレインしないため）。
+        """
         chunks: List[np.ndarray] = []
         while True:
             try:
-                chunks.append(self._audio_q.get_nowait())
+                chunks.append(q.get_nowait())
             except queue.Empty:
                 break
         if not chunks:
