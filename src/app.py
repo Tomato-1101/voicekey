@@ -586,14 +586,15 @@ class VoicekeyApp(QObject):
                 if self._auto_enter:
                     self._finish_recording()
                     return
-                # ダブルタップ検出用にリリース時刻を記録してから停止
                 now = time.monotonic()
-                self._last_release_time = now
-                self._last_release_slot = recording_slot
                 if now - self._recording_started < _DOUBLE_TAP_SEC:
                     # 短いタップ＝ダブルタップの 1 打目の可能性。録音を止めずに 2 打目を待つ
                     # （タップと同時に話し始めた声を失わない。2 打目が来なければ通常どおり確定。
                     #  誤タップで発話が無い場合は通知を出さず静かに捨てる）
+                    # リリース情報は「短いタップとして成立したときだけ」記録する。長押しの離鍵で
+                    # 記録すると、直後に始めた録音まで誤ってダブルタップ(auto_enter)扱いになる(#19)。
+                    self._last_release_time = now
+                    self._last_release_slot = recording_slot
                     with self._state_lock:
                         if self._pending_tap_timer is not None:
                             self._pending_tap_timer.cancel()
