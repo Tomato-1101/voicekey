@@ -7,8 +7,6 @@ Mac 版 SettingsView.swift と同じ 5 ページ構成（一般 / ホットキ�
 ダーク/ライトテーマ切り替えに対応（Qt は OS テーマに自動追従しないため Windows 版のみ）。
 """
 
-import importlib.util
-import os
 import threading
 from datetime import datetime
 from typing import Optional
@@ -55,7 +53,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSlider,
-    QSpinBox,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -659,7 +656,6 @@ class HotkeyInput(QLineEdit):
         key = event.key()
         virtual_key = event.nativeVirtualKey()
         scan_code = event.nativeScanCode()
-        modifiers = event.modifiers()
 
         # 新しい入力開始時は古いキーをクリア
         if not self._is_recording:

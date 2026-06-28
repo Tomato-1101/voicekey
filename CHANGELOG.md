@@ -18,6 +18,11 @@ voicekeyの変更履歴を記録するファイルです。
   Mac(`swift test`)のテストが存在。CLAUDE.md の旧アーキ節は OVERVIEW.md に委譲する簡潔版へ差し替え。
   OVERVIEW.md / AGENTS.md / CLAUDE.md は両ブランチ同一、README はブランチ別（main=実プロバイダー名 /
   release=2 択名）に整合させた。
+- **未使用 import / ローカル変数を整理（lint クリーンアップ・両ブランチ）**。
+  `pyflakes` で検出した未使用を除去：`src/ui/settings_window.py`（`importlib.util` / `os` / `QSpinBox`、
+  `_on_key_press` の未使用ローカル `modifiers`）、`src/ui/system_tray.py`（`QtCore.Qt`）、
+  `tests/test_secrets_auth.py`（`json`）。意図的な参照は残す：`src/core/streaming_transcriber.py` の
+  `websockets.sync.client.connect`（同期クライアント有無の存在確認プローブ・`# noqa` 済み）。
 
 ### Fixed
 - **未ログイン時のゲート文言を無料体験仕様に修正（release・Mac/Windows）**。

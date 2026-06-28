@@ -4,7 +4,6 @@
 ユーザーの画面に資格情報ダイアログを出さないための恒久ルール。
 """
 
-import json
 import os
 import unittest
 from unittest import mock

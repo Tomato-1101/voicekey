@@ -7,7 +7,7 @@
 
 from typing import Optional, Union
 
-from PySide6.QtCore import Signal, Qt
+from PySide6.QtCore import Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
