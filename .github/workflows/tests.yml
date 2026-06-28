@@ -1,0 +1,63 @@
+# Python（Windows 版コード）と Swift（Mac 版）のユニットテストを CI で実行する。
+#
+# 目的: 配布ビルド（windows-build.yml / release.yml）とは別に、コード変更ごとに
+#       自動でテストを回し、回帰をマージ前に捕まえる。
+#
+# セキュリティ:
+# - テストはすべてモック済み（実モデルのダウンロード・実 API キー・ネットワーク・
+#   実 Keychain/keyring に触れない）。よって API キーやプロバイダーの GitHub Secrets は
+#   一切渡さない。テスト用のスタブ値が要る箇所は各テスト内のモックで完結する。
+# - 文字起こしプロバイダーのキーを CI に置かないこと自体が漏洩面の縮小になる。
+#
+# 実行環境:
+# - Python テストは macOS ランナーで回す。sounddevice / PySide6 の wheel が macOS では
+#   ネイティブライブラリ（PortAudio / Qt）を同梱するため、Linux のシステムライブラリ
+#   （libportaudio2 / libEGL 等）の用意が不要で、開発機（macOS）と同じ条件で検証できる。
+# - Python は配布ビルドと同じ 3.12 に固定（torch の wheel が確実にある）。
+
+name: テスト
+
+on:
+  push:
+    branches: [main, release]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  python-tests:
+    name: Python ユニットテスト
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 依存パッケージのインストール
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: ユニットテスト（オフスクリーン Qt・ネットワーク/キー/モデル不要）
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest discover -s tests -v
+
+  swift-tests:
+    name: Swift ユニットテスト（Mac 版）
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Swift バージョン
+        run: swift --version
+
+      - name: Swift テスト
+        run: swift test --package-path macos
+
+      - name: Swift ビルド（メニューバーアプリ）
+        run: swift build --package-path macos

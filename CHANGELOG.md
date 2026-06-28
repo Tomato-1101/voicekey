@@ -4,6 +4,14 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased]
 
+### Added
+- **CI で Python / Swift のユニットテストを自動実行（`.github/workflows/tests.yml`・両ブランチ）**。
+  これまで CI は Windows 配布ビルド（`windows-build.yml`）と Release（`release.yml`）のみで、
+  テストは手元実行頼みだった。`main` / `release` への push・PR・手動実行で Python（`unittest discover -s tests`・
+  `QT_QPA_PLATFORM=offscreen`）と Swift（`swift test --package-path macos` ＋ `swift build`）を
+  macOS ランナーで回す。テストはすべてモック済み（実モデル DL・実 API キー・ネットワーク・実 Keychain に
+  触れない）ため、プロバイダーキー等の GitHub Secrets は CI に一切渡さない（漏洩面の縮小）。
+
 ### Changed
 - **ドキュメントを現状の実装に合わせて修正（両ブランチ・実装乖離の解消）**。
   README / OVERVIEW.md / AGENTS.md / CLAUDE.md に残っていた旧 WhisperWin 時代の記述を一掃した。
