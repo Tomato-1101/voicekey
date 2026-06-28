@@ -522,6 +522,11 @@ class ThemeToggleButton(QPushButton):
 
         self.update()
 
+    def set_dark(self, dark: bool) -> None:
+        """外部からテーマ状態を同期する（設定の再ロード/キャンセル時にプレビューを戻す）。"""
+        self._is_dark = dark
+        self.update()
+
     def get_angle(self):
         """現在の回転角度を取得する。"""
         return self._angle
@@ -1511,8 +1516,14 @@ class SettingsWindow(QWidget):
         self._refresh_history()
 
     def showEvent(self, event) -> None:
-        """ウィンドウを開くたびに履歴・実績を最新化する。"""
+        """ウィンドウを開くたびに永続設定から UI を再ロードし、履歴・実績を最新化する。
+
+        ウィンドウは破棄されず使い回されるため、前回の未保存編集やテーマプレビューが
+        残ったまま再表示・保存されるのを防ぐ。キャンセル（保存せず閉じる）した変更は
+        次に開いた時点でここで破棄される。
+        """
         super().showEvent(event)
+        self._load_current_settings()
         self._refresh_history()
         self._refresh_stats()
 
@@ -2225,8 +2236,17 @@ class SettingsWindow(QWidget):
     # ------------------------------------------------------------------
 
     def _load_current_settings(self) -> None:
-        """設定ファイルから現在の値をUIに読み込む。"""
+        """設定ファイルから現在の値をUIに読み込む。
+
+        ウィンドウは使い回されるため、このメソッドは「永続 config を UI に流し込んで
+        未保存の編集・テーマプレビューを破棄する」役目も持つ（showEvent から毎回呼ぶ）。
+        """
         config = self._config_manager.config
+
+        # テーマも永続 config に合わせて戻す（未保存のプレビューを破棄）
+        self._is_dark_mode = config.get("dark_mode", False)
+        self._theme_toggle.set_dark(self._is_dark_mode)
+        self._apply_theme(self._is_dark_mode)
 
         # 一般 - 言語（保存値が選択肢に無くても選択を保持して表示する）
         language = config.get("language", "ja") or ""
@@ -2353,11 +2373,16 @@ class SettingsWindow(QWidget):
             "llm_postprocess": existing_llm_postprocess,
         }
 
-        # 自動起動はレジストリで管理するため settings.yaml とは別に反映する
-        if autostart.is_supported():
-            autostart.set_enabled(self._autostart_check.isChecked())
-
         if self._config_manager.save(new_config):
+            # 自動起動は保存成功と同じ境界でのみ反映する。先に反映すると保存失敗時に
+            # 「自動起動だけ変わって設定は元のまま」という不整合が残るため（item 15）。
+            # 自動起動は settings.yaml ではなくレジストリで管理するので別途反映する。
+            if autostart.is_supported():
+                if not autostart.set_enabled(self._autostart_check.isChecked()):
+                    QMessageBox.warning(
+                        self, "注意",
+                        "設定は保存しましたが、ログイン時起動の更新に失敗しました。",
+                    )
             # 本体へ設定変更を即時適用させる（共有マネージャなので mtime ポーリングを待たない）
             self.settings_saved.emit()
             self.close()
