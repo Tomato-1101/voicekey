@@ -5,6 +5,22 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased]
 
 ### Security
+- **配布バイナリへの長期プロバイダーキー埋め込みを撤去（release・両OS）**。
+  これまで配布版は開発者の OpenAI / Groq / ElevenLabs / Deepgram のキーを XOR 難読化して
+  バイナリに焼き込んでいたが、XOR は暗号化ではなく（マスクも同じバイナリに同梱され復元可能）
+  漏洩源だった。製品版は文字起こし・整形をすべて自社サーバー経由（Deepgram=短命 JWT 直叩き /
+  ElevenLabs・Groq=サーバープロキシ）で行うため、アプリ側にプロバイダーキーは不要。
+  配布物に長期キーを **1 バイトも埋め込まない**ようにした。
+  - 生成スクリプトをキーレス化: `scripts/build/generate_embedded_keys.py` と
+    `macos/scripts/generate_embedded_keys.sh` は IS_DIST フラグだけの「DIST マーカー」を出力し、
+    .env.dist / Keychain / 環境変数からキーを読まない（Mac の `--export-env` も撤去）。
+  - キー解決の埋め込みフォールバックを撤去: `src/utils/secrets.get_api_key`（Python）と
+    Mac `Keychain.apiKey`（Swift）はキーを keyring/Keychain からのみ取得する。
+  - ビルドパイプラインがプロバイダーキーを扱わない: `.github/workflows/windows-build.yml` から
+    API キーの Secrets 受け渡しを削除。ビルド時に `scripts/build/verify_no_embedded_keys.py` で
+    生成物にキーの痕跡が無いことを検査してから先へ進む（漏洩回帰の防止・Win/Mac 両パイプライン）。
+  - **要対応（コード変更とは別）**: v1.2.0 以前の配布物に焼き込まれた旧キーは**漏洩済み**として
+    扱い、各プロバイダー側で**ローテーション（無効化・再発行）が必要**。キー値そのものはここでは扱わない。
 - **配布版で接続先・認証情報の汚染を防止（`.env` / `VOICEKEY_SERVER_URL` の無効化・両OS）**。
   配布（DIST）ビルドでは `.env` を読み込まず、環境変数 `VOICEKEY_SERVER_URL` による
   サーバー接続先の上書きも無視するようにした。これまでは作業ディレクトリの `.env` や

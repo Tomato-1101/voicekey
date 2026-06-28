@@ -54,8 +54,10 @@ except Exception as e:  # ImportError 以外（DBus 不在等）も含めて握�
         "API キーは環境変数からのフォールバック読み込みのみ可能です。"
     )
 
-# 配布（DIST）ビルドの埋め込みキー。scripts/build/generate_embedded_keys.py が
+# 配布（DIST）ビルドのマーカーモジュール。scripts/build/generate_embedded_keys.py が
 # 生成する git 管理外モジュールで、開発環境には存在しない（ImportError で None になる）。
+# 配布バイナリに長期プロバイダーキーは埋め込まない（製品版は自社サーバー経由・2026-06-28）。
+# このモジュールは IS_DIST フラグだけを持ち、API キーの保管には一切使わない。
 _embedded = None
 try:
     from ..config import embedded_keys as _embedded  # type: ignore
@@ -67,23 +69,13 @@ def is_dist_build() -> bool:
     """
     配布（DIST）ビルドかどうかを返す。
 
-    埋め込みキーモジュールの有無で判定する。設定画面の API キータブ表示や
+    DIST マーカーモジュールの有無で判定する。設定画面の API キータブ表示や
     自動アップデートの有効化判定に使う。
 
     Returns:
-        埋め込みキーモジュールが存在し IS_DIST が True の場合 True
+        マーカーモジュールが存在し IS_DIST が True の場合 True
     """
     return _embedded is not None and getattr(_embedded, "IS_DIST", False)
-
-
-def _get_embedded_key(service: str) -> Optional[str]:
-    """埋め込みキーを取得する（DIST ビルド以外は常に None）"""
-    if _embedded is None:
-        return None
-    try:
-        return _embedded.get_key(service)
-    except Exception:
-        return None
 
 
 def is_keyring_available() -> bool:
@@ -106,24 +98,23 @@ def get_api_key(service: str) -> Optional[str]:
     Returns:
         保存済み API キー、未保存または取得失敗時は None
     """
+    # プロバイダーキーは OS のシークレットストア（keyring）からのみ取得する。
+    # 配布ビルドにキーは埋め込まないため、未登録なら None（製品版はサーバー経由で動く）。
     if _keyring_module is None:
-        return _get_embedded_key(service)
+        return None
     with _cache_lock:
         if service in _cache:
-            cached = _cache[service]
-            # 未登録（None）がキャッシュされていても、配布ビルドなら埋め込みキーへ落とす
-            return cached if cached is not None else _get_embedded_key(service)
+            return _cache[service]
     try:
         value = _keyring_module.get_password(service, _USERNAME) or None
     except Exception as e:
         # NoKeyringError / KeyringError / OS 認証拒否などをまとめて握る。
         # 失敗はキャッシュしない（次回呼び出しで再試行させる）
         logger.warning(f"keyring 読み込みに失敗 ({service}): {e}")
-        return _get_embedded_key(service)
+        return None
     with _cache_lock:
         _cache[service] = value
-    # テスター環境では keyring に何も保存されていないため、ここで埋め込みキーが使われる
-    return value if value is not None else _get_embedded_key(service)
+    return value
 
 
 def set_api_key(service: str, key: str) -> bool:

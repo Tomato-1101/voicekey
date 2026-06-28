@@ -1,7 +1,12 @@
-"""secrets の埋め込みキーフォールバックと生成スクリプトのテスト。
+"""secrets の DIST 判定と、配布生成物にキーが埋め込まれないことのテスト。
 
 実 keyring / Keychain には絶対に触れない（全て偽モジュールに差し替える）。
 ユーザーの画面に資格情報ダイアログを出さないための恒久ルール。
+
+2026-06-28 のセキュリティ修正で、配布バイナリには長期プロバイダーキーを 1 バイトも
+埋め込まなくなった（製品版は自社サーバー経由）。よって get_api_key の埋め込みキー
+フォールバックは撤去され、生成スクリプトは IS_DIST フラグだけのマーカーを出す。
+ここではその「キーは keyring からのみ」「生成物はキーレス」を回帰として固定する。
 """
 
 import importlib.util
@@ -14,9 +19,9 @@ from unittest import mock
 from src.utils import secrets
 
 
-def _fake_embedded(keys: dict, is_dist: bool = True) -> types.SimpleNamespace:
-    """embedded_keys モジュールの偽物を作る。"""
-    return types.SimpleNamespace(IS_DIST=is_dist, get_key=lambda svc: keys.get(svc))
+def _fake_marker(is_dist: bool = True) -> types.SimpleNamespace:
+    """DIST マーカーモジュール（embedded_keys）の偽物。IS_DIST フラグだけを持つ。"""
+    return types.SimpleNamespace(IS_DIST=is_dist)
 
 
 class _FakeKeyring:
@@ -32,11 +37,35 @@ class _FakeKeyring:
         return self.store.get(service)
 
 
-class TestEmbeddedFallback(unittest.TestCase):
-    """get_api_key のキー解決チェーン（keyring → 埋め込み）のテスト。"""
+class TestIsDistBuild(unittest.TestCase):
+    """is_dist_build はマーカーモジュールの IS_DIST だけで判定する。"""
 
     def setUp(self):
-        # モジュールグローバルを退避してテストごとに初期化
+        self._orig_embedded = secrets._embedded
+
+    def tearDown(self):
+        secrets._embedded = self._orig_embedded
+
+    def test_false_in_dev(self):
+        """マーカーが無い開発環境では DIST 判定が False。"""
+        secrets._embedded = None
+        self.assertFalse(secrets.is_dist_build())
+
+    def test_true_with_marker(self):
+        """IS_DIST=True のマーカーがあれば DIST 判定が True。"""
+        secrets._embedded = _fake_marker(True)
+        self.assertTrue(secrets.is_dist_build())
+
+    def test_false_when_marker_is_dist_false(self):
+        """IS_DIST=False のスタブでは DIST 判定が False。"""
+        secrets._embedded = _fake_marker(False)
+        self.assertFalse(secrets.is_dist_build())
+
+
+class TestApiKeyNoEmbeddedFallback(unittest.TestCase):
+    """get_api_key はキーを keyring からのみ取得し、埋め込みフォールバックを持たない。"""
+
+    def setUp(self):
         self._orig_embedded = secrets._embedded
         self._orig_keyring = secrets._keyring_module
         with secrets._cache_lock:
@@ -48,56 +77,40 @@ class TestEmbeddedFallback(unittest.TestCase):
         with secrets._cache_lock:
             secrets._cache.clear()
 
-    def test_is_dist_build_false_in_dev(self):
-        """埋め込みモジュールが無い開発環境では DIST 判定が False。"""
-        secrets._embedded = None
-        self.assertFalse(secrets.is_dist_build())
-
-    def test_is_dist_build_true_with_embedded(self):
-        """IS_DIST=True の埋め込みモジュールがあれば DIST 判定が True。"""
-        secrets._embedded = _fake_embedded({})
-        self.assertTrue(secrets.is_dist_build())
-
-    def test_keyring_value_wins_over_embedded(self):
-        """keyring に保存済みのキーは埋め込みより優先される（開発者自身の環境）。"""
+    def test_keyring_value_is_returned(self):
+        """keyring に保存済みのキーはそのまま返る（開発者自身の環境）。"""
         secrets._keyring_module = _FakeKeyring({secrets.SERVICE_OPENAI: "user-key"})
-        secrets._embedded = _fake_embedded({secrets.SERVICE_OPENAI: "embedded-key"})
+        secrets._embedded = _fake_marker(True)
         self.assertEqual(secrets.get_api_key(secrets.SERVICE_OPENAI), "user-key")
 
-    def test_embedded_used_when_keyring_empty(self):
-        """keyring 未登録（テスター環境）では埋め込みキーへフォールバックする。"""
+    def test_dist_with_empty_keyring_returns_none(self):
+        """配布ビルドでも keyring が空ならキーは無い（埋め込みへ落ちない）。"""
         secrets._keyring_module = _FakeKeyring({})
-        secrets._embedded = _fake_embedded({secrets.SERVICE_OPENAI: "embedded-key"})
-        self.assertEqual(secrets.get_api_key(secrets.SERVICE_OPENAI), "embedded-key")
+        secrets._embedded = _fake_marker(True)
+        self.assertIsNone(secrets.get_api_key(secrets.SERVICE_GROQ))
 
-    def test_embedded_used_when_keyring_missing(self):
-        """keyring モジュール自体が無くても埋め込みキーが使える。"""
+    def test_no_keyring_module_returns_none(self):
+        """keyring モジュール自体が無ければ None（埋め込みは存在しない）。"""
         secrets._keyring_module = None
-        secrets._embedded = _fake_embedded({secrets.SERVICE_GROQ: "embedded-key"})
-        self.assertEqual(secrets.get_api_key(secrets.SERVICE_GROQ), "embedded-key")
+        secrets._embedded = _fake_marker(True)
+        self.assertIsNone(secrets.get_api_key(secrets.SERVICE_GROQ))
 
-    def test_embedded_used_when_keyring_raises(self):
-        """keyring が例外を投げても埋め込みキーへフォールバックする。"""
+    def test_keyring_raises_returns_none(self):
+        """keyring が例外を投げても埋め込みへ落ちず None を返す。"""
         secrets._keyring_module = _FakeKeyring(raise_on_get=True)
-        secrets._embedded = _fake_embedded({secrets.SERVICE_OPENAI: "embedded-key"})
-        self.assertEqual(secrets.get_api_key(secrets.SERVICE_OPENAI), "embedded-key")
+        secrets._embedded = _fake_marker(True)
+        self.assertIsNone(secrets.get_api_key(secrets.SERVICE_OPENAI))
 
-    def test_cached_none_still_falls_to_embedded(self):
-        """未登録（None）キャッシュ後の 2 回目呼び出しでも埋め込みへ落ちる。"""
+    def test_none_is_cached_and_stays_none(self):
+        """未登録（None）はキャッシュされ、2 回目も None のまま（埋め込みへ落ちない）。"""
         secrets._keyring_module = _FakeKeyring({})
-        secrets._embedded = _fake_embedded({secrets.SERVICE_OPENAI: "embedded-key"})
-        secrets.get_api_key(secrets.SERVICE_OPENAI)  # 1 回目で None がキャッシュされる
-        self.assertEqual(secrets.get_api_key(secrets.SERVICE_OPENAI), "embedded-key")
-
-    def test_dev_returns_none_without_embedded(self):
-        """開発環境（埋め込みなし・keyring 空）では従来どおり None。"""
-        secrets._keyring_module = _FakeKeyring({})
-        secrets._embedded = None
+        secrets._embedded = _fake_marker(True)
+        self.assertIsNone(secrets.get_api_key(secrets.SERVICE_OPENAI))  # 1 回目で None をキャッシュ
         self.assertIsNone(secrets.get_api_key(secrets.SERVICE_OPENAI))
 
 
 class TestGenerateEmbeddedKeys(unittest.TestCase):
-    """scripts/build/generate_embedded_keys.py の生成物ラウンドトリップテスト。"""
+    """scripts/build/generate_embedded_keys.py が IS_DIST だけのキーレスマーカーを生成する。"""
 
     SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "build" / "generate_embedded_keys.py"
 
@@ -108,40 +121,25 @@ class TestGenerateEmbeddedKeys(unittest.TestCase):
         spec.loader.exec_module(module)
         return module
 
-    def test_roundtrip_and_no_plaintext(self):
-        """生成 → 読み込みで元のキーに戻り、ファイルに平文キーが残らない。"""
+    def test_generates_keyless_marker(self):
+        """生成物は IS_DIST=True のみで、鍵復元 API（get_key）や payload を持たない。"""
         gen = self._load_script()
-        fake_key = "sk-test-roundtrip-key-1234567890"
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "embedded_keys.py"
-            with mock.patch.object(gen, "ENV_DIST", Path(tmp) / "no-such-env"), \
-                 mock.patch.object(gen, "OUT", out), \
-                 mock.patch.dict("os.environ", {"OPENAI_API_KEY": fake_key}, clear=False):
+            with mock.patch.object(gen, "OUT", out):
                 self.assertEqual(gen.main(), 0)
 
-            # 生成ファイルに平文キーが含まれない（XOR 難読化の確認）
             text = out.read_text(encoding="utf-8")
-            self.assertNotIn(fake_key, text)
+            # キー埋め込みの痕跡（旧 XOR 実装の名残）が一切無い
+            for banned in ("get_key", "_MASK", "_PAYLOAD", "payload"):
+                self.assertNotIn(banned, text, f"生成物に '{banned}' が残っている")
 
-            # 生成モジュールを読み込むと元のキーに復元できる
+            # 読み込むと IS_DIST=True のフラグだけを持つ
             spec = importlib.util.spec_from_file_location("embedded_test", out)
             embedded = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(embedded)
             self.assertTrue(embedded.IS_DIST)
-            self.assertEqual(embedded.get_key("voicekey.OpenAI"), fake_key)
-            self.assertIsNone(embedded.get_key("voicekey.Groq"))
-
-    def test_no_keys_returns_error(self):
-        """キーが 1 件も無ければエラー終了（空の embedded_keys を作らない）。"""
-        gen = self._load_script()
-        with tempfile.TemporaryDirectory() as tmp:
-            out = Path(tmp) / "embedded_keys.py"
-            env = {name: "" for name in gen.SERVICES.values()}
-            with mock.patch.object(gen, "ENV_DIST", Path(tmp) / "no-such-env"), \
-                 mock.patch.object(gen, "OUT", out), \
-                 mock.patch.dict("os.environ", env, clear=False):
-                self.assertEqual(gen.main(), 1)
-            self.assertFalse(out.exists())
+            self.assertFalse(hasattr(embedded, "get_key"))
 
 
 if __name__ == "__main__":

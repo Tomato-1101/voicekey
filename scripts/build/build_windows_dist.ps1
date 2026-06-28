@@ -6,12 +6,14 @@
 # 前提:
 #   - venv\Scripts\python.exe に依存導入済み（pip install -r requirements.txt + pyinstaller）
 #   - Inno Setup 6 インストール済み（ISCC.exe）
-#   - リポジトリ直下に .env.dist がある
-#     （Mac 側で macos/scripts/generate_embedded_keys.sh --export-env を実行して手動コピー）
+#
+# 注意（2026-06-28 セキュリティ修正）:
+#   配布バイナリに長期プロバイダーキーは埋め込まない（製品版は自社サーバー経由）。
+#   API キーは不要で .env.dist も使わない。生成する embedded_keys.py は IS_DIST フラグのみ。
 #
 # 処理の流れ:
-#   キー埋め込み生成 → PyInstaller → ソース平文混入チェック → Inno Setup →
-#   SHA256 → version.json 出力 → 埋め込みキーの後始末
+#   DIST マーカー生成 → PyInstaller → ソース平文混入チェック → 鍵漏洩チェック →
+#   Inno Setup → SHA256 → version.json 出力 → 生成マーカーの後始末
 #
 # 出力:
 #   dist\installer\voicekey-<Version>-setup.exe
@@ -64,9 +66,9 @@ try {
     Set-Content $ConstantsPath $NewConstants -Encoding UTF8 -NoNewline
     Write-Host "==> APP_VERSION = $Version（src\config\constants.py）"
 
-    # --- 2. 埋め込みキー生成（.env.dist → src\config\embedded_keys.py） ---
+    # --- 2. DIST マーカー生成（src\config\embedded_keys.py。キーは埋め込まない） ---
     & $Python (Join-Path $Root "scripts\build\generate_embedded_keys.py")
-    if ($LASTEXITCODE -ne 0) { Write-Error "埋め込みキー生成に失敗しました" }
+    if ($LASTEXITCODE -ne 0) { Write-Error "DIST マーカー生成に失敗しました" }
 
     # --- 3. PyInstaller（onedir） ---
     & $Python -m PyInstaller voicekey.spec --clean --noconfirm
@@ -84,6 +86,13 @@ try {
         Write-Error "dist に自分のソース（src の .py）が含まれています。voicekey.spec の datas を確認してください"
     }
     Write-Host "==> 自分のソース平文混入なし（dist\voicekey に src の .py なし）"
+
+    # --- 4.5 プロバイダーキー漏洩チェック（生成マーカー＋自分の exe にキーが無いこと） ---
+    # 製品版は自社サーバー経由でキーを持たない。万一の埋め込み回帰を CI で止める。
+    # torch 等 OSS の DLL 群は誤検出ノイズになるため走査対象に含めず、自分の生成物だけ渡す。
+    $ExeForScan = Join-Path $Root "dist\voicekey\voicekey.exe"
+    & $Python (Join-Path $Root "scripts\build\verify_no_embedded_keys.py") $EmbeddedKeys $ExeForScan
+    if ($LASTEXITCODE -ne 0) { Write-Error "鍵漏洩チェックに失敗しました（生成物にプロバイダーキーの痕跡）" }
 
     # --- 5. Inno Setup でインストーラ作成 ---
     & $Iscc (Join-Path $Root "installer\windows\voicekey.iss") "/DAppVersion=$Version"
@@ -117,7 +126,7 @@ try {
     Write-Host "  3. constants.py の APP_VERSION 変更を voicekey 本体リポジトリへコミット"
 }
 finally {
-    # 埋め込みキーは開発環境に残さない（gitignore 済みだが多層防御）
+    # 生成した DIST マーカーは開発環境に残さない（gitignore 済みだが多層防御）
     if (Test-Path $EmbeddedKeys) {
         Remove-Item $EmbeddedKeys -Force
         Write-Host "==> 後始末: embedded_keys.py を削除しました"

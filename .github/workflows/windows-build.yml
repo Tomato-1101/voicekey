@@ -9,16 +9,13 @@
 #   gh run download -n voicekey-windows-installer -D dist/ci/
 #   → dist/ci/ の setup.exe と version.json を voicekey-site へ配置して deploy
 #
-# 前提（初回のみ・ユーザー作業）:
-#   リポジトリ直下で `gh secret set -f .env.dist` を実行して
-#   OPENAI_API_KEY / GROQ_API_KEY / ELEVENLABS_API_KEY / DEEPGRAM_API_KEY を
-#   GitHub Secrets に登録する（.env.dist 自体はどこにもアップロードしない）。
-#
-# セキュリティ:
-# - キーは Secrets → ビルドステップの環境変数として generate_embedded_keys.py に渡す
-#   （.env.dist ファイルはランナー上に作らない。ログにも出ない＝GitHub が自動マスク）。
-# - 生成された embedded_keys.py は build_windows_dist.ps1 の finally で削除される。
-# - リポジトリは private。artifact（XOR 難読化済みキー入り exe）はテスター配布物と同等。
+# セキュリティ（2026-06-28 修正）:
+# - 配布バイナリに長期プロバイダーキーは 1 バイトも埋め込まない。製品版は文字起こし・
+#   整形をすべて自社サーバー経由（短命 JWT / プロキシ）で行うため、ビルドに API キーは不要。
+#   よって OPENAI/GROQ/ELEVENLABS/DEEPGRAM_API_KEY の GitHub Secrets はもう渡さない。
+# - build_windows_dist.ps1 が PyInstaller 後に verify_no_embedded_keys.py で
+#   生成物にキーが混入していないことを検査してから次へ進む（漏洩回帰の防止）。
+# - リポジトリは private。artifact はソースを含まない配布バイナリ。
 
 name: Windows ビルド
 
@@ -65,13 +62,9 @@ jobs:
             choco install innosetup -y --no-progress
           }
 
-      - name: 配布ビルド（キー埋め込み → PyInstaller → Inno Setup）
+      - name: 配布ビルド（DIST マーカー生成 → PyInstaller → 漏洩チェック → Inno Setup）
         shell: pwsh
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
-          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
           # PyInstaller が python312.dll を見つけられない既知問題（setup-python の Windows）対策。
           # setup-python が公開する pythonLocation（DLL のある install ルート）を PYTHONHOME に渡す。
           PYTHONHOME: ${{ env.pythonLocation }}

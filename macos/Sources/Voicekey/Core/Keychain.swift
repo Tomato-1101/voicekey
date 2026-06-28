@@ -82,12 +82,8 @@ enum Keychain {
         if let env = ProcessInfo.processInfo.environment[envVar], !env.isEmpty {
             return env
         }
-        // 配布ビルドの埋め込みキー（テスター環境では Keychain も環境変数も無いため
-        // ここに落ちる。通常開発ビルドではスタブが常に nil を返す）
-        if let embedded = EmbeddedKeys.key(forService: svc) {
-            lock.lock(); cache[svc] = embedded; lock.unlock()
-            return embedded
-        }
+        // 配布ビルドにプロバイダーキーは埋め込まない（製品版はサーバー経由）。
+        // Keychain にも環境変数にも無ければ未設定として nil を返す。
         return nil
     }
 

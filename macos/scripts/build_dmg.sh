@@ -6,8 +6,6 @@
 #   ./scripts/build_dmg.sh --version 1.1.0 --identity "Developer ID Application: ..." --notarize
 #
 # 前提:
-#   - Keychain に voicekey.{OpenAI,Groq,ElevenLabs,Deepgram} のキーが保存済み
-#     （初回は security の許可ダイアログが出るので「常に許可」を選ぶ）
 #   - Sparkle EdDSA 秘密鍵が ~/.voicekey/sparkle_eddsa_key にエクスポート済み
 #   - --notarize は Apple Developer Program 加入後、
 #     `xcrun notarytool store-credentials voicekey-notary` を済ませてから使う
@@ -54,8 +52,8 @@ BUILD_NUM=$(( $(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" Resources/In
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUM" Resources/Info.plist
 echo "==> バージョン: $VERSION (build $BUILD_NUM)"
 
-# キー埋め込み。スクリプト終了時は成功・失敗を問わず必ずスタブに戻し、
-# キー入りの生成ソースを作業ツリーに残さない
+# DIST マーカー生成（isDist=true・キーは埋め込まない）。スクリプト終了時は成功・失敗を
+# 問わず必ずスタブ（isDist=false）に戻し、配布マーカーを作業ツリーに残さない
 trap './scripts/generate_embedded_keys.sh >/dev/null 2>&1 || true' EXIT
 ./scripts/generate_embedded_keys.sh --dist
 
@@ -64,6 +62,12 @@ VOICEKEY_SIGN_IDENTITY="$IDENTITY" ./scripts/build_app.sh
 APP="dist/voicekey.app"
 BIN="$APP/Contents/MacOS/voicekey"
 FW="$APP/Contents/Frameworks/Sparkle.framework"
+
+# プロバイダーキー漏洩チェック（生成マーカー＋自分のバイナリにキーが無いこと）。
+# 製品版は自社サーバー経由でキーを持たない。万一の埋め込み回帰をここで止める。
+# このスクリプトは macos/ を cwd にしているため、検証スクリプトはリポジトリ直下を参照する。
+python3 ../scripts/build/verify_no_embedded_keys.py \
+    Sources/Voicekey/Config/EmbeddedKeys.generated.swift "$BIN"
 
 # 開発機の絶対パス rpath（.build/artifacts/...）を除去して自己完結にする。
 # @ で始まる rpath（@executable_path 等）は残す。署名前に行うこと
