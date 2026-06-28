@@ -74,6 +74,16 @@ try {
     & $Python -m PyInstaller voicekey.spec --clean --noconfirm
     if ($LASTEXITCODE -ne 0) { Write-Error "PyInstaller に失敗しました" }
 
+    # --- 3.5 onnxruntime 同梱チェック（VAD は onnxruntime が無いと黙って無効化される） ---
+    # vad.py は遅延 import onnxruntime で Silero VAD を CPU 実行する。これが同梱されないと
+    # analyze() が安全側の (True, None) を返し、無音圧縮・長文分割が一切効かない（文字起こし
+    # 自体は動くため気付きにくい潜在バグ）。onnxruntime のコア拡張が dist にあるか実機確認する。
+    $OrtCore = Get-ChildItem (Join-Path $Root "dist\voicekey") -Recurse -Filter "onnxruntime_pybind11_state*" -ErrorAction SilentlyContinue
+    if (-not $OrtCore) {
+        Write-Error "onnxruntime が dist に同梱されていません（VAD が無効になります）。requirements.txt の onnxruntime と voicekey.spec の collect_all('onnxruntime') を確認してください"
+    }
+    Write-Host "==> onnxruntime 同梱を確認（VAD 有効）: $($OrtCore[0].Name)"
+
     # --- 4. 自分のソース平文混入チェック ---
     # 目的は「自分の proprietary な src/ が平文 .py で同梱されていないこと」の確認。
     # torch / torchaudio 等の OSS ライブラリは PyInstaller onedir では .py を必ず同梱する

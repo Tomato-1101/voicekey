@@ -16,16 +16,18 @@
 
 ## 🚦 配布ステータス
 
-> このセクションはコード／リリース状態が変わるたびに更新します（最終更新: **2026-06-28**）。
+> このセクションはコード／リリース状態が変わるたびに更新します（最終更新: **2026-06-29**）。
 >
 > **このブランチ（`release`）は製品版**です。文字起こしは「高速リアルタイム / 正確性」の 2 モード・
 > モデル選択なし・テキスト整形は裏で自動（オン/オフのみ）。配布タグ（`v*`）はこのブランチで打ちます。
 
 | プラットフォーム | 最新版 | 配布状態 | 入手先 | 備考 |
 |---|---|---|---|---|
-| 🍎 macOS | **v1.5.1** | ✅ **配布中** | [voicekey.vercel.app](https://voicekey.vercel.app) | Apple Development 署名。初回起動のみ Gatekeeper 回避手順あり（サイト／DMG に同梱）。自動更新（Sparkle）対応 |
-| 🪟 Windows | **v1.5.1** | ✅ **配布中** | [voicekey.vercel.app](https://voicekey.vercel.app) | GitHub Actions（`windows-build.yml`）でビルド。インストーラ（約 268MB）は容量が大きいため公開バイナリ専用リポ（`voicekey-releases`・ソース非公開）の GitHub Releases でホスト。未署名のため初回のみ SmartScreen 回避手順あり。自動更新対応。インストール時にデスクトップ／スタートメニューへショートカット作成 |
+| 🍎 macOS | **v1.6.0** | ✅ **配布中** | [voicekey.vercel.app](https://voicekey.vercel.app) | Apple Development 署名。初回起動のみ Gatekeeper 回避手順あり（サイト／DMG に同梱）。自動更新（Sparkle）対応 |
+| 🪟 Windows | **v1.6.0** | ✅ **配布中** | [voicekey.vercel.app](https://voicekey.vercel.app) | GitHub Actions（`windows-build.yml`）でビルド。インストーラ（約 268MB）は容量が大きいため公開バイナリ専用リポ（`voicekey-releases`・ソース非公開）の GitHub Releases でホスト。未署名のため初回のみ SmartScreen 回避手順あり。自動更新対応。インストール時にデスクトップ／スタートメニューへショートカット作成 |
 
+> **v1.6.0（2026-06-29）**: **Windows 版で無音圧縮・長文分割（VAD）が実際に効くように修正**。配布ビルドに `onnxruntime` が同梱されておらず VAD が常に無効化されていた潜在バグを解消した（文字起こし自体は従来も動作）。あわせて未ログイン時のゲート文言を無料体験仕様に統一し、CI でのユニットテスト自動実行・lint クリーンアップ・ドキュメント整合など内部品質を改善。詳細は [CHANGELOG](CHANGELOG.md)。
+>
 > **v1.5.1（2026-06-28）**: **製品版の初回録音・初回整形を高速化**。アプリ起動時にサーバー接続を 1 回だけ暖機して、初回のサーバー往復＋serverless cold start（最大数秒）を体感から消した（無料枠は消費しない設計）。整形の暖機先も実際のサーバープロキシに修正。詳細は [CHANGELOG](CHANGELOG.md)。
 >
 > **v1.5.0（2026-06-27）**: **アカウントごとに無料体験枠（200 回）を付与**。ログインすればキーが無くても文字起こしを試せ、無料体験を使い切るとアクティベーションキーの登録が必要になる（数え方＝文字起こし 1 回で 1 消費・累計一度きり）。詳細は [CHANGELOG](CHANGELOG.md)。

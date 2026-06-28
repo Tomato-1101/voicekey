@@ -4,6 +4,8 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-06-29
+
 ### Added
 - **CI で Python / Swift のユニットテストを自動実行（`.github/workflows/tests.yml`・両ブランチ）**。
   これまで CI は Windows 配布ビルド（`windows-build.yml`）と Release（`release.yml`）のみで、

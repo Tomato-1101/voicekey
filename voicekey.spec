@@ -44,6 +44,15 @@ hiddenimports += tmp_ret[2]
 # Also collect silero_vad submodules explicitly
 hiddenimports += collect_submodules('silero_vad')
 
+# onnxruntime（Silero VAD の ONNX を CPU 実行する本体）。これを同梱しないと
+# vad.py の遅延 import onnxruntime が配布版で失敗し、analyze() が安全側の
+# (True, None) を返して VAD が常に無効化される（無音圧縮・長文分割が効かない）。
+# requirements.txt への宣言（onnxruntime>=1.16.1）と対で必須。
+tmp_ret = collect_all('onnxruntime')
+datas += tmp_ret[0]
+binaries += tmp_ret[1]
+hiddenimports += tmp_ret[2]
+
 # Collect PySide6 (only core modules needed)
 tmp_ret = collect_all('PySide6')
 datas += tmp_ret[0]
