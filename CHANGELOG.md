@@ -5,6 +5,14 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased]
 
 ### Fixed
+- **録音中のマイク切断・構成変更で復帰できないとき、それまでの録音音声を捨てないようにした（Mac・両ブランチ）**。
+  デバイス切断で `handleConfigurationChange` が復帰失敗すると `recording=false` にし、その後の
+  `stop()` がガードで空配列を返していたため、切断直前までに録音できていた音声が失われていた。
+  録音 buffer の「未取得」状態を `BufferAvailability` で管理し、録音確定済み（`recording=false`）でも
+  未取得 buffer があれば一度だけ取り出して文字起こしへ回すようにした（二重取得は防止）。切断時も
+  喋った分が無駄にならない（`macos/.../AudioRecorder.swift`）。回帰テスト追加
+  （`macos/Tests/VoicekeyTests/BufferAvailabilityTests.swift`: 通常停止は一度だけ/切断後も一度だけ
+  取り出す/対象なしは空/セッションをまたいで再利用）。
 - **長押し録音の直後に始めた録音へ誤って自動 Enter が付く不具合を修正（Windows・両ブランチ）**。
   ダブルタップ（auto_enter）判定用のリリース情報（時刻・スロット）を、長押しの離鍵でも
   記録していたため、長い口述の直後に素早く次の録音を始めると `_DOUBLE_TAP_SEC`（0.4 秒）内なら

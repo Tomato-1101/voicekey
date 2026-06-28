@@ -16,6 +16,34 @@ import os.log
 
 private let log = Logger(subsystem: "com.voicekey.app", category: "audio")
 
+/// 録音 buffer の「未取得」状態を管理する小さな状態機械（#20）。
+///
+/// 録音開始で利用可能になり、stop の取り出しで「一度だけ」消費される。
+/// デバイス切断（構成変更からの復帰失敗）で録音が確定し recording=false になっても、
+/// 利用可能フラグは残すため、それまでに録音済みの音声を取りこぼさず文字起こしへ回せる。
+/// AudioRecorder.queue 上からのみ操作するため内部ロックは持たない。
+final class BufferAvailability {
+    /// 取り出していない録音 buffer があるか
+    private(set) var available = false
+
+    /// 録音開始時に呼ぶ（buffer の取り出しを許可する）
+    func markAvailable() {
+        available = true
+    }
+
+    /// stop 時に buffer を取り出してよいか判定する。
+    /// 録音中、または録音確定済み（recording=false）でも未取得 buffer が残っていれば true を
+    /// 返し、内部状態を消費済みにする（同じ buffer を二重取得しない）。
+    ///
+    /// - Parameter recording: 現在録音中か
+    /// - Returns: 取り出してよければ true（呼び出し側が drain する）
+    func consume(recording: Bool) -> Bool {
+        guard recording || available else { return false }
+        available = false
+        return true
+    }
+}
+
 final class AudioRecorder {
 
     /// 出力サンプリングレート（Whisper 系 API の標準）
@@ -89,6 +117,9 @@ final class AudioRecorder {
     /// 構成変更による再起動のループ防止用カウンタと窓の開始時刻（queue 上からのみ触る）
     private var recentRestarts = 0
     private var restartWindowStart: TimeInterval = 0
+    /// 録音 buffer の「未取得」状態（#20）。queue 上からのみ触る。
+    /// デバイス切断で recording=false になっても、確定済み音声を一度だけ取り出すために使う
+    private let bufferAvailability = BufferAvailability()
 
     init() {
         // 録音中のマイク切断・サンプルレート変更等ではエンジンが静かに止まり、
@@ -234,6 +265,7 @@ final class AudioRecorder {
                 // 次録音の streamer（より新しい世代）には旧音声が渡らない。
                 stateLock.lock(); _activeChunkGen = _chunkGen; stateLock.unlock()
                 recording = true
+                bufferAvailability.markAvailable()  // この録音の buffer を取り出し可能にする（#20）
                 completion(true)
             } else {
                 completion(false)
@@ -288,7 +320,9 @@ final class AudioRecorder {
     /// 録音を停止し、確定した音声データを返す（即座に返る。結果はコールバック）
     func stop(completion: @escaping ([Float]) -> Void) {
         queue.async { [self] in
-            guard recording else {
+            // 録音中でなくても、デバイス切断で録音が確定済み（recording=false）の場合は
+            // それまでに録音済みの buffer を一度だけ取り出す（#20）。二度目以降は空を返す。
+            guard bufferAvailability.consume(recording: recording) else {
                 completion([])
                 return
             }
