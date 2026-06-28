@@ -5,6 +5,18 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased]
 
 ### Fixed
+- **CJK 隣接スペースの除去を全バックエンド・streaming/REST・Mac/Windows で統一（両ブランチ）**。
+  これまで CJK 単語間スペースの除去は一部経路のみ（Mac は Deepgram ストリーミングだけ、Windows は
+  Deepgram REST だけ）で、ElevenLabs・OpenAI・Groq の REST 経路やサーバープロキシ経由では
+  「今日 は 晴れ」のようにスペースが残っていた。Mac は共通正規化 `TextNormalize.stripCJKSpaces` を
+  新設して streaming/REST（直叩き・ElevenLabs プロキシ・Deepgram 短命 JWT）全 return で適用、
+  Windows は既存 `text_utils.strip_cjk_spaces` を基底 `ApiTranscriber.transcribe`（OpenAI/Groq）と
+  `ElevenLabsTranscriber.transcribe`（プロキシ/直叩き両方）にも適用した。判定範囲（ひらがな・
+  カタカナ・CJK 拡張A・統合漢字・互換漢字・全角半角形）は両 OS で一致。冪等なので Deepgram の
+  二重適用も安全（`macos/.../Core/TextNormalize.swift`・`macos/.../Core/Transcriber.swift`・
+  `macos/.../Core/StreamingTranscriber.swift`・`src/core/api_transcriber.py`）。テスト追加
+  （`macos/Tests/VoicekeyTests/TextNormalizeTests.swift`・`tests/test_text_utils.py` に中国語/全角/
+  冪等の境界ケース：日本語・中国語・英数字の境界を網羅）。
 - **録音中のマイク切断・構成変更で復帰できないとき、それまでの録音音声を捨てないようにした（Mac・両ブランチ）**。
   デバイス切断で `handleConfigurationChange` が復帰失敗すると `recording=false` にし、その後の
   `stop()` がガードで空配列を返していたため、切断直前までに録音できていた音声が失われていた。

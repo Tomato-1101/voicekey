@@ -188,7 +188,7 @@ final class StreamingTranscriber: @unchecked Sendable {
         markCancelled()?.cancel(with: .normalClosure, reason: nil)
         // 録音のたびに生成するセッションは明示的に破棄する（放置すると漸増リーク）
         session.finishTasksAndInvalidate()
-        return Self.stripCJKSpaces(currentText())
+        return TextNormalize.stripCJKSpaces(currentText())
     }
 
     /// lock 下で現在の task を読む（async コンテキストから直接 lock しないため）
@@ -276,7 +276,7 @@ final class StreamingTranscriber: @unchecked Sendable {
         lock.unlock()
 
         // HUD へは日本語スペースを除去した見た目で渡す
-        onInterim?(Self.stripCJKSpaces(snapshot))
+        onInterim?(TextNormalize.stripCJKSpaces(snapshot))
     }
 
     /// finish() の継続を一度だけ解決する（接続終了 / Metadata / タイムアウトのいずれか）
@@ -289,40 +289,4 @@ final class StreamingTranscriber: @unchecked Sendable {
         cont?.resume()
     }
 
-    // MARK: - 日本語スペース除去
-
-    /// Deepgram は日本語出力に単語間スペースを挿入するため、
-    /// 「前後どちらかが CJK 文字」のスペースだけを除去する。
-    /// （英単語間のスペースは残すので "GPT 4" などは壊さない）
-    static func stripCJKSpaces(_ s: String) -> String {
-        let chars = Array(s)
-        var out = String()
-        out.reserveCapacity(chars.count)
-        for (i, c) in chars.enumerated() {
-            if c == " " {
-                let prev = i > 0 ? chars[i - 1] : nil
-                let next = i + 1 < chars.count ? chars[i + 1] : nil
-                if (prev.map(isCJK) ?? false) || (next.map(isCJK) ?? false) {
-                    continue  // CJK 隣接のスペースは除去
-                }
-            }
-            out.append(c)
-        }
-        return out
-    }
-
-    /// ひらがな・カタカナ・漢字（および全角記号の一部）判定
-    private static func isCJK(_ c: Character) -> Bool {
-        for scalar in c.unicodeScalars {
-            let v = scalar.value
-            if (0x3040...0x30FF).contains(v)       // ひらがな・カタカナ
-                || (0x3400...0x4DBF).contains(v)   // CJK 拡張A
-                || (0x4E00...0x9FFF).contains(v)   // CJK 統合漢字
-                || (0xF900...0xFAFF).contains(v)   // CJK 互換漢字
-                || (0xFF00...0xFFEF).contains(v) { // 全角・半角形
-                return true
-            }
-        }
-        return false
-    }
 }

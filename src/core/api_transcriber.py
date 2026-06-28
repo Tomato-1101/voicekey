@@ -276,7 +276,9 @@ class ApiTranscriber:
             files={"file": ("audio.wav", wav_bytes, "audio/wav")},
         )
 
-        text = resp.text.strip()
+        # streaming/REST・Mac/Windows で同じ結果にするため共通正規化を通す（#21）。
+        # OpenAI/Groq も日本語に単語間スペースが入りうるため CJK 隣接スペースを除去する。
+        text = strip_cjk_spaces(resp.text.strip())
         logger.info(
             f"{self.display_name} 文字起こし完了: {self.last_api_time:.0f}ms, {len(text)} 文字"
         )
@@ -366,7 +368,10 @@ class ElevenLabsTranscriber(ApiTranscriber):
         # ElevenLabs バッチは短命キー非対応のためプロキシを使う（並存ガード）。
         if backend_client.is_logged_in():
             try:
-                return backend_client.transcribe_elevenlabs(wav_bytes, self.language or "")
+                # プロキシ経由でも直叩きと同じ正規化を通す（#21・CJK 隣接スペース除去）
+                return strip_cjk_spaces(
+                    backend_client.transcribe_elevenlabs(wav_bytes, self.language or "")
+                )
             except backend_client.BackendError as e:
                 raise TranscriptionError(str(e))
 
@@ -385,7 +390,7 @@ class ElevenLabsTranscriber(ApiTranscriber):
         )
 
         try:
-            text = (resp.json().get("text") or "").strip()
+            text = strip_cjk_spaces((resp.json().get("text") or "").strip())
         except Exception as e:
             raise TranscriptionError(f"{self.display_name} 応答の解析に失敗しました: {e}")
 

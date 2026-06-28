@@ -22,6 +22,19 @@ class TestStripCJKSpaces(unittest.TestCase):
         # 漢字と英字の境界スペースは片側 CJK なので除去
         self.assertEqual(strip_cjk_spaces("日本 ABC"), "日本ABC")
 
+    def test_chinese_spaces_removed(self):
+        # 中国語（CJK 統合漢字）の単語間スペースも除去（#21・Mac TextNormalize と同結果）
+        self.assertEqual(strip_cjk_spaces("今天 天气 很好"), "今天天气很好")
+
+    def test_fullwidth_boundary_removed(self):
+        # 全角・半角形（全角英数）も CJK とみなしスペースを除去
+        self.assertEqual(strip_cjk_spaces("Ａ は B"), "ＡはB")
+
+    def test_idempotent(self):
+        # 冪等: 2 回適用しても結果は変わらない（Deepgram 既処理の二重適用に備える）
+        once = strip_cjk_spaces("今日 は 晴れ")
+        self.assertEqual(strip_cjk_spaces(once), once)
+
     def test_no_space_unchanged(self):
         self.assertEqual(strip_cjk_spaces("テスト"), "テスト")
         self.assertEqual(strip_cjk_spaces(""), "")

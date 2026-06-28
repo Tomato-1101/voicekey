@@ -189,8 +189,9 @@ final class Transcriber: @unchecked Sendable {
         let request = buildRequest(audio: encodeAudio(samples), apiKey: apiKey)
         let start = Date()
         let data = try await send(request)
-        let text = try parseResponse(data)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = TextNormalize.stripCJKSpaces(
+            try parseResponse(data).trimmingCharacters(in: .whitespacesAndNewlines)
+        )
         let elapsed = Int(Date().timeIntervalSince(start) * 1000)
         log.info("\(self.backend.label, privacy: .public) 文字起こし完了: \(elapsed)ms, \(text.count) 文字")
         return text
@@ -203,9 +204,11 @@ final class Transcriber: @unchecked Sendable {
     private func transcribeElevenLabsViaProxy(samples: [Float]) async throws -> String {
         let start = Date()
         do {
-            let text = try await BackendClient.transcribeElevenLabs(
-                wav: WavEncoder.encode(samples), language: language
-            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = TextNormalize.stripCJKSpaces(
+                try await BackendClient.transcribeElevenLabs(
+                    wav: WavEncoder.encode(samples), language: language
+                ).trimmingCharacters(in: .whitespacesAndNewlines)
+            )
             let elapsed = Int(Date().timeIntervalSince(start) * 1000)
             log.info("\(self.backend.label, privacy: .public) 文字起こし完了: \(elapsed)ms, \(text.count) 文字")
             return text
@@ -228,8 +231,9 @@ final class Transcriber: @unchecked Sendable {
 
         let start = Date()
         let data = try await send(request)
-        let text = try parseResponse(data)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = TextNormalize.stripCJKSpaces(
+            try parseResponse(data).trimmingCharacters(in: .whitespacesAndNewlines)
+        )
         let elapsed = Int(Date().timeIntervalSince(start) * 1000)
         log.info("\(self.backend.label, privacy: .public) 文字起こし完了: \(elapsed)ms, \(text.count) 文字")
         return text
