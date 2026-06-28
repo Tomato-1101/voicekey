@@ -75,7 +75,7 @@
 - **🖥️ Cross-Platform**: Windows / macOS 対応
 - **✨ 自動テキスト整形**: 文字起こし結果を読みやすく自動整形（ホットキーごとにオン/オフ可）
 - **🎙️ 高精度・低遅延**: 無音スキップ・音量正規化などの処理は常に最適な設定で自動実行
-- **🪟 Dynamic Island 風 UI**: モダンなオーバーレイ表示
+- **🪟 コンパクトな録音 HUD**: 画面上部に小さく出る録音インジケーター（録音中だけ表示・邪魔にならない）
 - **⚙️ GUI 設定**: 設定ウィンドウから簡単に変更。各設定は**開閉できる左サイドバー**から選びます（折りたたむとアイコンだけのレールになり、項目が増えても縦スクロールで全部に届きます）
 - **🎯 ダブルタップ Auto-Enter**: 連続入力後に自動で Enter（チャットアプリ向け）
 - **🤚 ハンズフリー切替キー**: 切替キー＋ホットキーで「押して開始・もう一度で停止」のトグル録音に
@@ -164,12 +164,13 @@ Copy-Item -Path settings.example.yaml -Destination settings.yaml -ErrorAction Si
 
 ### API キーの設定（起動後）
 
-文字起こしは **Groq / OpenAI のどちらか（または両方）** のクラウド API で行うため、API キーが必要：
+配布版はログインのみで文字起こしできます（キー不要）。**ソースから動かす場合**は、文字起こしに **高速リアルタイム（Deepgram）/ 正確性（ElevenLabs）** のクラウド API を使うため API キーが必要です（テキスト整形を使うなら Groq も）：
 
-| サービス | 取得先 | 無料枠 |
+| サービス | 用途 | 取得先 |
 |---|---|---|
-| Groq | https://console.groq.com/keys | あり（レート制限あり） |
-| OpenAI | https://platform.openai.com/api-keys | なし（事前課金） |
+| Deepgram（高速リアルタイム） | 文字起こし（既定・低遅延） | https://console.deepgram.com/ |
+| ElevenLabs（正確性） | 文字起こし（高精度） | https://elevenlabs.io/ |
+| Groq | テキスト整形（任意） | https://console.groq.com/keys |
 
 **設定方法（推奨）**: トレイ/メニューバーのアイコン → 設定ウィンドウ → API キーフィールドに貼り付けて保存。
 キーは **macOS Keychain / Windows Credential Manager** に安全に保存される（`.env` や YAML に書く必要なし）。
@@ -193,10 +194,10 @@ Copy-Item -Path settings.example.yaml -Destination settings.yaml -ErrorAction Si
 | **OS** | Windows 10/11 または macOS 11+ |
 | **Python** | 3.10 以上 |
 | **ffmpeg** | `PATH` に通っていること（音声変換用） |
-| **GPU** | **不要**（VAD は CPU でも動く。Apple Silicon は MPS、NVIDIA は CUDA を自動検出） |
-| **API キー** | OpenAI または Groq のいずれか（両方併用も可） |
+| **GPU** | **不要**（VAD はローカル CPU 実行＝Silero ONNX を onnxruntime で。文字起こしはすべてクラウド API） |
+| **アカウント / API キー** | 配布版はログインのみ（無料体験 200 回 → アクティベーションキー）。ソースから動かす場合は文字起こし用 API キー（高速リアルタイム=Deepgram / 正確性=ElevenLabs）＋整形用に Groq（任意） |
 
-> **💡 Tip**: 文字起こしはすべてクラウド API なので、GPU 非搭載 PC でも動作します。
+> **💡 Tip**: 文字起こしはすべてクラウド API、発話区間検出（VAD）だけローカル CPU 実行なので、GPU 非搭載 PC でも動作します。
 
 ---
 
@@ -250,7 +251,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-> `torch` / `torchaudio` は両 OS とも標準 wheel が使えます。Apple Silicon は MPS、NVIDIA GPU 搭載機は自動的に CUDA を利用します（VAD のみ）。
+> VAD（発話区間検出）は Silero の ONNX モデルを `onnxruntime` で **CPU 実行**します（GPU 不要）。`requirements.txt` の `torch` / `torchaudio` は `silero-vad` パッケージの依存として入るだけで、実行時には使いません。
 
 ### 4. ffmpeg の確認
 
@@ -453,22 +454,21 @@ dev_mode: false
 
 ### API キーの設定
 
-プロジェクトルートに `.env` を作成：
+配布版はログインのみで使えます（キー不要）。ソースから動かす場合は、設定ウィンドウの API キーフィールドで保存するか、プロジェクトルートに `.env` を作成します：
 
 ```env
-GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxxxxxx
-OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+DEEPGRAM_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxx      # 高速リアルタイム（文字起こし）
+ELEVENLABS_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxx    # 正確性（文字起こし）
+GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxxxxxx      # テキスト整形（任意）
 ```
 
 ### API キーの取得
 
-| サービス | 料金 | 取得先 |
+| サービス | 用途 | 取得先 |
 |---|---|---|
-| **Groq** | 無料（レート制限あり） | [console.groq.com/keys](https://console.groq.com/keys) |
-| **OpenAI** | 有料（事前課金） | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
-
-OpenAI 課金: [platform.openai.com/account/billing](https://platform.openai.com/account/billing)
-料金詳細: [openai.com/pricing](https://openai.com/pricing)
+| **Deepgram**（高速リアルタイム） | 文字起こし（既定・低遅延） | [console.deepgram.com](https://console.deepgram.com/) |
+| **ElevenLabs**（正確性） | 文字起こし（高精度） | [elevenlabs.io](https://elevenlabs.io/) |
+| **Groq** | テキスト整形（任意・無料枠あり） | [console.groq.com/keys](https://console.groq.com/keys) |
 
 ---
 
@@ -559,9 +559,10 @@ voicekey/
 │   │   ├── audio_recorder.py     # sounddevice ベースの録音
 │   │   ├── audio_preprocess.py   # 音量正規化（Peak+RMS）
 │   │   ├── audio_utils.py        # WAV / MP3 変換
-│   │   ├── vad.py                # silero-vad ローカル VAD
-│   │   ├── groq_transcriber.py   # Groq API クライアント
-│   │   ├── openai_transcriber.py # OpenAI API クライアント
+│   │   ├── vad.py                # silero-vad（ONNX / CPU）ローカル VAD
+│   │   ├── api_transcriber.py    # REST 文字起こし（Deepgram / ElevenLabs / OpenAI / Groq）
+│   │   ├── streaming_transcriber.py # Deepgram ストリーミング（低遅延）
+│   │   ├── text_formatter.py     # Groq LLM によるテキスト整形
 │   │   └── input_handler.py      # クリップボード経由のテキスト挿入
 │   ├── platform/                 # OS 抽象化層
 │   │   ├── base.py               # PlatformAdapter 抽象クラス
@@ -570,7 +571,7 @@ voicekey/
 │   │   ├── macos/adapter.py      # Cmd 系修飾キー、メニューバー挙動
 │   │   └── windows/adapter.py    # Ctrl 系修飾キー、トレイ挙動
 │   ├── ui/
-│   │   ├── overlay.py            # Dynamic Island 風オーバーレイ
+│   │   ├── hud.py                # コンパクトな録音 HUD
 │   │   ├── settings_window.py    # 設定ウィンドウ
 │   │   ├── styles.py             # macOS 風テーマ
 │   │   └── system_tray.py        # システムトレイ / メニューバー

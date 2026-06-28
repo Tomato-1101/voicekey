@@ -4,6 +4,21 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased]
 
+### Changed
+- **ドキュメントを現状の実装に合わせて修正（両ブランチ・実装乖離の解消）**。
+  README / OVERVIEW.md / AGENTS.md / CLAUDE.md に残っていた旧 WhisperWin 時代の記述を一掃した。
+  具体的には (1) 「SuperWhisper / faster-whisper / CUDA 必須 / NVIDIA GPU / VRAM」→ 文字起こしは
+  クラウド API・VAD はローカル CPU（Silero ONNX + onnxruntime。GPU 不要。`torch`/`torchaudio` は
+  `silero-vad` の依存として入るだけで実行時不使用）、(2) 「Dynamic Island 風オーバーレイ / `src/ui/overlay.py`」→
+  コンパクトな録音 HUD（`src/ui/hud.py`）、(3) 実在しない `src/core/groq_transcriber.py` /
+  `openai_transcriber.py` / `transcriber.py` → `api_transcriber.py`（REST）/ `streaming_transcriber.py`、
+  (4) 「文字起こしは OpenAI/Groq だけ」→ 現在のプロバイダー（main は 4 種実名、release は高速リアルタイム=
+  Deepgram / 正確性=ElevenLabs の 2 択＋整形に Groq）、(5) Windows 単一コードベース前提 → Mac(Swift)/
+  Windows(Python) 二本立て、(6) 「自動テストは無い」→ Python(`unittest discover -s tests`・offscreen)・
+  Mac(`swift test`)のテストが存在。CLAUDE.md の旧アーキ節は OVERVIEW.md に委譲する簡潔版へ差し替え。
+  OVERVIEW.md / AGENTS.md / CLAUDE.md は両ブランチ同一、README はブランチ別（main=実プロバイダー名 /
+  release=2 択名）に整合させた。
+
 ### Fixed
 - **未ログイン時のゲート文言を無料体験仕様に修正（release・Mac/Windows）**。
   配布版で未ログインのまま文字起こしすると「利用するにはログインとアクティベーションキーが必要です」と

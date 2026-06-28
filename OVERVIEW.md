@@ -12,7 +12,7 @@
 ## 1. voicekey とは
 
 ホットキーを押している間だけ音声を録音し、文字起こし結果を**いま使っているアプリのカーソル位置へ自動入力**する常駐型音声入力ツール。
-Mac はメニューバー常駐、Windows はタスクトレイ常駐。クラウド API で文字起こしする（ローカル GPU 版は Windows の歴史的経緯で残るが、配布の主軸は API）。
+Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字起こしはクラウド API、発話区間検出（VAD）だけローカル実行（Python=Silero ONNX を onnxruntime/CPU、Mac=エネルギー RMS）。
 
 ## 2. 構成（プラットフォーム二本立て）
 
@@ -34,7 +34,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。クラ�
 | 文字起こしの選択肢 | 4 プロバイダーを**実名表示**（OpenAI / Groq / ElevenLabs / Deepgram） | **2 択のみ**：高速リアルタイム（Deepgram nova-3）/ 正確性（ElevenLabs scribe_v1） |
 | モデル選択 | あり（フルコントロール） | なし（推奨モデル固定） |
 | テキスト整形（Groq） | トグルあり・既定 OFF・モデル/プロンプト選択可 | **裏で固定実行**（llama-3.1-8b-instant 固定・UI は ON/OFF のみ・既定 ON） |
-| API キータブ | 表示 | 配布ビルドは非表示。**ログイン必須**。ログインで**無料体験 200 回**、使い切るとアクティベーションキー必須（無料体験は v1.5.0〜・キー必須は v1.3.0〜・埋め込みキーは休眠） |
+| API キータブ | 表示 | 配布ビルドは非表示。**ログイン必須**。ログインで**無料体験 200 回**、使い切るとアクティベーションキー必須（無料体験は v1.5.0〜・キー必須は v1.3.0〜・埋め込みキーは撤去済み＝完全サーバー経由） |
 
 両ブランチ共通: **VAD・長文分割・ストリーミング・録音 HUD は常時 ON 固定**（設定 UI から撤去済み。Mac は `ConfigStore` で true 固定、Windows は `config_manager._force_always_on` が読込・保存時に矯正）。
 
@@ -56,7 +56,6 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。クラ�
 | 使用実績（統計＋チャート＋レベル） | レベル/経験値・推定節約時間・連続利用日数に加え、今日/今週/累計の入力量と期間切替（週/月/年）の棒グラフを「実績」タブに表示（カウントアップ／棒伸びアニメ・集計は貼付後の処理＝遅延ゼロ）。**ログイン中はアカウントに紐付き複数端末で合算・再インストール後も引き継ぎ**（`usage_stats`／release 製品版・未ログインはローカルのみ） | ✅ | ✅ |
 | 自動更新 | Mac=Sparkle / Win=version.json フィード（起動時＋1日ごと自動確認・「バージョン情報」タブで手動確認＋検知時に「今すぐ更新する」） | ✅ | ✅ |
 | ログイン起動 | OS のログイン時に自動起動 | ✅ | ✅ |
-| ローカル GPU 文字起こし | faster-whisper（Windows の歴史的経緯） | — | ✅ |
 
 ## 5. アーキ地図（責務 → ファイル）
 
@@ -76,7 +75,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。クラ�
 | VAD / マイク自動検出 / 履歴 | `Core/VoiceActivity.swift` / `MicAutoDetector.swift` / `HistoryStore.swift` | `core/vad.py` / `mic_auto_detect.py` / `history.py` |
 | 使用実績（統計・レベル） | `Core/StatsStore.swift` | `core/stats.py` |
 | 設定画面 UI | `UI/SettingsView.swift` / `HotkeyRecorderView.swift` | `ui/settings_window.py` / `styles.py` |
-| HUD / オーバーレイ / トレイ | `UI/Hud.swift` / `VoicekeyApp.swift`（メニューバー） | `ui/hud.py` / `overlay.py` / `system_tray.py` |
+| HUD / トレイ | `UI/Hud.swift` / `VoicekeyApp.swift`（メニューバー） | `ui/hud.py` / `system_tray.py` |
 | API キー保管 | `Core/Keychain.swift` / `Config/EmbeddedKeys.generated.swift` | `utils/secrets.py` / `.env` |
 | 自動更新 | `Core/UpdaterController.swift`（Sparkle） | `utils/updater.py` |
 | OS 権限 | `AppController.swift`（マイク/入力監視/アクセシビリティ） | — （Windows は OS ゲートなし） |
@@ -86,7 +85,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。クラ�
 
 - **Mac**: DMG・自動更新フィード（Sparkle appcast）とも Vercel サイト `voicekey.vercel.app`（ソース `/Users/tomato/Project/voicekey-site/`、`vercel deploy --prod`）。
 - **Windows**: インストーラ（約 270MB）は公開バイナリ専用リポ `voicekey-releases` の GitHub Releases。更新フィード `version.json` / `downloads.json` は Vercel。
-- 配布版は**ログイン必須**。**v1.5.0〜はログインで無料体験 200 回**（文字起こし 1 回＝1 消費・累計一度きり）、使い切ると**アクティベーションキー必須**（課金は未実装＝当面はキー登録のみが解放手段）。文字起こしは自社サーバー（`voicekey.vercel.app`）が利用権と無料体験の残量を検証（`entitlements.free_quota/free_used` ＋ `consume_free_quota` RPC・残枠ゼロは 402）し、Deepgram=短命トークン直叩き / ElevenLabs・Groq=サーバープロキシで処理（埋め込みキーは休眠）。旧版（v1.2.0 以前）は提供元キーのローテーションで順次無効化。**ソース非公開**。
+- 配布版は**ログイン必須**。**v1.5.0〜はログインで無料体験 200 回**（文字起こし 1 回＝1 消費・累計一度きり）、使い切ると**アクティベーションキー必須**（課金は未実装＝当面はキー登録のみが解放手段）。文字起こしは自社サーバー（`voicekey.vercel.app`）が利用権と無料体験の残量を検証（`entitlements.free_quota/free_used` ＋ `consume_free_quota` RPC・残枠ゼロは 402）し、Deepgram=短命トークン直叩き / ElevenLabs・Groq=サーバープロキシで処理（埋め込みキーは撤去済み＝製品版は完全サーバー経由）。旧版（v1.2.0 以前）は埋め込み済みの提供元キーが漏洩済みのためローテーションで順次無効化。**ソース非公開**。
 - リリースは常に Mac/Windows 両 OS 同期。版番号は semver で Claude が決める。手順の全文は `HANDOFF.md`「リリース手順」。
 
 ## 7. ドキュメント体系（どれを見ればいいか）

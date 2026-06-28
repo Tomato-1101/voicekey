@@ -49,7 +49,7 @@ Mac（`macos/` Swift）と Windows（`src/` Python）の両方を同じ作業で
 
 ## 最重要: Mac 版（macos/ ディレクトリ・Swift）の作業ルール
 
-このリポジトリには Windows 版（下記 Project Overview、Python/faster-whisper）に加えて
+このリポジトリには Windows 版（下記 Project Overview、Python/PySide6）に加えて
 **Mac 版（`macos/`、Swift製メニューバーアプリ）** がある。Mac 版を触るときは以下を厳守:
 
 - `macos/Sources/` を変更したら、**報告前に必ずワンセットで実行する**（ユーザーのビルド忘れ防止・2026-06-10 指示）:
@@ -64,182 +64,66 @@ Mac（`macos/` Swift）と Windows（`src/` Python）の両方を同じ作業で
 
 ## Project Overview
 
-voicekey (SuperWhisper) is a Windows desktop application for real-time speech-to-text transcription using faster-whisper. It runs as a system tray application with a Dynamic Island-style overlay UI, activated by global hotkeys.
+voicekey は、ホットキーを押している間だけ音声を録音し、文字起こし結果を**今使っているアプリのカーソル位置へ自動入力**する常駐型の音声入力ツール（Mac=メニューバー / Windows=タスクトレイ）。
+**文字起こしはすべてクラウド API**（Deepgram / ElevenLabs / OpenAI / Groq）、**発話区間検出（VAD）だけローカル CPU 実行**（Python=Silero ONNX を onnxruntime、Mac=エネルギー RMS）。ローカル GPU 文字起こし（faster-whisper）は廃止済み＝**CUDA / GPU は不要**。
+
+> 機能一覧・アーキ地図（責務 → ファイル）・2 ブランチの違い・配布構成は **`OVERVIEW.md`** に集約してある。ここでは重複させない（ドリフト防止）。Windows は `src/`（Python / PySide6）、Mac は `macos/Sources/Voicekey/`（Swift）の二本立て。
 
 ## Development Commands
 
-### Running the Application
+### Windows（`src/`・Python）
 
 ```bash
-# Development mode
+# 開発実行
 python run.py
 
-# Build executable (creates dist/SuperWhisperLike/SuperWhisperLike.exe)
-pyinstaller SuperWhisperLike.spec --clean --noconfirm
+# 配布ビルド（PyInstaller） → dist/voicekey/voicekey.exe
+pyinstaller voicekey.spec --clean --noconfirm
 ```
 
-### Setup
+### Mac（`macos/`・Swift）
 
 ```bash
-# Create and activate virtual environment
+cd macos && ./scripts/build_app.sh   # アプリをビルド（配布 DMG は build_dmg.sh）
+swift test --package-path macos       # Swift ユニットテスト
+```
+
+### Setup（Windows・ソースから）
+
+```bash
 python -m venv venv
-.\venv\Scripts\Activate.ps1  # Windows PowerShell
-
-# Install dependencies
+.\venv\Scripts\Activate.ps1   # Windows PowerShell
 pip install -r requirements.txt
-
-# Install PyTorch with CUDA 12.1 (required for GPU acceleration)
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
 ```
 
-## System Requirements
+GPU / CUDA は不要（文字起こしはクラウド API、VAD は onnxruntime の CPU 実行）。`torch` / `torchaudio` は `silero-vad` の依存として入るだけで、実行時には使わない。
 
-- **CUDA-capable NVIDIA GPU required** - The application uses GPU acceleration exclusively via faster-whisper
-- Python 3.8+
-- ffmpeg must be installed and available in PATH
+## Architecture（要点のみ・全体は OVERVIEW.md）
 
-## Architecture
+### 処理の流れ（Windows）
 
-### Core Application Flow
+1. **デュアルホットキー検出**（`src/app.py`）: 2 つの独立ホットキーを同時監視（pynput）。
+2. **音声録音**（`src/core/audio_recorder.py`）: sounddevice でマイク録音。`audio_preprocess.py` で音量正規化、`vad.py`（Silero ONNX / CPU）で無音圧縮・長文分割。
+3. **文字起こし**: REST=`src/core/api_transcriber.py`（Deepgram / ElevenLabs / OpenAI / Groq）、低遅延ストリーミング=`src/core/streaming_transcriber.py`（Deepgram）。
+4. **テキスト整形**（任意・`src/core/text_formatter.py`）: Groq の高速 LLM で 1 回だけ整形（失敗時は原文フォールバック）。
+5. **テキスト入力**（`src/core/input_handler.py`）: クリップボード経由で前面アプリへ貼り付け、貼付後に原本を復元。
+6. **UI 更新**: PySide6 のシグナル/スロットでスレッド安全に HUD（`src/ui/hud.py`）・システムトレイ（`src/ui/system_tray.py`）を更新。
 
-1. **Dual Hotkey Detection** (`src/app.py`): Keyboard listener monitors TWO independent hotkeys simultaneously
-2. **Audio Recording** (`src/core/audio_recorder.py`): Captures audio using sounddevice when either hotkey triggered
-3. **Backend Selection**: Each hotkey can use different transcription backend (local/groq/openai)
-4. **Transcription** (`src/core/transcriber.py`): Processes audio with selected backend
-5. **Text Input** (`src/core/input_handler.py`): Injects transcribed text into active window using pynput
-6. **UI Updates**: PySide6 signals/slots coordinate updates to overlay and system tray
+### 中央コントローラ（`VoicekeyApp`・`src/app.py`）
 
-### Key Components
+- 2 スロット（`HotkeySlot`）を独立設定（ホットキー / モード hold・toggle / バックエンド / モデル・プロンプト）。`_hotkey_slots: Dict[int, HotkeySlot]`、`_active_slot` が録音中スロット。
+- 録音開始時に設定をスナップショットして処理キューへ載せる（処理中の設定変更に影響されない）。
+- 常駐デーモンスレッド: キーボードリスナ / 設定ホットリロード監視。
 
-**SuperWhisperApp** (`src/app.py`):
-- Central controller integrating all components
-- **Dual Hotkey Support**: Manages 2 independent hotkey slots
-  - Each slot: hotkey, mode (hold/toggle), backend (local/groq/openai), API model/prompt
-  - `HotkeySlot` dataclass holds per-slot configuration
-  - `_hotkey_slots: Dict[int, HotkeySlot]` manages both slots
-  - `_active_slot` tracks which slot is currently recording
-- **Shared Local Transcriber**: `_local_transcriber` instance shared by both slots (VRAM efficient)
-- **Per-Slot API Transcribers**: Each slot has its own GroqTranscriber/OpenAITranscriber
-- Manages two background daemon threads:
-  - Keyboard listener for dual hotkey detection
-  - Config monitor for hot-reload support
-- Thread-safe communication via PySide6 signals (status_changed, text_ready)
-- Handles recording cancellation when new recording starts during transcription
+### 設定（`src/config/`）
 
-**Transcriber** (`src/core/transcriber.py`):
-- Lazy-loads WhisperModel on first transcription or preloads during recording
-- Auto-unloads model after configurable delay (release_memory_delay) to free VRAM
-- Thread-safe model management with locks and timer cancellation
-- Filters transcription segments by no_speech_prob to prevent hallucinations
-- **CRITICAL**: Always checks torch.cuda.is_available() and raises RuntimeError if CUDA unavailable
+- `config_manager.py` が `settings.yaml` を読み込み（凍結時は実行ファイルのディレクトリ）、旧フォーマットを自動マイグレーション、mtime 監視でホットリロード。保存はアトミック置換（一時ファイル → `os.replace`）。
+- `constants.py` の `APP_VERSION` がバージョンの**単一ソース**（`src/__init__.__version__`・Windows ビルド・`updater.py` が参照）。
+- **VAD / 長文分割 / ストリーミング / 録音 HUD は常時 ON 固定**（`_force_always_on` が読込・保存時に矯正）。
 
-**ConfigManager** (`src/config/config_manager.py`):
-- Loads settings.yaml from project root (or executable directory when frozen)
-- **Automatic Migration**: Detects legacy config format and auto-converts to new structure
-- Monitors file mtime and triggers hot-reload without restart
-- Deep-merges user config with DEFAULT_CONFIG from constants.py (nested dict support)
-- `_deep_merge()` helper for recursive dict merging
+### release（製品版）固有のサーバー認証層
 
-**DynamicIslandOverlay** (`src/ui/overlay.py`):
-- Frameless, always-on-top window at screen top-center
-- Three states: idle (hidden), recording (red pulse animation), transcribing
-- Custom paintEvent for pill-shaped background with pulse effect
-- Animates size changes with QPropertyAnimation
-
-### Configuration System
-
-**settings.yaml** controls all runtime behavior with hierarchical structure:
-
-```yaml
-# Global settings (shared by both hotkeys)
-language: ja
-vad_filter: true
-vad_min_silence_duration_ms: 500
-
-# Local backend settings (shared)
-local_backend:
-  model_size: large-v3
-  compute_type: float16
-  release_memory_delay: 300
-  # ... other Whisper parameters
-
-# Hotkey 1 configuration
-hotkey1:
-  hotkey: <shift_r>
-  hotkey_mode: hold
-  backend: openai
-  api_model: gpt-4o-mini-transcribe
-  api_prompt: ""
-
-# Hotkey 2 configuration
-hotkey2:
-  hotkey: <f2>
-  hotkey_mode: toggle
-  backend: groq
-  api_model: whisper-large-v3-turbo
-  api_prompt: ""
-```
-
-**Key Configuration Features**:
-- **Dual Hotkey**: Fixed 2 slots (`hotkey1` / `hotkey2`), each with independent settings
-- **Backend Selection**: Per-hotkey backend (local/groq/openai)
-- **Shared Local Settings**: `local_backend` section applies to both hotkeys
-- **API Models**: Different models per hotkey for Groq/OpenAI
-- **Hot-Reload**: Changes detected automatically by config monitor thread and applied without restart
-- **Backward Compatibility**: Old single-hotkey format auto-migrates to new structure
-
-### Threading Model
-
-- **Main Thread**: PySide6 event loop for UI
-- **Keyboard Listener Thread**: pynput keyboard listener (daemon)
-- **Config Monitor Thread**: Polls settings.yaml mtime every CONFIG_CHECK_INTERVAL_SEC (daemon)
-- **Transcription Workers**: Short-lived daemon threads spawned per transcription request
-- **Model Preload**: Background thread started during recording to reduce latency
-
-### PyInstaller Packaging
-
-**SuperWhisperLike.spec**:
-- One-Dir mode (not One-File) for faster startup
-- Bundles settings.yaml into dist
-- Collects faster_whisper and ctranslate2 dependencies with collect_all
-- Hidden imports for all src modules
-- Console=False for windowed app
-
-## Hallucination Prevention
-
-The app implements multiple strategies to prevent Whisper from generating phantom text:
-
-1. **VAD Filter**: Voice Activity Detection removes silent segments before transcription
-2. **no_speech_threshold**: Model's internal threshold during inference (default 0.6)
-3. **no_speech_prob_cutoff**: Post-processing filter that discards segments with high no_speech_prob (default 0.7)
-4. **condition_on_previous_text=false**: Prevents model from continuing previous patterns
-
-Users experiencing hallucinations like "ご視聴ありがとうございました" should:
-- Increase no_speech_threshold (0.7-0.8)
-- Decrease no_speech_prob_cutoff (0.5-0.6)
-- Enable vad_filter if disabled
-
-## Common Issues
-
-### WinError 1314 (Symbolic Link Privilege)
-Set `model_cache_dir` in settings.yaml to avoid HuggingFace Hub trying to create symlinks. Example: `D:/whisper_cache`
-
-### Text Not Inserting
-- App needs admin privileges to inject text into admin-elevated windows
-- Check for hotkey conflicts with other applications
-
-### VRAM Management
-- Model unloads after release_memory_delay seconds of inactivity
-- Reduce model_size or use int8 compute_type for lower VRAM usage
-- Model preloads during recording to minimize transcription delay
-
-## Code Style Notes
-
-- Type hints used throughout (from typing import)
-- Enums defined in src/config/types.py (HotkeyMode, ModelSize, ComputeType, AppState)
-- Constants in src/config/constants.py (UI dimensions, intervals, default config)
-- Logger via src/utils/logger.py (get_logger(__name__))
-- PySide6 signals for thread-safe UI updates (never manipulate UI from worker threads directly)
+- `src/core/auth_client.py` / `backend_client.py` / `login_coordinator.py`: ログイン（deep link）・利用権／無料体験残量の検証・短命トークン／プロキシ取得を担う。`main`（自分用）には存在しない。
 
 ## コメントルール（重要）
 
@@ -504,11 +388,15 @@ main への push は手動で実行してください: `git push origin main`
 ### 動作確認コマンド
 
 ```bash
-# 開発モードで起動
+# 自動テスト（オフライン・鍵/ネットワーク/モデル DL なし）
+QT_QPA_PLATFORM=offscreen python -m unittest discover -s tests   # Windows(Python)
+swift test --package-path macos                                  # Mac(Swift)
+
+# 開発モードで起動（Windows）
 python run.py
 
-# ビルドして実行
-pyinstaller SuperWhisperLike.spec --clean --noconfirm
-cd dist/SuperWhisperLike
-./SuperWhisperLike.exe
+# ビルドして実行（Windows）
+pyinstaller voicekey.spec --clean --noconfirm
+cd dist/voicekey
+./voicekey.exe
 ```
