@@ -5,6 +5,13 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased]
 
 ### Fixed
+- **アプリのバージョン定義を `constants.APP_VERSION` の単一ソースへ統一（両ブランチ）**。
+  `src/__init__.py` の `__version__` が `"2.0.0"` とハードコードされ、実際の配布版（`constants.APP_VERSION`・
+  Info.plist・README）と食い違っていた。`from .config.constants import APP_VERSION as __version__` に変更し、
+  Windows ビルドスクリプト／`updater.py` が既に参照している `APP_VERSION` を唯一の真実とした。
+  整合回帰テストを追加（`tests/test_version_consistency.py`: `__init__` がハードコードせず単一ソースを参照する／
+  macOS Info.plist の表示バージョン／README 配布ステータス表の macOS・Windows 行が `APP_VERSION` と一致する。
+  値固定でなく相互一致を検証するのでブランチ非依存）。
 - **VAD テストがクリーンな clone / git archive でも通るよう、音声 fixture をリポジトリ同梱に変更（両ブランチ）**。
   `tests/test_vad.py` が `.gitignore` 除外（`benchmark/audio/*.wav`）の `benchmark/audio/short_ja.wav` に
   依存しており、開発者ローカルにしか無いためクリーンな checkout では VAD テスト 13 件が setup error に
