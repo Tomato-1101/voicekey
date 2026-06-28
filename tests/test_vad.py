@@ -151,6 +151,81 @@ class TestSegment(unittest.TestCase):
         probs[10] = 1.0  # 1 フレームのみ
         self.assertEqual(SileroVad._speech_regions(probs, 50 * 512, 250, 0.7), [])
 
+    def test_speech_regions_two_isolated_frames_are_noise(self):
+        """離れた単発フレーム 2 個（総数 2・各 run 長 1）は発話としない（#22）。
+        旧実装は総数 2 以上で通したため 2 発話と誤採用していた。"""
+        probs = np.zeros(100, dtype=np.float32)
+        probs[10] = 1.0
+        probs[80] = 1.0  # 離れた 2 個の単発クリックノイズ
+        self.assertEqual(SileroVad._speech_regions(probs, 100 * 512, 250, 0.7), [])
+
+    def test_speech_regions_short_run_is_speech(self):
+        """連続 2 フレーム（≒64ms）の run は発話とみなす（#22）。"""
+        probs = np.zeros(100, dtype=np.float32)
+        probs[10:12] = 1.0  # 連続 2 フレーム
+        regions = SileroVad._speech_regions(probs, 100 * 512, 250, 0.7)
+        self.assertEqual(len(regions), 1)
+
+    def test_speech_regions_isolated_noise_dropped_run_kept(self):
+        """単発ノイズと連続 run が混在 → run だけ採用（#22）。"""
+        probs = np.zeros(100, dtype=np.float32)
+        probs[5] = 1.0       # 単発ノイズ（捨てる）
+        probs[40:45] = 1.0   # 連続 5 フレームの発話（採用）
+        regions = SileroVad._speech_regions(probs, 100 * 512, 250, 0.7)
+        self.assertEqual(len(regions), 1)
+
+
+class TestSegmentMerge(unittest.TestCase):
+    """短いセグメントの直前結合（#23）。_speech_regions をモックして長さ条件だけ検証する。
+
+    旧実装は「直前セグメントが短いとき」だけ結合していたため、長区間の後ろに続く
+    _MIN_SEGMENT_SEC 未満の短区間が独立したまま残っていた。現在セグメント長でも
+    判定するようにして、先頭・中間・末尾いずれの短区間も直前へ結合されることを確認する。
+    """
+
+    LONG = 48000   # 3 秒（>= _MIN_SEGMENT_SEC = 2 秒）
+    SHORT = 16000  # 1 秒（< _MIN_SEGMENT_SEC）
+    MIN = 32000    # 2 秒分のサンプル数
+
+    def _segment_with_region_lens(self, region_lens):
+        """指定長の連続セグメント列になる regions を返すよう _speech_regions を差し替え、
+        分割対象になる 20 秒のダミー音声で segment() を実行して結果を返す。"""
+        vad = SileroVad()
+        regions, pos = [], 0
+        for length in region_lens:
+            regions.append([pos, pos + length])
+            pos += length
+        audio = np.zeros(20 * _SAMPLE_RATE, dtype=np.float32)  # 12 秒超 → 分割対象
+        with patch.object(SileroVad, "_load_session", return_value=True), \
+             patch.object(SileroVad, "_frame_probs", return_value=np.zeros(10, dtype=np.float32)), \
+             patch.object(SileroVad, "_speech_regions", return_value=regions):
+            return vad.segment(audio)
+
+    def _assert_no_short_segment(self, segs, expected_count):
+        self.assertEqual(len(segs), expected_count)
+        for seg in segs:
+            self.assertGreaterEqual(len(seg), self.MIN, "結合されず短区間が残っている")
+
+    def test_leading_short_merged_forward(self):
+        """先頭の短区間は直後の長区間と結合される。"""
+        segs = self._segment_with_region_lens([self.SHORT, self.LONG, self.LONG])
+        self._assert_no_short_segment(segs, 2)
+
+    def test_middle_short_merged(self):
+        """中間の短区間は直前へ結合される。"""
+        segs = self._segment_with_region_lens([self.LONG, self.SHORT, self.LONG])
+        self._assert_no_short_segment(segs, 2)
+
+    def test_trailing_short_merged(self):
+        """末尾の短区間（報告バグ）は直前へ結合される。"""
+        segs = self._segment_with_region_lens([self.LONG, self.LONG, self.SHORT])
+        self._assert_no_short_segment(segs, 2)
+
+    def test_all_long_unchanged(self):
+        """すべて長区間なら結合せずそのまま。"""
+        segs = self._segment_with_region_lens([self.LONG, self.LONG])
+        self._assert_no_short_segment(segs, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

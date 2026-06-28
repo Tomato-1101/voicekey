@@ -29,6 +29,9 @@ enum VoiceActivity {
     private static let frameLen = 480
     /// 発話とみなす RMS しきい値（正規化後の音声に対して）
     private static let energyThreshold: Float = 0.02
+    /// 発話とみなす連続フレームの最小長。離れた単発クリックノイズ（1 フレームだけ
+    /// しきい値超え）を発話としないため、各 run の連続長で判定する（Python _MIN_SPEECH_FRAMES と一致）。
+    private static let minSpeechFrames = 2
 
     // MARK: - 音量正規化
 
@@ -121,12 +124,15 @@ enum VoiceActivity {
             if isActive {
                 if runStart == nil { runStart = i }
             } else if let start = runStart {
-                regions.append((max(0, start * frameLen - pad),
-                                min(samples.count, i * frameLen + pad)))
+                // 連続長が minSpeechFrames 未満の run（≒単発クリックノイズ）は採らない（#22）
+                if i - start >= minSpeechFrames {
+                    regions.append((max(0, start * frameLen - pad),
+                                    min(samples.count, i * frameLen + pad)))
+                }
                 runStart = nil
             }
         }
-        if let start = runStart {
+        if let start = runStart, active.count - start >= minSpeechFrames {
             regions.append((max(0, start * frameLen - pad),
                             min(samples.count, active.count * frameLen + pad)))
         }
@@ -178,16 +184,26 @@ enum VoiceActivity {
         guard merged.count >= 2 else { return [] }
         // 短すぎるセグメントは直前に結合して細切れ・送信オーバーヘッドを抑える
         let minLen = Int(Double(sampleRate) * minSegmentSec)
+        let slices = merged.map { Array(samples[$0.lower..<$0.upper]) }
+        let segments = mergeShortSegments(slices, minLen: minLen)
+        return segments.count >= 2 ? segments : []
+    }
+
+    /// 短すぎるセグメント（minLen 未満）を直前へ結合する（#23）。
+    ///
+    /// 「現在の slice が短い」場合（末尾・中間の短区間）と「直前の slice が短い」場合
+    /// （先頭の短区間）の両方を直前へ結合する。現在 slice 長を見ないと、長区間の後ろに
+    /// 続く minSegmentSec 未満の短区間が独立したまま残ってしまう。Python vad.segment と同条件。
+    static func mergeShortSegments(_ slices: [[Float]], minLen: Int) -> [[Float]] {
         var segments: [[Float]] = []
-        for region in merged {
-            let slice = Array(samples[region.lower..<region.upper])
-            if let last = segments.last, last.count < minLen {
+        for slice in slices {
+            if let last = segments.last, last.count < minLen || slice.count < minLen {
                 segments[segments.count - 1] = last + slice
             } else {
                 segments.append(slice)
             }
         }
-        return segments.count >= 2 ? segments : []
+        return segments
     }
 
     /// セグメントごとの文字起こし結果を、境界の文字種を見て結合する。

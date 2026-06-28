@@ -5,6 +5,19 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased]
 
 ### Fixed
+- **VAD の孤立ノイズ判定を「総数」でなく「連続 run の長さ」に修正（両 OS・両ブランチ）**。
+  Python `_speech_regions` はしきい値超えフレームの総数が 2 以上なら発話としていたため、離れた
+  単発クリックノイズ 2 個を 2 発話として採用していた。Swift `speechRegions` も run 長 1 の単発
+  フレームから区間を作っていた。各連続 run の長さが `_MIN_SPEECH_FRAMES`（=2 フレーム・≒64ms）
+  以上の run だけを発話とみなすようにし、両 OS の閾値・挙動を揃えた（`src/core/vad.py`・
+  `macos/.../Core/VoiceActivity.swift`）。テスト追加（離れた単発 2 個=ノイズ／連続 2 フレーム=発話／
+  単発＋run 混在=run だけ採用）。
+- **短い後続 VAD セグメントの結合判定を「現在セグメント長」も見るよう修正（両 OS・両ブランチ）**。
+  分割並列送信のセグメント結合が「直前セグメントが短いとき」だけ結合していたため、長区間の後ろに
+  続く `_MIN_SEGMENT_SEC`（2 秒）未満の短区間が独立したまま残り、無駄な細切れ API 送信になっていた。
+  現在セグメント長と直前セグメント長の両方で判定し、先頭・中間・末尾いずれの短区間も直前へ結合する
+  ようにした。Swift は結合ロジックを純粋関数 `mergeShortSegments` に抽出して決定的にテスト可能にした
+  （`src/core/vad.py`・`macos/.../Core/VoiceActivity.swift`）。テスト追加（先頭/中間/末尾短区間/全長区間）。
 - **CJK 隣接スペースの除去を全バックエンド・streaming/REST・Mac/Windows で統一（両ブランチ）**。
   これまで CJK 単語間スペースの除去は一部経路のみ（Mac は Deepgram ストリーミングだけ、Windows は
   Deepgram REST だけ）で、ElevenLabs・OpenAI・Groq の REST 経路やサーバープロキシ経由では

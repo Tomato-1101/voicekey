@@ -28,6 +28,9 @@ logger = get_logger(__name__)
 _FRAME_SAMPLES = 512      # 1 フレーム = 512 サンプル（32ms @16kHz）
 _CONTEXT_SAMPLES = 64     # 各フレームの先頭に前フレーム末尾 64 サンプルを連結する
 _SPEECH_THRESHOLD = 0.5   # 発話とみなす確率しきい値（公式デフォルトと同じ）
+# 発話とみなす連続フレームの最小長。離れた単発クリックノイズ（1 フレームだけ
+# しきい値超え）を発話としないため、総数ではなく「連続 run の長さ」で判定する。
+_MIN_SPEECH_FRAMES = 2    # 連続 2 フレーム（≒64ms）以上で初めて発話とみなす
 
 # 発話間に保持する無音の最大長（秒）。
 # ポーズは句読点・文区切りの推定材料になるため完全には消さない
@@ -175,24 +178,34 @@ class SileroVad:
         """発話確率列から、前後 pad 付き・gap_sec 以下の無音でマージした
         サンプル区間 [[lower, upper], ...] を返す（発話なしは空リスト）。
 
-        単発のクリックノイズ誤検出を避けるため、しきい値超えフレームが
-        2 つ以上（≒64ms 以上）ある場合のみ発話とみなす。analyze（gap=_KEPT_GAP_SEC）と
-        segment（gap=_SPLIT_GAP_SEC）の共通処理。
+        単発のクリックノイズ誤検出を避けるため、しきい値超えフレームの「総数」ではなく
+        各連続 run の長さで判定し、_MIN_SPEECH_FRAMES 以上連続した run だけを発話とみなす。
+        （離れた単発ノイズ 2 個は総数 2 でも各 run が 1 フレームなので除外される。）
+        analyze（gap=_KEPT_GAP_SEC）と segment（gap=_SPLIT_GAP_SEC）の共通処理。
         """
         speech_idx = np.flatnonzero(probs >= _SPEECH_THRESHOLD)
-        if len(speech_idx) < 2:
+        if len(speech_idx) == 0:
             return []
         # 発話フレームの連続区間（インデックスの切れ目で分割）
         splits = np.flatnonzero(np.diff(speech_idx) > 1)
         starts = np.concatenate(([speech_idx[0]], speech_idx[splits + 1]))
         ends = np.concatenate((speech_idx[splits], [speech_idx[-1]]))
 
+        # 連続長が _MIN_SPEECH_FRAMES 未満の run（≒単発クリックノイズ）は捨てる
+        runs = [
+            (int(s), int(e))
+            for s, e in zip(starts, ends)
+            if int(e) - int(s) + 1 >= _MIN_SPEECH_FRAMES
+        ]
+        if not runs:
+            return []
+
         pad = int(16000 * pad_ms / 1000)
         gap = int(16000 * gap_sec)
         regions: list = []
-        for s, e in zip(starts, ends):
-            lower = max(0, int(s) * _FRAME_SAMPLES - pad)
-            upper = min(audio_len, (int(e) + 1) * _FRAME_SAMPLES + pad)
+        for s, e in runs:
+            lower = max(0, s * _FRAME_SAMPLES - pad)
+            upper = min(audio_len, (e + 1) * _FRAME_SAMPLES + pad)
             # 近接区間はマージ（区間の間に残る無音が gap 以下なら切らない）
             if regions and lower - regions[-1][1] <= gap:
                 regions[-1][1] = max(regions[-1][1], upper)
@@ -228,12 +241,15 @@ class SileroVad:
         regions = self._speech_regions(probs, len(audio), pad_ms, _SPLIT_GAP_SEC)
         if len(regions) < 2:
             return []
-        # 短すぎるセグメントは直前に結合して細切れ・送信オーバーヘッドを抑える
+        # 短すぎるセグメントは直前に結合して細切れ・送信オーバーヘッドを抑える。
+        # 「現在のセグメントが短い」場合（末尾・中間の短区間）と「直前が短い」場合
+        # （先頭の短区間）の両方を直前へ結合する。現在 seg 長を見ないと、長区間の
+        # 後ろに続く 2 秒未満の短区間が独立して残ってしまう（#23）。
         min_len = int(16000 * _MIN_SEGMENT_SEC)
         segments: list = []
         for lo, hi in regions:
             seg = audio[lo:hi]
-            if segments and len(segments[-1]) < min_len:
+            if segments and (len(seg) < min_len or len(segments[-1]) < min_len):
                 segments[-1] = np.concatenate([segments[-1], seg])
             else:
                 segments.append(seg)
