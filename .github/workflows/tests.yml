@@ -53,6 +53,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: EmbeddedKeys スタブ生成（git 管理外の生成ファイルを用意）
+        # EmbeddedKeys.generated.swift は .gitignore 済みで checkout に含まれない。
+        # 引数なし＝キーなし・isDist=false のスタブを生成する（Keychain も Secrets も不要）。
+        run: bash macos/scripts/generate_embedded_keys.sh
+
       - name: Swift バージョン
         run: swift --version
 

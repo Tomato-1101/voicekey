@@ -33,6 +33,22 @@ voicekeyの変更履歴を記録するファイルです。
   `websockets.sync.client.connect`（同期クライアント有無の存在確認プローブ・`# noqa` 済み）。
 
 ### Fixed
+- **`onnxruntime` を明示依存に追加（VAD が無効化される潜在バグ・両ブランチ）**。
+  `vad.py` は Silero VAD の ONNX を `onnxruntime` で実行するが、`onnxruntime` は `silero-vad` の
+  optional extra（`onnx-cpu`）でしか入らず、`requirements.txt` に宣言が無かった。クリーンな
+  `pip install -r requirements.txt`（CI・Windows 配布ビルドを含む）では `onnxruntime` が入らず、
+  `vad.py` の遅延 `import onnxruntime` が失敗 → `analyze()` が安全側の `(True, None)` を返し、
+  **無音圧縮・長文分割が一切効かない**状態になっていた（録音はそのまま全文送信される＝文字起こし自体は
+  動くため気付きにくい）。`requirements.txt` に `onnxruntime>=1.16.1`（silero-vad の extra と同じ下限）を
+  明示追加。これで CI の VAD テストが通り、次回以降の配布ビルドでは VAD が実際に機能する。
+  **注**: 既存の配布済み Windows 版（CI ビルド）は `onnxruntime` 未同梱のため VAD が無効のまま＝
+  この修正を反映するには Windows 版の再ビルド・再配布が必要（PyInstaller は `vad.py` の
+  `import onnxruntime` を検出して contrib フックで同梱する想定だが、再ビルド時に同梱を実機確認すること）。
+- **CI の Swift ジョブでクリーンチェックアウト時に `EmbeddedKeys.generated.swift` を生成（両ブランチ）**。
+  同ファイルは `.gitignore` 済みの生成物で checkout に含まれず、`swift test`/`swift build` が
+  「cannot find 'EmbeddedKeys' in scope」で失敗していた。`tests.yml` の Swift ジョブに
+  引数なし（キーなし・`isDist=false`・Keychain/Secrets 不要）のスタブ生成
+  （`bash macos/scripts/generate_embedded_keys.sh`）をビルド前に挟んで解消。
 - **未ログイン時のゲート文言を無料体験仕様に修正（release・Mac/Windows）**。
   配布版で未ログインのまま文字起こしすると「利用するにはログインとアクティベーションキーが必要です」と
   表示していたが、実際はログインすればまず無料体験枠で使え、枠を使い切ってからアクティベーションキーが

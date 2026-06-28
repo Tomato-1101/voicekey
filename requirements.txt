@@ -11,6 +11,10 @@ pyyaml
 
 # VAD
 silero-vad
+# Silero VAD の ONNX を CPU 実行する。onnxruntime は silero-vad の optional extra
+# （onnx-cpu）でしか入らないため、明示依存として宣言する。これが無いと
+# vad.py の import onnxruntime が失敗し VAD が常に無効化される（無音圧縮・長文分割が効かない）。
+onnxruntime>=1.16.1
 
 # Optional but recommended
 ffmpeg-python
