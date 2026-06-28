@@ -122,7 +122,9 @@ class TestPersistentStreamSession(unittest.TestCase):
         rec._last_record_end = 0.0
         rec._last_level_time = 0.0
         rec._level_callback = None
-        rec.chunk_callback = None
+        rec._record_gen = 0
+        rec._active_chunk_gen = 0
+        rec._chunk_entry = (0, None)
         return rec
 
     def test_records_on_first_and_second_recording(self):
@@ -234,6 +236,86 @@ class TestRecoverDoubleCompletion(unittest.TestCase):
         # 旧スレッドは新世代のバッファをドレインしていない（新音声がそのまま残る）
         remaining = rec._drain_queue(new_q)
         self.assertEqual(len(remaining), 320, "古い世代が新世代の音声を奪った")
+
+
+class TestCrossRecordingChunkBinding(unittest.TestCase):
+    """item7: 旧録音の stop ドレイン中に次録音が streamer を差し替えても、旧録音末尾の
+    チャンクが次録音の streamer へ混入しないことを検証する（連続録音間の音声混入防止）。
+
+    chunk_callback を録音世代に束縛し、_do_start で確定した受理世代（_active_chunk_gen）と
+    一致しないチャンクを audio callback が拒否する。受理世代は _do_start でのみ進むため、
+    旧録音の stop ドレイン中（_do_start 前）は進まず、差し替えられた新 streamer に渡らない。
+    """
+
+    def setUp(self):
+        self._orig_sd = sys.modules.get("sounddevice")
+        fake = types.ModuleType("sounddevice")
+        fake.InputStream = _FakeStream
+        sys.modules["sounddevice"] = fake
+
+    def tearDown(self):
+        if self._orig_sd is not None:
+            sys.modules["sounddevice"] = self._orig_sd
+        else:
+            sys.modules.pop("sounddevice", None)
+
+    def _bare_recorder(self):
+        rec = object.__new__(AudioRecorder)
+        rec.sample_rate = 16000
+        rec._audio_q = queue.Queue()
+        rec._recording = False
+        rec._stream = None
+        rec._stream_device = None
+        rec._input_device = None
+        rec._session_id = 0
+        rec._callback_logged = False
+        rec._pending_stop_cb = None
+        rec._last_record_end = 0.0
+        rec._last_level_time = 0.0
+        rec._level_callback = None
+        rec._record_gen = 0
+        rec._active_chunk_gen = 0
+        rec._chunk_entry = (0, None)
+        return rec
+
+    def test_old_recording_tail_not_sent_to_next_streamer(self):
+        rec = self._bare_recorder()
+        a_chunks, b_chunks = [], []
+
+        # 録音A: streamerA を世代1で登録 → _do_start で受理世代=1 に確定
+        self.assertEqual(rec.set_chunk_callback(lambda s: a_chunks.append(s)), 1)
+        rec._do_start(None)
+        stream = rec._stream
+        self.assertEqual(rec._active_chunk_gen, 1)
+
+        # A 録音中のチャンクは streamerA に届く（世代一致）
+        stream.feed(np.ones((160, 1), dtype=np.float32))
+        self.assertEqual(len(a_chunks), 1, "A の音声が streamerA に届いていない")
+
+        # 次録音Bが listener スレッドで streamerB を世代2で差し替える（B の _do_start 前）。
+        # 受理世代は 1 のままなので、この瞬間に届く「A の末尾チャンク」は誰にも送られない
+        self.assertEqual(rec.set_chunk_callback(lambda s: b_chunks.append(s)), 2)
+        stream.feed(np.full((160, 1), 0.3, dtype=np.float32))
+        self.assertEqual(b_chunks, [], "A の末尾が次録音 streamerB へ混入した")
+        self.assertEqual(len(a_chunks), 1, "差し替え後に streamerA へも送られた")
+
+        # A の停止 → B の物理録音開始で受理世代が 2 になり、以降は streamerB に届く
+        rec._do_stop(lambda audio: None)
+        self.assertFalse(rec._recording)
+        rec._do_start(None)
+        self.assertEqual(rec._active_chunk_gen, 2)
+        stream.feed(np.full((160, 1), 0.5, dtype=np.float32))
+        self.assertEqual(len(b_chunks), 1, "B の音声が streamerB に届いていない")
+
+    def test_disarm_blocks_all_delivery(self):
+        # set_chunk_callback(None) で解除したら、録音中でも誰にも送られない
+        rec = self._bare_recorder()
+        got = []
+        rec.set_chunk_callback(lambda s: got.append(s))
+        rec._do_start(None)
+        rec.set_chunk_callback(None)  # 解除（finish 経路）
+        rec._stream.feed(np.ones((160, 1), dtype=np.float32))
+        self.assertEqual(got, [], "解除後もチャンクが送出された")
 
 
 if __name__ == "__main__":

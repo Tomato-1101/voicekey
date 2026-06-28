@@ -119,8 +119,16 @@ class AudioRecorder:
         """
         self.sample_rate = sample_rate
         self._level_callback = level_callback
-        # ストリーミング送出用フック。録音ごとにアプリ側が set/clear する公開属性
-        self.chunk_callback = chunk_callback
+        # ストリーミング送出フックを録音世代に束縛して保持する（連続録音間の音声混入防止）。
+        # (gen, callback) を 1 タプルで原子的に差し替え、audio callback は世代不一致を拒否する。
+        # 旧録音の stop ドレイン中に次録音が別 streamer を差し替えても、ドレイン中に受理する
+        # 世代（_active_chunk_gen）は進んでいない（_do_start でのみ進む）ため、旧録音末尾の
+        # チャンクが次録音の streamer へ流れ込まない。
+        self._record_gen = 0                  # set_chunk_callback の採番（listener スレッドのみが進める）
+        self._active_chunk_gen = 0            # 現在の物理録音が受理する世代（_do_start で確定）
+        self._chunk_entry: tuple = (0, None)  # (gen, callback)。callback が None なら送出しない
+        if chunk_callback is not None:
+            self.set_chunk_callback(chunk_callback)
         self._input_device = self.normalize_device_setting(input_device)
 
         # 録音データ（audio callback → stop 時にドレイン）
@@ -177,6 +185,28 @@ class AudioRecorder:
                       AudioControl スレッド上で呼ばれる（重い処理は受け側で逃がすこと）
         """
         self._commands.put(("stop", on_audio))
+
+    def set_chunk_callback(self, callback: Optional[Callable[[npt.NDArray[np.float32]], None]]) -> int:
+        """ストリーミング送出フックを新しい録音世代で登録／解除する（listener スレッドから）。
+
+        登録（callback あり）のたびに録音世代を 1 つ進めて束縛する。次の物理録音が
+        `_do_start` でこの世代を受理世代として確定するまで、旧録音の stop ドレイン中に
+        差し替えても旧 audio callback には拾われない（世代不一致で拒否）。
+
+        Args:
+            callback: 生 PCM チャンク（float32 モノラル）を受け取る関数。None で解除。
+
+        Returns:
+            登録した録音世代。解除時は 0。
+        """
+        if callback is None:
+            # 解除は callback を None にするだけ（世代は次の登録で進む）
+            self._chunk_entry = (0, None)
+            return 0
+        # 採番は listener スレッドのみが行うのでロック不要。タプル代入は GIL 下で原子的
+        self._record_gen += 1
+        self._chunk_entry = (self._record_gen, callback)
+        return self._record_gen
 
     def set_input_device(self, device: Any) -> None:
         """使用する入力デバイス設定を更新する（次回ストリーム再作成時に適用）。"""
@@ -396,6 +426,11 @@ class AudioRecorder:
             self._callback_logged = False
             self._drain_audio()
 
+            # この物理録音が受理するストリーミング世代を確定する（stream.start より前）。
+            # 旧録音の stop ドレイン中はこの値が進まないため、ドレイン中に差し替えられた
+            # 次録音の streamer（より新しい世代）には旧音声が渡らない。
+            self._active_chunk_gen = self._chunk_entry[0]
+
             self._stream.start()
             self._recording = True
             ok = True
@@ -554,9 +589,11 @@ class AudioRecorder:
             self._audio_q.put(indata.copy())
 
             # ストリーミング送出（Deepgram へ逐次送る。録音ごとに差し替わる）。
-            # REST 経路（audio_q）とは独立。フックが無ければ何もしない
-            chunk_cb = self.chunk_callback
-            if chunk_cb is not None:
+            # REST 経路（audio_q）とは独立。世代が一致しないチャンクは拒否する
+            # （旧録音の stop ドレイン中に差し替えられた次録音の streamer へ混入させない）。
+            # (gen, cb) を 1 タプルで原子読みして cb/gen の不整合読みを避ける
+            gen, chunk_cb = self._chunk_entry
+            if chunk_cb is not None and gen == self._active_chunk_gen:
                 try:
                     chunk_cb(indata.reshape(-1).copy())
                 except Exception:

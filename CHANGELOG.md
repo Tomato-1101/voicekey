@@ -5,6 +5,21 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased]
 
 ### Fixed
+- **連続録音間の音声混入を防止（chunk_callback / chunkHandler を録音世代に束縛・両ブランチ・両OS）**。
+  前回録音の stop が完了する前に次の録音を開始すると、共有の送出フック（Python
+  `chunk_callback` / Mac `chunkHandler`）が次録音の streamer へ差し替わり、前回録音末尾の
+  チャンクが次録音のストリームへ送られ得た（別バックエンドの録音に前回 Deepgram の音声が混入）。
+  既存の `_session_id` ガードはストリーム世代（recover 時のみ進む）の判定で、同一ストリーム内の
+  録音と録音の区別はできていなかった。
+  - 送出フックを録音世代に束縛（`(gen, callback)` を原子的に差し替え）。物理録音が開始
+    （`_do_start` / `start`）した時点の世代を「受理世代」として確定し、audio callback は
+    世代不一致のチャンクを送出しない。受理世代は録音開始でのみ進むため、旧録音の stop
+    ドレイン中（差し替えは起こり得る）に次録音の streamer へ旧音声が渡らない。
+  - start/stop は元々 AudioControl スレッド（Python）/ engine queue（Mac）で直列化されており、
+    物理 start は前回 stop 完了後にしか走らない。残る非直列点（listener/main スレッドでの
+    フック差し替え）を世代束縛で塞いだ（要件「stop 完了まで次 start を待機」は直列化で既達）。
+  - 回帰テスト追加（Python `tests/test_audio_recorder.py::TestCrossRecordingChunkBinding`）:
+    旧録音末尾が次 streamer へ届かない・解除後は誰にも届かない。
 - **音声コールバック内の同期 WebSocket 送信を撤去（ロック中 I/O 禁止・固定上限キュー＋専用 sender スレッド・両ブランチ）**。
   これまで `StreamingTranscriber.send()` は audio コールバックスレッドから `self._lock` を
   保持したまま同期 `ws.send(pcm)` を呼んでいた。回線が遅い/詰まると送信がブロックし、

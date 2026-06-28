@@ -612,8 +612,9 @@ class VoicekeyApp(QObject):
             if stream.start():
                 with self._state_lock:
                     self._active_streamer = stream
-                # 録音中のみ発火するフック。次の停止で解除する
-                self._recorder.chunk_callback = stream.send
+                # 録音中のみ発火するフック。録音世代に束縛して登録する（次の停止で解除）。
+                # 旧録音の stop ドレイン中に差し替えても旧音声は新 streamer へ混入しない
+                self._recorder.set_chunk_callback(stream.send)
 
         self._recorder.start_async(self._on_record_started)
 
@@ -629,7 +630,7 @@ class VoicekeyApp(QObject):
             self._recording_slot = None
             streamer = self._active_streamer
             self._active_streamer = None
-        self._recorder.chunk_callback = None
+        self._recorder.set_chunk_callback(None)
         if streamer is not None:
             streamer.cancel()  # 受信ループ停止・WebSocket close・短命トークン破棄
         self.notice.emit("録音を開始できませんでした（マイクを確認してください）")
@@ -658,7 +659,7 @@ class VoicekeyApp(QObject):
                 self._pending_tap_timer = None
 
         # ストリーミング送出を停止（確定は finish() がワーカー上で行う）
-        self._recorder.chunk_callback = None
+        self._recorder.set_chunk_callback(None)
 
         logger.info(f"録音停止要求 (スロット{slot_id})")
         self._emit_state()
@@ -978,7 +979,7 @@ class VoicekeyApp(QObject):
                 streamer = self._active_streamer
                 self._active_streamer = None
             # ハング時もストリーミング接続を確実に破棄する
-            self._recorder.chunk_callback = None
+            self._recorder.set_chunk_callback(None)
             if streamer is not None:
                 streamer.cancel()
             self._recorder.recover()
@@ -1069,7 +1070,7 @@ class VoicekeyApp(QObject):
         with self._state_lock:
             streamer = self._active_streamer
             self._active_streamer = None
-        self._recorder.chunk_callback = None
+        self._recorder.set_chunk_callback(None)
         if streamer is not None:
             streamer.cancel()
 

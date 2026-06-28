@@ -29,10 +29,23 @@ final class AudioRecorder {
 
     /// 16kHz モノラルチャンクの逐次通知（ストリーミング送信用、audio スレッドから呼ばれる）。
     /// ストリーミング録音時のみ設定し、終了時に nil へ戻す。
-    /// メインスレッドが書き、audio スレッドが読むため lock で同期する
+    /// メインスレッドが書き、audio スレッドが読むため lock で同期する。
+    ///
+    /// 連続録音間の音声混入防止: 登録のたびに録音世代を進めて束縛し、handleBuffer は
+    /// 「現在の物理録音が受理する世代（activeChunkGen、start で確定）」と一致するチャンク
+    /// だけを送る。旧録音の stop ドレイン中に次録音が別 streamer を差し替えても、受理世代は
+    /// start でしか進まないため、旧録音末尾のチャンクが次録音の streamer へ流れ込まない。
     var chunkHandler: (([Float]) -> Void)? {
         get { stateLock.lock(); defer { stateLock.unlock() }; return _chunkHandler }
-        set { stateLock.lock(); _chunkHandler = newValue; stateLock.unlock() }
+        set {
+            stateLock.lock()
+            _chunkHandler = newValue
+            if newValue != nil {
+                _recordGen += 1
+                _chunkGen = _recordGen
+            }
+            stateLock.unlock()
+        }
     }
 
     /// 使用する入力デバイスの UID（空ならシステム既定）。録音開始のたびに参照する
@@ -54,6 +67,9 @@ final class AudioRecorder {
     /// メイン・制御キュー・audio スレッドをまたぐ可変状態の保護
     private let stateLock = NSLock()
     private var _chunkHandler: (([Float]) -> Void)?
+    private var _recordGen = 0       // chunkHandler 登録の採番（main スレッドのみが進める）
+    private var _chunkGen = 0        // _chunkHandler が属する録音世代
+    private var _activeChunkGen = 0  // 現在の物理録音が受理する世代（start で確定）
     private var _inputDeviceUID = ""
     private var _recording = false
     private var recording: Bool {
@@ -213,6 +229,10 @@ final class AudioRecorder {
             applyInputDevice()
 
             if installTapAndStart() {
+                // この物理録音が受理するストリーミング世代を確定する（recording=true より前）。
+                // 旧録音の stop ドレイン中はこの値が進まないため、ドレイン中に差し替えられた
+                // 次録音の streamer（より新しい世代）には旧音声が渡らない。
+                stateLock.lock(); _activeChunkGen = _chunkGen; stateLock.unlock()
                 recording = true
                 completion(true)
             } else {
@@ -349,8 +369,17 @@ final class AudioRecorder {
         samplesLock.unlock()
 
         // ストリーミング送信用に逐次チャンクを渡す（全バッファ蓄積とは独立）。
-        // ストリーミングが失敗しても samples には残るため REST フォールバックが効く
-        chunkHandler?(chunk)
+        // ストリーミングが失敗しても samples には残るため REST フォールバックが効く。
+        // 世代一致のチャンクのみ送る（旧録音 stop ドレイン中に差し替えられた新 streamer へ
+        // 混入させない）。handler/gen は原子的にまとめて読む
+        stateLock.lock()
+        let handler = _chunkHandler
+        let handlerGen = _chunkGen
+        let activeGen = _activeChunkGen
+        stateLock.unlock()
+        if let handler, handlerGen == activeGen {
+            handler(chunk)
+        }
 
         // HUD 用レベル通知（約 30fps に間引き）
         if let handler = levelHandler {
