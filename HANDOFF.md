@@ -91,21 +91,24 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 
 ## 現在地 / 次の一手
 
-- 現在地: **Mac v1.5.0 / Windows v1.5.0 リリース完了**（2026-06-27。release＝製品版ブランチ。
-  **アカウントごとに無料体験枠 200 回**を付与。これまで「ログイン＋有効キー必須」で一切試せなかったのを、
-  ログインすれば無料で 200 回まで文字起こしを試せるようにし、使い切ったら従来どおりアクティベーションキー登録へ誘導
-  〔課金は未実装＝当面はキー登録のみが解放手段〕。数え方は「文字起こし 1 回＝1 消費・累計一度きり・整形は消費なし」。
-  サーバーだけが見える本物の呼び出し回数で数えるためクライアント申告では突破不可。サーバーで原子的にカウント
-  〔`entitlements.free_quota`(既定200)/`free_used` ＋ `consume_free_quota(uuid)` RPC＝条件付き UPDATE・残枠ゼロは 402〕。
-  **DB マイグレーション（リポでは `voicekey-site/supabase/migrations/0015_free_quota.sql`）は本番 Supabase に適用・検証済み**
-  （free_used 0→1→reset 0 を実測）。サーバーコード〔`lib/apiAuth.ts` の `authorizeUsable`・ephemeral/elevenlabs〔consume〕・
-  format〔no-consume〕・me〔残量返却〕〕は **本番デプロイ済み**（`/me`・`/ephemeral` が 401 で健全稼働を確認）。
-  上限200は DB の `free_quota` 既定値で再配布なしに調整可。後方互換: 旧サーバー応答（free_* 無し）でも 0 扱いで従来挙動。
-  - 配布物（**全て本番反映済み・全 200 確認**）: Mac=DMG＋Sparkle appcast〔build 12・EdDSA 署名・build 11→12 delta・鍵平文 0 件確認〕、
-    Windows=setup.exe〔268MB・公開リポ `voicekey-releases` の Release `v1.5.0`・sha256 `0b00a3…c305`・DL URL 200〕＋
-    `windows/version.json`。`downloads.json` は mac/windows とも 1.5.0。転送用 Release `winci-1.5.0`（本リポ private）は relay 後に削除済み。
-  - コミット: 本体 release=`a9297d3`（コード）、voicekey-site main=`dfe1252`（サーバー）＋`f0023a5`（配布物）。
-  - 既往: Mac/Windows v1.4.0（2026-06-27・使用実績のアカウント連携〔#10〕。`usage_stats` に紐付き複数端末合算・
+- 現在地: **Mac v1.5.1 / Windows v1.5.1 リリース完了**（2026-06-28。release＝製品版ブランチ。
+  **製品版の初回録音・初回整形を高速化**。ログイン後の最初の文字起こし／整形は、サーバー往復に加えて
+  serverless 関数の **cold start（最大数秒）** を初回に払っていた。**アプリ起動時にサーバー接続を 1 回だけ暖機**して
+  TLS・接続・認証経路を温め、初回の往復を体感から消した（記事 nani-translate の「起動時プリフライト」応用）。
+  **無料枠を消費しない設計**: 暖機は `GET /api/v1/me`（消費なし read）で行い、短命トークンの先取りは**有料ユーザー
+  かつ Deepgram 設定時のみ**（有料は consume 前 return＝消費ゼロ）。整形側は録音開始時に `/api/v1/format` を空 POST で
+  暖機（サーバーが空を 400 で短絡＝Groq を呼ばず・`consume:false` で無料枠も不消費）。背景の定期取得は張らない。
+  - 実装（両OS同期）: Mac=`AppController.startup()`＋`BackendClient.warmFormatProxy()`＋`TextFormatter.prewarm()`、
+    Windows=`app.py _prewarm_backend`＋`backend_client.warm_format_proxy()`＋`text_formatter.prewarm()`。
+    既存の `fetchAccountStatus()`／`fetchEphemeralToken()`（60 秒 TTL キャッシュ）を再利用。`main`（自分用）は
+    サーバー往復が無く既に最速のため変更なし。テスト追加（暖機の分岐・空 POST・未ログイン no-op）＝unittest 56 件 pass。
+  - 配布物（**全て本番反映済み・全 200 確認**）: Mac=DMG＋Sparkle appcast〔build 13・EdDSA 署名・delta 13→8..12・鍵平文 0 件確認（実バイナリ・zip）〕、
+    Windows=setup.exe〔281MB・公開リポ `voicekey-releases` の Release `v1.5.1`・sha256 `1bff3a…b15a`・DL URL 200〕＋
+    `windows/version.json`。`downloads.json` は mac/windows とも 1.5.1。転送用 Release `winci-1.5.1`（本リポ private）は残置。
+  - コミット: 本体 release=`a824811`/`32fe6bc`/`e42ee50`（暖機コード）＋`6daea9b`（版+docs）＋本コミット（Info.plist build13・本 HANDOFF）、voicekey-site=`7b4ce03`（配布物）。
+  - 既往: **Mac/Windows v1.5.0**（2026-06-27・アカウントごとに無料体験枠 200 回〔#11〕。`entitlements.free_quota/free_used` ＋
+    `consume_free_quota` RPC・残枠ゼロは 402。本番 Supabase 適用・検証済み）、
+    Mac/Windows v1.4.0（2026-06-27・使用実績のアカウント連携〔#10〕。`usage_stats` に紐付き複数端末合算・
     再インストール後も引き継ぎ。自動更新フィード Mac build 11 / Win version.json を配信済み）、
     Mac/Windows v1.3.1（2026-06-27・ログイン誤失効バグ修正＋レイテンシ短縮）、
     v1.3.0（2026-06-26・アクティベーションキー版）、v1.1.0（2026-06-18・製品版2モード化）、
@@ -119,9 +122,10 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
   再起動まで実施）。ベータ版の動作確認は `macos/scripts/run_beta.sh`（dist/ の最新 DMG を
   マウントして一時起動・終わったら run_dev.sh で戻る）。dist/voicekey.app はビルドごとに
   dev/dist で上書きされるため常用しない。見分け方: 設定画面に API キータブがあれば開発版。
-- 次の一手: **v1.5.0（無料体験）は配布完了**。残るユーザー作業は **各 API ダッシュボードで利用上限・アラート設定**のみ（保険）。
-  無料体験 200 回の上限値は `entitlements.free_quota` の既定値（DB 側）で調整可能＝コード変更・再配布なしに将来見直せる。
-  なお無料体験が広く使われ始めるため、各 API ダッシュボードの利用上限・コストアラート設定は早めにやっておくと安全。
+- 次の一手: **v1.5.1（初回録音・整形の高速化）は配布完了**（無料体験は v1.5.0 で配布済み）。残るユーザー作業は
+  **各 API ダッシュボードで利用上限・アラート設定**のみ（保険）。無料体験 200 回の上限値は `entitlements.free_quota` の
+  既定値（DB 側）で調整可能＝コード変更・再配布なしに将来見直せる。なお無料体験が広く使われ始めるため、
+  各 API ダッシュボードの利用上限・コストアラート設定は早めにやっておくと安全。
 - **リリース手順（Mac/Windows は常に両方を同じ修正内容で同期リリースする・版番号は Claude が semver で決める）**:
   - Mac: `cd macos && ./scripts/build_dmg.sh --version X.Y.Z`（Info.plist 自動 bump・署名・zip/DMG/appcast 生成）
     → DMG を `voicekey-site/downloads/`、`voicekey-X.Y.Z.zip`＋`voicekeyN-M.delta`＋`appcast.xml` を
