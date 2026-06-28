@@ -5,6 +5,11 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased]
 
 ### Fixed
+- **VAD テストがクリーンな clone / git archive でも通るよう、音声 fixture をリポジトリ同梱に変更（両ブランチ）**。
+  `tests/test_vad.py` が `.gitignore` 除外（`benchmark/audio/*.wav`）の `benchmark/audio/short_ja.wav` に
+  依存しており、開発者ローカルにしか無いためクリーンな checkout では VAD テスト 13 件が setup error に
+  なっていた。同じ音声（`say` 合成の日本語・秘密情報なし）を `tests/fixtures/short_ja.wav` として
+  コミットし、テストの参照先をそちらへ変更。クリーンな `git archive` 展開でも 20 件すべて通ることを確認した。
 - **VAD の孤立ノイズ判定を「総数」でなく「連続 run の長さ」に修正（両 OS・両ブランチ）**。
   Python `_speech_regions` はしきい値超えフレームの総数が 2 以上なら発話としていたため、離れた
   単発クリックノイズ 2 個を 2 発話として採用していた。Swift `speechRegions` も run 長 1 の単発

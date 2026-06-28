@@ -1,8 +1,10 @@
 """SileroVad.analyze（1 パス VAD + 無音圧縮）のロジックテスト。
 
 venv 同梱の実 Silero ONNX モデルで推論する（ネットワーク不要・数百 ms）。
-実音声は benchmark/audio/short_ja.wav（say 合成の日本語 約 6.8 秒）を使い、
+実音声は tests/fixtures/short_ja.wav（say 合成の日本語 約 6.8 秒・リポジトリ同梱）を使い、
 「発話を失わず、長い無音だけが縮む」ことを検証する。
+fixture はコミット済みなので、クリーンな clone / git archive でもそのまま動く
+（開発者ローカルの ignored ファイルには依存しない）。
 """
 
 import unittest
@@ -15,7 +17,7 @@ import numpy as np
 from src.core.vad import _KEPT_GAP_SEC, _MIN_SPLIT_SEC, SileroVad
 
 _SAMPLE_RATE = 16000
-_SPEECH_WAV = Path(__file__).parent.parent / "benchmark" / "audio" / "short_ja.wav"
+_SPEECH_WAV = Path(__file__).parent / "fixtures" / "short_ja.wav"
 
 
 def _load_speech() -> np.ndarray:
