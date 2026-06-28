@@ -2,7 +2,7 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
-## [Unreleased]
+## [1.5.1] - 2026-06-28
 
 ### Changed
 - **製品版の初回録音を高速化（起動時にサーバー接続を暖機／両OS・release）**。
@@ -31,6 +31,10 @@ voicekeyの変更履歴を記録するファイルです。
     従来どおり直 Groq を温める。テスト追加（暖機の分岐・空 POST・未ログイン no-op）。
   - 注: 整形の主たる所要時間は Groq の推論（≒355ms・US）で、これは暖機では縮まない。本変更が消すのは
     接続確立・サーバー関数の cold start 分。
+
+### Technical Details
+- アプリのバージョンを **1.5.1** に更新（Win=`config/constants.py`、Mac=`Resources/Info.plist`：
+  `CFBundleShortVersionString=1.5.1` / `CFBundleVersion=13`）。性能改善（バグ修正レベル）のため PATCH を更新。
 
 ## [1.5.0] - 2026-06-27
 
