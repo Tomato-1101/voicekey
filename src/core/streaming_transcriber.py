@@ -21,6 +21,7 @@ websockets が未導入の環境では start() が False を返し、呼び出�
 
 import json
 import os
+import queue
 import threading
 import time
 from typing import Callable, List, Optional
@@ -45,6 +46,14 @@ _RECV_POLL_SEC: float = 0.5
 # finish() が接続確立前に呼ばれた時、接続を待つ猶予（秒）。
 # 短い発話（接続確立 ~0.2s より短いキータップ）でも取りこぼさないため
 _CONNECT_GRACE_SEC: float = 1.0
+
+# 送信キューの固定上限（チャンク数）。回線が遅く送信が音声生成に追いつかなくなったら
+# 音声を黙って捨てず overflow を streaming 失敗として扱い、REST フォールバックへ移す。
+# 16kHz・1チャンク数十ms 換算で 512 ≒ 十数秒ぶんの退避（短い発話なら全段キャッシュ可）
+_SEND_QUEUE_MAX: int = 512
+
+# 送信キューに積む「CloseStream を送れ」マーカー（finish が退避済み音声の後に積む）
+_CLOSE_STREAM = object()
 
 
 def _float32_to_pcm16le(samples: npt.NDArray[np.float32]) -> bytes:
@@ -89,11 +98,16 @@ class StreamingTranscriber:
         self._ws = None                       # 接続確立後にセット（websockets ClientConnection）
         self._finals: List[str] = []          # 確定済みセグメント
         self._interim: str = ""               # 直近の暫定セグメント
-        self._pending: List[bytes] = []        # 接続前に届いた PCM の退避
+        # PCM 送信は固定上限キュー経由で専用 sender スレッドが行う（audio コールバック内で
+        # ネットワーク I/O もロック取得もしないため）。接続前に届いた PCM もここに積まれ、
+        # 接続確立後に sender が FIFO で送るので順序が保たれる
+        self._send_q: "queue.Queue" = queue.Queue(maxsize=_SEND_QUEUE_MAX)
         self._cancelled = False               # finish/cancel が接続前に呼ばれた
         self._closed = False                  # 受信ループ停止フラグ
+        self._failed = False                  # キュー溢れ/送信失敗 → REST フォールバックへ委ねる
         self._done_event = threading.Event()  # 確定完了/切断の通知
         self._thread: Optional[threading.Thread] = None
+        self._sender: Optional[threading.Thread] = None  # 送信専用スレッド
 
     @property
     def _stream_language(self) -> str:
@@ -115,7 +129,8 @@ class StreamingTranscriber:
         WebSocket 受信スレッドを起動する（即座に返る）。
 
         実際の接続確立は受信スレッド側で行うため、ここではブロックしない。
-        接続前に届いた PCM は send() がバッファし、接続確立後に順序を保って送出する。
+        接続前に届いた PCM は send() が送信キューへ積み、接続確立後に sender スレッドが
+        FIFO で送出するので順序は保たれる。
 
         Returns:
             開始できれば True。キー未設定かつ未ログイン / websockets 未導入なら False
@@ -147,25 +162,26 @@ class StreamingTranscriber:
 
     def send(self, samples: npt.NDArray[np.float32]) -> None:
         """
-        16kHz モノラル Float32 チャンクを送信する（audio スレッドから呼ばれる）。
+        16kHz モノラル Float32 チャンクを送信キューへ積む（audio スレッドから呼ばれる）。
 
-        接続確立前のチャンクはバッファし、確立時に順序を保ってまとめて送る。
+        ネットワーク I/O もロック取得もせず、固定上限キューへノンブロッキング投入する
+        だけなので、回線が遅くても audio コールバックは即座に return する。実送信は
+        専用 sender スレッドが行う。キューが溢れたら音声を黙って捨てず streaming 失敗
+        として記録し、保持済み全音声での REST フォールバックへ移す。
         """
         if samples is None or len(samples) == 0:
             return
+        # フラグはプレーン読み（GIL 下で十分。ロックを取らないことで callback を塞がない）
+        if self._cancelled or self._closed or self._failed:
+            return
         pcm = _float32_to_pcm16le(samples)
-        with self._lock:
-            if self._cancelled or self._closed:
-                return
-            ws = self._ws
-            if ws is None:
-                # まだ接続前 → 退避（接続確立時に _run がフラッシュする）
-                self._pending.append(pcm)
-                return
-            try:
-                ws.send(pcm)
-            except Exception as e:
-                logger.debug(f"ストリーミング送信エラー（無視）: {e}")
+        try:
+            self._send_q.put_nowait(pcm)
+        except queue.Full:
+            # 送信が音声生成に追いつかない（回線が遅い/詰まり）。取りこぼしを隠さず
+            # streaming 失敗にして REST フォールバック（task.audio_data の全音声）へ委ねる
+            logger.warning("ストリーミング送信キューが上限に達しました。REST にフォールバックします")
+            self._mark_failed()
 
     def finish(self, timeout: float = _FINISH_TIMEOUT) -> str:
         """
@@ -201,14 +217,22 @@ class StreamingTranscriber:
                 self._cancelled = True
 
         if ws is not None:
+            # CloseStream は送信キュー経由で積む（退避済み音声の後に送られ順序が保たれる）。
+            # 詰まっていて積めない場合は最後の手段で直接送る（worker スレッドなのでブロック可）
             try:
-                ws.send(json.dumps({"type": "CloseStream"}))
-            except Exception as e:
-                logger.debug(f"CloseStream 送信エラー（無視）: {e}")
+                self._send_q.put_nowait(_CLOSE_STREAM)
+            except queue.Full:
+                try:
+                    ws.send(json.dumps({"type": "CloseStream"}))
+                except Exception as e:
+                    logger.debug(f"CloseStream 送信エラー（無視）: {e}")
 
         # 確定（Metadata 受信）または切断まで待つ
         self._done_event.wait(timeout)
         self._shutdown_socket()
+        if self._failed:
+            # キュー溢れ/送信失敗 → 部分結果は使わず REST フォールバックに全音声で委ねる
+            return ""
         return strip_cjk_spaces(self._current_text())
 
     def cancel(self) -> None:
@@ -216,6 +240,19 @@ class StreamingTranscriber:
         with self._lock:
             self._cancelled = True
         self._shutdown_socket()
+        self._resolve_finish()
+
+    def _mark_failed(self) -> None:
+        """ストリーミングを失敗として確定し、finish() を空文字で返させて REST に委ねる。
+
+        キュー溢れ・送信失敗から呼ばれる。sender / 受信ループが closed を見て止まり、
+        finish() の待機も解除されるので、呼び出し側は保持済み全音声で REST に落ちる。
+        """
+        with self._lock:
+            if self._failed:
+                return
+            self._failed = True
+            self._closed = True
         self._resolve_finish()
 
     def _shutdown_socket(self) -> None:
@@ -240,7 +277,7 @@ class StreamingTranscriber:
     # ------------------------------------------------------------------
 
     def _run(self, key: Optional[str], logged_in: bool) -> None:
-        """接続 → 退避済み PCM のフラッシュ → 受信ループ（専用スレッド上）。
+        """接続 → sender スレッド起動 → 受信ループ（専用スレッド上）。
 
         Args:
             key: 直叩き用の Deepgram API キー（未ログイン時に使う。ログイン時は None でも可）
@@ -291,19 +328,14 @@ class StreamingTranscriber:
             f"Deepgram ストリーミング開始 (model={self.model}, lang={self._stream_language})"
         )
 
-        # 退避済み PCM を順序保証のためロック下でフラッシュしてから ws を公開する
+        # cancel/close 済みなら即閉じる。問題なければ ws を公開して sender を起動する。
+        # 接続前に send() がキューへ積んだ PCM も sender が FIFO で送るので順序は保たれる
         close_now = False
         with self._lock:
             if self._cancelled or self._closed:
                 close_now = True
             else:
                 self._ws = ws
-                for chunk in self._pending:
-                    try:
-                        ws.send(chunk)
-                    except Exception as e:
-                        logger.debug(f"退避 PCM の送信エラー（無視）: {e}")
-                self._pending = []
         if close_now:
             try:
                 ws.close()
@@ -312,9 +344,42 @@ class StreamingTranscriber:
             self._resolve_finish()
             return
 
+        # 送信専用スレッドを起動（ネットワーク I/O はここに集約し、audio コールバックは塞がない）
+        self._sender = threading.Thread(
+            target=self._sender_loop, args=(ws,), daemon=True, name="DeepgramSend"
+        )
+        self._sender.start()
+
         self._receive_loop(ws)
         # ループ脱出（切断・終端）→ finish() を解決
         self._resolve_finish()
+
+    def _sender_loop(self, ws) -> None:
+        """送信キューの PCM を WebSocket へ送る専用スレッド（ロックを持たずに I/O する）。
+
+        audio コールバックは put_nowait するだけで、実際のネットワーク送信はここで行う。
+        送信に失敗したら音声を黙って捨てず streaming 失敗として記録し REST フォール
+        バックへ委ねる。CloseStream マーカーを受け取ったら送って終了する。
+        """
+        while True:
+            if self._closed or self._failed:
+                return
+            try:
+                item = self._send_q.get(timeout=_RECV_POLL_SEC)
+            except queue.Empty:
+                continue  # closed/failed の再確認のためループ継続
+            if item is _CLOSE_STREAM:
+                try:
+                    ws.send(json.dumps({"type": "CloseStream"}))
+                except Exception as e:
+                    logger.debug(f"CloseStream 送信エラー（無視）: {e}")
+                return  # CloseStream 後は送信不要（受信ループが Metadata を待つ）
+            try:
+                ws.send(item)  # ← ネットワーク I/O。_lock は保持していない
+            except Exception as e:
+                logger.debug(f"ストリーミング送信エラー: {e}")
+                self._mark_failed()
+                return
 
     def _receive_loop(self, ws) -> None:
         """確定/暫定メッセージを受信し続けるループ。"""

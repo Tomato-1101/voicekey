@@ -5,6 +5,20 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased]
 
 ### Fixed
+- **音声コールバック内の同期 WebSocket 送信を撤去（ロック中 I/O 禁止・固定上限キュー＋専用 sender スレッド・両ブランチ）**。
+  これまで `StreamingTranscriber.send()` は audio コールバックスレッドから `self._lock` を
+  保持したまま同期 `ws.send(pcm)` を呼んでいた。回線が遅い/詰まると送信がブロックし、
+  PortAudio の音声コールバックがその間ずっと塞がれて録音が途切れ得た（さらに `_lock` 保持中の
+  I/O は他スレッドの finish/cancel も巻き込む）。
+  - `send()` は `_float32_to_pcm16le` の後、固定上限キュー（`_send_q`, maxsize=512）へ
+    `put_nowait` するだけのノンブロッキング処理にした（ロックもネットワーク I/O も持たない）。
+  - 実送信は専用 sender スレッド（`_sender_loop`）が担い、`_lock` を持たずに `ws.send` する。
+    接続前に積まれた PCM も sender が FIFO で送るので順序は保たれる（旧 `_pending` 退避を置換）。
+  - キュー溢れ・送信失敗は音声を黙って捨てず streaming 失敗として記録（`_mark_failed`）し、
+    `finish()` が空文字を返して**保持済み全音声**（`task.audio_data`）での REST フォールバックへ移す。
+  - `finish()` の CloseStream も送信キュー経由（退避済み音声の後に送出）にして順序を保証。
+  - 回帰テスト追加（`tests/test_streaming_transcriber.py`）: 遅い WebSocket でも `send()` が即 return、
+    キュー溢れ→失敗確定→`finish()` 空文字、送信失敗→失敗確定、CloseStream マーカーで sender 終了。
 - **録音開始失敗時に古い Deepgram ストリーミング接続を確実に破棄（両ブランチ）**。
   `_on_record_started(False)` が録音スロットだけを消し、`_active_streamer` と
   `chunk_callback`（= 古い `streamer.send`）を残していた。その結果、次回に別バックエンドで
