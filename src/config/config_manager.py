@@ -320,9 +320,17 @@ class ConfigManager:
                 # 常時 ON 固定の項目はファイルにも True で書き戻す（UI から撤去済み）
                 self._force_always_on(self.config)
 
-                # ファイルに書き込み
-                with open(self.config_path, "w", encoding="utf-8") as f:
+                # アトミック書き込み: 一時ファイルへ全量書いてから os.replace で置換する。
+                # open("w") の直接書きは truncate 後にクラッシュ/ディスク不足が起きると
+                # settings.yaml が空・破損で残り、ユーザーの全設定が消える。同一ディレクトリの
+                # 一時ファイル経由なら、置換は同一ファイルシステム上の原子的 rename になる
+                # （os.replace は Windows でも既存ファイルを上書きする）。
+                tmp_path = f"{self.config_path}.tmp"
+                with open(tmp_path, "w", encoding="utf-8") as f:
                     yaml.dump(self.config, f, default_flow_style=False, allow_unicode=True)
+                    f.flush()
+                    os.fsync(f.fileno())  # 置換前に中身をディスクへ確実に落とす
+                os.replace(tmp_path, self.config_path)
 
                 # 再読み込みループを防ぐために更新時刻を記録
                 self.last_mtime = os.path.getmtime(self.config_path)

@@ -123,5 +123,44 @@ class TestMigration(unittest.TestCase):
             os.unlink(path)
 
 
+class TestAtomicSave(unittest.TestCase):
+    """#12: settings.yaml の保存は一時ファイル経由のアトミック置換にする。"""
+
+    def _manager(self, data):
+        handle = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False, encoding="utf-8")
+        yaml.dump(data, handle, allow_unicode=True)
+        handle.close()
+        return ConfigManager(config_path=handle.name), handle.name
+
+    def test_save_round_trips_and_leaves_no_tmp(self):
+        """通常保存は反映され、後に .tmp を残さない。"""
+        mgr, path = self._manager({"language": "ja"})
+        try:
+            self.assertTrue(mgr.save({"language": "en"}))
+            reloaded = ConfigManager(config_path=path)
+            self.assertEqual(reloaded.config["language"], "en")
+            self.assertFalse(os.path.exists(path + ".tmp"))  # 成功後は一時ファイルが消えている
+        finally:
+            os.unlink(path)
+
+    def test_failed_write_keeps_original_intact(self):
+        """書き込み途中で失敗しても、元の settings.yaml が破損・空にならない。"""
+        from unittest import mock
+        from src.config import config_manager as cm
+
+        mgr, path = self._manager({"language": "ja"})
+        try:
+            original = open(path, encoding="utf-8").read()
+            # yaml.dump が一時ファイルへの書き込み中に落ちる状況を模擬
+            with mock.patch.object(cm.yaml, "dump", side_effect=OSError("disk full")):
+                self.assertFalse(mgr.save({"language": "en"}))
+            # 直書きなら truncate 済みで壊れるが、アトミック置換なので元ファイルは無傷
+            self.assertEqual(open(path, encoding="utf-8").read(), original)
+        finally:
+            os.unlink(path)
+            if os.path.exists(path + ".tmp"):
+                os.unlink(path + ".tmp")
+
+
 if __name__ == "__main__":
     unittest.main()
