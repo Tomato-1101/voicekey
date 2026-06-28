@@ -277,6 +277,10 @@ enum BackendClient {
         let totalSessions: Int
         /// 累計録音秒数（端末横断）
         let totalRecordingSeconds: Double
+        /// #11: サーバーが持つ「この端末ぶん」の日次（server baseline）。
+        /// 端末横断 daily からこの端末の寄与を引き、未同期のローカル差分だけを足すために使う。
+        /// nil = サーバーが self_daily を返さない旧サーバー（従来の max 合成にフォールバック）。
+        let selfDaily: [String: DayStat]?
     }
 
     /// アカウント横断の使用実績を取得する（GET /api/v1/stats）。
@@ -287,22 +291,28 @@ enum BackendClient {
         let data = try await send(req)
         struct Day: Decodable { let day: String; let chars: Int?; let sessions: Int?; let duration_ms: Int? }
         struct Totals: Decodable { let chars: Int?; let sessions: Int?; let duration_ms: Int? }
-        struct Resp: Decodable { let daily: [Day]?; let totals: Totals? }
+        struct Resp: Decodable { let daily: [Day]?; let totals: Totals?; let self_daily: [Day]? }
         guard let r = try? JSONDecoder().decode(Resp.self, from: data) else {
             throw BackendError.invalidResponse
         }
-        var daily: [String: DayStat] = [:]
-        for d in r.daily ?? [] {
-            daily[d.day] = DayStat(
-                characters: d.chars ?? 0,
-                recordingSeconds: Double(d.duration_ms ?? 0) / 1000.0,
-                sessions: d.sessions ?? 0)
+        func parseDaily(_ rows: [Day]) -> [String: DayStat] {
+            var out: [String: DayStat] = [:]
+            for d in rows {
+                out[d.day] = DayStat(
+                    characters: d.chars ?? 0,
+                    recordingSeconds: Double(d.duration_ms ?? 0) / 1000.0,
+                    sessions: d.sessions ?? 0)
+            }
+            return out
         }
+        // self_daily はキーが在るときだけ（空配列でも [:]）。無い旧サーバーは nil。
+        let selfDaily = r.self_daily != nil ? parseDaily(r.self_daily!) : nil
         return AccountStats(
-            daily: daily,
+            daily: parseDaily(r.daily ?? []),
             totalCharacters: r.totals?.chars ?? 0,
             totalSessions: r.totals?.sessions ?? 0,
-            totalRecordingSeconds: Double(r.totals?.duration_ms ?? 0) / 1000.0)
+            totalRecordingSeconds: Double(r.totals?.duration_ms ?? 0) / 1000.0,
+            selfDaily: selfDaily)
     }
 
     /// ElevenLabs「正確性」プロキシで文字起こしする（WAV を multipart 送信）。

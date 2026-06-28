@@ -66,6 +66,10 @@ struct StatsData: Codable, Equatable {
     var accountTotalSessions: Int?
     /// 端末横断の累計録音秒数（サーバー totals）
     var accountTotalRecordingSeconds: Double?
+    /// #11: サーバーが持つ「この端末ぶん」の日次（server baseline）。
+    /// 端末横断 accountDaily からこの端末の寄与を引き、未同期のローカル差分だけを
+    /// 足すために使う＝二重計上も過少計上もしない。nil=旧サーバー（従来の max 合成）。
+    var accountSelfDaily: [String: DayStat]?
 }
 
 /// ログイン/ログアウトを各ストアへ伝えるための通知（LoginCoordinator が発火する）
@@ -93,6 +97,7 @@ extension StatsData {
         accountTotalCharacters = try c.decodeIfPresent(Int.self, forKey: .accountTotalCharacters)
         accountTotalSessions = try c.decodeIfPresent(Int.self, forKey: .accountTotalSessions)
         accountTotalRecordingSeconds = try c.decodeIfPresent(Double.self, forKey: .accountTotalRecordingSeconds)
+        accountSelfDaily = try c.decodeIfPresent([String: DayStat].self, forKey: .accountSelfDaily)
     }
 }
 
@@ -197,31 +202,69 @@ final class StatsStore: ObservableObject {
 
     // MARK: - アカウント横断の派生値（#10。未ログイン時はローカルにフォールバック）
 
-    /// 表示用の日次（チャート用）。ログイン中はサーバー合算（端末横断）にこの端末の
-    /// 未送信分を field-wise max で重ねる＝二重計上せずに最新も拾う。未ログインはローカルのみ。
+    /// 表示用の日次（チャート用）。ログイン中はサーバー合算（端末横断）にこの端末の未送信分を重ねる。
+    /// #11: server baseline(accountSelfDaily) があれば effective = account + max(0, local - baseline)
+    /// で合成する。account は baseline を含むので、未同期のローカル差分だけを足す＝二重計上も
+    /// 過少計上もしない。baseline が無い旧サーバーは従来の field-wise max にフォールバック
+    /// （二重計上を避ける安全側）。未ログインはローカルのみ。
     var effectiveDaily: [String: DayStat] {
         guard let acc = data.accountDaily else { return data.daily }
         var out = acc
+        let baseline = data.accountSelfDaily
         for (key, local) in data.daily {
             var merged = out[key] ?? DayStat()
-            merged.characters = max(merged.characters, local.characters)
-            merged.recordingSeconds = max(merged.recordingSeconds, local.recordingSeconds)
-            merged.sessions = max(merged.sessions, local.sessions)
+            if let baseline {
+                let bl = baseline[key] ?? DayStat()
+                merged.characters += max(0, local.characters - bl.characters)
+                merged.recordingSeconds += max(0, local.recordingSeconds - bl.recordingSeconds)
+                merged.sessions += max(0, local.sessions - bl.sessions)
+            } else {
+                merged.characters = max(merged.characters, local.characters)
+                merged.recordingSeconds = max(merged.recordingSeconds, local.recordingSeconds)
+                merged.sessions = max(merged.sessions, local.sessions)
+            }
             out[key] = merged
         }
         return out
     }
 
-    /// 表示用の累計文字数。ログイン中は端末横断の累計とローカル累計の大きい方
-    /// （古い端末履歴で XP が下がらないよう下限をローカルに保つ）。
-    var totalCharacters: Int { max(data.totalCharacters, data.accountTotalCharacters ?? 0) }
+    /// 表示用の累計を端末横断＋未同期分で算出するヘルパ（#11）。
+    /// server baseline があれば account + max(0, local - baselineSum)、無ければ max(local, account)。
+    private func mergedTotal(local: Int, account: Int?, baselineSum: Int) -> Int {
+        guard let account else { return local }
+        if data.accountSelfDaily != nil {
+            return account + max(0, local - baselineSum)
+        }
+        return max(local, account)
+    }
+
+    private func mergedTotal(local: Double, account: Double?, baselineSum: Double) -> Double {
+        guard let account else { return local }
+        if data.accountSelfDaily != nil {
+            return account + max(0, local - baselineSum)
+        }
+        return max(local, account)
+    }
+
+    /// server baseline(accountSelfDaily) の各フィールド合計（未ログイン/旧サーバーは 0）
+    private var baselineCharacters: Int { (data.accountSelfDaily ?? [:]).values.reduce(0) { $0 + $1.characters } }
+    private var baselineSessions: Int { (data.accountSelfDaily ?? [:]).values.reduce(0) { $0 + $1.sessions } }
+    private var baselineRecordingSeconds: Double { (data.accountSelfDaily ?? [:]).values.reduce(0) { $0 + $1.recordingSeconds } }
+
+    /// 表示用の累計文字数。#11: server baseline があれば端末横断の合算にこの端末の
+    /// 未同期分だけを足す（無ければローカルを下限にした max で XP が下がらないようにする）。
+    var totalCharacters: Int {
+        mergedTotal(local: data.totalCharacters, account: data.accountTotalCharacters, baselineSum: baselineCharacters)
+    }
 
     /// 表示用の累計回数（同上）
-    var totalSessions: Int { max(data.totalSessions, data.accountTotalSessions ?? 0) }
+    var totalSessions: Int {
+        mergedTotal(local: data.totalSessions, account: data.accountTotalSessions, baselineSum: baselineSessions)
+    }
 
     /// 表示用の累計録音秒数（同上）
     var totalRecordingSeconds: Double {
-        max(data.totalRecordingSeconds, data.accountTotalRecordingSeconds ?? 0)
+        mergedTotal(local: data.totalRecordingSeconds, account: data.accountTotalRecordingSeconds, baselineSum: baselineRecordingSeconds)
     }
 
     /// 表示用の推定節約秒数。未ログインはローカル精密値、ログイン中は端末横断の日次から再計算。
@@ -394,20 +437,40 @@ final class StatsStore: ObservableObject {
 
     // MARK: - アカウント同期（#10）
 
+    // #11: 当日分の送信を「アカウント単位で直列化＋coalesce」する単一フライト制御。
+    // @MainActor 隔離なので await をまたがない限り不可分。録音のたびに新タスクを撃って
+    // 送信を並走させると古い絶対値が新しい値を上書きする順序逆転が起きうるため、
+    // ワーカーは 1 本だけ動かし、走行中の追加要求は syncPending に畳む。
+    private var syncInFlight = false
+    private var syncPending = false
+
     /// 当日分（この端末の絶対値）をサーバーへ送る。ログイン中のみ・撃ちっぱなし。
-    /// 録音のたびに呼ばれるが、(user_id,device_id,day) の絶対値 upsert なので冪等。
+    /// (user_id,device_id,day) の絶対値 upsert なので冪等。
     func syncTodayInBackground() {
         guard BackendClient.isLoggedIn else { return }
-        let key = Self.dayString(Date())
-        guard let b = data.daily[key] else { return }
-        let payload = BackendClient.StatsDayPayload(
-            day: key,
-            chars: b.characters,
-            sessions: b.sessions,
-            duration_ms: Int((b.recordingSeconds * 1000).rounded()))
-        Task.detached {
-            try? await BackendClient.syncStats(days: [payload])
+        if syncInFlight {
+            syncPending = true  // 走行中＝最新値の再送だけ予約して畳む
+            return
         }
+        syncInFlight = true
+        Task { await self.syncWorker() }
+    }
+
+    /// 当日分の送信ワーカー（単一フライト）。pending が立っている限り最新値を送り直す。
+    private func syncWorker() async {
+        repeat {
+            syncPending = false
+            guard BackendClient.isLoggedIn else { break }
+            let key = Self.dayString(Date())
+            guard let b = data.daily[key] else { break }
+            let payload = BackendClient.StatsDayPayload(
+                day: key,
+                chars: b.characters,
+                sessions: b.sessions,
+                duration_ms: Int((b.recordingSeconds * 1000).rounded()))
+            try? await BackendClient.syncStats(days: [payload])
+        } while syncPending
+        syncInFlight = false
     }
 
     /// ログイン直後/起動時に呼ぶ。まずこの端末の直近分を押し上げ、続いて端末横断の集計を取り込む。
@@ -420,12 +483,17 @@ final class StatsStore: ObservableObject {
     }
 
     /// 端末横断の集計をサーバーから取り込む（accountDaily / account累計を更新して永続化）。
+    /// #11: 取得開始時の認証世代を控え、取得中にログアウト/別ログインが起きていたら結果を捨てる
+    /// （前アカウントの実績を復活させる「アカウント漏洩」を防ぐ）。
     func refreshAccount() async {
+        let gen = AuthClient.generation
         guard let snap = try? await BackendClient.fetchStats() else { return }
+        guard gen == AuthClient.generation else { return }  // 取得中にアカウントが変わった＝破棄
         data.accountDaily = snap.daily
         data.accountTotalCharacters = snap.totalCharacters
         data.accountTotalSessions = snap.totalSessions
         data.accountTotalRecordingSeconds = snap.totalRecordingSeconds
+        data.accountSelfDaily = snap.selfDaily  // server baseline（旧サーバーは nil）
         save()
     }
 
@@ -435,6 +503,7 @@ final class StatsStore: ObservableObject {
         data.accountTotalCharacters = nil
         data.accountTotalSessions = nil
         data.accountTotalRecordingSeconds = nil
+        data.accountSelfDaily = nil
         save()
     }
 

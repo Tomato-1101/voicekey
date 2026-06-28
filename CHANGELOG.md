@@ -5,6 +5,30 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased]
 
 ### Fixed
+- **使用実績のアカウント同期を順序逆転・過少計上・アカウント漏洩から守る（製品版のみ・両OS＋サーバー）**。
+  ログイン中の実績は端末ごとの「当日の絶対値」をサーバーへ送り、取得時に端末横断で合算して表示する。
+  この経路に 3 つの不具合があった。
+  - 順序逆転: 録音のたびに新スレッドで送信していたため複数送信が並走し、到着順が前後すると
+    古い（小さい）絶対値が新しい値を上書きして過少計上し得た。アプリ側は送信を単一フライトで
+    直列化＋coalesce し（走行中の再要求は最新値 1 回に畳む。Python `StatsStore._sync_worker`、
+    Mac `StatsStore.syncWorker`）、サーバー側は単調増加 upsert（`apply_usage_stats` RPC が
+    `GREATEST` を取る）にして到着順に依存しないようにした。
+  - 過少計上: 表示が「端末横断合算 と ローカル の field-wise max」だったため、別端末の寄与がある日に
+    この端末の未送信分が埋もれて取りこぼしていた。サーバー応答にこの端末ぶんの日次
+    （`self_daily`＝server baseline）を追加し、表示を `合算 + max(0, ローカル − baseline)` に変更。
+    端末横断を保ったまま未同期分だけを足す＝二重計上も過少計上もしない（再インストールで
+    ローカル 0 でも合算を下回らない）。`self_daily` を返さない旧サーバーは従来の max 合成へ安全に
+    フォールバック（Python `stats._effective_daily_locked`／`snapshot`、Mac `StatsStore.effectiveDaily`／
+    累計プロパティ）。
+  - アカウント漏洩: ログアウト／アカウント切替が実績取得の往復に割り込むと、後から完了した取得が
+    前アカウントの実績を復活表示し得た。取得開始時の認証世代（#9 の generation）を控え、保存直前に
+    世代が変わっていたら破棄する（Python `StatsStore.refresh_account`、Mac `StatsStore.refreshAccount`）。
+  - サーバー（voicekey-site）: `GET /api/v1/stats` が `self_daily` を返す／`POST /api/v1/stats/sync` が
+    `apply_usage_stats` RPC（単調増加 upsert）を使う／マイグレーション `0016_usage_stats_monotonic.sql`。
+    無料枠の課金判定はサーバーの本物の消費（`consume_free_quota`）で行い、本表示用集計は使わない。
+  - 回帰テスト追加（Python `tests/test_stats.py`）: 未同期分を足す／同期済みは二重計上しない／
+    再インストールの下限維持／旧サーバーの max フォールバック／取得中のアカウント切替で破棄／
+    5 連打が送信 2 回に畳まれる。
 - **無料枠の「1録音＝1消費」を保証（短命トークンのキャッシュをサーバーの cacheable に従わせる・製品版のみ・両OS＋サーバー）**。
   `fetch_ephemeral_token` は短命 JWT を約 60 秒キャッシュし録音をまたいで再利用していたが、
   サーバーの無料枠消費は token 発行時に 1 回のため、同じ JWT を複数録音に使うと無料体験の

@@ -359,30 +359,41 @@ def fetch_stats() -> dict:
 
     Returns:
         {"daily": {"yyyy-MM-dd": {characters, recording_seconds, sessions}},
-         "total_characters": int, "total_sessions": int, "total_recording_seconds": float}
+         "total_characters": int, "total_sessions": int, "total_recording_seconds": float,
+         "self_daily": {...} or None}
         （サーバーのミリ秒は秒へ戻す）
+        self_daily は #11 のサーバー baseline（この端末ぶんのサーバー値）。サーバーが
+        返さない旧サーバーでは None（呼び出し側は従来の max 合成にフォールバックする）。
 
     Raises:
         BackendError: 認証・通信エラー
     """
     resp = _send("GET", constants.API_STATS_PATH, headers=_auth_headers())
     body = resp.json() if resp.content else {}
-    daily: dict = {}
-    for d in body.get("daily") or []:
-        day = d.get("day")
-        if not day:
-            continue
-        daily[day] = {
-            "characters": int(d.get("chars") or 0),
-            "recording_seconds": float(d.get("duration_ms") or 0) / 1000.0,
-            "sessions": int(d.get("sessions") or 0),
-        }
+
+    def _parse_daily(rows: list) -> dict:
+        out: dict = {}
+        for d in rows or []:
+            day = d.get("day")
+            if not day:
+                continue
+            out[day] = {
+                "characters": int(d.get("chars") or 0),
+                "recording_seconds": float(d.get("duration_ms") or 0) / 1000.0,
+                "sessions": int(d.get("sessions") or 0),
+            }
+        return out
+
+    daily = _parse_daily(body.get("daily") or [])
+    # self_daily はキーが在るときだけ dict（空配列でも {}）にする。キーが無い旧サーバーは None。
+    self_daily = _parse_daily(body.get("self_daily") or []) if "self_daily" in body else None
     totals = body.get("totals") or {}
     return {
         "daily": daily,
         "total_characters": int(totals.get("chars") or 0),
         "total_sessions": int(totals.get("sessions") or 0),
         "total_recording_seconds": float(totals.get("duration_ms") or 0) / 1000.0,
+        "self_daily": self_daily,
     }
 
 

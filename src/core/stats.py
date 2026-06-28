@@ -75,6 +75,12 @@ class StatsStore:
         # ダイアログを防ぐ＝lessons 2026-06-12）。Mac は署名アプリの Keychain 読取が
         # 無プロンプトなので StatsStore.init で登録するが、機能としては等価。
         self._account_sync_enabled = False
+        # #11: 当日分の送信を「アカウント単位で直列化＋coalesce」するための単一フライト制御。
+        # 録音のたびに新スレッドを撃つと送信が並走し、古い絶対値が新しい値を上書きする
+        # 順序逆転が起きうる。ワーカーは 1 本だけ動かし、走行中の追加要求は pending に畳む。
+        self._sync_state_lock = threading.Lock()
+        self._sync_inflight = False
+        self._sync_pending = False
         self._data = self._load()
 
     def enable_account_sync(self) -> None:
@@ -141,13 +147,25 @@ class StatsStore:
             d = dict(self._data)
             eff = self._effective_daily_locked()
         logged_in = d.get("account_daily") is not None
-        # アカウント対応の累計（ローカルを下限にする）
-        total_chars = max(int(d["total_characters"]), int(d.get("account_total_characters") or 0))
-        total_sessions = max(int(d["total_sessions"]), int(d.get("account_total_sessions") or 0))
-        total_rec = max(
-            float(d["total_recording_seconds"]),
-            float(d.get("account_total_recording_seconds") or 0.0),
-        )
+        # アカウント対応の累計。#11: server baseline があれば
+        # account_total + max(0, local_total - baseline_total) で未同期分だけ足す
+        # （端末横断の合算を保ちつつ、この端末の未送信分を過少計上しない）。
+        # baseline が無い旧サーバーは従来の max(local, account)（ローカル下限）にフォールバック。
+        baseline = d.get("account_self_daily")
+        acc_chars = int(d.get("account_total_characters") or 0)
+        acc_sessions = int(d.get("account_total_sessions") or 0)
+        acc_rec = float(d.get("account_total_recording_seconds") or 0.0)
+        if logged_in and baseline is not None:
+            bl_chars = sum(int(b.get("characters", 0)) for b in baseline.values())
+            bl_sessions = sum(int(b.get("sessions", 0)) for b in baseline.values())
+            bl_rec = sum(float(b.get("recording_seconds", 0.0)) for b in baseline.values())
+            total_chars = acc_chars + max(0, int(d["total_characters"]) - bl_chars)
+            total_sessions = acc_sessions + max(0, int(d["total_sessions"]) - bl_sessions)
+            total_rec = acc_rec + max(0.0, float(d["total_recording_seconds"]) - bl_rec)
+        else:
+            total_chars = max(int(d["total_characters"]), acc_chars)
+            total_sessions = max(int(d["total_sessions"]), acc_sessions)
+            total_rec = max(float(d["total_recording_seconds"]), acc_rec)
         if logged_in:
             saved = max(float(d["saved_seconds"]), self._saved_from_daily(eff))
             cur_streak = max(self._current_streak_from(eff), int(d["current_streak"]))
@@ -269,24 +287,41 @@ class StatsStore:
     # MARK: - アカウント連携（#10）
 
     def _effective_daily_locked(self) -> dict:
-        """ローカル daily に account_daily を field-wise max で重ねた辞書を返す。
+        """ローカル daily に端末横断 account_daily を重ねた表示用の辞書を返す（_lock 保持中に呼ぶ）。
 
-        ログイン中はサーバー合算（端末横断）にこの端末の未送信分を max で重ねる
-        ＝二重計上せずに最新も拾う。未ログイン（account_daily=None）はローカルのみ。
-        _lock 保持中に呼ぶこと。
+        #11: サーバーが返す「この端末ぶん」(account_self_daily=server baseline) があるときは
+        effective = account + max(0, local - baseline) で合成する。account は server baseline を
+        含むので、端末ごとの未同期ローカル差分(pending)だけを足す＝二重計上も過少計上もしない。
+        baseline が無い旧サーバーのときは従来どおり field-wise max にフォールバックする
+        （二重計上を避ける安全側。多端末同日の過少計上はサーバー更新後に解消）。
+        未ログイン（account_daily=None）はローカルのみ。
         """
         local = self._data.get("daily", {}) or {}
         acc = self._data.get("account_daily")
         if not acc:
             return {k: dict(v) for k, v in local.items()}
+        baseline = self._data.get("account_self_daily")
         out = {k: dict(v) for k, v in acc.items()}
         for key, lv in local.items():
             m = out.get(key) or {"characters": 0, "recording_seconds": 0.0, "sessions": 0}
-            m["characters"] = max(int(m.get("characters", 0)), int(lv.get("characters", 0)))
-            m["recording_seconds"] = max(
-                float(m.get("recording_seconds", 0.0)), float(lv.get("recording_seconds", 0.0))
-            )
-            m["sessions"] = max(int(m.get("sessions", 0)), int(lv.get("sessions", 0)))
+            if baseline is not None:
+                # server baseline（この端末のサーバー値）を引いた未同期分だけを足す
+                bl = baseline.get(key) or {}
+                m["characters"] = int(m.get("characters", 0)) + max(
+                    0, int(lv.get("characters", 0)) - int(bl.get("characters", 0))
+                )
+                m["recording_seconds"] = float(m.get("recording_seconds", 0.0)) + max(
+                    0.0, float(lv.get("recording_seconds", 0.0)) - float(bl.get("recording_seconds", 0.0))
+                )
+                m["sessions"] = int(m.get("sessions", 0)) + max(
+                    0, int(lv.get("sessions", 0)) - int(bl.get("sessions", 0))
+                )
+            else:
+                m["characters"] = max(int(m.get("characters", 0)), int(lv.get("characters", 0)))
+                m["recording_seconds"] = max(
+                    float(m.get("recording_seconds", 0.0)), float(lv.get("recording_seconds", 0.0))
+                )
+                m["sessions"] = max(int(m.get("sessions", 0)), int(lv.get("sessions", 0)))
             out[key] = m
         return out
 
@@ -360,11 +395,39 @@ class StatsStore:
     def sync_today_in_background(self) -> None:
         """当日分（この端末の絶対値）をサーバーへ送る。連携 ON かつログイン中のみ・撃ちっぱなし。
 
-        録音のたびに呼ばれるが、(user_id,device_id,day) の絶対値 upsert なので冪等。
+        #11: 送信は単一フライトのワーカーで直列化する。走行中に再要求が来たら pending に
+        畳んで（coalesce）、走行中の送信が終わってから最新の当日値を 1 回だけ送る。
+        これで複数送信の並走による順序逆転（古い絶対値が新しい値を上書き）を防ぐ。
+        (user_id,device_id,day) の絶対値 upsert なので冪等。
         連携 OFF（テスト等）のときは keyring/ネットワークに一切触れず即 return する。
         """
         if not self._account_sync_enabled:
             return
+        with self._sync_state_lock:
+            if self._sync_inflight:
+                # すでにワーカーが走っている＝最新値の再送だけ予約して畳む
+                self._sync_pending = True
+                return
+            self._sync_inflight = True
+        threading.Thread(target=self._sync_worker, daemon=True).start()
+
+    def _sync_worker(self) -> None:
+        """当日分の送信ワーカー（単一フライト）。pending が立っている限り最新値を送り直す。"""
+        try:
+            while True:
+                self._push_today_once()
+                with self._sync_state_lock:
+                    if not self._sync_pending:
+                        self._sync_inflight = False
+                        return
+                    self._sync_pending = False  # 畳んだ再要求を 1 回ぶんに集約して継続
+        except Exception as e:  # 想定外でもフラグを必ず戻す（恒久ハング防止）
+            logger.debug(f"実績同期ワーカーで例外（無視）: {e}")
+            with self._sync_state_lock:
+                self._sync_inflight = False
+
+    def _push_today_once(self) -> None:
+        """当日分の最新絶対値を 1 回サーバーへ送る（ログイン中のみ）。"""
         from . import backend_client
 
         try:
@@ -383,14 +446,10 @@ class StatsStore:
                 "sessions": int(b.get("sessions", 0)),
                 "duration_ms": int(round(float(b.get("recording_seconds", 0.0)) * 1000)),
             }
-
-        def _run() -> None:
-            try:
-                backend_client.sync_stats([payload])
-            except Exception as e:  # 同期失敗は実績表示に影響しない
-                logger.debug(f"実績の同期に失敗（無視）: {e}")
-
-        threading.Thread(target=_run, daemon=True).start()
+        try:
+            backend_client.sync_stats([payload])
+        except Exception as e:  # 同期失敗は実績表示に影響しない
+            logger.debug(f"実績の同期に失敗（無視）: {e}")
 
     def sync_on_login(self) -> None:
         """ログイン直後/起動時に呼ぶ。まずこの端末の直近分を押し上げ、続いて端末横断の集計を取り込む。
@@ -408,21 +467,33 @@ class StatsStore:
         self.refresh_account()
 
     def refresh_account(self) -> None:
-        """端末横断の集計をサーバーから取り込む（account_* を更新して永続化）。"""
-        from . import backend_client
+        """端末横断の集計をサーバーから取り込む（account_* を更新して永続化）。
 
+        #11: 取得開始時の認証世代を控え、保存直前に世代が変わっていたら破棄する
+        （ログアウト/別アカウントへ切替後に古い取得結果が前アカウントの実績を
+        復活させる「アカウント漏洩」を防ぐ）。ネットワーク I/O はロック外で行う。
+        """
+        from . import auth_client, backend_client
+
+        gen = auth_client.auth_generation()
         try:
             snap = backend_client.fetch_stats()
         except Exception as e:
             logger.debug(f"端末横断実績の取得に失敗（無視）: {e}")
             return
         with self._lock:
+            # 取得中にログアウト/別ログインが起きていたら、この結果は前アカウントのもの＝捨てる
+            if auth_client.auth_generation() != gen:
+                logger.debug("実績取得中にアカウントが変わったため結果を破棄")
+                return
             self._data["account_daily"] = snap.get("daily") or {}
             self._data["account_total_characters"] = int(snap.get("total_characters") or 0)
             self._data["account_total_sessions"] = int(snap.get("total_sessions") or 0)
             self._data["account_total_recording_seconds"] = float(
                 snap.get("total_recording_seconds") or 0.0
             )
+            # server baseline（この端末ぶん）。旧サーバーが返さなければ None のまま＝従来挙動
+            self._data["account_self_daily"] = snap.get("self_daily")
             self._save()
 
     def clear_account(self) -> None:
@@ -432,6 +503,7 @@ class StatsStore:
             self._data["account_total_characters"] = None
             self._data["account_total_sessions"] = None
             self._data["account_total_recording_seconds"] = None
+            self._data["account_self_daily"] = None
             self._save()
 
     @staticmethod
@@ -466,6 +538,11 @@ class StatsStore:
             "account_total_characters": None,
             "account_total_sessions": None,
             "account_total_recording_seconds": None,
+            # #11: サーバーが持つ「この端末ぶん」の日次（server baseline）。
+            # 端末横断合算 account_daily からこの端末の寄与を引くために使う＝未同期の
+            # ローカル差分だけを pending として足せる（過少計上の修正）。
+            # None=サーバーが self_daily を返さない旧サーバー（その場合は従来の max 合成にフォールバック）。
+            "account_self_daily": None,
         }
 
     def _load(self) -> dict:
@@ -491,6 +568,10 @@ class StatsStore:
                     raw_acc = raw.get("account_daily")
                     if isinstance(raw_acc, dict):
                         data["account_daily"] = self._clean_daily(raw_acc)
+                    # #11: server baseline（この端末ぶんのサーバー値）。あれば復元
+                    raw_self = raw.get("account_self_daily")
+                    if isinstance(raw_self, dict):
+                        data["account_self_daily"] = self._clean_daily(raw_self)
                     atc = raw.get("account_total_characters")
                     data["account_total_characters"] = int(atc) if atc is not None else None
                     ats = raw.get("account_total_sessions")

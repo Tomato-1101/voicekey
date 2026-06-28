@@ -268,5 +268,188 @@ class TestStatsAccountLinking(unittest.TestCase):
         self.assertEqual(reopened.snapshot()["total_characters"], 30)
 
 
+class TestStatsBaselineMerge(unittest.TestCase):
+    """#11: server baseline(account_self_daily) を使った過少計上の修正テスト。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self._tmp.name) / "stats.json"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_daily_adds_unsynced_delta_over_baseline(self):
+        """多端末同日：effective = account + max(0, local - baseline)。max では過少計上していた分を拾う。"""
+        store = StatsStore(self.path)
+        day = "2026-06-26"
+        # この端末ローカルは 20 文字（うち 15 はサーバー反映済み＝baseline、5 が未同期）
+        store._data["daily"] = {day: {"characters": 20, "recording_seconds": 2.0, "sessions": 4}}
+        # 端末横断合算 = 別端末 100 + この端末のサーバー値 15 = 115
+        store._data["account_daily"] = {day: {"characters": 115, "recording_seconds": 11.0, "sessions": 11}}
+        # server baseline（この端末ぶんのサーバー値）= 15
+        store._data["account_self_daily"] = {day: {"characters": 15, "recording_seconds": 1.5, "sessions": 3}}
+        series = store.daily_series(1, end_day=day)
+        # 115 + (20 - 15) = 120（旧 max なら 115 のままで 5 を取りこぼしていた）
+        self.assertEqual(series[-1]["characters"], 120)
+        self.assertEqual(series[-1]["sessions"], 12)  # 11 + (4-3)
+
+    def test_daily_no_double_count_when_synced(self):
+        """未同期分が無い（local == baseline）なら account そのまま＝二重計上しない。"""
+        store = StatsStore(self.path)
+        day = "2026-06-26"
+        store._data["daily"] = {day: {"characters": 15, "recording_seconds": 1.5, "sessions": 3}}
+        store._data["account_daily"] = {day: {"characters": 115, "recording_seconds": 11.0, "sessions": 11}}
+        store._data["account_self_daily"] = {day: {"characters": 15, "recording_seconds": 1.5, "sessions": 3}}
+        series = store.daily_series(1, end_day=day)
+        self.assertEqual(series[-1]["characters"], 115)  # 115 + max(0, 15-15)
+
+    def test_daily_reinstall_floor_keeps_account(self):
+        """再インストール等でローカルが 0 でも、サーバー値（account）は下回らない。"""
+        store = StatsStore(self.path)
+        day = "2026-06-26"
+        store._data["daily"] = {}  # ローカル空（再インストール直後）
+        store._data["account_daily"] = {day: {"characters": 80, "recording_seconds": 8.0, "sessions": 9}}
+        store._data["account_self_daily"] = {day: {"characters": 30, "recording_seconds": 3.0, "sessions": 4}}
+        series = store.daily_series(1, end_day=day)
+        self.assertEqual(series[-1]["characters"], 80)  # account のまま（過少計上しない）
+
+    def test_totals_add_unsynced_delta_over_baseline(self):
+        """累計も baseline 方式：account_total + max(0, local_total - baseline_total)。"""
+        store = StatsStore(self.path)
+        store.record_session(characters=200, recording_seconds=5.0)  # local 200
+        store._data["account_daily"] = {"2026-06-26": {"characters": 1, "recording_seconds": 0, "sessions": 1}}
+        store._data["account_total_characters"] = 1000  # 別端末込みの合算
+        store._data["account_self_daily"] = {"2026-06-01": {"characters": 150, "recording_seconds": 0.0, "sessions": 0}}
+        snap = store.snapshot()
+        # 1000 + (200 - 150) = 1050（旧 max なら 1000 で未同期 50 を取りこぼし）
+        self.assertEqual(snap["total_characters"], 1050)
+
+    def test_totals_reinstall_floor(self):
+        """ローカル累計 0 でも account_total を下回らない。"""
+        store = StatsStore(self.path)
+        store._data["account_daily"] = {"2026-06-26": {"characters": 1, "recording_seconds": 0, "sessions": 1}}
+        store._data["account_total_characters"] = 500
+        store._data["account_self_daily"] = {"2026-06-01": {"characters": 300, "recording_seconds": 0.0, "sessions": 0}}
+        snap = store.snapshot()
+        self.assertEqual(snap["total_characters"], 500)  # 500 + max(0, 0-300)
+
+    def test_old_server_without_self_daily_falls_back_to_max(self):
+        """self_daily を返さない旧サーバー（account_self_daily=None）は従来の max 合成のまま。"""
+        store = StatsStore(self.path)
+        day = "2026-06-26"
+        store._data["daily"] = {day: {"characters": 20, "recording_seconds": 2.0, "sessions": 4}}
+        store._data["account_daily"] = {day: {"characters": 115, "recording_seconds": 11.0, "sessions": 11}}
+        store._data["account_self_daily"] = None  # 旧サーバー
+        series = store.daily_series(1, end_day=day)
+        self.assertEqual(series[-1]["characters"], 115)  # max(20,115) のまま（二重計上しない安全側）
+
+
+class TestStatsAccountGeneration(unittest.TestCase):
+    """#11: 取得中のアカウント切替で古い結果を破棄する（アカウント漏洩防止）。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self._tmp.name) / "stats.json"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_refresh_discarded_when_generation_changes_midflight(self):
+        """fetch_stats 中にログアウト（世代+1）が起きたら、取得結果を account_* に入れない。"""
+        from unittest import mock
+        from src.core import auth_client, backend_client
+
+        store = StatsStore(self.path)
+
+        def _fake_fetch():
+            # 取得中に別スレッドでログアウト/別ログインが起きたのを模擬（世代を進める）
+            with auth_client._generation_lock:
+                auth_client._auth_generation += 1
+            return {
+                "daily": {"2026-06-26": {"characters": 99, "recording_seconds": 9.0, "sessions": 9}},
+                "total_characters": 99,
+                "total_sessions": 9,
+                "total_recording_seconds": 9.0,
+                "self_daily": {},
+            }
+
+        with mock.patch.object(backend_client, "fetch_stats", side_effect=_fake_fetch):
+            store.refresh_account()
+        # 世代が変わった＝前アカウントの結果なので取り込まれていないこと
+        self.assertIsNone(store._data["account_daily"])
+        self.assertIsNone(store._data["account_total_characters"])
+
+    def test_refresh_applied_when_generation_stable(self):
+        """世代が変わらなければ通常どおり取り込む（対照）。"""
+        from unittest import mock
+        from src.core import backend_client
+
+        store = StatsStore(self.path)
+        snap = {
+            "daily": {"2026-06-26": {"characters": 50, "recording_seconds": 5.0, "sessions": 5}},
+            "total_characters": 50,
+            "total_sessions": 5,
+            "total_recording_seconds": 5.0,
+            "self_daily": {"2026-06-26": {"characters": 50, "recording_seconds": 5.0, "sessions": 5}},
+        }
+        with mock.patch.object(backend_client, "fetch_stats", return_value=snap):
+            store.refresh_account()
+        self.assertEqual(store._data["account_total_characters"], 50)
+        self.assertEqual(store._data["account_self_daily"]["2026-06-26"]["characters"], 50)
+
+
+class TestStatsSyncCoalesce(unittest.TestCase):
+    """#11: 当日分の送信を単一フライトで直列化＋coalesce（順序逆転防止）。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self._tmp.name) / "stats.json"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_concurrent_calls_coalesce_to_single_resend(self):
+        """走行中の複数要求は 1 回ぶんに畳まれる＝5 連打でも送信は 2 回（並走しない）。"""
+        import threading
+        from datetime import datetime
+        from unittest import mock
+        from src.core import backend_client
+        from src.core.stats import _day_string
+
+        store = StatsStore(self.path)
+        store._account_sync_enabled = True
+        today = _day_string(datetime.now().astimezone())
+        store._data["daily"] = {today: {"characters": 10, "recording_seconds": 1.0, "sessions": 1}}
+
+        started = threading.Event()
+        release = threading.Event()
+        calls = []
+        lock = threading.Lock()
+
+        def _fake_sync(days):
+            with lock:
+                calls.append(list(days))
+                n = len(calls)
+            if n == 1:
+                started.set()
+                release.wait(timeout=3)  # 1 回目を止めて、その間に再要求を畳ませる
+
+        with mock.patch.object(backend_client, "is_logged_in", return_value=True), \
+             mock.patch.object(backend_client, "sync_stats", side_effect=_fake_sync):
+            store.sync_today_in_background()       # ワーカー起動 → 送信#1 でブロック
+            self.assertTrue(started.wait(2), "ワーカーが送信#1 に到達しない")
+            for _ in range(4):                     # inflight 中の 4 連打 → pending に集約
+                store.sync_today_in_background()
+            release.set()                          # #1 解放 → pending を見て #2 を 1 回だけ送る
+            # ワーカー完了待ち（inflight が下りるまで）
+            for _ in range(60):
+                if not store._sync_inflight:
+                    break
+                threading.Event().wait(0.05)
+
+        self.assertFalse(store._sync_inflight)
+        self.assertEqual(len(calls), 2)  # 5 要求 → 送信 2 回（並走せず最新値を 1 回再送）
+
+
 if __name__ == "__main__":
     unittest.main()
