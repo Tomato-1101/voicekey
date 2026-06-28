@@ -5,6 +5,15 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased]
 
 ### Fixed
+- **ログ出力先を作業ディレクトリ依存にせず OS 標準ログディレクトリへ固定（Windows・両ブランチ）**。
+  起動時ログ（`startup_log.txt`）を相対パスで開いていたため、ログイン時自動起動やショートカット
+  起動では cwd が `C:\Windows\System32` 等になり、ログが書けない／想定外の場所に散らばっていた。
+  相対名は OS 標準のユーザー書き込み可能ディレクトリ（Windows=`%LOCALAPPDATA%\voicekey\logs`、
+  macOS=`~/Library/Logs/voicekey`、その他=`$XDG_STATE_HOME/voicekey/logs`）配下へ解決するようにし、
+  絶対パスはそのまま使用。ディレクトリ/ファイル作成に失敗してもアプリは止めずコンソール出力で継続。
+  Mac ネイティブ版は Apple 統合ログ（`os.Logger`）を使うため対象外。回帰テスト追加
+  （`tests/test_logger.py`: 相対名は log dir 配下/絶対パスはそのまま/作成失敗時はコンソール継続/
+  None で無効化/プラットフォーム別 dir）。
 - **Keychain 書き込み（delete→add）の add 失敗で旧資格情報を失わないようにした（製品版・Mac）**。
   `Keychain.write` は所有権確保のため delete→add 方式を採る（`SecItemUpdate` は他アプリ/旧署名所有の
   項目が ACL ごと残り承認ダイアログが再発するため・2026-06-12 実測）。ただし delete 後に add が失敗すると
