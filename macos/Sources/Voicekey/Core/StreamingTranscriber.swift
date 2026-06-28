@@ -66,11 +66,11 @@ final class StreamingTranscriber: @unchecked Sendable {
     /// - Returns: キー未設定かつ未ログインなど開始できない場合 false（呼び出し側は REST にフォールバック）
     func start() -> Bool {
         let loggedIn = BackendClient.isLoggedIn
-        // 配布版（製品版ビルド）はアクティベーション必須＝未ログインでは埋め込みキーを使わない。
+        // 配布版（製品版ビルド）はログイン必須＝未ログインでは埋め込みキーを使わない。
         // その場合 false を返し、ゲート済みの REST 経路に委ねてログイン要求エラーを表示させる。
         let key = EmbeddedKeys.isDist ? nil : Keychain.apiKey(for: .deepgram)
         guard loggedIn || key != nil else {
-            log.error("Deepgram: 未ログイン（配布版はアクティベーション必須）またはキー未設定のためストリーミングを開始できません")
+            log.error("Deepgram: 未ログイン（配布版はログイン必須）またはキー未設定のためストリーミングを開始できません")
             return false
         }
 

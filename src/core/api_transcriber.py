@@ -163,11 +163,11 @@ class ApiTranscriber:
         return bool(self._resolve_api_key())
 
     def _dist_guard(self, server_supported: bool) -> None:
-        """配布（DIST）ビルドの無料ゲート: ログイン＋アクティベーション必須にする。
+        """配布（DIST）ビルドのゲート: 文字起こしにはログインを必須にする。
 
-        配布版はアプリに長期キーを埋め込まず、ログイン（＝アカウント）＋有効な
-        アクティベーションキーが無いと文字起こしできない。サブスク/キーの有効性
-        判定はサーバー側（ephemeral/proxy が 403 を返す）で行うため、ここでは
+        配布版はアプリに長期キーを埋め込まない。ログイン後はまず無料体験枠で使え、
+        枠を使い切るとアクティベーションキーの登録が必要になる。無料枠/キー/サブスクの
+        有効性判定はサーバー側（ephemeral/proxy が 402/403 を返す）で行うため、ここでは
         「ログイン済みか」と「この方式がサーバー経由に対応しているか」だけを見る。
 
         開発（dev）ビルドでは何もしない（埋め込み/設定キー直叩きの並存を維持）。
@@ -184,7 +184,7 @@ class ApiTranscriber:
             return
         if not backend_client.is_logged_in():
             raise TranscriptionError(
-                "利用するにはログインとアクティベーションキーが必要です（設定 → アカウント）"
+                "ログインすると無料体験で使えます（設定 → アカウント）"
             )
         if not server_supported:
             raise TranscriptionError("この文字起こし方式は配布版では利用できません")

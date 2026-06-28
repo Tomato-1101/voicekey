@@ -151,13 +151,13 @@ final class Transcriber: @unchecked Sendable {
         guard !samples.isEmpty else { return "" }
 
         // 配布版（製品版ビルド）は「アクティベーション必須」。埋め込みキーへはフォールバックしない。
-        // 未ログイン＝停止して「設定 → アカウント」でログイン＋キー登録を促す。
-        // 利用権（アクティベーションキー/サブスク）が無い場合はサーバーが 403 を返し、
-        // BackendError.noSubscription（＝キー登録を促すメッセージ）として表面化する。
+        // 未ログイン＝停止して「設定 → アカウント」でログインを促す（ログイン後は無料体験で使える）。
+        // 無料体験を使い切った/利用権が無い場合はサーバーが 402/403 を返し、
+        // BackendError.freeQuotaExhausted / .noSubscription（＝キー登録を促すメッセージ）として表面化する。
         if EmbeddedKeys.isDist {
             guard BackendClient.isLoggedIn else {
                 throw TranscriptionError(
-                    message: "利用するにはログインとアクティベーションキーが必要です（設定 → アカウント）"
+                    message: "ログインすると無料体験で使えます（設定 → アカウント）"
                 )
             }
             switch backend {
