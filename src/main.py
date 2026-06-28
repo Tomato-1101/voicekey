@@ -16,8 +16,13 @@ from .app import VoicekeyApp
 from .platform import get_platform_adapter
 from .utils.logger import get_logger, setup_logger
 
-# .envファイルから環境変数を読み込み（APIキー等）
-load_dotenv()
+# .env ファイルから環境変数を読み込み（API キー等）。
+# 配布（DIST）ビルドでは読み込まない＝作業ディレクトリの .env で接続先や鍵を
+# 汚染されないようにする。override 判定のため secrets を先に取り込む。
+from .utils import secrets as _secrets  # noqa: E402
+
+if not _secrets.is_dist_build():
+    load_dotenv()
 
 # ロギング設定
 setup_logger(log_file="startup_log.txt")

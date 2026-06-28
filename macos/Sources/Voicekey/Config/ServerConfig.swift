@@ -12,14 +12,22 @@
 import Foundation
 
 enum ServerConfig {
-    /// バックエンドのベース URL。配布ビルドは本番、開発ビルドは localhost。
-    /// preview 検証などで切り替えたい場合は環境変数 VOICEKEY_SERVER_URL で上書き可。
-    static var baseURL: String {
-        if let override = ProcessInfo.processInfo.environment["VOICEKEY_SERVER_URL"],
-           !override.isEmpty {
+    /// バックエンドのベース URL を解決する（テスト可能な純関数）。
+    /// 配布ビルドは本番固定で、環境変数 override を無視する（接続先汚染を防ぐ）。
+    /// 開発ビルドのみ preview 検証用に VOICEKEY_SERVER_URL での上書きを許可する。
+    static func resolveBaseURL(isDist: Bool, override: String?) -> String {
+        if !isDist, let override = override, !override.isEmpty {
             return override.hasSuffix("/") ? String(override.dropLast()) : override
         }
-        return EmbeddedKeys.isDist ? "https://voicekey.vercel.app" : "http://localhost:3000"
+        return isDist ? "https://voicekey.vercel.app" : "http://localhost:3000"
+    }
+
+    /// バックエンドのベース URL。配布ビルドは本番、開発ビルドは localhost。
+    static var baseURL: String {
+        resolveBaseURL(
+            isDist: EmbeddedKeys.isDist,
+            override: ProcessInfo.processInfo.environment["VOICEKEY_SERVER_URL"]
+        )
     }
 
     /// Deepgram 短命 JWT 発行

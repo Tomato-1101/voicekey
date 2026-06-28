@@ -112,11 +112,19 @@ class TestServerBaseURL(unittest.TestCase):
             os.environ.pop("VOICEKEY_SERVER_URL", None)
             self.assertEqual(secrets.get_server_base_url(), secrets_product_url())
 
-    def test_env_override_wins(self):
-        """環境変数 VOICEKEY_SERVER_URL が最優先（末尾スラッシュ除去）。"""
+    def test_env_override_wins_in_dev(self):
+        """開発ビルドでは環境変数 VOICEKEY_SERVER_URL が最優先（末尾スラッシュ除去）。"""
         secrets._embedded = None
         with mock.patch.dict(os.environ, {"VOICEKEY_SERVER_URL": "https://preview.example/"}, clear=False):
             self.assertEqual(secrets.get_server_base_url(), "https://preview.example")
+
+    def test_env_override_ignored_in_dist(self):
+        """配布ビルドでは override を無視して本番 URL に固定する（接続先汚染の防止）。"""
+        import types
+
+        secrets._embedded = types.SimpleNamespace(IS_DIST=True, get_key=lambda s: None)
+        with mock.patch.dict(os.environ, {"VOICEKEY_SERVER_URL": "https://evil.example/"}, clear=False):
+            self.assertEqual(secrets.get_server_base_url(), secrets_product_url())
 
 
 def secrets_local_url() -> str:

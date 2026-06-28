@@ -2,6 +2,19 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
+## [Unreleased]
+
+### Security
+- **配布版で接続先・認証情報の汚染を防止（`.env` / `VOICEKEY_SERVER_URL` の無効化・両OS）**。
+  配布（DIST）ビルドでは `.env` を読み込まず、環境変数 `VOICEKEY_SERVER_URL` による
+  サーバー接続先の上書きも無視するようにした。これまでは作業ディレクトリの `.env` や
+  環境変数を汚染されると、Bearer トークン・音声・フィードバックを任意のサーバーへ
+  向けられる余地があった。override は開発ビルドの preview 検証用に限定する。
+  - 実装: Windows=`src/main.py`（`load_dotenv` を dist でスキップ）/ `src/utils/secrets.py`
+    （`get_server_base_url` の override を dist で破棄）、Mac=`ServerConfig.resolveBaseURL`
+    （dist では override 分岐に入らず本番固定・テスト可能な純関数へ分離）。
+  - テスト追加（dist で override が無視される回帰／`tests/test_secrets_auth.py`）。
+
 ## [1.5.1] - 2026-06-28
 
 ### Changed

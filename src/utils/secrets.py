@@ -182,14 +182,17 @@ def get_server_base_url() -> str:
     """
     自社バックエンド（短命キー発行・プロキシ）のベース URL を返す。
 
-    配布ビルドは本番、開発ビルドは localhost を既定とする。preview 検証などで
-    切り替えたい場合は環境変数 VOICEKEY_SERVER_URL で上書きできる。
+    配布ビルドは本番固定（環境変数 override は無視）。開発ビルドは localhost を
+    既定とし、preview 検証などで環境変数 VOICEKEY_SERVER_URL による上書きを許可する。
 
     Returns:
         末尾スラッシュを除いたベース URL（例 "https://voicekey.vercel.app"）
     """
+    # 配布ビルドでは override を一切受け付けない。作業ディレクトリや環境変数を汚染されても
+    # Bearer token・音声・フィードバックを任意サーバーへ向けられないようにするため。
+    # override は開発ビルドの preview 検証用に限定する。
     override = os.environ.get("VOICEKEY_SERVER_URL")
-    if override:
+    if override and not is_dist_build():
         return override.rstrip("/")
     # 循環 import を避けるため遅延 import（constants は secrets に依存しない）
     from ..config.constants import LOCAL_SERVER_URL, PRODUCT_SERVER_URL
