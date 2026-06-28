@@ -5,6 +5,12 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased]
 
 ### Fixed
+- **製品版のバックエンド表示名をエラー・通知でも 2 択名に統一（release・Windows）**。
+  設定ドロップダウン（Win）と Mac `AppConfig.backendDisplayName` は既に「高速リアルタイム／正確性」だったが、
+  `api_transcriber.py` の `display_name`（API キー未設定・レート制限・HTTP エラー・タイムアウト等のメッセージや
+  通知に露出）だけが ElevenLabs=「多言語」/ Deepgram=「リアルタイム」のままで、製品版の 2 択名と食い違っていた。
+  ElevenLabs を「正確性」、Deepgram を「高速リアルタイム」に統一（`src/core/api_transcriber.py`）。
+  `main`（自分用）は実プロバイダー名表示のため対象外（既に OpenAI/Groq/ElevenLabs/Deepgram で一致）。
 - **アプリのバージョン定義を `constants.APP_VERSION` の単一ソースへ統一（両ブランチ）**。
   `src/__init__.py` の `__version__` が `"2.0.0"` とハードコードされ、実際の配布版（`constants.APP_VERSION`・
   Info.plist・README）と食い違っていた。`from .config.constants import APP_VERSION as __version__` に変更し、
