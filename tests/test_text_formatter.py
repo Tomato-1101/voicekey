@@ -134,6 +134,17 @@ class TestClientReuse(unittest.TestCase):
                 patch.object(text_formatter, "_get_client", return_value=client):
             text_formatter.prewarm()  # 例外が出なければ OK
 
+    def test_prewarm_dist_skips_direct_groq(self):
+        """配布ビルド（未ログイン）は直 Groq を温めない（キーも見に行かない）。"""
+        client = _mock_client()
+        with patch.object(text_formatter.backend_client, "is_logged_in", return_value=False), \
+                patch.object(text_formatter.secrets, "is_dist_build", return_value=True), \
+                patch.object(text_formatter.secrets, "get_api_key") as mock_key, \
+                patch.object(text_formatter, "_get_client", return_value=client) as mock_get:
+            text_formatter.prewarm()
+            mock_get.assert_not_called()   # 直 Groq は温めない
+            mock_key.assert_not_called()   # キーも見に行かない
+
 
 class TestFormatText(unittest.TestCase):
     """format_text の API 呼び出しとフォールバック動作を検証する。"""
@@ -169,6 +180,16 @@ class TestFormatText(unittest.TestCase):
                 patch.object(text_formatter, "_get_client", return_value=client):
             self.assertEqual(format_text("えーと原文です", "m"), "えーと原文です")
             client.post.assert_not_called()
+
+    def test_dist_build_skips_direct_groq(self):
+        """配布ビルド（未ログイン）は整形せず原文を返し、直 Groq を一切叩かない。"""
+        client = _mock_client()
+        with patch.object(text_formatter.secrets, "is_dist_build", return_value=True), \
+                patch.object(text_formatter.secrets, "get_api_key") as mock_key, \
+                patch.object(text_formatter, "_get_client", return_value=client):
+            self.assertEqual(format_text("えーと原文です", "m"), "えーと原文です")
+            client.post.assert_not_called()  # 直 Groq を叩かない
+            mock_key.assert_not_called()     # キーも見に行かない（dist ガードで先に return）
 
     def test_env_var_fallback_is_used(self):
         """Keychain に無くても GROQ_API_KEY 環境変数があれば API を呼ぶ。"""

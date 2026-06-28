@@ -83,6 +83,8 @@ final class TextFormatter {
             Task { await BackendClient.warmFormatProxy() }
             return
         }
+        // 配布ビルド（製品版）は直 Groq を温めない（整形はサーバープロキシ専用・キーも持たない）
+        if EmbeddedKeys.isDist { return }
         // 非ログイン（自前キー直叩き＝主に main/自分用）は従来どおり Groq の TLS を温める
         guard let apiKey = Keychain.apiKey(for: .groq) else { return }
         var request = URLRequest(url: URL(string: "https://api.groq.com/openai/v1/models")!)
@@ -134,6 +136,10 @@ final class TextFormatter {
                 return text
             }
         }
+
+        // 製品版（release）は整形も含め直プロバイダー呼び出しを一切しない。未ログインなら
+        // 整形せず原文を返す（配布バイナリにキーは無く、整形はサーバープロキシ専用のため）。
+        if EmbeddedKeys.isDist { return text }
 
         // 整形は Groq 固定。キー未設定なら整形せず原文を返す
         guard let apiKey = Keychain.apiKey(for: .groq) else {

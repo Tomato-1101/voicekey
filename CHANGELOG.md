@@ -16,6 +16,8 @@ voicekeyの変更履歴を記録するファイルです。
     .env.dist / Keychain / 環境変数からキーを読まない（Mac の `--export-env` も撤去）。
   - キー解決の埋め込みフォールバックを撤去: `src/utils/secrets.get_api_key`（Python）と
     Mac `Keychain.apiKey`（Swift）はキーを keyring/Keychain からのみ取得する。
+  - テキスト整形の直 Groq フォールバックに DIST ガードを追加（`text_formatter` / `TextFormatter.swift`）。
+    配布ビルドは未ログイン時も直プロバイダーを叩かず、整形せず原文を返す（整形はサーバープロキシ専用）。
   - ビルドパイプラインがプロバイダーキーを扱わない: `.github/workflows/windows-build.yml` から
     API キーの Secrets 受け渡しを削除。ビルド時に `scripts/build/verify_no_embedded_keys.py` で
     生成物にキーの痕跡が無いことを検査してから先へ進む（漏洩回帰の防止・Win/Mac 両パイプライン）。

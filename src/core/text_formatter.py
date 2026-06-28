@@ -65,6 +65,9 @@ def prewarm() -> None:
     if backend_client.is_logged_in():
         backend_client.warm_format_proxy()
         return
+    # 配布ビルド（製品版）は直 Groq を温めない（整形はサーバープロキシ専用・キーも持たない）
+    if secrets.is_dist_build():
+        return
     # 非ログイン（自前キー直叩き＝主に main/自分用）は従来どおり Groq の TLS を温める
     api_key = secrets.get_api_key(secrets.SERVICE_GROQ) or os.environ.get("GROQ_API_KEY")
     if not api_key:
@@ -161,6 +164,11 @@ def format_text(text: str, model: str, prompt: str = "") -> str:
         except backend_client.BackendError as e:
             logger.warning(f"サーバー整形に失敗、原文を使用: {e}")
             return text
+
+    # 製品版（release）は整形も含め直プロバイダー呼び出しを一切しない。未ログインなら
+    # 整形せず原文を返す（配布バイナリにキーは無く、整形はサーバープロキシ専用のため）。
+    if secrets.is_dist_build():
+        return text
 
     # 文字起こし（api_transcriber）と同じく環境変数フォールバックを持たせ、
     # キーの解決方法をバックエンド間で揃える（Mac 版 Keychain.apiKey と同挙動）
