@@ -23,9 +23,11 @@
 
 | プラットフォーム | 最新版 | 配布状態 | 入手先 | 備考 |
 |---|---|---|---|---|
-| 🍎 macOS | **v1.6.1** | ✅ **配布中** | [voicekey.vercel.app](https://voicekey.vercel.app) | Apple Development 署名。初回起動のみ Gatekeeper 回避手順あり（サイト／DMG に同梱）。自動更新（Sparkle）対応 |
-| 🪟 Windows | **v1.6.1** | ✅ **配布中** | [voicekey.vercel.app](https://voicekey.vercel.app) | GitHub Actions（`windows-build.yml`）でビルド。インストーラ（約 268MB）は容量が大きいため公開バイナリ専用リポ（`voicekey-releases`・ソース非公開）の GitHub Releases でホスト。未署名のため初回のみ SmartScreen 回避手順あり。自動更新対応。インストール時にデスクトップ／スタートメニューへショートカット作成 |
+| 🍎 macOS | **v1.6.2** | ✅ **配布中** | [voicekey.vercel.app](https://voicekey.vercel.app) | Apple Development 署名。初回起動のみ Gatekeeper 回避手順あり（サイト／DMG に同梱）。自動更新（Sparkle）対応 |
+| 🪟 Windows | **v1.6.2** | ✅ **配布中** | [voicekey.vercel.app](https://voicekey.vercel.app) | GitHub Actions（`windows-build.yml`）でビルド。インストーラ（約 268MB）は容量が大きいため公開バイナリ専用リポ（`voicekey-releases`・ソース非公開）の GitHub Releases でホスト。未署名のため初回のみ SmartScreen 回避手順あり。自動更新対応。インストール時にデスクトップ／スタートメニューへショートカット作成 |
 
+> **v1.6.2（2026-06-29）**: **「正確性」（ElevenLabs）の話し始め〜文字起こしの遅延を解消**。正確性モードはサーバープロキシ経由で中継するため初回に serverless cold start（最大数秒）を踏んでいたのを、プロキシ関数を起動時＋数分間隔で温め続けて解消（消費ゼロの暖機）。あわせてサーバーがボディをバッファせず ElevenLabs へストリーム透過するようにして中継の二度手間を削減した（精度・モデルは scribe_v1 のまま不変）。詳細は [CHANGELOG](CHANGELOG.md)。
+>
 > **v1.6.1（2026-06-29）**: **無料体験中の「高速リアルタイム」の話し始めの遅延を解消**。録音直前のトークン取得が serverless cold start を踏んで数秒待たされていたのを、トークン発行関数を起動時＋数分間隔で温め続けることで解消した（消費ゼロの暖機なので無料枠は減らない）。あわせて**使うたびに設定画面の「残り回数」が即減って見える**ように、録音完了ごとに残量を取り直すよう修正。詳細は [CHANGELOG](CHANGELOG.md)。
 >
 > **v1.6.0（2026-06-29）**: **Windows 版で無音圧縮・長文分割（VAD）が実際に効くように修正**。配布ビルドに `onnxruntime` が同梱されておらず VAD が常に無効化されていた潜在バグを解消した（文字起こし自体は従来も動作）。あわせて未ログイン時のゲート文言を無料体験仕様に統一し、CI でのユニットテスト自動実行・lint クリーンアップ・ドキュメント整合など内部品質を改善。詳細は [CHANGELOG](CHANGELOG.md)。

@@ -149,6 +149,8 @@ final class AppController: ObservableObject {
             if BackendClient.isLoggedIn {
                 let usesDeepgramStreaming = config.streamingEnabled
                     && (config.slot(1).backend == .deepgram || config.slot(2).backend == .deepgram)
+                let usesElevenLabs = config.slot(1).backend == .elevenlabs
+                    || config.slot(2).backend == .elevenlabs
                 Task {
                     let status = try? await BackendClient.fetchAccountStatus()
                     if usesDeepgramStreaming {
@@ -158,8 +160,13 @@ final class AppController: ObservableObject {
                             await BackendClient.warmEphemeral()                 // 無料: 消費なしで関数だけ温める
                         }
                     }
+                    // 「正確性」(ElevenLabs プロキシ)を使う設定なら、その関数も消費なしで温める
+                    // （cold start 解消。EL バッチは短命キーが無くプロキシ経由なので暖機が効く）
+                    if usesElevenLabs {
+                        await BackendClient.warmElevenLabs()
+                    }
                 }
-                startEphemeralWarmLoop()  // 以後も数分間隔で /ephemeral を温存（cold start 回避）
+                startEphemeralWarmLoop()  // 以後も数分間隔でプロキシ関数を温存（cold start 回避）
             }
 
             // 入力監視・アクセシビリティ権限の確認と監視開始
@@ -174,21 +181,25 @@ final class AppController: ObservableObject {
         warmTimer = nil
     }
 
-    /// 製品版で Deepgram ストリーミングを使う間、/ephemeral 関数を一定間隔で温める。
+    /// 製品版で使用中のプロキシ関数（/ephemeral・/transcribe/elevenlabs）を一定間隔で温める。
     /// cold start（Vercel serverless の起動）が「話し始めの遅延」の主因なので、消費なしの
-    /// 軽量 GET（warmEphemeral）で関数を温存し、録音ごとのトークン POST を warm path に乗せる。
-    /// 重い常駐ループは張らず、約 4 分間隔で GET を 1 本打つだけ（Vercel の warm 保持は数分程度）。
-    /// 条件（ログイン済み・ストリーミング ON・Deepgram スロット）を満たさない回は何もしない。
+    /// 軽量 GET で関数を温存し、録音ごとの POST を warm path に乗せる。
+    /// 重い常駐ループは張らず、約 4 分間隔で GET を打つだけ（Vercel の warm 保持は数分程度）。
+    /// 使っていないプロバイダの関数は温めない（設定スロットを見て該当時だけ打つ）。
     private func startEphemeralWarmLoop() {
         warmTimer?.invalidate()
         warmTimer = Timer.scheduledTimer(withTimeInterval: 240, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self,
-                      BackendClient.isLoggedIn,
-                      self.config.streamingEnabled,
-                      self.config.slot(1).backend == .deepgram || self.config.slot(2).backend == .deepgram
-                else { return }
-                await BackendClient.warmEphemeral()
+                guard let self, BackendClient.isLoggedIn else { return }
+                // Deepgram「高速リアルタイム」: ストリーミング ON ＋ Deepgram スロットのとき
+                if self.config.streamingEnabled,
+                   self.config.slot(1).backend == .deepgram || self.config.slot(2).backend == .deepgram {
+                    await BackendClient.warmEphemeral()
+                }
+                // ElevenLabs「正確性」: ElevenLabs スロットのとき
+                if self.config.slot(1).backend == .elevenlabs || self.config.slot(2).backend == .elevenlabs {
+                    await BackendClient.warmElevenLabs()
+                }
             }
         }
     }

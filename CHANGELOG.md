@@ -4,6 +4,35 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased]
 
+## [1.6.2] - 2026-06-29
+
+### Fixed
+- **「正確性」（ElevenLabs）の話し始め〜文字起こしの遅延を解消（両 OS・release）**。
+  「正確性」モードは ElevenLabs のバッチ文字起こし（scribe_v1）を使うが、これは
+  クライアント直叩き用の短命キーが無いため**サーバープロキシ経由**で中継している。
+  この初回利用時に Vercel serverless 関数の **cold start（最大数秒）** を踏むのが
+  遅延の主因だった。「高速リアルタイム」と同じ対策を「正確性」プロキシにも入れた:
+  - サーバーに**消費なし・認証なしの `GET` 暖機ハンドラ**を追加（EL も DB も叩かず即 200・
+    無料枠もコストも消費しない）。アプリが**起動時＋約 4 分間隔**でこの GET を叩いて
+    プロキシ関数（lambda）を温存し、録音後の文字起こし POST を warm path に乗せる。
+  - **中継の二度手間を削減**：新クライアントは ElevenLabs がそのまま受け取れる multipart
+    （`file` + `model_id=scribe_v1` + `language_code`）を `x-vk-passthrough: 1` 付きで送り、
+    サーバーは**ボディをバッファせず EL へストリーム透過**する（従来の「全量受信 →
+    再構築 → 送信」をやめる）。旧クライアント（ヘッダ無し）は従来どおりサーバー側で
+    組み直すため**後方互換**（精度・モデルは scribe_v1 のまま不変）。
+
+### Technical Details
+- **voicekey-site** `app/api/v1/transcribe/elevenlabs/route.ts`: 暖機用 `GET`（`{ warm: true }`）を
+  追加。`POST` に `x-vk-passthrough` ヘッダ判定を追加し、ヘッダありかつ multipart なら
+  `request.body` を `duplex:"half"` で EL へストリーム透過。ヘッダ無しは従来の
+  `request.formData()` 再構築にフォールバック（後方互換）。
+- **Mac**（Swift）: `BackendClient.warmElevenLabs()`（消費なし GET）／`transcribeElevenLabs` に
+  `x-vk-passthrough: 1` ヘッダと EL 形式 multipart（`model_id`/`language_code`）を追加／
+  `AppController` の起動時暖機・`startEphemeralWarmLoop`（240s）に ElevenLabs スロット判定を追加。
+- **Windows**（Python）: `backend_client.warm_elevenlabs()`（消費なし GET）／
+  `transcribe_elevenlabs` に `x-vk-passthrough` ヘッダと `model_id`/`language_code` を追加／
+  `app.py` の `_prewarm_backend`・`_ephemeral_warm_loop` に ElevenLabs スロット判定を追加。
+
 ## [1.6.1] - 2026-06-29
 
 ### Fixed

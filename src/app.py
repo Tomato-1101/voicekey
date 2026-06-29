@@ -330,30 +330,38 @@ class VoicekeyApp(QObject):
             status = backend_client.fetch_account_status()
         except Exception:
             return
-        # Deepgram ストリーミングを使わないなら /ephemeral は不要（暖機しない）
-        if not self._config.get("streaming_enabled", True):
-            return
-        if not any(
-            s.backend == TranscriptionBackend.DEEPGRAM.value
+        # Deepgram「高速リアルタイム」: ストリーミング ON ＋ Deepgram スロットのとき /ephemeral を温める
+        uses_deepgram_streaming = self._config.get("streaming_enabled", True) and any(
+            s.backend == TranscriptionBackend.DEEPGRAM.value for s in self._slots.values()
+        )
+        if uses_deepgram_streaming:
+            try:
+                if status.get("active"):
+                    # 有料: 実トークンを先取り（消費ゼロ＝consume 前に return・キャッシュも温まる）
+                    backend_client.fetch_ephemeral_token()
+                else:
+                    # 無料体験: 枠を守るため消費なしの GET で関数だけ温める（トークンは録音時に取得）
+                    backend_client.warm_ephemeral()
+            except Exception:
+                pass
+        # ElevenLabs「正確性」: ElevenLabs スロットがあれば、そのプロキシ関数も消費なしで温める
+        # （cold start 解消。EL バッチは短命キーが無くプロキシ経由なので暖機が効く）
+        if any(
+            s.backend == TranscriptionBackend.ELEVENLABS.value
             for s in self._slots.values()
         ):
-            return
-        try:
-            if status.get("active"):
-                # 有料: 実トークンを先取り（消費ゼロ＝consume 前に return・キャッシュも温まる）
-                backend_client.fetch_ephemeral_token()
-            else:
-                # 無料体験: 枠を守るため消費なしの GET で関数だけ温める（トークンは録音時に取得）
-                backend_client.warm_ephemeral()
-        except Exception:
-            pass
+            try:
+                backend_client.warm_elevenlabs()
+            except Exception:
+                pass
 
     def _ephemeral_warm_loop(self) -> None:
-        """/ephemeral の serverless 関数を定期的に温め、録音時の cold start を防ぐ（Task 2）。
+        """使用中のプロキシ関数を定期的に温め、録音時の cold start を防ぐ（Task 2）。
 
         起動直後は _prewarm_backend が暖機するので、最初の 1 回はインターバル後に行う。
-        消費ゼロの GET（warm_ephemeral）なので無料枠を減らさない。ログイン中かつ Deepgram
-        ストリーミング設定のときだけ温める（設定はホットリロードされるため毎回読み直す）。
+        消費ゼロの GET なので無料枠を減らさない。ログイン中のとき、設定スロットを見て
+        Deepgram「高速リアルタイム」(/ephemeral) と ElevenLabs「正確性」(/transcribe/elevenlabs) の
+        うち使っている方だけ温める（設定はホットリロードされるため毎回読み直す）。
         daemon スレッドのため、停止は _monitoring の解除＋プロセス終了に任せる。
         """
         while self._monitoring:
@@ -363,16 +371,20 @@ class VoicekeyApp(QObject):
             try:
                 if not backend_client.is_logged_in():
                     continue
-                if not self._config.get("streaming_enabled", True):
-                    continue
-                if not any(
+                # Deepgram「高速リアルタイム」: ストリーミング ON ＋ Deepgram スロットのとき
+                if self._config.get("streaming_enabled", True) and any(
                     s.backend == TranscriptionBackend.DEEPGRAM.value
                     for s in self._slots.values()
                 ):
-                    continue
-                backend_client.warm_ephemeral()
+                    backend_client.warm_ephemeral()
+                # ElevenLabs「正確性」: ElevenLabs スロットのとき
+                if any(
+                    s.backend == TranscriptionBackend.ELEVENLABS.value
+                    for s in self._slots.values()
+                ):
+                    backend_client.warm_elevenlabs()
             except Exception as e:  # 暖機の失敗で常駐ループを止めない
-                logger.debug(f"/ephemeral の暖機に失敗（無視）: {e}")
+                logger.debug(f"プロキシ関数の暖機に失敗（無視）: {e}")
 
     def _refresh_entitlement_async(self) -> None:
         """録音完了後、利用権の残量を別スレッドで静かに取り直し、設定画面の表示を更新する（Task 1）。

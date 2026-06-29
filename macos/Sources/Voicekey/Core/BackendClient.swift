@@ -330,16 +330,32 @@ enum BackendClient {
     }
 
     /// ElevenLabs「正確性」プロキシで文字起こしする（WAV を multipart 送信）。
+    ///
+    /// multipart は ElevenLabs がそのまま受け取れる形（file + model_id=scribe_v1 + language_code）で
+    /// 組み、`x-vk-passthrough: 1` を付ける。サーバーはこのヘッダを見たらボディを read せず
+    /// EL へストリーム透過する（formData の全量バッファ＋再構築をやめる＝中継の二度手間を削減）。
     static func transcribeElevenLabs(wav: Data, language: String) async throws -> String {
         try? await AuthClient.ensureValidSession()  // 失効間際なら先にリフレッシュ
         var req = try authorizedRequest(path: ServerConfig.elevenLabsProxyPath)
         req.httpMethod = "POST"
         let boundary = "vk-\(UUID().uuidString)"
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        req.setValue("1", forHTTPHeaderField: "x-vk-passthrough")  // EL 形式で送る＝サーバーは透過
         req.httpBody = multipartBody(boundary: boundary, wav: wav, language: language)
         let data = try await send(req)
         struct Resp: Decodable { let text: String? }
         return (try? JSONDecoder().decode(Resp.self, from: data))?.text ?? ""
+    }
+
+    /// ElevenLabs「正確性」プロキシ（/api/v1/transcribe/elevenlabs）の serverless 関数を温める。
+    /// 「正確性」初回利用時の Vercel 関数 cold start（最大数秒）が遅延の主因なので、起動時・
+    /// 数分間隔で消費なしの GET を叩いて同じ関数を温存し、録音後の文字起こし POST を warm path に乗せる。
+    /// GET は無料枠を消費せず・EL も Supabase も叩かない（即 200）。認証ヘッダは付けない。失敗は無視。
+    static func warmElevenLabs() async {
+        guard isLoggedIn else { return }
+        guard let url = ServerConfig.url(ServerConfig.elevenLabsProxyPath) else { return }
+        let req = URLRequest(url: url)  // GET（既定メソッド）。認証不要・消費なし。
+        _ = try? await session.data(for: req)
     }
 
     /// Groq テキスト整形プロキシ（モデル/プロンプトはサーバー固定。text のみ送る）。
@@ -462,13 +478,19 @@ enum BackendClient {
         return f.date(from: s)
     }
 
-    /// ElevenLabs プロキシ用の multipart ボディ（field: language, file=audio.wav）
+    /// ElevenLabs がそのまま受け取れる multipart ボディ（透過用）。
+    /// field: model_id=scribe_v1（モデル固定・製品版仕様）, language_code（任意）, file=audio.wav。
+    /// サーバーは x-vk-passthrough を見てこのボディを EL へ無加工で流す。
     private static func multipartBody(boundary: String, wav: Data, language: String) -> Data {
         var body = Data()
         func append(_ s: String) { body.append(Data(s.utf8)) }
+        // モデルは scribe_v1 固定（サーバーが透過するため、クライアント側で EL 形式に含める）
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"model_id\"\r\n\r\n")
+        append("scribe_v1\r\n")
         if !language.isEmpty {
             append("--\(boundary)\r\n")
-            append("Content-Disposition: form-data; name=\"language\"\r\n\r\n")
+            append("Content-Disposition: form-data; name=\"language_code\"\r\n\r\n")
             append("\(language)\r\n")
         }
         append("--\(boundary)\r\n")

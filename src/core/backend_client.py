@@ -318,6 +318,10 @@ def warm_ephemeral() -> None:
 def transcribe_elevenlabs(wav_bytes: bytes, language: str = "") -> str:
     """ElevenLabs「正確性」プロキシで文字起こしする（WAV を multipart 送信）。
 
+    multipart は ElevenLabs がそのまま受け取れる形（file + model_id=scribe_v1 + language_code）で
+    組み、x-vk-passthrough: 1 を付ける。サーバーはこのヘッダを見たらボディを read せず EL へ
+    ストリーム透過する（formData の全量バッファ＋再構築をやめる＝中継の二度手間を削減）。
+
     Args:
         wav_bytes: WAV バイト列
         language: 言語コード（空なら送らない＝サーバー/プロバイダ自動判定）
@@ -329,14 +333,34 @@ def transcribe_elevenlabs(wav_bytes: bytes, language: str = "") -> str:
         BackendError: 認証・サブスク・通信エラー
     """
     files = {"file": ("audio.wav", wav_bytes, "audio/wav")}
-    data = {"language": language} if language else {}
+    # モデルは scribe_v1 固定（製品版仕様）。サーバーが透過するため EL 形式で組む。
+    data = {"model_id": "scribe_v1"}
+    if language:
+        data["language_code"] = language
     resp = _post(
         constants.API_ELEVENLABS_PROXY_PATH,
-        headers=_auth_headers(),
+        headers={**_auth_headers(), "x-vk-passthrough": "1"},
         files=files,
         data=data,
     )
     return resp.json().get("text", "") or ""
+
+
+def warm_elevenlabs() -> None:
+    """ElevenLabs「正確性」プロキシ（/api/v1/transcribe/elevenlabs）の serverless 関数を温める。
+
+    「正確性」初回利用時の Vercel 関数 cold start（最大数秒）が遅延の主因なので、起動時・
+    数分間隔で消費なしの GET を叩いて同じ関数を温存し、録音後の文字起こし POST を warm path に
+    乗せる。GET は無料枠を消費せず・EL も Supabase も叩かない（即 200）。認証ヘッダは付けない。
+    失敗は無視。ブロッキング I/O なので呼び出し側はバックグラウンドスレッドで呼ぶ。
+    """
+    if not is_logged_in():
+        return
+    try:
+        # headers={} ＝認証なし。空ヘッダなので 401 リフレッシュ再試行も発生しない。
+        _send("GET", constants.API_ELEVENLABS_PROXY_PATH, headers={}, raise_on_error=False)
+    except Exception:
+        pass
 
 
 def format_text(text: str) -> str:
