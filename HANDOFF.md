@@ -91,7 +91,16 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 
 ## 現在地 / 次の一手
 
-- 現在地: **Mac v1.6.1 / Windows v1.6.1 リリース完了**（2026-06-29。release＝製品版ブランチ。全フィード 200 検証済み・既存ユーザーへ自動更新配信中）。
+- 現在地: **Mac v1.6.2 / Windows v1.6.2 リリース完了**（2026-06-29。release＝製品版ブランチ。全フィード 200 検証済み・既存ユーザーへ自動更新配信中）。
+  ユーザーの製品版テストで挙げた「正確性でも遅くなるのはダメ」に対応＝**「正確性」(ElevenLabs) の遅延対策（段階A）**:
+  - **プロキシ関数の cold start 解消**: 「正確性」は client 直叩き用の短命キーが無く（single-use token は Scribe v2 Realtime 専用）サーバープロキシ経由で中継する。初回利用時に Vercel 関数の cold start（最大数秒）を踏むのが遅延主因。サーバーに**消費なし `GET` 暖機ハンドラ**を追加（本番で `{"warm":true}` 200 確認）、アプリが起動時＋240s 間隔で叩いて温存（高速リアルタイムと同じ機構を EL 経路にも適用）。
+  - **ストリーミング透過**: 新クライアントは EL 形式 multipart（`file`+`model_id=scribe_v1`+`language_code`）を `x-vk-passthrough:1` で送り、サーバーは body をバッファせず EL へ流す（中継の二度手間削減）。旧クライアントは従来の formData 組み直し＝**後方互換**。精度・モデルは scribe_v1 のまま不変。
+  - 実装（両OS同期・release のみ）: voicekey-site `app/api/v1/transcribe/elevenlabs/route.ts`（GET 暖機＋透過）。Mac=`BackendClient.warmElevenLabs()`／`transcribeElevenLabs` に透過ヘッダ＋EL 形式 multipart／`AppController` 起動時暖機・`startEphemeralWarmLoop` に EL スロット判定。Windows=`backend_client.warm_elevenlabs()`／`transcribe_elevenlabs` に透過ヘッダ＋`model_id`/`language_code`／`app.py` の `_prewarm_backend`・`_ephemeral_warm_loop` に EL スロット判定。
+  - 検証: Mac=`build_dmg.sh` 成功（build 16）・kill→再起動で起動確認（PID 12213）。Windows=`py_compile` OK（この Mac に Windows 依存が無く unittest は未実行）。voicekey-site=`tsc --noEmit` exit 0。改善前ベースライン（usage_logs・過去14日 EL `proxy_transcribe`）= n=4・avg 1007ms・max 2005ms（cold 外れ値1件）。**注意: サーバー `latency_ms` は EL 取得区間のみ計測で Vercel 関数 cold start はハンドラ前に起きるため出ない→cold start 解消の確認は体感ベース**。
+  - **配布（完了・2026-06-29）**: voicekey-site `vercel deploy --prod` 済み（EL GET 暖機が本番で `{"warm":true}` 200）。Mac=DMG（1,984,250B）＋appcast〔build 16・EdDSA 署名・delta 16→11..15〕、Windows=setup.exe〔293,466,392B・公開リポ `voicekey-releases` の Release `v1.6.2`（DL URL 200）・sha256 `6983ca…e94b`〕＋`windows/version.json`（sha256 一致）。`downloads.json` は mac/windows とも 1.6.2。転送用 Release `winci-1.6.2`（本リポ private）は relay 後に削除済み。
+  - コミット: 本体 release=`9da9d6e`（実装＋docs・push 済み）、voicekey-site=`8b6651c`（route.ts）/`3f01683`（Mac 配布）/`d096938`（Windows 配布）。
+  - **段階B（保留・後日）**: Scribe v2 Realtime の精度を実音声で再ベンチ→精度が許容なら「正確性」を**クライアント直結 websocket（single-use token）**に切替えてリレー自体を排除（＝直叩き相当の速さ）。精度が落ちるなら scribe_v1＋プロキシのまま維持。
+- 既往（リリース済み）: **Mac v1.6.1 / Windows v1.6.1**（2026-06-29。release＝製品版ブランチ。全フィード 200 検証済み）。
   ユーザーの製品版テストで挙げた 2 点を修正:
   1. **無料体験の「高速リアルタイム」の話し始めの遅延を解消**。無料ユーザーは録音直前に短命トークン発行
      `POST /api/v1/auth/ephemeral`（無料枠 1 消費）を毎回叩くが、これが Vercel serverless の cold start（最大数秒）を
@@ -142,8 +151,8 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
   再起動まで実施）。ベータ版の動作確認は `macos/scripts/run_beta.sh`（dist/ の最新 DMG を
   マウントして一時起動・終わったら run_dev.sh で戻る）。dist/voicekey.app はビルドごとに
   dev/dist で上書きされるため常用しない。見分け方: 設定画面に API キータブがあれば開発版。
-- 次の一手: **v1.6.1（高速リアルタイムの遅延解消＋残り回数の即時表示）は両 OS 配布完了**（2026-06-29・全フィード 200 検証済み・自動更新配信中）。
-  実機での体感確認（無料体験アカウントで「高速リアルタイム」の話し始めの遅延が消えたか・録音ごとに残り回数が減って見えるか）が次の確認ポイント。
+- 次の一手: **v1.6.2（「正確性」=ElevenLabs の遅延対策・段階A）は両 OS 配布完了**（2026-06-29・全フィード 200 検証済み・自動更新配信中）。
+  実機での体感確認（「正確性」モードで初回の話し始め〜文字起こしの待ちが消えたか）が次の確認ポイント。体感で十分速ければ段階Aで完了、まだ遅いと感じるなら**段階B（Scribe v2 Realtime の精度再ベンチ→クライアント直結でリレー排除）**へ進む。
   残るユーザー作業は (1) **v1.2.0 以前に配布した埋め込み済み旧プロバイダーキーのローテーション**（各プロバイダーのダッシュボードで失効・再発行＝本人のみ可能・キー値は Claude が扱わない）、
   (2) **各 API ダッシュボードで利用上限・アラート設定**（保険）。無料体験 200 回の上限値は `entitlements.free_quota` の
   既定値（DB 側）で調整可能＝コード変更・再配布なしに将来見直せる。なお無料体験が広く使われ始めるため、
