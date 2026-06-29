@@ -341,6 +341,10 @@ enum BackendClient {
         let boundary = "vk-\(UUID().uuidString)"
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         req.setValue("1", forHTTPHeaderField: "x-vk-passthrough")  // EL 形式で送る＝サーバーは透過
+        // 文字起こしは本質的に時間がかかる（cold start＋長文＋日米越境往復）。録音直前の token 取得用に
+        // 短く設定したセッション既定(15s)のままだと長文で応答前に切れ「通信に失敗」になるため、
+        // このリクエストだけ余裕を持たせる（セッション既定をリクエスト単位で上書き）。
+        req.timeoutInterval = 90
         req.httpBody = multipartBody(boundary: boundary, wav: wav, language: language)
         let data = try await send(req)
         struct Resp: Decodable { let text: String? }
@@ -365,6 +369,8 @@ enum BackendClient {
         var req = try authorizedRequest(path: ServerConfig.formatProxyPath)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // 整形も長文だと時間がかかる。token 取得用の短いセッション既定(15s)を上書きして余裕を持たせる。
+        req.timeoutInterval = 60
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["text": text])
         let data = try await send(req)
         struct Resp: Decodable { let text: String? }

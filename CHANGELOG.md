@@ -4,6 +4,34 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased]
 
+## [1.6.3] - 2026-06-29
+
+### Fixed
+- **録音後の処理中に「サーバーに接続できませんでした」が出るバグを修正（両 OS・release）**。
+  「正確性」（ElevenLabs）など**サーバー経由**の文字起こし／整形は、録音直前のトークン取得用に
+  **短く設定したタイムアウト（15 秒）をそのまま流用**していた。長文や cold start を踏むと
+  応答前にこの 15 秒で切れ、**音声入力が終わった後の処理段階で「通信に失敗しました
+  （＝サーバーに接続できませんでした）」**になっていた（＝せっかくの入力が無駄になる）。
+  さらにサーバー側の serverless 関数も実行上限が短いと長文処理の途中で**関数が強制終了**し、
+  失敗記録すら残らないまま落ちていた（暖機ではこの上限超過は防げない）。
+  - **クライアント（Mac/Windows）**: 文字起こし・整形リクエストだけ、**リクエスト単位で
+    タイムアウトを延長**（ElevenLabs 文字起こし=90 秒・整形=60 秒）。録音直前のトークン取得は
+    速さ優先で従来の 15 秒のまま（用途ごとにタイムアウトを分離）。
+  - **サーバー**: ElevenLabs プロキシ関数と整形プロキシ関数の両方に **`maxDuration=60`** を明示し、
+    長文処理の途中終了を防止（どちらも明示が無く既定の短い実行上限のままだった）。
+
+### Technical Details
+- **Mac**（Swift）`BackendClient.swift`: `transcribeElevenLabs` に `req.timeoutInterval = 90`、
+  `formatText` に `req.timeoutInterval = 60` を設定（短い接続用セッション既定 15s をリクエスト単位で上書き）。
+- **Windows**（Python）`backend_client.py`: `transcribe_elevenlabs` に
+  `timeout=httpx.Timeout(90.0, connect=5.0)`、`format_text` に `timeout=httpx.Timeout(60.0, connect=5.0)` を
+  個別指定（共有クライアント既定 15s を呼び出し単位で上書き）。
+- **voicekey-site** `app/api/v1/transcribe/elevenlabs/route.ts` および `app/api/v1/format/route.ts`:
+  `export const maxDuration = 60` を追加。
+- **テスト**: `tests/test_backend_client.py` の ElevenLabs multipart 検証を実フィールド名
+  `language_code` に追従（v1.6.2 のストリーミング透過で `language` → `language_code` に変わって以降、
+  当時 unittest 未実行のため取り残されていた stale assert を修正）。
+
 ## [1.6.2] - 2026-06-29
 
 ### Fixed

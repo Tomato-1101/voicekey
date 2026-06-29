@@ -342,6 +342,10 @@ def transcribe_elevenlabs(wav_bytes: bytes, language: str = "") -> str:
         headers={**_auth_headers(), "x-vk-passthrough": "1"},
         files=files,
         data=data,
+        # 文字起こしは本質的に時間がかかる（cold start＋長文＋日米越境往復）。録音直前の token 取得用に
+        # 短く設定した共有クライアント既定(15s)のままだと長文で応答前に切れ「接続に失敗」になるため、
+        # この呼び出しだけ余裕を持たせる（接続は短く、全体は長く）。
+        timeout=httpx.Timeout(90.0, connect=5.0),
     )
     return resp.json().get("text", "") or ""
 
@@ -376,7 +380,13 @@ def format_text(text: str) -> str:
         BackendError: 認証・サブスク・通信エラー
     """
     headers = {**_auth_headers(), "Content-Type": "application/json"}
-    resp = _post(constants.API_FORMAT_PROXY_PATH, headers=headers, json={"text": text})
+    # 整形も長文だと時間がかかる。token 取得用の短い共有クライアント既定(15s)を上書きして余裕を持たせる。
+    resp = _post(
+        constants.API_FORMAT_PROXY_PATH,
+        headers=headers,
+        json={"text": text},
+        timeout=httpx.Timeout(60.0, connect=5.0),
+    )
     return resp.json().get("text", text) or text
 
 

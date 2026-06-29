@@ -270,7 +270,8 @@ class TestElevenLabs(_Base):
         def handler(request: httpx.Request) -> httpx.Response:
             seen["path"] = request.url.path
             seen["body_has_file"] = b"audio.wav" in request.content
-            seen["body_has_lang"] = b"name=\"language\"" in request.content
+            # v1.6.2 のストリーミング透過で EL 形式 multipart に変更＝言語フィールド名は language_code
+            seen["body_has_lang"] = b"name=\"language_code\"" in request.content
             return httpx.Response(200, json={"text": "こんにちは"})
 
         _install_mock(handler)
@@ -284,7 +285,7 @@ class TestElevenLabs(_Base):
         seen = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
-            seen["body_has_lang"] = b"name=\"language\"" in request.content
+            seen["body_has_lang"] = b"name=\"language_code\"" in request.content
             return httpx.Response(200, json={"text": "ok"})
 
         _install_mock(handler)
