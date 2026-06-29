@@ -91,7 +91,16 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 
 ## 現在地 / 次の一手
 
-- 現在地: **Mac v1.6.2 / Windows v1.6.2 リリース完了**（2026-06-29。release＝製品版ブランチ。全フィード 200 検証済み・既存ユーザーへ自動更新配信中）。
+- 現在地: **Mac v1.6.3 / Windows v1.6.3 リリース完了**（2026-06-29。release＝製品版ブランチ。全フィード 200 検証済み・既存ユーザーへ自動更新配信中）。
+  製品版テストで挙がった「録音後の処理中に『サーバーに接続できませんでした』が出て入力が消える」を修正＝**「正確性」(ElevenLabs) 経路のタイムアウト分離＋サーバー実行上限の明示**:
+  - **タイムアウトを用途別に分離**: 録音直前のトークン取得用の短い既定(15s)を文字起こし/整形にも流用していたため、長文や cold start で応答前に切れ「通信に失敗」になっていた。文字起こし=90s・整形=60s をリクエスト単位で個別延長（トークン取得は速さ優先で 15s 据置）。
+  - **サーバー側プロキシの実行上限を明示**: EL・整形 両 route.ts に `maxDuration=60`（既定の短い上限で長文処理が途中強制終了し logUsage 到達前に落ちるのを防止）。**前回セッションが整形 route の maxDuration 欠落＋CHANGELOG 誤記（「整形は既に60」）を残していたのを発見・訂正**。
+  - **stale テスト修正**: `test_backend_client` の EL multipart 検証が旧フィールド名 `language`（v1.6.2 で `language_code` に変更済）で HEAD でも FAIL していたのを実名に追従（v1.6.2 が unittest 未実行で見逃していた）。
+  - 実装（両OS同期・release のみ）: Mac=`BackendClient.transcribeElevenLabs`/`formatText` に `timeoutInterval` 90/60、Windows=`backend_client.transcribe_elevenlabs`/`format_text` に `httpx.Timeout` 90/60、voicekey-site=EL/format route.ts に `maxDuration=60`。
+  - 検証: py_compile OK / unittest **370 件 pass** / Mac `build_dmg`(build17)成功・kill→open で 1.6.3 起動確認(PID 90088) / voicekey-site `tsc` exit 0。
+  - **配布（完了・2026-06-29）**: voicekey-site `vercel deploy --prod` 済み（EL/ephemeral 暖機 GET 本番 200・EL/format `maxDuration` 反映）。Mac=DMG（1,983,993B）＋appcast〔build 17・EdDSA 署名・delta 17→12..16〕、Windows=setup.exe〔293,432,726B・公開リポ `voicekey-releases` の Release `v1.6.3`（DL URL 200）・sha256 `a91df8…aa6c`〕＋`windows/version.json`（sha256 一致）。`downloads.json` は mac/windows とも 1.6.3。転送用 Release `winci-1.6.3`（本リポ private）は relay 後に削除済み。
+  - コミット: 本体 release=`b983c34`（実装＋テスト修正＋docs・push 済み）、voicekey-site=`75b3514`（route.ts maxDuration＋Mac/Windows 配布フィード・remote 無し）。
+- 既往（リリース済み）: **Mac v1.6.2 / Windows v1.6.2**（2026-06-29。release＝製品版ブランチ。全フィード 200 検証済み）。
   ユーザーの製品版テストで挙げた「正確性でも遅くなるのはダメ」に対応＝**「正確性」(ElevenLabs) の遅延対策（段階A）**:
   - **プロキシ関数の cold start 解消**: 「正確性」は client 直叩き用の短命キーが無く（single-use token は Scribe v2 Realtime 専用）サーバープロキシ経由で中継する。初回利用時に Vercel 関数の cold start（最大数秒）を踏むのが遅延主因。サーバーに**消費なし `GET` 暖機ハンドラ**を追加（本番で `{"warm":true}` 200 確認）、アプリが起動時＋240s 間隔で叩いて温存（高速リアルタイムと同じ機構を EL 経路にも適用）。
   - **ストリーミング透過**: 新クライアントは EL 形式 multipart（`file`+`model_id=scribe_v1`+`language_code`）を `x-vk-passthrough:1` で送り、サーバーは body をバッファせず EL へ流す（中継の二度手間削減）。旧クライアントは従来の formData 組み直し＝**後方互換**。精度・モデルは scribe_v1 のまま不変。
@@ -151,8 +160,8 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
   再起動まで実施）。ベータ版の動作確認は `macos/scripts/run_beta.sh`（dist/ の最新 DMG を
   マウントして一時起動・終わったら run_dev.sh で戻る）。dist/voicekey.app はビルドごとに
   dev/dist で上書きされるため常用しない。見分け方: 設定画面に API キータブがあれば開発版。
-- 次の一手: **v1.6.2（「正確性」=ElevenLabs の遅延対策・段階A）は両 OS 配布完了**（2026-06-29・全フィード 200 検証済み・自動更新配信中）。
-  実機での体感確認（「正確性」モードで初回の話し始め〜文字起こしの待ちが消えたか）が次の確認ポイント。体感で十分速ければ段階Aで完了、まだ遅いと感じるなら**段階B（Scribe v2 Realtime の精度再ベンチ→クライアント直結でリレー排除）**へ進む。
+- 次の一手: **v1.6.3（「正確性」=ElevenLabs の録音後タイムアウト/接続失敗バグ修正）は両 OS 配布完了**（2026-06-29・全フィード 200 検証済み・自動更新配信中）。
+  実機での確認ポイントは「正確性」モードで**長文や初回の文字起こしが途中で『サーバーに接続できませんでした』にならず最後まで入力されるか**。あわせて段階A（v1.6.2）の体感速度（話し始めの待ちが消えたか）も確認し、まだ遅いと感じるなら**段階B（Scribe v2 Realtime の精度再ベンチ→クライアント直結 websocket でリレー排除）**へ進む。
   残るユーザー作業は (1) **v1.2.0 以前に配布した埋め込み済み旧プロバイダーキーのローテーション**（各プロバイダーのダッシュボードで失効・再発行＝本人のみ可能・キー値は Claude が扱わない）、
   (2) **各 API ダッシュボードで利用上限・アラート設定**（保険）。無料体験 200 回の上限値は `entitlements.free_quota` の
   既定値（DB 側）で調整可能＝コード変更・再配布なしに将来見直せる。なお無料体験が広く使われ始めるため、
