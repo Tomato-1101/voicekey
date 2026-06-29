@@ -91,7 +91,26 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 
 ## 現在地 / 次の一手
 
-- 現在地: **Mac v1.6.0 / Windows v1.6.0 リリース完了**（2026-06-29。release＝製品版ブランチ。
+- 現在地: **Mac v1.6.1 / Windows v1.6.1 を実装・ビルド・検証済み（未リリース＝配布公開 GO 待ち）**（2026-06-29。release ブランチ）。
+  ユーザーの製品版テストで挙げた 2 点を修正:
+  1. **無料体験の「高速リアルタイム」の話し始めの遅延を解消**。無料ユーザーは録音直前に短命トークン発行
+     `POST /api/v1/auth/ephemeral`（無料枠 1 消費）を毎回叩くが、これが Vercel serverless の cold start（最大数秒）を
+     踏んで「話し始めの待ち」になっていた。サーバーに**消費なし・認証なしの `GET` 暖機ハンドラ**を追加し、アプリが
+     **起動時＋約 240s 間隔**でこの GET を叩いて発行関数を温存→録音時の POST が warm path に乗る。ユーザー選択の
+     「より低リスクな根本対応」（消費 API を分離せず＝突破耐性と「1 録音=1 消費」を維持したまま cold start だけ潰す）に準拠。
+  2. **使うたびに設定画面の「残り回数」が即減って見えるよう修正**。消費は元々サーバーが原子的に行っていたが、
+     アプリの残量表示が起動/ログイン時の一度きりで更新されず古いまま見えていた。**録音 1 回ごとに残量を静かに取り直す**
+     （UI を「確認中…」に落とさない quiet 更新・クリティカルパス外・有料/未ログインは no-op）。
+  - 実装（両OS同期・release のみ）: voicekey-site `app/api/v1/auth/ephemeral/route.ts` に GET 暖機。
+    Mac=`BackendClient.warmEphemeral()`／`AppController` の `startEphemeralWarmLoop()`＋起動時暖機の無料/有料分岐＋
+    `taskFinished()`→`refreshEntitlementQuiet()`、`LoginCoordinator.refreshEntitlementQuiet()`＋`applyStatus()`。
+    Windows=`backend_client.warm_ephemeral()`／`app.py` の `_prewarm_backend` 拡張＋`_ephemeral_warm_loop`＋
+    `_refresh_entitlement_async`（`account_refreshed` シグナル）、`login_coordinator.refresh_entitlement(quiet=)`＋`_apply_status()`。
+  - 検証: Mac=`build_app.sh` 成功・kill→再起動で起動確認。Windows=`py_compile` OK・`unittest discover -s tests` 実行（version_consistency/
+    outstanding_count のテストも 1.6.1 対応に追従済み）。バージョン: constants.py / Info.plist(short) / README ステータス表すべて 1.6.1。
+  - **未了（ユーザーの GO 待ち＝不可逆な外部公開）**: voicekey-site の `vercel deploy --prod`（GET 暖機ハンドラの本番反映）と、
+    v1.6.1 の両 OS 配布（DMG/appcast・Windows setup.exe・downloads.json/フィード更新）。リリース手順は本節末尾を参照。
+- 既往（リリース済み）: **Mac v1.6.0 / Windows v1.6.0**（2026-06-29。release＝製品版ブランチ。
   **Windows 配布版で VAD（無音圧縮・長文分割）が実際に効くように修正**＋**コードレビュー31項目の反映**。
   配布ビルドに `onnxruntime` が同梱されておらず（`silero-vad` の optional extra でしか入らず `requirements.txt` 未宣言）、
   `vad.py` の遅延 `import onnxruntime` が失敗 → `analyze()` が安全側の `(True, None)` を返し **VAD が常時無効**だった潜在バグを解消。
@@ -122,7 +141,9 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
   再起動まで実施）。ベータ版の動作確認は `macos/scripts/run_beta.sh`（dist/ の最新 DMG を
   マウントして一時起動・終わったら run_dev.sh で戻る）。dist/voicekey.app はビルドごとに
   dev/dist で上書きされるため常用しない。見分け方: 設定画面に API キータブがあれば開発版。
-- 次の一手: **v1.6.0（Windows VAD 修正＋レビュー31項目）は両 OS 配布完了**（2026-06-29・全フィード 200 検証済み）。
+- 次の一手: **v1.6.1（高速リアルタイムの遅延解消＋残り回数の即時表示）は実装・検証済み。ユーザーの GO が出たら
+  (a) voicekey-site を `vercel deploy --prod`（GET 暖機ハンドラを本番反映）→ (b) v1.6.1 を両 OS 同期リリース**（本節末尾の手順）。
+  v1.6.0（Windows VAD 修正＋レビュー31項目）は両 OS 配布完了済み（2026-06-29・全フィード 200 検証済み）。
   残るユーザー作業は (1) **v1.2.0 以前に配布した埋め込み済み旧プロバイダーキーのローテーション**（各プロバイダーのダッシュボードで失効・再発行＝本人のみ可能・キー値は Claude が扱わない）、
   (2) **各 API ダッシュボードで利用上限・アラート設定**（保険）。無料体験 200 回の上限値は `entitlements.free_quota` の
   既定値（DB 側）で調整可能＝コード変更・再配布なしに将来見直せる。なお無料体験が広く使われ始めるため、

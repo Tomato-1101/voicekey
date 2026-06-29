@@ -4,6 +4,38 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-06-29
+
+### Fixed
+- **無料体験中の「高速リアルタイム」の話し始めの遅延を解消（両 OS・release）**。
+  無料体験ユーザーは録音直前に短命トークン発行 `POST /api/v1/auth/ephemeral` を毎回叩いて
+  無料枠を 1 消費する（有料はトークンをキャッシュ再利用するため毎回は叩かない）。この POST が
+  Vercel serverless 関数の **cold start（最大数秒）** を踏むと、そのまま「話し始めの待ち時間」
+  になっていた＝リアルタイム文字起こしの遅延の主因。サーバーに**消費なし・認証なしの `GET`
+  暖機ハンドラ**を追加し（DB も Deepgram も叩かず即 200・無料枠もコストも消費しない）、
+  アプリが**起動時＋約 4 分間隔**でこの GET を叩いて発行関数（lambda）を温存するようにした。
+  これで録音時の POST が warm path に乗り、遅延なくトークンを取得できる。ユーザーが選んだ
+  「より低リスクな根本対応」（消費 API を分離せず＝突破耐性と「1 録音 = 1 消費」を維持したまま
+  cold start だけを潰す）に沿った実装。
+- **使うたびに設定画面の「残り回数」が即減って見えるよう修正（両 OS・release）**。
+  消費自体は従来からサーバーが原子的に行っていたが、アプリ側の残量表示は起動／ログイン時に
+  一度取得したきりで録音後に更新されず、「使っても残り回数が減らない」ように見えていた
+  （表示だけが古い状態）。**録音 1 回ごとに利用権の残量を静かに取り直す**ようにした
+  （UI を「確認中…」に落とさない quiet 更新・クリティカルパス外・有料/未ログインは no-op）。
+
+### Technical Details
+- **voicekey-site** `app/api/v1/auth/ephemeral/route.ts`: 暖機用 `GET`（消費なし・認証なし・
+  外部 API 非依存で `{ warm: true }` を返すだけ）を追加。`POST`（消費あり・トークン発行）と
+  同一ファイル＝同一関数なので、GET で温めると POST 経路ごと warm path に乗る。
+- **Mac**（Swift）: `BackendClient.warmEphemeral()`（消費なし GET）／`AppController` に
+  `startEphemeralWarmLoop()`（240s 間隔・ログイン中かつ Deepgram ストリーミング時のみ）と
+  起動時暖機の無料/有料分岐／`taskFinished()` から `LoginCoordinator.refreshEntitlementQuiet()`。
+  `LoginCoordinator` に `refreshEntitlementQuiet()` ＋ 共通 `applyStatus()` を追加。
+- **Windows**（Python）: `backend_client.warm_ephemeral()`（消費なし GET）／`app.py` の
+  `_prewarm_backend` を無料ユーザーも暖機するよう拡張・`_ephemeral_warm_loop`（240s 常駐）・
+  `_refresh_entitlement_async`（録音完了ごと・`account_refreshed` シグナルで UI 更新）。
+  `login_coordinator.refresh_entitlement(quiet=...)` ＋ 共通 `_apply_status()` を追加。
+
 ## [1.6.0] - 2026-06-29
 
 ### Added

@@ -295,6 +295,26 @@ def warm_format_proxy() -> None:
         pass
 
 
+def warm_ephemeral() -> None:
+    """Deepgram 短命トークン発行関数（/api/v1/auth/ephemeral）の serverless 関数を温める。
+
+    無料ユーザーは録音ごとに POST /ephemeral を叩いて 1 消費するが、その POST が
+    cold start（Vercel 関数の起動・最大数秒）を踏むと「話し始めの遅延」になる。これが
+    リアルタイム文字起こしの遅延の主因。サーバーが用意した消費なしの GET を起動時・
+    数分間隔で叩いて同じ関数を温存し、録音時の POST を warm path に乗せる。
+    GET は無料枠を消費せず・トークンも発行しない（Deepgram も Supabase も叩かない）。
+    認証ヘッダは付けない（暖機だけが目的で何も返さないため）。失敗は無視。
+    ブロッキング I/O なので呼び出し側はバックグラウンドスレッドで呼ぶ（既存の warm と同じ）。
+    """
+    if not is_logged_in():
+        return
+    try:
+        # headers={} ＝認証なし。空ヘッダなので 401 リフレッシュ再試行も発生しない。
+        _send("GET", constants.API_EPHEMERAL_PATH, headers={}, raise_on_error=False)
+    except Exception:
+        pass
+
+
 def transcribe_elevenlabs(wav_bytes: bytes, language: str = "") -> str:
     """ElevenLabs「正確性」プロキシで文字起こしする（WAV を multipart 送信）。
 

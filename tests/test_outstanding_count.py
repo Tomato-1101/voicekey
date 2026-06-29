@@ -24,6 +24,9 @@ class TestOutstandingNeverNegative(unittest.TestCase):
             _outstanding=outstanding_start,
             _process_task=mock.Mock(),
             _emit_state=mock.Mock(),
+            # 録音完了ごとに呼ばれる利用権の残量再取得（finally 内）。ここでは未完了数の
+            # 検証だけが目的なので no-op モックにする。
+            _refresh_entitlement_async=mock.Mock(),
             notice=mock.Mock(),
         )
 

@@ -199,6 +199,20 @@ enum BackendClient {
         _ = try? await send(req)  // 空テキストは 400。throw は握る（暖機が目的）。
     }
 
+    /// Deepgram 短命トークン発行関数（/api/v1/auth/ephemeral）の serverless 関数を温める。
+    /// 無料ユーザーは録音ごとに POST /ephemeral を叩いて 1 消費するが、その POST が
+    /// cold start（Vercel 関数の起動・最大数秒）を踏むと「話し始めの遅延」になる。これが
+    /// リアルタイム文字起こしの遅延の主因。サーバーが用意した消費なしの GET を起動時・
+    /// 数分間隔で叩いて同じ関数を温存し、録音時の POST を warm path に乗せる。
+    /// GET は無料枠を消費せず・トークンも発行しない（Deepgram も Supabase も叩かない）。
+    /// 認証ヘッダは付けない（暖機だけが目的で何も返さないため）。失敗は無視。
+    static func warmEphemeral() async {
+        guard isLoggedIn else { return }
+        guard let url = ServerConfig.url(ServerConfig.ephemeralPath) else { return }
+        let req = URLRequest(url: url)  // GET（既定メソッド）。認証不要・消費なし。
+        _ = try? await session.data(for: req)
+    }
+
     /// ログイン中アカウントの状態（メール・利用権の有無/期限）を取得する。
     /// 設定画面の表示・ゲート判定の事前確認に使う（200 固定＝未契約でも 200 で active:false）。
     static func fetchAccountStatus() async throws -> AccountStatus {

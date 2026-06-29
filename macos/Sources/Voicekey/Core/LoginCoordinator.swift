@@ -113,25 +113,44 @@ final class LoginCoordinator: ObservableObject {
     // MARK: - 利用権（アクティベーションキー）
 
     /// ログイン中アカウントの利用権を再確認する（/api/v1/me）。
+    /// UI を「確認中…」に一旦落としてから取り直す（明示操作・起動時用）。
     func refreshEntitlement() {
         guard Keychain.authSession() != nil else { entitlement = .unknown; return }
         entitlement = .checking
         Task { @MainActor in
             do {
                 let s = try await BackendClient.fetchAccountStatus()
-                accountEmail = s.email
-                if s.active {
-                    entitlement = .active(s.activeUntil)
-                } else if s.freeRemaining > 0 {
-                    // 無料体験中（まだ残量あり）。使い切ると .none に落ちてキー入力が要る。
-                    entitlement = .free(remaining: s.freeRemaining, quota: s.freeQuota)
-                } else {
-                    entitlement = .none
-                }
+                applyStatus(s)
             } catch {
                 let msg = (error as? BackendClient.BackendError)?.userMessage ?? "状態を確認できませんでした"
                 entitlement = .error(msg)
             }
+        }
+    }
+
+    /// 残量だけを静かに更新する（UI を「確認中…」に落とさない）。録音完了後に呼び、
+    /// 「使うたびに残り回数が即減って見える」状態を担保する（消費自体はサーバーが原子的に
+    /// 行うため、アプリは最新の残量を取り直すだけ）。利用権あり(paid)は録音で残量が変わら
+    /// ないので無駄打ちしない。失敗は黙って無視（表示は前回値を保つ）。
+    func refreshEntitlementQuiet() {
+        guard Keychain.authSession() != nil else { return }
+        if case .active = entitlement { return }  // 有料は残量非依存＝再取得しない
+        Task { @MainActor in
+            guard let s = try? await BackendClient.fetchAccountStatus() else { return }
+            applyStatus(s)
+        }
+    }
+
+    /// 取得済みのアカウント状態を表示状態へ反映する（refreshEntitlement / Quiet 共通）。
+    private func applyStatus(_ s: BackendClient.AccountStatus) {
+        accountEmail = s.email
+        if s.active {
+            entitlement = .active(s.activeUntil)
+        } else if s.freeRemaining > 0 {
+            // 無料体験中（まだ残量あり）。使い切ると .none に落ちてキー入力が要る。
+            entitlement = .free(remaining: s.freeRemaining, quota: s.freeQuota)
+        } else {
+            entitlement = .none
         }
     }
 

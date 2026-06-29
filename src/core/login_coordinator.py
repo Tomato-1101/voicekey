@@ -132,37 +132,60 @@ class LoginCoordinator:
             self.error = str(e)
         return True
 
-    def refresh_entitlement(self) -> None:
+    def refresh_entitlement(self, quiet: bool = False) -> bool:
         """ログイン中アカウントの利用権を再確認する（/api/v1/me を同期で叩く）。
 
         ネットワーク I/O を伴うため、UI からはワーカースレッドで呼ぶこと。
         結果は self.entitlement / entitlement_active_until / account_email に反映する。
+
+        Args:
+            quiet: True なら UI を「確認中…」に落とさず、失敗しても前回値を保つ
+                （録音完了後の静かな残量更新用）。有料は残量非依存なので再取得を省く。
+
+        Returns:
+            表示状態を更新したか（quiet 更新の呼び出し側が再描画の要否を判断するため）。
         """
         from . import backend_client
 
         if not auth_client.secrets.get_auth_session():
+            if quiet:
+                return False
             self.entitlement = self.ENT_UNKNOWN
-            return
-        self.entitlement = self.ENT_CHECKING
+            return True
+        # 静かな更新で既に有料なら、録音しても残量は変わらない＝無駄打ちしない
+        if quiet and self.entitlement == self.ENT_ACTIVE:
+            return False
+        if not quiet:
+            self.entitlement = self.ENT_CHECKING
         try:
             s = backend_client.fetch_account_status()
-            self.account_email = s.get("email")
-            free_remaining = int(s.get("free_remaining") or 0)
-            if s.get("active"):
-                self.entitlement = self.ENT_ACTIVE
-                self.entitlement_active_until = s.get("active_until")
-            elif free_remaining > 0:
-                # 無料体験中（まだ残量あり）。使い切ると ENT_NONE に落ちてキー入力が要る。
-                self.entitlement = self.ENT_FREE
-                self.entitlement_active_until = None
-                self.entitlement_free_remaining = free_remaining
-                self.entitlement_free_quota = int(s.get("free_quota") or 0)
-            else:
-                self.entitlement = self.ENT_NONE
-                self.entitlement_active_until = None
+            self._apply_status(s)
+            return True
         except BackendError as e:
+            if quiet:
+                # 静かな更新の失敗は前回値を保つ（一時的なネットワーク失敗で表示を壊さない）
+                return False
             self.entitlement = self.ENT_ERROR
             self.entitlement_error = str(e)
+            return True
+
+    def _apply_status(self, s: dict) -> None:
+        """fetch_account_status の結果を表示状態へ反映する（明示/静か更新で共通）。"""
+        self.account_email = s.get("email")
+        free_remaining = int(s.get("free_remaining") or 0)
+        if s.get("active"):
+            self.entitlement = self.ENT_ACTIVE
+            self.entitlement_active_until = s.get("active_until")
+        elif free_remaining > 0:
+            # 無料体験中（まだ残量あり）。使い切ると ENT_NONE に落ちてキー入力が要る。
+            self.entitlement = self.ENT_FREE
+            self.entitlement_active_until = None
+            self.entitlement_free_remaining = free_remaining
+            self.entitlement_free_quota = int(s.get("free_quota") or 0)
+        else:
+            self.entitlement = self.ENT_NONE
+            self.entitlement_active_until = None
+            self.entitlement_free_remaining = 0
 
     def redeem(self, code: str) -> Tuple[bool, str]:
         """アクティベーションキーを登録する（/api/v1/activation/redeem を同期で叩く）。

@@ -84,6 +84,9 @@ _MIN_AUDIO_SEC: float = 0.3
 _SPLIT_MIN_SEC: float = 12.0
 # ホットリロードで退役したトランスクライバを close するまでの猶予（秒）
 _RETIRE_CLOSE_DELAY_SEC: float = 30.0
+# /ephemeral の serverless 関数を温め直す間隔（秒）。Vercel 関数が冷える前に GET で叩き、
+# 録音時の cold start（話し始めの遅延）を防ぐ。消費ゼロの GET なので無料枠は減らさない。
+_EPHEMERAL_WARM_INTERVAL_SEC: float = 240.0
 # 修飾キーの汎用名。macOS の pynput は左修飾キーを汎用名（cmd 等）で報告する
 _GENERIC_MODIFIERS = ("ctrl", "alt", "shift", "cmd")
 
@@ -177,6 +180,9 @@ class VoicekeyApp(QObject):
     audio_level = Signal(float)
     notice = Signal(str)
     interim_text = Signal(str)
+    # 録音完了後に利用権の残量を取り直したら発火（設定画面の「残り回数」を即更新するため。
+    # ワーカースレッド → メインスレッドへ Qt のキュー接続でホップする）
+    account_refreshed = Signal()
 
     def __init__(self) -> None:
         """アプリケーションを初期化する。"""
@@ -257,6 +263,8 @@ class VoicekeyApp(QObject):
             updater=self._updater,
         )
         self._settings_window.settings_saved.connect(self._apply_config_changes)
+        # 録音完了後の残量更新（別スレッド）→ 設定画面のアカウント表示をメインスレッドで描き直す
+        self.account_refreshed.connect(self._settings_window.refresh_account_status)
         self._tray = SystemTray(platform_adapter=self._platform)
         self._tray.open_settings.connect(self._open_settings)
         self._tray.force_reset.connect(self._force_restart)
@@ -296,6 +304,11 @@ class VoicekeyApp(QObject):
         # アカウント状態（有料/無料）を見て決める（無料体験ユーザーの枠を消費しないため）。
         if backend_client.is_logged_in():
             threading.Thread(target=self._prewarm_backend, daemon=True).start()
+            # /ephemeral の serverless 関数を定期 GET で温め続け、録音時の cold start
+            # （話し始めの遅延の主因・最大数秒）を防ぐ。消費ゼロなので無料枠は減らさない。
+            threading.Thread(
+                target=self._ephemeral_warm_loop, daemon=True, name="EphemeralWarm"
+            ).start()
 
         # macOS の権限不足は「ホットキーが無言で効かない」となるため起動時に明示
         self._check_permissions()
@@ -306,19 +319,18 @@ class VoicekeyApp(QObject):
     def _prewarm_backend(self) -> None:
         """起動時にサーバー接続を 1 回暖機し、初回のサーバー往復・cold start を前払いする。
 
-        GET /me（無料枠を消費しない read）で TLS・接続・認証経路を温める。さらに有料
-        ユーザーかつ Deepgram ストリーミング設定なら、短命トークンも先取りする（有料は
-        consume 前に return＝消費ゼロ・トークンキャッシュも温まる）。無料体験ユーザーは
-        トークンを取得しない＝/ephemeral は無料枠を 1 消費するため、録音前の暖機で枠を
-        減らさない。失敗は無視（録音時に通常経路で再取得される）。
+        GET /me（無料枠を消費しない read）で TLS・接続・認証経路を温める。Deepgram
+        ストリーミング設定のときは /ephemeral も温める:
+        - 有料: 短命トークンを先取り（consume 前に return＝消費ゼロ・トークンキャッシュも温まる）。
+        - 無料体験: 枠を消費しない GET（warm_ephemeral）で serverless 関数だけ温める。実トークンは
+          録音時に取得する（その 1 回が枠 1 消費）。cold start はここで前払い済みなので遅延が出ない。
+        失敗は無視（録音時に通常経路で再取得される）。
         """
         try:
             status = backend_client.fetch_account_status()
         except Exception:
             return
-        # 有料ユーザーのみ実トークンを先取り（消費ゼロ）。無料体験は枠を守るため取得しない。
-        if not status.get("active"):
-            return
+        # Deepgram ストリーミングを使わないなら /ephemeral は不要（暖機しない）
         if not self._config.get("streaming_enabled", True):
             return
         if not any(
@@ -327,9 +339,62 @@ class VoicekeyApp(QObject):
         ):
             return
         try:
-            backend_client.fetch_ephemeral_token()
+            if status.get("active"):
+                # 有料: 実トークンを先取り（消費ゼロ＝consume 前に return・キャッシュも温まる）
+                backend_client.fetch_ephemeral_token()
+            else:
+                # 無料体験: 枠を守るため消費なしの GET で関数だけ温める（トークンは録音時に取得）
+                backend_client.warm_ephemeral()
         except Exception:
             pass
+
+    def _ephemeral_warm_loop(self) -> None:
+        """/ephemeral の serverless 関数を定期的に温め、録音時の cold start を防ぐ（Task 2）。
+
+        起動直後は _prewarm_backend が暖機するので、最初の 1 回はインターバル後に行う。
+        消費ゼロの GET（warm_ephemeral）なので無料枠を減らさない。ログイン中かつ Deepgram
+        ストリーミング設定のときだけ温める（設定はホットリロードされるため毎回読み直す）。
+        daemon スレッドのため、停止は _monitoring の解除＋プロセス終了に任せる。
+        """
+        while self._monitoring:
+            time.sleep(_EPHEMERAL_WARM_INTERVAL_SEC)
+            if not self._monitoring:
+                break
+            try:
+                if not backend_client.is_logged_in():
+                    continue
+                if not self._config.get("streaming_enabled", True):
+                    continue
+                if not any(
+                    s.backend == TranscriptionBackend.DEEPGRAM.value
+                    for s in self._slots.values()
+                ):
+                    continue
+                backend_client.warm_ephemeral()
+            except Exception as e:  # 暖機の失敗で常駐ループを止めない
+                logger.debug(f"/ephemeral の暖機に失敗（無視）: {e}")
+
+    def _refresh_entitlement_async(self) -> None:
+        """録音完了後、利用権の残量を別スレッドで静かに取り直し、設定画面の表示を更新する（Task 1）。
+
+        消費自体はサーバーが原子的に行うため、アプリは最新の残量を取り直すだけ。UI を
+        「確認中…」に落とさない静かな更新（quiet）で、設定画面が開いていれば残り回数の表示を
+        即座に減らす。有料（残量非依存）は coord 側で再取得をスキップする。失敗は黙って無視。
+        ネットワーク I/O を伴うのでワーカーを塞がないよう別スレッドで行う。
+        """
+        if not backend_client.is_logged_in():
+            return
+
+        def _work() -> None:
+            from .core import login_coordinator
+
+            if login_coordinator.shared().refresh_entitlement(quiet=True):
+                # UI 更新はメインスレッドで（Qt のキュー接続でホップ）
+                self.account_refreshed.emit()
+
+        threading.Thread(
+            target=_work, daemon=True, name="EntitlementRefresh"
+        ).start()
 
     # ------------------------------------------------------------------
     # ブラウザ経由ログインの deep link 処理（製品版・段階4）
@@ -761,6 +826,8 @@ class VoicekeyApp(QObject):
                     # （表示が「変換中」に張り付くのを防ぐ防御。本来は録音側で exactly once）
                     self._outstanding = max(0, self._outstanding - 1)
                 self._emit_state()
+                # 録音 1 回ごとに利用権の残量を取り直し、設定画面の「残り回数」を即減らす（Task 1）
+                self._refresh_entitlement_async()
 
     def _process_task(self, task: TranscriptionTask) -> None:
         """ストリーミング確定 →（空なら）正規化 → VAD → API → テキスト挿入を実行する。

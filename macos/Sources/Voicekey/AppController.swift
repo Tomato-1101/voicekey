@@ -71,6 +71,9 @@ final class AppController: ObservableObject {
 
     private var configObservation: Any?
 
+    /// /ephemeral 関数を一定間隔で温め続けるタイマー（Deepgram ストリーミング利用時の cold start 回避）
+    private var warmTimer: Timer?
+
     init() {
         rebuildTranscribers()
 
@@ -137,19 +140,26 @@ final class AppController: ObservableObject {
             // 製品版（ログイン済み）なら、起動時にサーバー接続を 1 回だけ暖機して初回の
             // サーバー往復（serverless cold start を含む最大数秒）を前払いする。暖機は
             // GET /me（無料枠を消費しない read）で TLS・接続・認証経路を温める。さらに
-            // 有料ユーザーかつ Deepgram ストリーミング設定のときだけ、短命トークンも先取りする
-            // （有料は consume 前に return＝消費ゼロ・トークンキャッシュも温まる）。無料体験
-            // ユーザーはトークンを取得しない＝/ephemeral は無料枠を 1 消費するため、録音前の
-            // 暖機で枠を減らさない。失敗は無視（録音時に通常経路で再取得される）。背景ループは張らない。
+            // Deepgram ストリーミング設定なら /ephemeral 関数も温める:
+            //  - 有料ユーザー: 短命トークンを先取り（consume 前に return＝消費ゼロ）。以後の
+            //    録音はキャッシュ再利用で往復ゼロ。
+            //  - 無料ユーザー: トークンは取らない（POST /ephemeral は 1 消費するため）。代わりに
+            //    消費なしの GET（warmEphemeral）で関数だけ温める＝枠を減らさずに cold start を回避。
+            // 失敗は無視（録音時に通常経路で再取得される）。継続的な温存は warmTimer が担う。
             if BackendClient.isLoggedIn {
-                let warmTokenToo = config.streamingEnabled
+                let usesDeepgramStreaming = config.streamingEnabled
                     && (config.slot(1).backend == .deepgram || config.slot(2).backend == .deepgram)
                 Task {
-                    guard let status = try? await BackendClient.fetchAccountStatus() else { return }
-                    if status.active, warmTokenToo {
-                        _ = try? await BackendClient.fetchEphemeralToken()
+                    let status = try? await BackendClient.fetchAccountStatus()
+                    if usesDeepgramStreaming {
+                        if status?.active == true {
+                            _ = try? await BackendClient.fetchEphemeralToken()  // 有料: 消費ゼロで先取り
+                        } else {
+                            await BackendClient.warmEphemeral()                 // 無料: 消費なしで関数だけ温める
+                        }
                     }
                 }
+                startEphemeralWarmLoop()  // 以後も数分間隔で /ephemeral を温存（cold start 回避）
             }
 
             // 入力監視・アクセシビリティ権限の確認と監視開始
@@ -160,6 +170,27 @@ final class AppController: ObservableObject {
 
     func shutdown() {
         hotkeys.stop()
+        warmTimer?.invalidate()
+        warmTimer = nil
+    }
+
+    /// 製品版で Deepgram ストリーミングを使う間、/ephemeral 関数を一定間隔で温める。
+    /// cold start（Vercel serverless の起動）が「話し始めの遅延」の主因なので、消費なしの
+    /// 軽量 GET（warmEphemeral）で関数を温存し、録音ごとのトークン POST を warm path に乗せる。
+    /// 重い常駐ループは張らず、約 4 分間隔で GET を 1 本打つだけ（Vercel の warm 保持は数分程度）。
+    /// 条件（ログイン済み・ストリーミング ON・Deepgram スロット）を満たさない回は何もしない。
+    private func startEphemeralWarmLoop() {
+        warmTimer?.invalidate()
+        warmTimer = Timer.scheduledTimer(withTimeInterval: 240, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self,
+                      BackendClient.isLoggedIn,
+                      self.config.streamingEnabled,
+                      self.config.slot(1).backend == .deepgram || self.config.slot(2).backend == .deepgram
+                else { return }
+                await BackendClient.warmEphemeral()
+            }
+        }
     }
 
     // MARK: - ホットキーイベント（メインスレッド）
@@ -556,6 +587,10 @@ final class AppController: ObservableObject {
     private func taskFinished() {
         outstanding -= 1
         emitState()
+        // 録音 1 回ごとに残量表示を静かに更新する（消費はサーバーが原子的に行うので、
+        // アプリは最新の残量を取り直して「使うたびに残り回数が即減って見える」を担保する）。
+        // クリティカルパス外（貼り付け後）。有料・未ログインは内部で no-op になる。
+        LoginCoordinator.shared.refreshEntitlementQuiet()
     }
 
     // MARK: - 状態計算（単一の発信点）
