@@ -91,7 +91,7 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 
 ## 現在地 / 次の一手
 
-- 現在地: **Mac v1.6.1 / Windows v1.6.1 を実装・ビルド・検証済み（未リリース＝配布公開 GO 待ち）**（2026-06-29。release ブランチ）。
+- 現在地: **Mac v1.6.1 / Windows v1.6.1 リリース完了**（2026-06-29。release＝製品版ブランチ。全フィード 200 検証済み・既存ユーザーへ自動更新配信中）。
   ユーザーの製品版テストで挙げた 2 点を修正:
   1. **無料体験の「高速リアルタイム」の話し始めの遅延を解消**。無料ユーザーは録音直前に短命トークン発行
      `POST /api/v1/auth/ephemeral`（無料枠 1 消費）を毎回叩くが、これが Vercel serverless の cold start（最大数秒）を
@@ -108,8 +108,9 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
     `_refresh_entitlement_async`（`account_refreshed` シグナル）、`login_coordinator.refresh_entitlement(quiet=)`＋`_apply_status()`。
   - 検証: Mac=`build_app.sh` 成功・kill→再起動で起動確認。Windows=`py_compile` OK・`unittest discover -s tests` 実行（version_consistency/
     outstanding_count のテストも 1.6.1 対応に追従済み）。バージョン: constants.py / Info.plist(short) / README ステータス表すべて 1.6.1。
-  - **未了（ユーザーの GO 待ち＝不可逆な外部公開）**: voicekey-site の `vercel deploy --prod`（GET 暖機ハンドラの本番反映）と、
-    v1.6.1 の両 OS 配布（DMG/appcast・Windows setup.exe・downloads.json/フィード更新）。リリース手順は本節末尾を参照。
+  - **配布（完了・2026-06-29）**: voicekey-site `vercel deploy --prod` 済み（GET 暖機ハンドラ本番反映＝`/api/v1/auth/ephemeral` GET が `{"warm":true}` 200）。
+    Mac=DMG（1,982,639B）＋appcast〔build 15・EdDSA 署名・delta 15→10..14〕、Windows=setup.exe〔293,483,660B・公開リポ `voicekey-releases` の Release `v1.6.1`（DL URL 200）・sha256 `4c91a5…06ae`〕＋`windows/version.json`（sha256 一致）。`downloads.json` は mac/windows とも 1.6.1。転送用 Release `winci-1.6.1`（本リポ private）は relay 後に削除済み。
+    コミット: 本体 release=`beefe7b`（実装＋docs）/`16137a2`（Info.plist build15）、voicekey-site=`631df5c`（GET 暖機）/`ff68dfa`（配布フィード）。
 - 既往（リリース済み）: **Mac v1.6.0 / Windows v1.6.0**（2026-06-29。release＝製品版ブランチ。
   **Windows 配布版で VAD（無音圧縮・長文分割）が実際に効くように修正**＋**コードレビュー31項目の反映**。
   配布ビルドに `onnxruntime` が同梱されておらず（`silero-vad` の optional extra でしか入らず `requirements.txt` 未宣言）、
@@ -141,9 +142,8 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
   再起動まで実施）。ベータ版の動作確認は `macos/scripts/run_beta.sh`（dist/ の最新 DMG を
   マウントして一時起動・終わったら run_dev.sh で戻る）。dist/voicekey.app はビルドごとに
   dev/dist で上書きされるため常用しない。見分け方: 設定画面に API キータブがあれば開発版。
-- 次の一手: **v1.6.1（高速リアルタイムの遅延解消＋残り回数の即時表示）は実装・検証済み。ユーザーの GO が出たら
-  (a) voicekey-site を `vercel deploy --prod`（GET 暖機ハンドラを本番反映）→ (b) v1.6.1 を両 OS 同期リリース**（本節末尾の手順）。
-  v1.6.0（Windows VAD 修正＋レビュー31項目）は両 OS 配布完了済み（2026-06-29・全フィード 200 検証済み）。
+- 次の一手: **v1.6.1（高速リアルタイムの遅延解消＋残り回数の即時表示）は両 OS 配布完了**（2026-06-29・全フィード 200 検証済み・自動更新配信中）。
+  実機での体感確認（無料体験アカウントで「高速リアルタイム」の話し始めの遅延が消えたか・録音ごとに残り回数が減って見えるか）が次の確認ポイント。
   残るユーザー作業は (1) **v1.2.0 以前に配布した埋め込み済み旧プロバイダーキーのローテーション**（各プロバイダーのダッシュボードで失効・再発行＝本人のみ可能・キー値は Claude が扱わない）、
   (2) **各 API ダッシュボードで利用上限・アラート設定**（保険）。無料体験 200 回の上限値は `entitlements.free_quota` の
   既定値（DB 側）で調整可能＝コード変更・再配布なしに将来見直せる。なお無料体験が広く使われ始めるため、
