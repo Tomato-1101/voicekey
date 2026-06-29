@@ -330,6 +330,9 @@ class VoicekeyApp(QObject):
             status = backend_client.fetch_account_status()
         except Exception:
             return
+        # 録音終了後の先読み（_postwarm_ephemeral）の判定に使い回す。
+        # 有料＝トークン先読み（消費ゼロ）/ 無料＝GET 暖機（枠を守る）の振り分けに使う。
+        self._account_active = bool(status.get("active"))
         # Deepgram「高速リアルタイム」: ストリーミング ON ＋ Deepgram スロットのとき /ephemeral を温める
         uses_deepgram_streaming = self._config.get("streaming_enabled", True) and any(
             s.backend == TranscriptionBackend.DEEPGRAM.value for s in self._slots.values()
@@ -354,6 +357,35 @@ class VoicekeyApp(QObject):
                 backend_client.warm_elevenlabs()
             except Exception:
                 pass
+
+    def _postwarm_ephemeral(self) -> None:
+        """録音終了直後に次回の短命トークンを先読み／暖機し、次録音の開始遅延を減らす。
+
+        トークン TTL は 60 秒。録音終了直後に先読みしておくと、続けて録音する
+        （連続ディクテーション）ときの 2 回目以降のサーバー往復がクリティカルパスから消える。
+        - 有料（active）: 実トークンを先取りしてキャッシュ（consume 前に return＝消費ゼロ）。
+          60 秒 TTL 内の次録音は往復ゼロになる。
+        - 無料体験: 枠を消費しない GET で serverless 関数だけ温める（実トークンは録音時取得＝
+          1 録音 1 消費を維持）。cold start を前払いし、録音時の POST を warm path に乗せる。
+        ストリーミング（Deepgram）を使う設定のときだけ動く。失敗は無視。
+        daemon スレッドから呼ばれる（_finish_recording 末尾で起動）。
+        """
+        if not backend_client.is_logged_in():
+            return
+        uses_deepgram_streaming = self._config.get("streaming_enabled", True) and any(
+            s.backend == TranscriptionBackend.DEEPGRAM.value for s in self._slots.values()
+        )
+        if not uses_deepgram_streaming:
+            return
+        try:
+            # 起動時 _prewarm_backend で確定したアカウント状態を使い回す（録音ごとの
+            # /me 往復を避ける）。未確定なら安全側＝無料扱い（枠を消費しない GET）。
+            if getattr(self, "_account_active", False):
+                backend_client.fetch_ephemeral_token()
+            else:
+                backend_client.warm_ephemeral()
+        except Exception:
+            pass
 
     def _ephemeral_warm_loop(self) -> None:
         """使用中のプロキシ関数を定期的に温め、録音時の cold start を防ぐ（Task 2）。
@@ -809,6 +841,10 @@ class VoicekeyApp(QObject):
             )
 
         self._recorder.stop_async(_on_audio)
+
+        # 次録音の開始遅延を減らすため、録音終了直後に次回トークンを先読み／暖機する
+        # （連続ディクテーション時の 2 回目以降のサーバー往復をクリティカルパスから外す）。
+        threading.Thread(target=self._postwarm_ephemeral, daemon=True).start()
 
     def _on_audio_level(self, level: float) -> None:
         """録音中の音声レベル（audio callback スレッドから約 30fps で呼ばれる）。"""

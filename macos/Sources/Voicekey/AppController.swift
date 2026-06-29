@@ -123,6 +123,10 @@ final class AppController: ObservableObject {
 
     private var started = false
 
+    /// 起動時に確定したアカウント状態（有料 = true）。録音終了後の先読み（taskFinished）で
+    /// 「有料 = トークン先読み（消費ゼロ）/ 無料 = GET 暖機」を振り分けるのに使い回す。
+    private var accountActive = false
+
     /// アプリ起動時に呼ぶ（権限確認 → 監視開始）。多重呼び出しは無視する
     func startup() {
         guard !started else { return }
@@ -153,6 +157,8 @@ final class AppController: ObservableObject {
                     || config.slot(2).backend == .elevenlabs
                 Task {
                     let status = try? await BackendClient.fetchAccountStatus()
+                    // 録音終了後の先読み（taskFinished）の判定に使い回す（録音ごとの /me 往復を避ける）
+                    self.accountActive = (status?.active == true)
                     if usesDeepgramStreaming {
                         if status?.active == true {
                             _ = try? await BackendClient.fetchEphemeralToken()  // 有料: 消費ゼロで先取り
@@ -602,6 +608,22 @@ final class AppController: ObservableObject {
         // アプリは最新の残量を取り直して「使うたびに残り回数が即減って見える」を担保する）。
         // クリティカルパス外（貼り付け後）。有料・未ログインは内部で no-op になる。
         LoginCoordinator.shared.refreshEntitlementQuiet()
+
+        // 次録音の開始遅延を減らすため、文字起こし完了直後に次回トークンを先読み／暖機する
+        // （連続ディクテーション時の 2 回目以降のサーバー往復をクリティカルパスから外す）。
+        // 有料: 実トークンを先取りしてキャッシュ（60 秒 TTL 内の次録音は往復ゼロ・消費ゼロ）。
+        // 無料: 枠を消費しない GET で serverless 関数だけ温める（実トークンは録音時取得＝1 録音 1 消費）。
+        if BackendClient.isLoggedIn, config.streamingEnabled,
+           config.slot(1).backend == .deepgram || config.slot(2).backend == .deepgram {
+            let active = accountActive
+            Task {
+                if active {
+                    _ = try? await BackendClient.fetchEphemeralToken()
+                } else {
+                    await BackendClient.warmEphemeral()
+                }
+            }
+        }
     }
 
     // MARK: - 状態計算（単一の発信点）

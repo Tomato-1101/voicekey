@@ -108,6 +108,10 @@ class StreamingTranscriber:
         self._done_event = threading.Event()  # 確定完了/切断の通知
         self._thread: Optional[threading.Thread] = None
         self._sender: Optional[threading.Thread] = None  # 送信専用スレッド
+        # 録音開始遅延の計測用（生成時刻 ≒ 録音開始）。トークン取得 / WS 接続 / 最初の文字
+        # までの内訳をログし、「始まりが遅い」の主因（サーバー往復か WS ハンドシェイクか）を裏取りする
+        self._created_at: float = time.monotonic()
+        self._first_result_logged: bool = False
 
     @property
     def _stream_language(self) -> str:
@@ -285,6 +289,7 @@ class StreamingTranscriber:
         """
         from websockets.sync.client import connect
 
+        t_start = time.monotonic()
         # 製品版（ログイン済み）: サーバーから短命 JWT を取得し Bearer で接続。
         # 未ログイン: 従来どおり埋め込み/設定キーを Token で使う（並存ガード）。
         if logged_in:
@@ -312,6 +317,7 @@ class StreamingTranscriber:
         }
         url = "wss://api.deepgram.com/v1/listen?" + urlencode(params)
 
+        t_token = time.monotonic()
         try:
             ws = connect(
                 url,
@@ -323,9 +329,15 @@ class StreamingTranscriber:
             logger.warning(f"Deepgram ストリーミング接続に失敗: {e}")
             self._resolve_finish()
             return
+        t_conn = time.monotonic()
 
+        # 「始まりが遅い」の主因切り分け用ログ（トークン取得 vs WS ハンドシェイク）
         logger.info(
-            f"Deepgram ストリーミング開始 (model={self.model}, lang={self._stream_language})"
+            "Deepgram ストリーミング開始 (model=%s, lang=%s): トークン取得 %.0fms / WS接続 %.0fms",
+            self.model,
+            self._stream_language,
+            (t_token - t_start) * 1000.0,
+            (t_conn - t_token) * 1000.0,
         )
 
         # cancel/close 済みなら即閉じる。問題なければ ws を公開して sender を起動する。
@@ -415,6 +427,14 @@ class StreamingTranscriber:
         if not channels:
             return
         transcript = (channels[0].get("transcript") or "").strip()
+
+        # 録音開始から「最初の文字が出るまで」の体感遅延を 1 度だけログ（内訳の合計確認用）
+        if transcript and not self._first_result_logged:
+            self._first_result_logged = True
+            logger.info(
+                "Deepgram 最初の文字まで %.0fms（録音開始から）",
+                (time.monotonic() - self._created_at) * 1000.0,
+            )
 
         with self._lock:
             if msg.get("is_final"):

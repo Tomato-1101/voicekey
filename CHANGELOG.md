@@ -4,6 +4,28 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased]
 
+### Changed
+- **「高速リアルタイム」（Deepgram ストリーミング）の話し始めの遅延を軽減（段階A・両 OS・release）**。
+  リアルタイム入力は録音開始の瞬間に「短命トークンの取得（サーバー往復）」＋「Deepgram への
+  WebSocket 接続確立」を直列で踏むため、最初の文字が出るまで体感の遅れがあった。第1段として
+  **録音終了直後に次回分の短命トークンを先読み／暖機**し、次の録音開始を warm path に乗せる。
+  - 有料アカウント（active）= 次回トークンを**先読み取得**（録音直後にキャッシュへ）。
+  - 無料／未確定 = サーバーの**暖機 GET**（消費なし）でプロキシ関数を温存。
+  - これにより「録音 → 終了 → すぐ次の録音」を繰り返す通常運用で、2 回目以降の開始遅延を縮める。
+- **開始遅延の内訳を実測するログを追加（段階A・両 OS）**。録音開始からの
+  「短命トークン取得 ms」「WS 接続 ms」「最初の文字まで ms」をログ出力し、
+  「始まりが遅い」の主因（サーバー往復か WS ハンドシェイクか）を実使用で裏取りできるようにした
+  （段階B＝WS 事前接続の設計判断に使う）。
+
+### Technical Details
+- **Windows**（Python）`app.py`: `_prewarm_backend` で取得済みの `active` を `_account_active` に保持。
+  新メソッド `_postwarm_ephemeral`（ログイン＋Deepgram ストリーミング使用時のみ、active=先読み取得／
+  それ以外=暖機 GET）を `_finish_recording` の録音停止直後に別スレッドで起動。
+  `streaming_transcriber.py`: 生成時刻からの `トークン取得 / WS接続 / 最初の文字まで` の経過を `logger.info` 出力。
+- **Mac**（Swift）`AppController.swift`: `accountActive` を `startup()` で保持し、`taskFinished()` で
+  上記と同条件の先読み／暖機を `Task` で起動。`StreamingTranscriber.swift`: トークン取得 ms と
+  録音開始からの最初の文字 ms を `os.log` 出力。
+
 ## [1.6.3] - 2026-06-29
 
 ### Fixed

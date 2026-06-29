@@ -42,6 +42,10 @@ final class StreamingTranscriber: @unchecked Sendable {
     private var finishContinuation: CheckedContinuation<Void, Never>?
     /// 接続が閉じた / 確定し終えたか
     private var done = false
+    /// 録音開始遅延の計測用（生成時刻 ≒ 録音開始）。トークン往復 / 最初の文字までの累計を
+    /// ログし、「始まりが遅い」の主因（サーバー往復か WS ハンドシェイクか）を裏取りする
+    private let createdAt = Date()
+    private var firstResultLogged = false
 
     init(model: String, language: String) {
         self.model = model
@@ -79,7 +83,10 @@ final class StreamingTranscriber: @unchecked Sendable {
             Task { [weak self] in
                 guard let self else { return }
                 do {
+                    let t0 = Date()
                     let tok = try await BackendClient.fetchEphemeralToken()
+                    // 「始まりが遅い」の主因切り分け用ログ（トークン往復 ms）
+                    log.info("Deepgram 短命トークン取得 \(Int(Date().timeIntervalSince(t0) * 1000), privacy: .public)ms")
                     self.connect(auth: "Bearer \(tok.token)")
                 } catch {
                     log.error("Deepgram 短命トークンの取得に失敗: \(error.localizedDescription)")
@@ -264,6 +271,17 @@ final class StreamingTranscriber: @unchecked Sendable {
 
         guard let transcript = msg.channel?.alternatives.first?.transcript else { return }
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // 録音開始から「最初の文字が出るまで」の体感遅延を 1 度だけログ（内訳の合計確認用）
+        if !trimmed.isEmpty {
+            lock.lock()
+            let alreadyLogged = firstResultLogged
+            firstResultLogged = true
+            lock.unlock()
+            if !alreadyLogged {
+                log.info("Deepgram 最初の文字まで \(Int(Date().timeIntervalSince(self.createdAt) * 1000), privacy: .public)ms（録音開始から）")
+            }
+        }
 
         lock.lock()
         if msg.is_final == true {
