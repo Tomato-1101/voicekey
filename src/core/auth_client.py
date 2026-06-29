@@ -171,6 +171,12 @@ def _perform_refresh() -> dict:
     except BackendError as e:
         if e.status == 401:
             secrets.clear_auth_session()  # 復帰不能 → 再ログインへ
+            raise
+        if e.status == 409:
+            # 409（refresh 競合）＝他スレッド/プロセスが既に refresh_token を回転済み
+            # ＝セッションは有効。破棄せず、最新の保存済みセッション（無ければ現行）を返す。
+            # これを期限切れ扱いすると「ログインの有効期限が切れました」を誤表示する。
+            return secrets.get_auth_session() or current
         raise
     session = _decode_session(resp.json())
     if not _save_session_if_current(gen, session):

@@ -182,6 +182,11 @@ enum AuthClient {
         } catch AuthError.sessionExpired {
             _ = Keychain.clearAuthSession()  // 復帰不能 → 再ログインへ
             throw AuthError.sessionExpired
+        } catch AuthError.server(409) {
+            // 409（refresh 競合）＝他経路（別タスク/別プロセス）が既に refresh_token を
+            // 回転済み＝セッションは有効。破棄せず、最新の保存済みセッション（無ければ現行）を
+            // 返す。これを期限切れ扱いすると「ログインの有効期限が切れました」を誤表示する。
+            return Keychain.authSession() ?? current
         }
         let s = try decodeSession(data)
         // 取得中にログアウト/別アカウントのログインが割り込んでいたら復活させない

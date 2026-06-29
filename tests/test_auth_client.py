@@ -161,6 +161,16 @@ class TestRefresh(_Base):
         self.assertEqual(cm.exception.status, 401)
         self.assertEqual(cleared["n"], 1)  # セッションを破棄した
 
+    def test_conflict_409_keeps_session(self):
+        # 409（refresh 競合）＝他経路が既に refresh_token を回転済み＝セッションは有効。
+        # 破棄も例外もせず、最新の保存済みセッションをそのまま返す（誤って期限切れにしない）。
+        _install_mock(lambda r: httpx.Response(409, json={"error": "conflict", "code": "refresh_conflict"}))
+        current = {"access_token": "still-valid", "refresh_token": "rot-by-other", "expires_at": 1_900_000_000}
+        with mock.patch.object(auth_client.secrets, "get_auth_session", return_value=current):
+            result = auth_client.refresh()
+        self.assertEqual(result["access_token"], "still-valid")  # 現行セッションを返す（例外なし）
+        auth_client.secrets.clear_auth_session.assert_not_called()  # セッションを破棄していない
+
 
 class TestEnsureValidSession(_Base):
     def test_fresh_token_no_refresh(self):
