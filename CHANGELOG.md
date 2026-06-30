@@ -18,6 +18,19 @@ voicekeyの変更履歴を記録するファイルです。
     401 再試行はそのまま連動し、サーバーは変更なし。再現テスト（409 でセッションを破棄しないこと）を追加。
 
 ### Changed
+- **無料体験の遅延解消＝保留/確定方式（段階1・両 OS・release）**。録音開始のたびに走っていた
+  同期 `consume_free_quota` 往復（400-800ms）を録音開始のクリティカルパスから外した。「1録音=1消費」は
+  維持したまま、開始遅延を解消する。
+  - トークン発行時は消費せず**保留(hold)**のみ。録音が成功（文字起こし非空）したら
+    `/api/v1/usage/confirm` に保留 `jti` を送って確定する（`free_used` を +1）。空文字（無音/接続失敗で
+    REST フォールバック）のときは確定しない＝保留は TTL で自動的に戻る（refund）。
+  - `jti` 付きトークンは取得時に **1 回限り pop**（キャッシュから除去）。旧クライアント（`x-vk-confirm`
+    ヘッダ無し）は従来どおり**即時 consume にフォールバック**（後方互換）。
+  - **Mac**: `BackendClient` に `jti` / `x-vk-confirm` / `confirmUsage`、`StreamingTranscriber` が start で
+    保留 jti を控え finish の非空時に確定。**Windows**: `backend_client.confirm_usage`、
+    `streaming_transcriber` が threading で確定送信。`constants` に `API_USAGE_CONFIRM_PATH`。
+  - **サーバ**（voicekey-site）: `/api/v1/usage/confirm`、`auth/ephemeral` の hold 化、
+    DB マイグレーション `0017`（hold/confirm/refund/sweep RPC）。
 - **「高速リアルタイム」（Deepgram ストリーミング）の話し始めの遅延を軽減（段階A・両 OS・release）**。
   リアルタイム入力は録音開始の瞬間に「短命トークンの取得（サーバー往復）」＋「Deepgram への
   WebSocket 接続確立」を直列で踏むため、最初の文字が出るまで体感の遅れがあった。第1段として

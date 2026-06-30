@@ -52,6 +52,8 @@ enum ServerConfig {
     static let redeemPath = "/api/v1/activation/redeem"
     /// ログイン中アカウントの状態（メール・利用権の有無/期限）取得
     static let mePath = "/api/v1/me"
+    /// 無料体験の消費確定（録音成功後に保留 jti を送る＝段階1。録音開始の往復から消費を外す）
+    static let usageConfirmPath = "/api/v1/usage/confirm"
 
     // 使用実績のアカウント連携（#10）
     /// 実績の送信（この端末の日次・絶対値を upsert）

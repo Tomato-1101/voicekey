@@ -46,6 +46,8 @@ final class StreamingTranscriber: @unchecked Sendable {
     /// ログし、「始まりが遅い」の主因（サーバー往復か WS ハンドシェイクか）を裏取りする
     private let createdAt = Date()
     private var firstResultLogged = false
+    /// 無料体験の保留 ID（free のみ非null）。文字起こし成功後に消費を確定するのに使う。
+    private var ephemeralJti: String?
 
     init(model: String, language: String) {
         self.model = model
@@ -85,6 +87,8 @@ final class StreamingTranscriber: @unchecked Sendable {
                 do {
                     let t0 = Date()
                     let tok = try await BackendClient.fetchEphemeralToken()
+                    // 録音成功後に消費を確定するための保留 ID（free のみ非null）を控える。
+                    self.lock.lock(); self.ephemeralJti = tok.jti; self.lock.unlock()
                     // 「始まりが遅い」の主因切り分け用ログ（トークン往復 ms）
                     log.info("Deepgram 短命トークン取得 \(Int(Date().timeIntervalSince(t0) * 1000), privacy: .public)ms")
                     self.connect(auth: "Bearer \(tok.token)")
@@ -195,7 +199,14 @@ final class StreamingTranscriber: @unchecked Sendable {
         markCancelled()?.cancel(with: .normalClosure, reason: nil)
         // 録音のたびに生成するセッションは明示的に破棄する（放置すると漸増リーク）
         session.finishTasksAndInvalidate()
-        return TextNormalize.stripCJKSpaces(currentText())
+        let text = TextNormalize.stripCJKSpaces(currentText())
+        // 文字起こしが成立したら無料体験の消費を確定する（ベストエフォート・非ブロッキング）。
+        // 空文字（無音/接続失敗で REST フォールバック）のときは確定しない＝保留は TTL で戻る。
+        if !text.isEmpty {
+            lock.lock(); let jti = ephemeralJti; ephemeralJti = nil; lock.unlock()
+            if let jti { Task { await BackendClient.confirmUsage(jti: jti) } }
+        }
+        return text
     }
 
     /// lock 下で現在の task を読む（async コンテキストから直接 lock しないため）

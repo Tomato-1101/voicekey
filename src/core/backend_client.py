@@ -247,9 +247,15 @@ def fetch_ephemeral_token() -> dict:
         c = _cached_token
         # 残 15 秒超のキャッシュがあれば即返す（往復ゼロ）
         if c and (c.get("_expires_monotonic", 0.0) - time.monotonic()) > 15:
+            # free の保留トークン(jti 付き)は「1保留=1録音=1confirm」を守るため 1 回使い切り
+            # （取り出したらキャッシュから除去）。paid(jti なし)は TTL 内で使い回す。
+            if c.get("jti"):
+                _cached_token = None
             return c
-        # キャッシュ無効 → 取得（ロック保持中＝同時呼び出しは待って新トークンを共有する）
-        resp = _post(constants.API_EPHEMERAL_PATH, headers=_auth_headers())
+        # キャッシュ無効 → 取得（ロック保持中＝同時呼び出しは待って新トークンを共有する）。
+        # 「録音成功後に /usage/confirm を送れる新クライアント」を宣言（サーバーが hold 化＝free
+        # でもトークンをキャッシュ可能にし、録音開始の往復を消す。確定は confirm で行う）。
+        resp = _post(constants.API_EPHEMERAL_PATH, headers={**_auth_headers(), "x-vk-confirm": "1"})
         data = resp.json()
         # 取得中にログアウト/別アカウントのログインが割り込んでいたら、旧アカウントの
         # トークンをキャッシュ・返却しない（別アカウントでの再利用を防ぐ）。
@@ -270,6 +276,29 @@ def clear_token_cache() -> None:
     global _cached_token
     with _token_lock:
         _cached_token = None
+
+
+def confirm_usage(jti: str) -> None:
+    """無料体験の消費を確定する（録音成功後に保留 jti を送る・ベストエフォート）。
+
+    録音開始のクリティカルパスから消費を外すための後段。失敗しても無視
+    （サーバー側で保留は TTL 経過後に整合する）。未ログイン/ jti なしなら何もしない。
+
+    Args:
+        jti: ephemeral が無料体験に対して返した保留 ID
+    """
+    if not jti or not is_logged_in():
+        return
+    try:
+        _send(
+            "POST",
+            constants.API_USAGE_CONFIRM_PATH,
+            headers={**_auth_headers(), "Content-Type": "application/json"},
+            json={"jti": jti},
+            raise_on_error=False,  # ベストエフォート（失敗してもユーザー操作を止めない）
+        )
+    except Exception:
+        pass
 
 
 def warm_format_proxy() -> None:

@@ -51,8 +51,10 @@ enum BackendClient {
         let token: String
         let expiresAt: Date
         /// 録音をまたいでキャッシュ再利用してよいか（サーバーが返す。利用権あり=true）。
-        /// 無料体験は発行ごとに 1 消費するため false＝毎録音で取り直す（1録音=1消費の保証）。
+        /// 段階1以降は無料体験も hold 化で true になる（消費は confirm 時の 1 回）。
         let cacheable: Bool
+        /// 無料体験の保留 ID（free のみ非null）。録音成功後に /usage/confirm へ送って 1 消費を確定する。
+        let jti: String?
     }
 
     /// ログイン中アカウントの状態（メール・利用権の有無/期限・無料体験の残量）
@@ -113,6 +115,9 @@ enum BackendClient {
         tokenLock.lock(); defer { tokenLock.unlock() }
         // 1) 残 15 秒超のキャッシュがあれば即返す
         if let c = cachedToken, c.expiresAt.timeIntervalSinceNow > 15 {
+            // free の保留トークン(jti 付き)は「1保留=1録音=1confirm」を守るため 1 回使い切り
+            // （取り出したらキャッシュから除去）。paid(jti なし)は TTL 内で使い回す。
+            if c.jti != nil { cachedToken = nil }
             return (c, nil)
         }
         // 2) 進行中の取得があれば相乗りする（録音開始の二重呼び出しを 1 往復に集約）
@@ -163,15 +168,20 @@ enum BackendClient {
         try? await AuthClient.ensureValidSession()  // 失効間際なら先にリフレッシュ
         var req = try authorizedRequest(path: ServerConfig.ephemeralPath)
         req.httpMethod = "POST"
+        // 「録音成功後に /usage/confirm を送れる新クライアント」であることを宣言する。これにより
+        // サーバーは消費を即時ではなく「保留(hold)」にし、free でもトークンをキャッシュ可能にする
+        // （録音開始のサーバー往復を消す）。確定（free_used +1）はクライアントが confirm で行う。
+        req.setValue("1", forHTTPHeaderField: "x-vk-confirm")
         let data = try await send(req)
-        struct Resp: Decodable { let token: String; let expires_in: Int; let cacheable: Bool? }
+        struct Resp: Decodable { let token: String; let expires_in: Int; let cacheable: Bool?; let jti: String? }
         guard let r = try? JSONDecoder().decode(Resp.self, from: data) else {
             throw BackendError.invalidResponse
         }
         return EphemeralToken(
             token: r.token,
             expiresAt: Date().addingTimeInterval(TimeInterval(r.expires_in)),
-            cacheable: r.cacheable ?? false  // 不明（旧サーバー）はキャッシュ不可＝毎録音で取り直す
+            cacheable: r.cacheable ?? false,  // 不明（旧サーバー）はキャッシュ不可＝毎録音で取り直す
+            jti: r.jti
         )
     }
 
@@ -211,6 +221,18 @@ enum BackendClient {
         guard let url = ServerConfig.url(ServerConfig.ephemeralPath) else { return }
         let req = URLRequest(url: url)  // GET（既定メソッド）。認証不要・消費なし。
         _ = try? await session.data(for: req)
+    }
+
+    /// 無料体験の消費を確定する（録音成功後に保留 jti を送る・ベストエフォート）。
+    /// 録音開始のクリティカルパスから消費を外すための後段。失敗してもユーザー操作は止めない
+    /// （サーバー側で保留は TTL 経過後に整合する）。未ログインなら何もしない。
+    static func confirmUsage(jti: String) async {
+        guard isLoggedIn else { return }
+        guard var req = try? authorizedRequest(path: ServerConfig.usageConfirmPath) else { return }
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["jti": jti])
+        _ = try? await send(req)  // 結果は使わない（ベストエフォート）
     }
 
     /// ログイン中アカウントの状態（メール・利用権の有無/期限）を取得する。

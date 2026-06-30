@@ -112,6 +112,8 @@ class StreamingTranscriber:
         # までの内訳をログし、「始まりが遅い」の主因（サーバー往復か WS ハンドシェイクか）を裏取りする
         self._created_at: float = time.monotonic()
         self._first_result_logged: bool = False
+        # 無料体験の保留 ID（free のみ非null）。文字起こし成功後に消費を確定するのに使う。
+        self._ephemeral_jti: Optional[str] = None
 
     @property
     def _stream_language(self) -> str:
@@ -237,7 +239,16 @@ class StreamingTranscriber:
         if self._failed:
             # キュー溢れ/送信失敗 → 部分結果は使わず REST フォールバックに全音声で委ねる
             return ""
-        return strip_cjk_spaces(self._current_text())
+        text = strip_cjk_spaces(self._current_text())
+        # 文字起こしが成立したら無料体験の消費を確定する（ベストエフォート・非ブロッキング）。
+        # 空文字（無音/接続失敗で REST フォールバック）のときは確定しない＝保留は TTL で戻る。
+        if text and self._ephemeral_jti:
+            jti = self._ephemeral_jti
+            self._ephemeral_jti = None
+            threading.Thread(
+                target=backend_client.confirm_usage, args=(jti,), daemon=True
+            ).start()
+        return text
 
     def cancel(self) -> None:
         """結果を使わずに接続を破棄する（録音破棄時など）。"""
@@ -295,6 +306,8 @@ class StreamingTranscriber:
         if logged_in:
             try:
                 grant = backend_client.fetch_ephemeral_token()
+                # 録音成功後に消費を確定するための保留 ID（free のみ非null）を控える。
+                self._ephemeral_jti = grant.get("jti")
                 auth_header = f"Bearer {grant['token']}"
             except backend_client.BackendError as e:
                 # 短命トークン取得失敗（未ログイン扱い・サブスク無効・通信失敗など）
