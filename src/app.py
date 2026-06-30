@@ -330,25 +330,34 @@ class VoicekeyApp(QObject):
             status = backend_client.fetch_account_status()
         except Exception:
             return
-        # 録音終了後の先読み（_postwarm_ephemeral）の判定に使い回す。
+        # 録音終了後の先読み（_postwarm_ephemeral）・暖機ループ・スリープ復帰の判定に使い回す。
         # 有料＝トークン先読み（消費ゼロ）/ 無料＝GET 暖機（枠を守る）の振り分けに使う。
         self._account_active = bool(status.get("active"))
-        # Deepgram「高速リアルタイム」: ストリーミング ON ＋ Deepgram スロットのとき /ephemeral を温める
-        uses_deepgram_streaming = self._config.get("streaming_enabled", True) and any(
+        self._warm_backends_now()  # 有料=トークン先読み（消費ゼロ）/無料=GET暖機
+
+    def _warm_backends_now(self) -> None:
+        """使用中プロバイダの関数を温め、有料なら短命トークンを先読みする（消費ゼロ）。
+
+        起動時・録音後・暖機ループ・スリープ復帰直後に共通で呼ぶ（Mac の warmBackendsNow と対）。
+        - 有料: トークンを先読みしてキャッシュ＝アイドル中も常に手元に有効トークンがあり録音開始
+          ゼロ待ち（TTL(300s) > 暖機間隔(240s) なのでキャッシュは切れない）。
+        - 無料: 枠を守るためトークンは取らず、消費なしの GET で関数だけ温める（実トークンは録音時取得）。
+        設定はホットリロードされるため毎回読み直す。失敗は無視。
+        """
+        if not backend_client.is_logged_in():
+            return
+        # Deepgram「高速リアルタイム」: ストリーミング ON ＋ Deepgram スロットのとき
+        if self._config.get("streaming_enabled", True) and any(
             s.backend == TranscriptionBackend.DEEPGRAM.value for s in self._slots.values()
-        )
-        if uses_deepgram_streaming:
+        ):
             try:
-                if status.get("active"):
-                    # 有料: 実トークンを先取り（消費ゼロ＝consume 前に return・キャッシュも温まる）
-                    backend_client.fetch_ephemeral_token()
+                if getattr(self, "_account_active", False):
+                    backend_client.fetch_ephemeral_token()  # 有料: 消費ゼロでトークンを常にキャッシュ
                 else:
-                    # 無料体験: 枠を守るため消費なしの GET で関数だけ温める（トークンは録音時に取得）
-                    backend_client.warm_ephemeral()
+                    backend_client.warm_ephemeral()          # 無料: 枠を守るため関数だけ温める
             except Exception:
                 pass
         # ElevenLabs「正確性」: ElevenLabs スロットがあれば、そのプロキシ関数も消費なしで温める
-        # （cold start 解消。EL バッチは短命キーが無くプロキシ経由なので暖機が効く）
         if any(
             s.backend == TranscriptionBackend.ELEVENLABS.value
             for s in self._slots.values()
@@ -391,30 +400,31 @@ class VoicekeyApp(QObject):
         """使用中のプロキシ関数を定期的に温め、録音時の cold start を防ぐ（Task 2）。
 
         起動直後は _prewarm_backend が暖機するので、最初の 1 回はインターバル後に行う。
-        消費ゼロの GET なので無料枠を減らさない。ログイン中のとき、設定スロットを見て
-        Deepgram「高速リアルタイム」(/ephemeral) と ElevenLabs「正確性」(/transcribe/elevenlabs) の
-        うち使っている方だけ温める（設定はホットリロードされるため毎回読み直す）。
+        有料はトークンを先読みしてキャッシュ（消費ゼロ）、無料は枠を守る GET 暖機（_warm_backends_now）。
+        さらにスリープ復帰を検知して即・暖機する: 短い間隔で起き、ウォールクロック（実時刻）が
+        想定より大きく飛んでいたら＝マシンがスリープしていた＝serverless 関数が冷え・短命トークンも
+        失効済み。復帰直後に話し始めても遅延が出ないよう、待たずに温め直す（Win 固有の電源イベント
+        API に依存しない移植性のある検知。Mac は NSWorkspace.didWake で同等）。
         daemon スレッドのため、停止は _monitoring の解除＋プロセス終了に任せる。
         """
+        check_interval = 30.0  # 復帰検知のため短い間隔で起きる（CPU 負荷は無視できる）
+        last = time.time()
+        elapsed = 0.0  # 前回の暖機からの累積経過（秒）
         while self._monitoring:
-            time.sleep(_EPHEMERAL_WARM_INTERVAL_SEC)
+            time.sleep(check_interval)
             if not self._monitoring:
                 break
+            now = time.time()
+            gap = now - last
+            last = now
+            # gap が間隔を大きく超える＝スリープからの復帰。即・暖機する。
+            resumed = gap > check_interval * 2
+            elapsed += gap
+            if not (resumed or elapsed >= _EPHEMERAL_WARM_INTERVAL_SEC):
+                continue
+            elapsed = 0.0
             try:
-                if not backend_client.is_logged_in():
-                    continue
-                # Deepgram「高速リアルタイム」: ストリーミング ON ＋ Deepgram スロットのとき
-                if self._config.get("streaming_enabled", True) and any(
-                    s.backend == TranscriptionBackend.DEEPGRAM.value
-                    for s in self._slots.values()
-                ):
-                    backend_client.warm_ephemeral()
-                # ElevenLabs「正確性」: ElevenLabs スロットのとき
-                if any(
-                    s.backend == TranscriptionBackend.ELEVENLABS.value
-                    for s in self._slots.values()
-                ):
-                    backend_client.warm_elevenlabs()
+                self._warm_backends_now()
             except Exception as e:  # 暖機の失敗で常駐ループを止めない
                 logger.debug(f"プロキシ関数の暖機に失敗（無視）: {e}")
 

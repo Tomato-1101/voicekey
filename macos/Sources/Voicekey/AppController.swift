@@ -151,28 +151,22 @@ final class AppController: ObservableObject {
             //    消費なしの GET（warmEphemeral）で関数だけ温める＝枠を減らさずに cold start を回避。
             // 失敗は無視（録音時に通常経路で再取得される）。継続的な温存は warmTimer が担う。
             if BackendClient.isLoggedIn {
-                let usesDeepgramStreaming = config.streamingEnabled
-                    && (config.slot(1).backend == .deepgram || config.slot(2).backend == .deepgram)
-                let usesElevenLabs = config.slot(1).backend == .elevenlabs
-                    || config.slot(2).backend == .elevenlabs
                 Task {
                     let status = try? await BackendClient.fetchAccountStatus()
-                    // 録音終了後の先読み（taskFinished）の判定に使い回す（録音ごとの /me 往復を避ける）
+                    // 録音終了後の先読み（taskFinished）・暖機ループ・スリープ復帰の判定に使い回す
+                    // （録音ごとの /me 往復を避ける）。
                     self.accountActive = (status?.active == true)
-                    if usesDeepgramStreaming {
-                        if status?.active == true {
-                            _ = try? await BackendClient.fetchEphemeralToken()  // 有料: 消費ゼロで先取り
-                        } else {
-                            await BackendClient.warmEphemeral()                 // 無料: 消費なしで関数だけ温める
-                        }
-                    }
-                    // 「正確性」(ElevenLabs プロキシ)を使う設定なら、その関数も消費なしで温める
-                    // （cold start 解消。EL バッチは短命キーが無くプロキシ経由なので暖機が効く）
-                    if usesElevenLabs {
-                        await BackendClient.warmElevenLabs()
-                    }
+                    await self.warmBackendsNow()  // 有料=トークン先読み（消費ゼロ）/無料=GET暖機
                 }
                 startEphemeralWarmLoop()  // 以後も数分間隔でプロキシ関数を温存（cold start 回避）
+                // スリープ復帰直後は serverless 関数が冷え・短命トークンも失効済み＝「放置後の
+                // 初回録音が遅い」の主因。復帰イベントで即・暖機＋（有料は）トークン先読みして、
+                // 復帰後の話し始めの待ちを消す（暖機タイマーは最大4分後までしか効かないため）。
+                NSWorkspace.shared.notificationCenter.addObserver(
+                    forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+                ) { [weak self] _ in
+                    Task { @MainActor in await self?.warmBackendsNow() }
+                }
             }
 
             // 入力監視・アクセシビリティ権限の確認と監視開始
@@ -195,18 +189,30 @@ final class AppController: ObservableObject {
     private func startEphemeralWarmLoop() {
         warmTimer?.invalidate()
         warmTimer = Timer.scheduledTimer(withTimeInterval: 240, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, BackendClient.isLoggedIn else { return }
-                // Deepgram「高速リアルタイム」: ストリーミング ON ＋ Deepgram スロットのとき
-                if self.config.streamingEnabled,
-                   self.config.slot(1).backend == .deepgram || self.config.slot(2).backend == .deepgram {
-                    await BackendClient.warmEphemeral()
-                }
-                // ElevenLabs「正確性」: ElevenLabs スロットのとき
-                if self.config.slot(1).backend == .elevenlabs || self.config.slot(2).backend == .elevenlabs {
-                    await BackendClient.warmElevenLabs()
-                }
+            Task { @MainActor in await self?.warmBackendsNow() }
+        }
+    }
+
+    /// 使用中プロバイダのサーバー関数を温め、有料なら短命トークンを先読みする（消費ゼロ）。
+    /// 起動時・録音後・暖機ループ・スリープ復帰直後に共通で呼ぶ。
+    /// 有料: トークンを先読みしてキャッシュ＝アイドル中も常に手元に有効トークンがあり録音開始ゼロ待ち
+    ///       （TTL(300s) > 暖機間隔(240s) なのでキャッシュは切れない）。
+    /// 無料: 枠を守るためトークンは取らず、消費なしの GET で関数だけ温める（実トークンは録音時取得）。
+    private func warmBackendsNow() async {
+        guard BackendClient.isLoggedIn else { return }
+        let usesDeepgramStreaming = config.streamingEnabled
+            && (config.slot(1).backend == .deepgram || config.slot(2).backend == .deepgram)
+        let usesElevenLabs = config.slot(1).backend == .elevenlabs
+            || config.slot(2).backend == .elevenlabs
+        if usesDeepgramStreaming {
+            if accountActive {
+                _ = try? await BackendClient.fetchEphemeralToken()  // 有料: 消費ゼロでトークンを常にキャッシュ
+            } else {
+                await BackendClient.warmEphemeral()                 // 無料: 枠を守るため関数だけ温める
             }
+        }
+        if usesElevenLabs {
+            await BackendClient.warmElevenLabs()
         }
     }
 
