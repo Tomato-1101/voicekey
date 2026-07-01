@@ -113,6 +113,20 @@ enum BackendClient {
         return try await task!.value     // cached が nil なら task は必ず非 nil
     }
 
+    /// warm ループが温めた有効な短命トークンを「同期・往復ゼロ・非同期化なし」で取り出す。
+    /// ストリーミング開始（StreamingTranscriber.start）を main（未ログインの Token 直叩き）と
+    /// 同じ「押した瞬間に WS を開く」挙動に揃えるための入口。キャッシュヒット時はこれで即 connect し、
+    /// `Task { await fetchEphemeralToken() }` の非同期ホップぶんの始まり遅延を無くす（cold のときだけ非同期取得へ）。
+    /// 判定・単発使い切りの規約は `cachedOrInFlightToken` のキャッシュ節（残 15 秒超・jti 付きは取り出しで除去）と一致させる。
+    static func cachedEphemeralTokenIfValid() -> EphemeralToken? {
+        tokenLock.lock(); defer { tokenLock.unlock() }
+        guard let c = cachedToken, c.expiresAt.timeIntervalSinceNow > 15 else { return nil }
+        // free の保留トークン(jti 付き)は「1保留=1録音=1confirm」を守るため 1 回使い切り。
+        // paid / 再利用 free(jti なし)は TTL 内で使い回す（fetchEphemeralToken と同規約）。
+        if c.jti != nil { cachedToken = nil }
+        return c
+    }
+
     /// キャッシュ確認と取得の集約を同期・ロック下で行う。
     /// 戻り値はちょうど一方が非 nil（有効キャッシュ or 取得 Task）。
     private static func cachedOrInFlightToken() -> (EphemeralToken?, Task<EphemeralToken, Error>?) {

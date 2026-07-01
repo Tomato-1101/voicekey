@@ -83,21 +83,31 @@ final class StreamingTranscriber: @unchecked Sendable {
         }
 
         if loggedIn {
-            // 製品版: サーバーから短命 JWT を取得してから Bearer で接続する
-            Task { [weak self] in
-                guard let self else { return }
-                do {
-                    let t0 = Date()
-                    let tok = try await BackendClient.fetchEphemeralToken()
-                    // 録音成功後に消費を確定するための情報を控える。段階1=保留 ID(jti)、
-                    // 段階3=再利用トークンの回数計測フラグ(meter)。どちらも録音成立時のみ送る。
-                    self.lock.lock(); self.ephemeralJti = tok.jti; self.ephemeralMeter = tok.meter; self.lock.unlock()
-                    // 「始まりが遅い」の主因切り分け用ログ（トークン往復 ms）
-                    log.info("Deepgram 短命トークン取得 \(Int(Date().timeIntervalSince(t0) * 1000), privacy: .public)ms")
-                    self.connect(auth: "Bearer \(tok.token)")
-                } catch {
-                    log.error("Deepgram 短命トークンの取得に失敗: \(error.localizedDescription)")
-                    self.resolveFinish()  // finish() を解決し REST フォールバックに委ねる
+            // 製品版: warm ループが温めたトークンがあれば main（未ログイン直叩き）と同じく
+            // 「押した瞬間に」同期で WS を開く。トークン往復ぶんの非同期デファーがストリーミングの
+            // 始まり遅延（＝release だけ「話した瞬間に出ない／ローディング」）の主因だったため、
+            // warm キャッシュヒット時は Task を挟まず即 connect する。cold のときだけ従来の非同期取得へ。
+            if let tok = BackendClient.cachedEphemeralTokenIfValid() {
+                self.lock.lock(); self.ephemeralJti = tok.jti; self.ephemeralMeter = tok.meter; self.lock.unlock()
+                log.info("Deepgram 短命トークン warm ヒット→同期接続（往復ゼロ）")
+                connect(auth: "Bearer \(tok.token)")  // main と同じ同期経路
+            } else {
+                // cold（起床直後・warm 漏れ・TTL 超過）: サーバーから短命 JWT を取得してから接続する
+                Task { [weak self] in
+                    guard let self else { return }
+                    do {
+                        let t0 = Date()
+                        let tok = try await BackendClient.fetchEphemeralToken()
+                        // 録音成功後に消費を確定するための情報を控える。段階1=保留 ID(jti)、
+                        // 段階3=再利用トークンの回数計測フラグ(meter)。どちらも録音成立時のみ送る。
+                        self.lock.lock(); self.ephemeralJti = tok.jti; self.ephemeralMeter = tok.meter; self.lock.unlock()
+                        // 「始まりが遅い」の主因切り分け用ログ（cold のトークン往復 ms）
+                        log.info("Deepgram 短命トークン取得(cold) \(Int(Date().timeIntervalSince(t0) * 1000), privacy: .public)ms")
+                        self.connect(auth: "Bearer \(tok.token)")
+                    } catch {
+                        log.error("Deepgram 短命トークンの取得に失敗: \(error.localizedDescription)")
+                        self.resolveFinish()  // finish() を解決し REST フォールバックに委ねる
+                    }
                 }
             }
         } else {
