@@ -112,8 +112,10 @@ class StreamingTranscriber:
         # までの内訳をログし、「始まりが遅い」の主因（サーバー往復か WS ハンドシェイクか）を裏取りする
         self._created_at: float = time.monotonic()
         self._first_result_logged: bool = False
-        # 無料体験の保留 ID（free のみ非null）。文字起こし成功後に消費を確定するのに使う。
+        # 無料体験の保留 ID（段階1 hold 経路のみ非null）。文字起こし成功後に消費を確定するのに使う。
         self._ephemeral_jti: Optional[str] = None
+        # 段階3: 再利用トークン（free）＝録音成功ごとに jti なし confirm で 1 消費すべきか。
+        self._ephemeral_meter: bool = False
 
     @property
     def _stream_language(self) -> str:
@@ -243,10 +245,18 @@ class StreamingTranscriber:
         # 文字起こしが成立したら無料体験の消費を確定する（ベストエフォート・非ブロッキング）。
         # 空文字（無音/接続失敗で REST フォールバック）のときは確定しない＝保留は TTL で戻る。
         if text and self._ephemeral_jti:
+            # 段階1: 保留を確定
             jti = self._ephemeral_jti
             self._ephemeral_jti = None
+            self._ephemeral_meter = False
             threading.Thread(
                 target=backend_client.confirm_usage, args=(jti,), daemon=True
+            ).start()
+        elif text and self._ephemeral_meter:
+            # 段階3: 再利用トークンの回数を +1（jti なし）
+            self._ephemeral_meter = False
+            threading.Thread(
+                target=backend_client.confirm_usage_count, daemon=True
             ).start()
         return text
 
@@ -306,8 +316,10 @@ class StreamingTranscriber:
         if logged_in:
             try:
                 grant = backend_client.fetch_ephemeral_token()
-                # 録音成功後に消費を確定するための保留 ID（free のみ非null）を控える。
+                # 録音成功後に消費を確定するための情報を控える。段階1=保留 ID(jti)、
+                # 段階3=再利用トークンの回数計測フラグ(meter)。どちらも録音成立時のみ送る。
                 self._ephemeral_jti = grant.get("jti")
+                self._ephemeral_meter = bool(grant.get("meter"))
                 auth_header = f"Bearer {grant['token']}"
             except backend_client.BackendError as e:
                 # 短命トークン取得失敗（未ログイン扱い・サブスク無効・通信失敗など）

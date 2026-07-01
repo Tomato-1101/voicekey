@@ -51,10 +51,15 @@ enum BackendClient {
         let token: String
         let expiresAt: Date
         /// 録音をまたいでキャッシュ再利用してよいか（サーバーが返す。利用権あり=true）。
-        /// 段階1以降は無料体験も hold 化で true になる（消費は confirm 時の 1 回）。
+        /// 段階3以降は無料体験も再利用トークン化で true になる（消費は confirm の非同期送信で数える）。
         let cacheable: Bool
-        /// 無料体験の保留 ID（free のみ非null）。録音成功後に /usage/confirm へ送って 1 消費を確定する。
+        /// 無料体験の保留 ID（段階1の hold 経路のみ非null）。録音成功後に /usage/confirm へ送って確定する。
+        /// 段階3の再利用トークンでは nil（消費は jti なしの confirmUsageCount で数える）。
         let jti: String?
+        /// 段階3: 再利用トークン（free）で「録音成功ごとに /usage/confirm（jti なし）で +1」すべきか。
+        /// paid は false（消費ゼロ）。無料体験の再利用モードのみ true。トークンをキャッシュ再利用しても
+        /// この値は保持されるので、同一トークンでの N 録音 → N 回の confirm で正しく N 消費される。
+        let meter: Bool
     }
 
     /// ログイン中アカウントの状態（メール・利用権の有無/期限・無料体験の残量）
@@ -168,12 +173,13 @@ enum BackendClient {
         try? await AuthClient.ensureValidSession()  // 失効間際なら先にリフレッシュ
         var req = try authorizedRequest(path: ServerConfig.ephemeralPath)
         req.httpMethod = "POST"
-        // 「録音成功後に /usage/confirm を送れる新クライアント」であることを宣言する。これにより
-        // サーバーは消費を即時ではなく「保留(hold)」にし、free でもトークンをキャッシュ可能にする
-        // （録音開始のサーバー往復を消す）。確定（free_used +1）はクライアントが confirm で行う。
-        req.setValue("1", forHTTPHeaderField: "x-vk-confirm")
+        // 段階3: 「録音成功後に /usage/confirm（jti なし）で回数を数えられる新クライアント」の宣言。
+        // これによりサーバーは free でも即時消費せず、有料と同じ再利用可トークン（cacheable:true・meter:true）
+        // を返す＝録音開始のサーバー往復を消す。無料枠の +1 はクライアントが録音後に非同期 confirm で行う。
+        // （"1"=段階1 hold・未指定=段階0 即時消費。新旧サーバーとの互換のため値で分岐する。）
+        req.setValue("2", forHTTPHeaderField: "x-vk-confirm")
         let data = try await send(req)
-        struct Resp: Decodable { let token: String; let expires_in: Int; let cacheable: Bool?; let jti: String? }
+        struct Resp: Decodable { let token: String; let expires_in: Int; let cacheable: Bool?; let jti: String?; let meter: Bool? }
         guard let r = try? JSONDecoder().decode(Resp.self, from: data) else {
             throw BackendError.invalidResponse
         }
@@ -181,7 +187,8 @@ enum BackendClient {
             token: r.token,
             expiresAt: Date().addingTimeInterval(TimeInterval(r.expires_in)),
             cacheable: r.cacheable ?? false,  // 不明（旧サーバー）はキャッシュ不可＝毎録音で取り直す
-            jti: r.jti
+            jti: r.jti,
+            meter: r.meter ?? false  // 再利用トークン（free）のみ true。録音後に jti なし confirm で数える
         )
     }
 
@@ -209,20 +216,6 @@ enum BackendClient {
         _ = try? await send(req)  // 空テキストは 400。throw は握る（暖機が目的）。
     }
 
-    /// Deepgram 短命トークン発行関数（/api/v1/auth/ephemeral）の serverless 関数を温める。
-    /// 無料ユーザーは録音ごとに POST /ephemeral を叩いて 1 消費するが、その POST が
-    /// cold start（Vercel 関数の起動・最大数秒）を踏むと「話し始めの遅延」になる。これが
-    /// リアルタイム文字起こしの遅延の主因。サーバーが用意した消費なしの GET を起動時・
-    /// 数分間隔で叩いて同じ関数を温存し、録音時の POST を warm path に乗せる。
-    /// GET は無料枠を消費せず・トークンも発行しない（Deepgram も Supabase も叩かない）。
-    /// 認証ヘッダは付けない（暖機だけが目的で何も返さないため）。失敗は無視。
-    static func warmEphemeral() async {
-        guard isLoggedIn else { return }
-        guard let url = ServerConfig.url(ServerConfig.ephemeralPath) else { return }
-        let req = URLRequest(url: url)  // GET（既定メソッド）。認証不要・消費なし。
-        _ = try? await session.data(for: req)
-    }
-
     /// 無料体験の消費を確定する（録音成功後に保留 jti を送る・ベストエフォート）。
     /// 録音開始のクリティカルパスから消費を外すための後段。失敗してもユーザー操作は止めない
     /// （サーバー側で保留は TTL 経過後に整合する）。未ログインなら何もしない。
@@ -232,6 +225,20 @@ enum BackendClient {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["jti": jti])
+        _ = try? await send(req)  // 結果は使わない（ベストエフォート）
+    }
+
+    /// 無料体験の消費を確定する（段階3・再利用トークン用＝jti なし）。録音成功ごとに送り、サーバーは
+    /// increment_free_used で free_used を +1 する（paid は no-op）。録音開始のクリティカルパスから
+    /// 消費計測を外すための後段＝「録音開始のサーバー往復ゼロ」を実現する要。失敗してもユーザー操作は
+    /// 止めない（ベストエフォート・多少の数え落ちは許容）。未ログインなら何もしない。
+    static func confirmUsageCount() async {
+        guard isLoggedIn else { return }
+        guard var req = try? authorizedRequest(path: ServerConfig.usageConfirmPath) else { return }
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // jti なしの空 JSON。サーバーは jti 不在を「段階3の回数確定」と解釈して increment する。
+        req.httpBody = try? JSONSerialization.data(withJSONObject: [String: String]())
         _ = try? await send(req)  // 結果は使わない（ベストエフォート）
     }
 

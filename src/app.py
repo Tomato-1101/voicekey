@@ -319,29 +319,21 @@ class VoicekeyApp(QObject):
     def _prewarm_backend(self) -> None:
         """起動時にサーバー接続を 1 回暖機し、初回のサーバー往復・cold start を前払いする。
 
-        GET /me（無料枠を消費しない read）で TLS・接続・認証経路を温める。Deepgram
-        ストリーミング設定のときは /ephemeral も温める:
-        - 有料: 短命トークンを先取り（consume 前に return＝消費ゼロ・トークンキャッシュも温まる）。
-        - 無料体験: 枠を消費しない GET（warm_ephemeral）で serverless 関数だけ温める。実トークンは
-          録音時に取得する（その 1 回が枠 1 消費）。cold start はここで前払い済みなので遅延が出ない。
-        失敗は無視（録音時に通常経路で再取得される）。
+        段階3: Deepgram ストリーミング設定なら、有料・無料とも再利用可トークンを先取りして
+        キャッシュへ載せる（消費ゼロ・往復ゼロで話し始められる）。トークン先取りが認証経路・
+        serverless 関数もまとめて温める。失敗は無視（録音時に通常経路で再取得される）。
         """
-        try:
-            status = backend_client.fetch_account_status()
-        except Exception:
+        if not backend_client.is_logged_in():
             return
-        # 録音終了後の先読み（_postwarm_ephemeral）・暖機ループ・スリープ復帰の判定に使い回す。
-        # 有料＝トークン先読み（消費ゼロ）/ 無料＝GET 暖機（枠を守る）の振り分けに使う。
-        self._account_active = bool(status.get("active"))
-        self._warm_backends_now()  # 有料=トークン先読み（消費ゼロ）/無料=GET暖機
+        self._warm_backends_now()  # 有料・無料とも短命トークン先読み（消費ゼロ）
 
     def _warm_backends_now(self) -> None:
-        """使用中プロバイダの関数を温め、有料なら短命トークンを先読みする（消費ゼロ）。
+        """使用中プロバイダの関数を温め、短命トークンを先読みする（消費ゼロ）。
 
         起動時・録音後・暖機ループ・スリープ復帰直後に共通で呼ぶ（Mac の warmBackendsNow と対）。
-        - 有料: トークンを先読みしてキャッシュ＝アイドル中も常に手元に有効トークンがあり録音開始
-          ゼロ待ち（TTL(300s) > 暖機間隔(240s) なのでキャッシュは切れない）。
-        - 無料: 枠を守るためトークンは取らず、消費なしの GET で関数だけ温める（実トークンは録音時取得）。
+        段階3: 有料・無料とも再利用可トークンを先読みしてキャッシュ＝アイドル中も常に手元に有効
+        トークンがあり録音開始ゼロ待ち（TTL(300s) > 暖機間隔(240s) なのでキャッシュは切れない）。
+        先読みは無料枠を消費しない（消費は録音成立後の非同期 confirm で数える）。
         設定はホットリロードされるため毎回読み直す。失敗は無視。
         """
         if not backend_client.is_logged_in():
@@ -351,10 +343,7 @@ class VoicekeyApp(QObject):
             s.backend == TranscriptionBackend.DEEPGRAM.value for s in self._slots.values()
         ):
             try:
-                if getattr(self, "_account_active", False):
-                    backend_client.fetch_ephemeral_token()  # 有料: 消費ゼロでトークンを常にキャッシュ
-                else:
-                    backend_client.warm_ephemeral()          # 無料: 枠を守るため関数だけ温める
+                backend_client.fetch_ephemeral_token()  # 有料・無料とも消費ゼロでトークンをキャッシュ
             except Exception:
                 pass
         # ElevenLabs「正確性」: ElevenLabs スロットがあれば、そのプロキシ関数も消費なしで温める
@@ -368,14 +357,12 @@ class VoicekeyApp(QObject):
                 pass
 
     def _postwarm_ephemeral(self) -> None:
-        """録音終了直後に次回の短命トークンを先読み／暖機し、次録音の開始遅延を減らす。
+        """録音終了直後に次回の短命トークンを先読みし、次録音の開始遅延を減らす。
 
-        トークン TTL は 60 秒。録音終了直後に先読みしておくと、続けて録音する
-        （連続ディクテーション）ときの 2 回目以降のサーバー往復がクリティカルパスから消える。
-        - 有料（active）: 実トークンを先取りしてキャッシュ（consume 前に return＝消費ゼロ）。
-          60 秒 TTL 内の次録音は往復ゼロになる。
-        - 無料体験: 枠を消費しない GET で serverless 関数だけ温める（実トークンは録音時取得＝
-          1 録音 1 消費を維持）。cold start を前払いし、録音時の POST を warm path に乗せる。
+        録音終了直後に先読みしておくと、続けて録音する（連続ディクテーション）ときの
+        2 回目以降のサーバー往復がクリティカルパスから消える。段階3: 有料・無料とも
+        再利用可トークンを先取りしてキャッシュ（TTL 内の次録音は往復ゼロ）。先読みは
+        無料枠を消費しない（消費は録音成立後の非同期 confirm で数える）。
         ストリーミング（Deepgram）を使う設定のときだけ動く。失敗は無視。
         daemon スレッドから呼ばれる（_finish_recording 末尾で起動）。
         """
@@ -387,12 +374,7 @@ class VoicekeyApp(QObject):
         if not uses_deepgram_streaming:
             return
         try:
-            # 起動時 _prewarm_backend で確定したアカウント状態を使い回す（録音ごとの
-            # /me 往復を避ける）。未確定なら安全側＝無料扱い（枠を消費しない GET）。
-            if getattr(self, "_account_active", False):
-                backend_client.fetch_ephemeral_token()
-            else:
-                backend_client.warm_ephemeral()
+            backend_client.fetch_ephemeral_token()  # 有料・無料とも消費ゼロで先読み
         except Exception:
             pass
 

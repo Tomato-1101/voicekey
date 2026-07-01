@@ -236,6 +236,16 @@ final class Transcriber: @unchecked Sendable {
         )
         let elapsed = Int(Date().timeIntervalSince(start) * 1000)
         log.info("\(self.backend.label, privacy: .public) 文字起こし完了: \(elapsed)ms, \(text.count) 文字")
+        // 文字起こしが成立したら無料体験の消費を確定する（ベストエフォート・非ブロッキング）。
+        // ストリーミングが空文字で REST へフォールバックしたとき、その 1 録音を数えるのはこの経路。
+        // 段階1=保留 ID(jti) を確定 / 段階3=再利用トークンの回数を +1（jti なし）。
+        if !text.isEmpty {
+            if let jti = grant.jti {
+                Task { await BackendClient.confirmUsage(jti: jti) }
+            } else if grant.meter {
+                Task { await BackendClient.confirmUsageCount() }
+            }
+        }
         return text
     }
 

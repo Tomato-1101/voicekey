@@ -492,6 +492,19 @@ class DeepgramTranscriber(ApiTranscriber):
         logger.info(
             f"{self.display_name} 文字起こし完了: {self.last_api_time:.0f}ms, {len(text)} 文字"
         )
+        # 文字起こしが成立したら無料体験の消費を確定する（ベストエフォート・非ブロッキング）。
+        # ストリーミングが空文字で REST へフォールバックしたとき、その 1 録音を数えるのはこの経路。
+        # 段階1=保留 ID(jti) を確定 / 段階3=再利用トークンの回数を +1（jti なし）。
+        if text:
+            jti = grant.get("jti")
+            if jti:
+                threading.Thread(
+                    target=backend_client.confirm_usage, args=(jti,), daemon=True
+                ).start()
+            elif grant.get("meter"):
+                threading.Thread(
+                    target=backend_client.confirm_usage_count, daemon=True
+                ).start()
         return text
 
     def transcribe(self, audio_data: npt.NDArray[np.float32]) -> str:

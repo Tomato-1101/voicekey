@@ -46,8 +46,10 @@ final class StreamingTranscriber: @unchecked Sendable {
     /// ログし、「始まりが遅い」の主因（サーバー往復か WS ハンドシェイクか）を裏取りする
     private let createdAt = Date()
     private var firstResultLogged = false
-    /// 無料体験の保留 ID（free のみ非null）。文字起こし成功後に消費を確定するのに使う。
+    /// 無料体験の保留 ID（段階1 hold 経路のみ非null）。文字起こし成功後に消費を確定するのに使う。
     private var ephemeralJti: String?
+    /// 段階3: 再利用トークン（free）＝録音成功ごとに jti なし confirm で 1 消費すべきか。
+    private var ephemeralMeter = false
 
     init(model: String, language: String) {
         self.model = model
@@ -87,8 +89,9 @@ final class StreamingTranscriber: @unchecked Sendable {
                 do {
                     let t0 = Date()
                     let tok = try await BackendClient.fetchEphemeralToken()
-                    // 録音成功後に消費を確定するための保留 ID（free のみ非null）を控える。
-                    self.lock.lock(); self.ephemeralJti = tok.jti; self.lock.unlock()
+                    // 録音成功後に消費を確定するための情報を控える。段階1=保留 ID(jti)、
+                    // 段階3=再利用トークンの回数計測フラグ(meter)。どちらも録音成立時のみ送る。
+                    self.lock.lock(); self.ephemeralJti = tok.jti; self.ephemeralMeter = tok.meter; self.lock.unlock()
                     // 「始まりが遅い」の主因切り分け用ログ（トークン往復 ms）
                     log.info("Deepgram 短命トークン取得 \(Int(Date().timeIntervalSince(t0) * 1000), privacy: .public)ms")
                     self.connect(auth: "Bearer \(tok.token)")
@@ -203,8 +206,12 @@ final class StreamingTranscriber: @unchecked Sendable {
         // 文字起こしが成立したら無料体験の消費を確定する（ベストエフォート・非ブロッキング）。
         // 空文字（無音/接続失敗で REST フォールバック）のときは確定しない＝保留は TTL で戻る。
         if !text.isEmpty {
-            lock.lock(); let jti = ephemeralJti; ephemeralJti = nil; lock.unlock()
-            if let jti { Task { await BackendClient.confirmUsage(jti: jti) } }
+            lock.lock(); let jti = ephemeralJti; let meter = ephemeralMeter; ephemeralJti = nil; ephemeralMeter = false; lock.unlock()
+            if let jti {
+                Task { await BackendClient.confirmUsage(jti: jti) }  // 段階1: 保留を確定
+            } else if meter {
+                Task { await BackendClient.confirmUsageCount() }     // 段階3: 再利用トークンの回数を +1
+            }
         }
         return text
     }

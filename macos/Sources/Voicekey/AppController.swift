@@ -123,10 +123,6 @@ final class AppController: ObservableObject {
 
     private var started = false
 
-    /// 起動時に確定したアカウント状態（有料 = true）。録音終了後の先読み（taskFinished）で
-    /// 「有料 = トークン先読み（消費ゼロ）/ 無料 = GET 暖機」を振り分けるのに使い回す。
-    private var accountActive = false
-
     /// アプリ起動時に呼ぶ（権限確認 → 監視開始）。多重呼び出しは無視する
     func startup() {
         guard !started else { return }
@@ -142,22 +138,12 @@ final class AppController: ObservableObject {
             }
 
             // 製品版（ログイン済み）なら、起動時にサーバー接続を 1 回だけ暖機して初回の
-            // サーバー往復（serverless cold start を含む最大数秒）を前払いする。暖機は
-            // GET /me（無料枠を消費しない read）で TLS・接続・認証経路を温める。さらに
-            // Deepgram ストリーミング設定なら /ephemeral 関数も温める:
-            //  - 有料ユーザー: 短命トークンを先取り（consume 前に return＝消費ゼロ）。以後の
-            //    録音はキャッシュ再利用で往復ゼロ。
-            //  - 無料ユーザー: トークンは取らない（POST /ephemeral は 1 消費するため）。代わりに
-            //    消費なしの GET（warmEphemeral）で関数だけ温める＝枠を減らさずに cold start を回避。
+            // サーバー往復（serverless cold start を含む最大数秒）を前払いする。段階3では
+            // 有料・無料とも再利用可トークンを先取りしてキャッシュへ載せる（消費ゼロ・往復ゼロで
+            // 話し始められる）。トークン先取りが認証経路・serverless 関数もまとめて温める。
             // 失敗は無視（録音時に通常経路で再取得される）。継続的な温存は warmTimer が担う。
             if BackendClient.isLoggedIn {
-                Task {
-                    let status = try? await BackendClient.fetchAccountStatus()
-                    // 録音終了後の先読み（taskFinished）・暖機ループ・スリープ復帰の判定に使い回す
-                    // （録音ごとの /me 往復を避ける）。
-                    self.accountActive = (status?.active == true)
-                    await self.warmBackendsNow()  // 有料=トークン先読み（消費ゼロ）/無料=GET暖機
-                }
+                Task { await self.warmBackendsNow() }  // 有料・無料とも短命トークン先読み（消費ゼロ）
                 startEphemeralWarmLoop()  // 以後も数分間隔でプロキシ関数を温存（cold start 回避）
                 // スリープ復帰直後は serverless 関数が冷え・短命トークンも失効済み＝「放置後の
                 // 初回録音が遅い」の主因。復帰イベントで即・暖機＋（有料は）トークン先読みして、
@@ -205,11 +191,10 @@ final class AppController: ObservableObject {
         let usesElevenLabs = config.slot(1).backend == .elevenlabs
             || config.slot(2).backend == .elevenlabs
         if usesDeepgramStreaming {
-            if accountActive {
-                _ = try? await BackendClient.fetchEphemeralToken()  // 有料: 消費ゼロでトークンを常にキャッシュ
-            } else {
-                await BackendClient.warmEphemeral()                 // 無料: 枠を守るため関数だけ温める
-            }
+            // 段階3: 有料も無料も再利用可トークンを先読みしてキャッシュを温める＝録音開始のサーバー往復ゼロ。
+            // 先読み自体は無料枠を消費しない（消費は録音成立後の非同期 confirm で数える）。これで
+            // 「無料の話し始めが遅い」の主因だった録音ごとのトークン取り直し（cold start 込み）を根絶する。
+            _ = try? await BackendClient.fetchEphemeralToken()
         }
         if usesElevenLabs {
             await BackendClient.warmElevenLabs()
@@ -615,20 +600,13 @@ final class AppController: ObservableObject {
         // クリティカルパス外（貼り付け後）。有料・未ログインは内部で no-op になる。
         LoginCoordinator.shared.refreshEntitlementQuiet()
 
-        // 次録音の開始遅延を減らすため、文字起こし完了直後に次回トークンを先読み／暖機する
+        // 次録音の開始遅延を減らすため、文字起こし完了直後に次回トークンを先読みする
         // （連続ディクテーション時の 2 回目以降のサーバー往復をクリティカルパスから外す）。
-        // 有料: 実トークンを先取りしてキャッシュ（60 秒 TTL 内の次録音は往復ゼロ・消費ゼロ）。
-        // 無料: 枠を消費しない GET で serverless 関数だけ温める（実トークンは録音時取得＝1 録音 1 消費）。
+        // 段階3: 有料も無料も再利用可トークンを先取りしてキャッシュ（TTL 内の次録音は往復ゼロ）。
+        // 先読みは無料枠を消費しない（消費は録音成立後の非同期 confirm で数える）。
         if BackendClient.isLoggedIn, config.streamingEnabled,
            config.slot(1).backend == .deepgram || config.slot(2).backend == .deepgram {
-            let active = accountActive
-            Task {
-                if active {
-                    _ = try? await BackendClient.fetchEphemeralToken()
-                } else {
-                    await BackendClient.warmEphemeral()
-                }
-            }
+            Task { _ = try? await BackendClient.fetchEphemeralToken() }
         }
     }
 

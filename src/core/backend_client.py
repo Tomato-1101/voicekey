@@ -218,10 +218,11 @@ def redeem_activation_key(code: str) -> Optional[str]:
 
 
 # 短命トークンのキャッシュと取得の集約（録音ごとの往復を省く）。
-# キャッシュ再利用は、サーバーが cacheable:true（=利用権あり paid＝発行で無料枠を消費しない）
-# と返したときだけ行う。無料体験（cacheable:false）・cacheable 不明（旧サーバー）は録音ごとに
-# 取り直す＝「1録音=1消費」を保証する（同じ JWT を使い回すと無料枠が 1 回しか減らない）。
-# Deepgram は接続確立時にのみトークンを検証するため、TTL(60秒)内の再利用は接続に十分。
+# キャッシュ再利用は、サーバーが cacheable:true と返したときだけ行う。段階3では有料・無料とも
+# 再利用可トークン（cacheable:true・free は meter:true）を返す＝録音開始の往復ゼロ。無料枠の消費は
+# 「トークン発行」ではなく「録音成立後の非同期 confirm」で数えるので、TTL 内でトークンを使い回して
+# 大丈夫（N 録音 → N 回 confirm → N 消費）。cacheable 不明（旧サーバー）は録音ごとに取り直す。
+# Deepgram は接続確立時にのみトークンを検証するため、TTL 内の再利用は接続に十分。
 # ロック保持中に取得することで、同時呼び出しは待って同じトークンを共有する（二重発行を防ぐ）。
 _token_lock = threading.Lock()
 _cached_token: Optional[dict] = None  # 値に _expires_monotonic（time.monotonic 基準の失効時刻）を持たせる
@@ -230,11 +231,11 @@ _cached_token: Optional[dict] = None  # 値に _expires_monotonic（time.monoton
 def fetch_ephemeral_token() -> dict:
     """Deepgram「高速リアルタイム」用の短命 JWT を取得する。
 
-    利用権あり（paid）でキャッシュ有効なら往復ゼロで即返す（2回目以降の録音を高速化）。
-    無料体験は録音ごとに新トークンを発行する（1録音=1消費の保証・キャッシュしない）。
+    段階3: 有料・無料ともキャッシュ有効なら往復ゼロで即返す（2回目以降の録音を高速化）。
+    無料体験の消費は録音成立後の非同期 confirm（jti なし）で数えるので、TTL 内で使い回してよい。
 
     Returns:
-        {"token", "expires_in", "expires_at", "provider"} の dict
+        {"token", "expires_in", "expires_at", "provider", "cacheable", "meter"} の dict
 
     Raises:
         BackendError: 未ログイン・サブスク無効・台数上限・通信失敗など
@@ -253,9 +254,10 @@ def fetch_ephemeral_token() -> dict:
                 _cached_token = None
             return c
         # キャッシュ無効 → 取得（ロック保持中＝同時呼び出しは待って新トークンを共有する）。
-        # 「録音成功後に /usage/confirm を送れる新クライアント」を宣言（サーバーが hold 化＝free
-        # でもトークンをキャッシュ可能にし、録音開始の往復を消す。確定は confirm で行う）。
-        resp = _post(constants.API_EPHEMERAL_PATH, headers={**_auth_headers(), "x-vk-confirm": "1"})
+        # 段階3: 「録音成功後に /usage/confirm（jti なし）で回数を数えられる新クライアント」を宣言。
+        # サーバーは free でも即時消費せず、有料と同じ再利用可トークン（cacheable:true・meter:true）を
+        # 返す＝録音開始のサーバー往復を消す。無料枠の +1 は録音後の非同期 confirm で行う。
+        resp = _post(constants.API_EPHEMERAL_PATH, headers={**_auth_headers(), "x-vk-confirm": "2"})
         data = resp.json()
         # 取得中にログアウト/別アカウントのログインが割り込んでいたら、旧アカウントの
         # トークンをキャッシュ・返却しない（別アカウントでの再利用を防ぐ）。
@@ -263,10 +265,9 @@ def fetch_ephemeral_token() -> dict:
             raise BackendError("ログアウトしました。再度ログインしてください", status=401)
         expires_in = data.get("expires_in") or 60
         data["_expires_monotonic"] = time.monotonic() + float(expires_in)
-        # 録音をまたいでキャッシュ再利用すると、サーバーの無料枠消費が token 発行時 1 回
-        # のため「1録音=1消費」が崩れる。サーバーが明示する cacheable（=利用権あり paid＝
-        # 発行で消費しない）のときだけキャッシュする。無料体験・cacheable 不明（旧サーバー）の
-        # ときは毎録音で取り直す（正確性優先）。旧 paid キャッシュが残っていれば破棄する。
+        # 段階3: サーバーが cacheable（有料 or 無料の再利用トークン）と返したときだけキャッシュする。
+        # 無料枠の消費は confirm（jti なし）で数えるので、キャッシュ再利用しても数え落ちない。
+        # cacheable 不明（旧サーバー）のときはキャッシュしない＝毎録音で取り直す（安全側）。
         _cached_token = data if data.get("cacheable") is True else None
         return data
 
@@ -301,6 +302,27 @@ def confirm_usage(jti: str) -> None:
         pass
 
 
+def confirm_usage_count() -> None:
+    """無料体験の消費を確定する（段階3・再利用トークン用＝jti なし）。
+
+    録音成立ごとに送り、サーバーは increment_free_used で free_used を +1 する（paid は no-op）。
+    録音開始のクリティカルパスから消費計測を外すための後段＝「録音開始のサーバー往復ゼロ」を
+    実現する要。失敗しても無視（ベストエフォート・多少の数え落ちは許容）。未ログインなら何もしない。
+    """
+    if not is_logged_in():
+        return
+    try:
+        _send(
+            "POST",
+            constants.API_USAGE_CONFIRM_PATH,
+            headers={**_auth_headers(), "Content-Type": "application/json"},
+            json={},  # jti なし＝サーバーは「段階3の回数確定」と解釈して increment する
+            raise_on_error=False,  # ベストエフォート
+        )
+    except Exception:
+        pass
+
+
 def warm_format_proxy() -> None:
     """整形プロキシ（/api/v1/format）の接続を温める（録音開始時に呼ぶ）。
 
@@ -320,26 +342,6 @@ def warm_format_proxy() -> None:
             json={"text": ""},
             raise_on_error=False,  # 空テキストは 400。暖機が目的なので例外にしない。
         )
-    except Exception:
-        pass
-
-
-def warm_ephemeral() -> None:
-    """Deepgram 短命トークン発行関数（/api/v1/auth/ephemeral）の serverless 関数を温める。
-
-    無料ユーザーは録音ごとに POST /ephemeral を叩いて 1 消費するが、その POST が
-    cold start（Vercel 関数の起動・最大数秒）を踏むと「話し始めの遅延」になる。これが
-    リアルタイム文字起こしの遅延の主因。サーバーが用意した消費なしの GET を起動時・
-    数分間隔で叩いて同じ関数を温存し、録音時の POST を warm path に乗せる。
-    GET は無料枠を消費せず・トークンも発行しない（Deepgram も Supabase も叩かない）。
-    認証ヘッダは付けない（暖機だけが目的で何も返さないため）。失敗は無視。
-    ブロッキング I/O なので呼び出し側はバックグラウンドスレッドで呼ぶ（既存の warm と同じ）。
-    """
-    if not is_logged_in():
-        return
-    try:
-        # headers={} ＝認証なし。空ヘッダなので 401 リフレッシュ再試行も発生しない。
-        _send("GET", constants.API_EPHEMERAL_PATH, headers={}, raise_on_error=False)
     except Exception:
         pass
 
