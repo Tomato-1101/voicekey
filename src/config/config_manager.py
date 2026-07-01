@@ -19,12 +19,13 @@ from .constants import DEFAULT_CONFIG, SETTINGS_FILE_NAME
 logger = get_logger(__name__)
 # 対応バックエンド（REST + ストリーミング）。これ以外は openai にフォールバック
 API_BACKENDS = {"groq", "openai", "elevenlabs", "deepgram"}
-# 製品版（release ブランチ）で文字起こしに選べるバックエンド。
-# 高速 = groq（普通入力・whisper-large-v3-turbo・プロキシ経由）/ 正確性 = elevenlabs（ハンズフリー）の 2 択のみ。
-# deepgram（旧「高速リアルタイム」）は選択肢から外した（openai は元から非表示）。
-# ＝旧 deepgram を選んでいた既存ユーザーの slot は groq へ自動移行する（下の _constrain_release_backends）。
-RELEASE_TRANSCRIBE_BACKENDS = ("groq", "elevenlabs")
-# 製品版で範囲外（deepgram/openai 等）の保存値を移行する先（高速＝普通入力）
+# 製品版（release ブランチ）で文字起こしに選べるバックエンド（モードは「リアルタイム」「正確性」の 2 系統）。
+# 高速リアルタイム = deepgram（nova-3・短命トークン直叩き＋ストリーミング）/
+# 正確性 = groq（普通入力の既定・whisper-large-v3-turbo・プロキシ経由）/
+# 高精度 = elevenlabs（ハンズフリーの既定・scribe_v1・プロキシ経由）。openai は元から非表示。
+# ＝範囲外（openai 等）の保存値だけ groq へ自動移行する（下の _constrain_release_backends）。deepgram は維持。
+RELEASE_TRANSCRIBE_BACKENDS = ("deepgram", "groq", "elevenlabs")
+# 製品版で範囲外（openai 等）の保存値を移行する先（正確性＝普通入力の既定）
 RELEASE_DEFAULT_BACKEND = "groq"
 
 
@@ -215,7 +216,7 @@ class ConfigManager:
             config = _deep_merge(DEFAULT_CONFIG, loaded_config)
             # 常時 ON 固定の項目を矯正（UI から撤去したため保存済みの古い false を上書き）
             self._force_always_on(config)
-            # 製品版は文字起こしバックエンドを 2 択に制限（範囲外は deepgram へ移行）
+            # 製品版は文字起こしバックエンドを 3 択に制限（範囲外の openai 等は groq へ移行・deepgram は維持）
             self._constrain_release_backends(config)
             return config
 
@@ -247,12 +248,12 @@ class ConfigManager:
     @staticmethod
     def _constrain_release_backends(config: Dict[str, Any]) -> None:
         """
-        製品版（release）の文字起こしバックエンドを 2 択（groq/elevenlabs）に制限する。
+        製品版（release）の文字起こしバックエンドを 3 択（deepgram/groq/elevenlabs）に制限する。
 
-        保存済み settings.yaml に deepgram/openai 等の範囲外バックエンドが残っていても、
-        groq（高速＝普通入力）へ移行する。移行時は api_model を空にして
+        保存済み settings.yaml に openai 等の範囲外バックエンドが残っていても、
+        groq（正確性＝普通入力の既定）へ移行する。移行時は api_model を空にして
         default_api_models（groq→whisper-large-v3-turbo）にフォールバックさせる。
-        ＝旧「高速リアルタイム」(deepgram) を選んでいた既存ユーザーの slot1 は自動で Groq になる。
+        deepgram（高速リアルタイム）は選択肢に残したので、保存済み deepgram はそのまま維持される。
 
         Args:
             config: 矯正対象の設定辞書（その場で書き換える）

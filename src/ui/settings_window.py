@@ -86,13 +86,15 @@ _BACKEND_PROVIDER_NAMES = {
     TranscriptionBackend.DEEPGRAM.value: "Deepgram",
 }
 
-# 製品版（release）で文字起こしに選べる 2 択（表示順）。
-# Groq=「高速」（普通入力・whisper-large-v3-turbo・プロキシ経由）/ ElevenLabs=「正確性」（ハンズフリー）。
-# Deepgram（旧「高速リアルタイム」）は選択肢から外した。モデルは推奨固定で非選択。
+# 製品版（release）で文字起こしに選べる 3 択（表示順）。モードは「リアルタイム」「正確性」の 2 系統:
+# 高速リアルタイム=Deepgram（nova-3・短命トークン直叩き＋ストリーミング）/
+# 正確性=Groq（普通入力の既定・whisper-large-v3-turbo・プロキシ経由）/
+# 高精度=ElevenLabs（ハンズフリーの既定・scribe_v1・プロキシ経由）。モデルは推奨固定で非選択。
 # Mac 版 Backend.selectableCases / Backend.label と一致させる。
 _TRANSCRIBE_BACKEND_LABELS = [
-    (TranscriptionBackend.GROQ.value, "高速"),
-    (TranscriptionBackend.ELEVENLABS.value, "正確性"),
+    (TranscriptionBackend.DEEPGRAM.value, "高速リアルタイム"),
+    (TranscriptionBackend.GROQ.value, "正確性"),
+    (TranscriptionBackend.ELEVENLABS.value, "高精度"),
 ]
 
 # 製品版の API キータブに出すバックエンド（開発ビルドのみ表示）。
@@ -1151,7 +1153,7 @@ class SettingsWindow(QWidget):
         setattr(self, f"_mode{slot_id}_combo", mode_combo)
         _add_row(cl, "動作", mode_combo)
 
-        # バックエンド選択（製品版は 2 択: 高速リアルタイム / 正確性）。
+        # バックエンド選択（製品版は 3 択: 高速リアルタイム / 正確性 / 高精度）。
         # モデルは推奨固定で非選択（Deepgram=nova-3 / ElevenLabs=scribe_v1）。
         backend_combo = QComboBox()
         for value, label in _TRANSCRIBE_BACKEND_LABELS:
@@ -2253,7 +2255,7 @@ class SettingsWindow(QWidget):
             lang_index = self._lang_combo.count() - 1
         self._lang_combo.setCurrentIndex(lang_index)
 
-        # ホットキー 1 / 2（製品版の既定: 高速リアルタイム=deepgram / 正確性=elevenlabs）
+        # ホットキー 1 / 2（製品版の既定: 普通入力=正確性(groq) / ハンズフリー=高精度(elevenlabs)）
         slot_defaults = {1: ("<f2>", "deepgram"), 2: ("<f3>", "elevenlabs")}
         for slot_id, (default_hotkey, default_backend) in slot_defaults.items():
             hotkey_config = config.get(f"hotkey{slot_id}", {}) or {}

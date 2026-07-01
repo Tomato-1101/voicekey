@@ -5,15 +5,17 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased]
 
 ### Changed
-- **製品版の文字起こしを「普通入力＝高速(Groq) / ハンズフリー＝正確性(ElevenLabs)」の 2 択に変更（両 OS・release＋サーバ）**。
-  速度改善の一環。旧「高速リアルタイム(Deepgram)」を選択肢から外し、普通入力を **Groq(whisper-large-v3-turbo)** に置き換えた。
-  Groq は Deepgram のような短命トークンが不要なので、あなたが遅いと感じていた**「録音開始時のトークン取得」ステップ自体が消える**。
+- **製品版の文字起こしを 3 モード「高速リアルタイム(Deepgram) / 正確性(Groq) / 高精度(ElevenLabs)」に整理（両 OS・release＋サーバ）**。
+  速度改善の一環。**普通入力の既定を Groq(whisper-large-v3-turbo)＝「正確性」に置き換え**、あなたが遅いと感じていた
+  **「録音開始時のトークン取得」ステップを普通入力から消した**（Groq は Deepgram のような短命トークンが不要）。
+  **Deepgram は「高速リアルタイム」（ストリーミング）として選択肢に残す**（話しながらライブ表示したいとき用）。
+  ラベルを整理: Deepgram=「高速リアルタイム」/ Groq=「正確性」/ ElevenLabs=「高精度」。
   - **サーバ**（voicekey-site）: `POST /api/v1/transcribe/groq` を新設。**Edge Runtime＋東京(hnd1)** で Node の cold start を排除
     （普通入力は短尺なので Edge で全量バッファ→Groq へ中継）。`consume:true`（1 プロキシ呼び出し=無料枠 1 消費）。
-    `GROQ_API_KEY` は整形用の既設のものを流用。暖機 GET 付き。EL「正確性」プロキシは長文 passthrough のため Node 据え置き。
-  - **クライアント**（Mac=Swift / Windows=Python）: 文字起こし 2 択を `Deepgram/ElevenLabs` → `Groq/ElevenLabs` に変更。
-    Groq もサーバープロキシ経由（`transcribeGroq`/`transcribe_groq`）。既定スロットを **1=普通入力(Groq・押している間) /
-    2=ハンズフリー(ElevenLabs・トグル)** に。保存済みで deepgram を選んでいたスロットは **groq へ自動移行**する。
+    `GROQ_API_KEY` は整形用の既設のものを流用。暖機 GET 付き。EL「高精度」プロキシは長文 passthrough のため Node 据え置き。
+  - **クライアント**（Mac=Swift / Windows=Python）: 文字起こし選択肢を `Deepgram/Groq/ElevenLabs` の 3 モードに。
+    Groq もサーバープロキシ経由（`transcribeGroq`/`transcribe_groq`）。既定スロットは **1=普通入力(正確性=Groq・押している間) /
+    2=ハンズフリー(高精度=ElevenLabs・トグル)**。保存済み deepgram はそのまま維持（範囲外の openai のみ groq へ移行）。
     暖機に Groq プロキシを追加。
 - **放置後の初回録音の遅さを根治（両 OS・release）**。長時間放置後の初回で「ログインセッション期限切れ→更新往復」を
   録音のクリティカルパスで踏んでいたのを、暖機のたびに**先回りでセッションを有効化**（`warm_session`/`ensureValidSession`）して解消。

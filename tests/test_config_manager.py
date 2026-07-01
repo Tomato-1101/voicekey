@@ -66,9 +66,10 @@ class TestMigration(unittest.TestCase):
         finally:
             os.unlink(path)
 
-    def test_release_constrains_openai_deepgram_to_groq(self):
-        # 製品版は openai/deepgram を文字起こしに選べないため groq(高速=普通入力)へ移行し、
-        # api_model は空にして default_api_models(whisper-large-v3-turbo) へフォールバックさせる
+    def test_release_constrains_openai_to_groq_keeps_deepgram(self):
+        # 製品版は openai を文字起こしに選べないため groq(正確性=普通入力の既定)へ移行し、
+        # api_model は空にして default_api_models(whisper-large-v3-turbo) へフォールバックさせる。
+        # deepgram(高速リアルタイム)は有効な選択肢なのでそのまま保持する。
         mgr, path = self._manager_for({
             "hotkey1": {
                 "hotkey": "<f2>", "hotkey_mode": "hold",
@@ -82,13 +83,14 @@ class TestMigration(unittest.TestCase):
         try:
             self.assertEqual(mgr.config["hotkey1"]["backend"], "groq")
             self.assertEqual(mgr.config["hotkey1"]["api_model"], "")
-            self.assertEqual(mgr.config["hotkey2"]["backend"], "groq")
-            self.assertEqual(mgr.config["hotkey2"]["api_model"], "")
+            # deepgram は選択肢に残したため維持される（api_model も保持）
+            self.assertEqual(mgr.config["hotkey2"]["backend"], "deepgram")
+            self.assertEqual(mgr.config["hotkey2"]["api_model"], "nova-3")
         finally:
             os.unlink(path)
 
     def test_release_keeps_elevenlabs(self):
-        # 正確性(elevenlabs)は製品版の有効な選択肢なのでそのまま保持する
+        # 高精度(elevenlabs)は製品版の有効な選択肢なのでそのまま保持する
         mgr, path = self._manager_for({
             "hotkey1": {
                 "hotkey": "<f2>", "hotkey_mode": "hold",
@@ -100,8 +102,8 @@ class TestMigration(unittest.TestCase):
         finally:
             os.unlink(path)
 
-    def test_deepgram_backend_migrated_to_groq(self):
-        # deepgram は製品版の文字起こし選択肢から外したため groq へ移行する（api_model はリセット）
+    def test_deepgram_backend_preserved(self):
+        # deepgram(高速リアルタイム)は製品版の文字起こし選択肢に残したため維持される
         mgr, path = self._manager_for({
             "hotkey1": {
                 "hotkey": "<f2>", "hotkey_mode": "hold",
@@ -109,8 +111,8 @@ class TestMigration(unittest.TestCase):
             },
         })
         try:
-            self.assertEqual(mgr.config["hotkey1"]["backend"], "groq")
-            self.assertEqual(mgr.config["hotkey1"]["api_model"], "")
+            self.assertEqual(mgr.config["hotkey1"]["backend"], "deepgram")
+            self.assertEqual(mgr.config["hotkey1"]["api_model"], "nova-3")
         finally:
             os.unlink(path)
 
