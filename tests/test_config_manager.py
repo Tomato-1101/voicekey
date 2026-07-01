@@ -60,29 +60,29 @@ class TestMigration(unittest.TestCase):
             self.assertIn("hotkey1", cfg)
             self.assertNotIn("hotkey", cfg)
             self.assertEqual(cfg["hotkey1"]["hotkey"], "<f4>")
-            # 製品版(release)は文字起こし 2 択のみ。旧 groq は deepgram(高速リアルタイム)へ移行する
-            self.assertEqual(cfg["hotkey1"]["backend"], "deepgram")
+            # 製品版(release)は文字起こし 2 択(groq/elevenlabs)。groq は有効なのでそのまま保持する
+            self.assertEqual(cfg["hotkey1"]["backend"], "groq")
             self.assertIn("hotkey2", cfg)
         finally:
             os.unlink(path)
 
-    def test_release_constrains_openai_groq_to_deepgram(self):
-        # 製品版は openai/groq を文字起こしに選べないため deepgram へ移行し、
-        # api_model は空にして default_api_models(nova-3) へフォールバックさせる
+    def test_release_constrains_openai_deepgram_to_groq(self):
+        # 製品版は openai/deepgram を文字起こしに選べないため groq(高速=普通入力)へ移行し、
+        # api_model は空にして default_api_models(whisper-large-v3-turbo) へフォールバックさせる
         mgr, path = self._manager_for({
             "hotkey1": {
                 "hotkey": "<f2>", "hotkey_mode": "hold",
                 "backend": "openai", "api_model": "gpt-4o-transcribe",
             },
             "hotkey2": {
-                "hotkey": "<f3>", "hotkey_mode": "hold",
-                "backend": "groq", "api_model": "whisper-large-v3-turbo",
+                "hotkey": "<f3>", "hotkey_mode": "toggle",
+                "backend": "deepgram", "api_model": "nova-3",
             },
         })
         try:
-            self.assertEqual(mgr.config["hotkey1"]["backend"], "deepgram")
+            self.assertEqual(mgr.config["hotkey1"]["backend"], "groq")
             self.assertEqual(mgr.config["hotkey1"]["api_model"], "")
-            self.assertEqual(mgr.config["hotkey2"]["backend"], "deepgram")
+            self.assertEqual(mgr.config["hotkey2"]["backend"], "groq")
             self.assertEqual(mgr.config["hotkey2"]["api_model"], "")
         finally:
             os.unlink(path)
@@ -100,7 +100,8 @@ class TestMigration(unittest.TestCase):
         finally:
             os.unlink(path)
 
-    def test_deepgram_backend_preserved(self):
+    def test_deepgram_backend_migrated_to_groq(self):
+        # deepgram は製品版の文字起こし選択肢から外したため groq へ移行する（api_model はリセット）
         mgr, path = self._manager_for({
             "hotkey1": {
                 "hotkey": "<f2>", "hotkey_mode": "hold",
@@ -108,8 +109,8 @@ class TestMigration(unittest.TestCase):
             },
         })
         try:
-            self.assertEqual(mgr.config["hotkey1"]["backend"], "deepgram")
-            self.assertEqual(mgr.config["hotkey1"]["api_model"], "nova-3")
+            self.assertEqual(mgr.config["hotkey1"]["backend"], "groq")
+            self.assertEqual(mgr.config["hotkey1"]["api_model"], "")
         finally:
             os.unlink(path)
 

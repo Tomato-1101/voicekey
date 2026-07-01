@@ -40,6 +40,7 @@ LOCAL_SERVER_URL: str = "http://localhost:3000"          # 開発ビルドの既
 # 自社バックエンドの API パス（get_server_base_url() と結合して使う）
 API_EPHEMERAL_PATH: str = "/api/v1/auth/ephemeral"                # Deepgram 短命 JWT 発行
 API_ELEVENLABS_PROXY_PATH: str = "/api/v1/transcribe/elevenlabs"  # 正確性モードのプロキシ
+API_GROQ_TRANSCRIBE_PROXY_PATH: str = "/api/v1/transcribe/groq"   # 高速モード（普通入力・Groq whisper）のプロキシ
 API_FORMAT_PROXY_PATH: str = "/api/v1/format"                     # Groq テキスト整形プロキシ
 API_FEEDBACK_PATH: str = "/api/v1/feedback"                       # アプリ内フィードバック送信
 # ブラウザ経由ログイン（段階4）
@@ -91,17 +92,17 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # 各要素: {"from": 置換元, "to": 置換先, "enabled": 有効か}
     "replacements": [],
 
-    # ホットキー1 設定（製品版の既定: 高速リアルタイム = Deepgram nova-3）
+    # ホットキー1 設定＝普通入力（製品版の既定: 高速 = Groq whisper-large-v3-turbo・押している間）
     "hotkey1": {
         "hotkey": "<f2>",
-        "hotkey_mode": HotkeyMode.TOGGLE.value,
-        "backend": "deepgram",
+        "hotkey_mode": HotkeyMode.HOLD.value,
+        "backend": "groq",
         "api_model": "",
         "api_prompt": "",
         "format_enabled": True,         # 製品版は裏でテキスト整形（既定オン）
     },
 
-    # ホットキー2 設定（製品版の既定: 正確性 = ElevenLabs scribe_v1）
+    # ホットキー2 設定＝ハンズフリー（製品版の既定: 正確性 = ElevenLabs scribe_v1・トグル）
     "hotkey2": {
         "hotkey": "<f3>",
         "hotkey_mode": HotkeyMode.TOGGLE.value,

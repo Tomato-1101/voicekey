@@ -398,6 +398,72 @@ def warm_elevenlabs() -> None:
         pass
 
 
+def transcribe_groq(wav_bytes: bytes, language: str = "") -> str:
+    """Groq「高速」プロキシで文字起こしする（普通入力・WAV を multipart 送信）。
+
+    Groq は Deepgram のような client 直叩き用の短命トークンが無いので、ElevenLabs と同じく
+    サーバープロキシ経由。サーバー(Edge・東京)は formData(file + language)を受けて Groq 形式
+    (model=whisper-large-v3-turbo / response_format=text)へ組み直して中継する＝クライアントは
+    file と language だけ送る（EL の passthrough とは違い透過フラグ・model_id は付けない）。
+    サーバーは consume:true で無料枠を同期消費するので、クライアント側の confirm は不要。
+
+    Args:
+        wav_bytes: WAV バイト列
+        language: 言語コード（空なら送らない＝サーバー/プロバイダ自動判定）
+
+    Returns:
+        文字起こし結果テキスト
+
+    Raises:
+        BackendError: 認証・サブスク・通信エラー
+    """
+    files = {"file": ("audio.wav", wav_bytes, "audio/wav")}
+    data = {}
+    if language:
+        data["language"] = language
+    resp = _post(
+        constants.API_GROQ_TRANSCRIBE_PROXY_PATH,
+        headers=_auth_headers(),
+        files=files,
+        data=data,
+        # 普通入力は短尺（ホールド発話）だが、cold start・越境往復に備え少し余裕を持たせる
+        # （長文の EL=90s とは別事情）。接続は短く、全体は 60s。
+        timeout=httpx.Timeout(60.0, connect=5.0),
+    )
+    return resp.json().get("text", "") or ""
+
+
+def warm_groq_transcribe() -> None:
+    """Groq「高速」プロキシ（/api/v1/transcribe/groq）の serverless 関数を温める。
+
+    Edge なので cold start はほぼ無いが、EL/format と同じ暖機導線で TLS・接続を先に温めておく。
+    GET は無料枠を消費せず・Groq も Supabase も叩かない（即 200）。認証ヘッダは付けない。
+    失敗は無視。ブロッキング I/O なので呼び出し側はバックグラウンドスレッドで呼ぶ。
+    """
+    if not is_logged_in():
+        return
+    try:
+        _send("GET", constants.API_GROQ_TRANSCRIBE_PROXY_PATH, headers={}, raise_on_error=False)
+    except Exception:
+        pass
+
+
+def warm_session() -> None:
+    """放置後初回の「セッション期限切れ→更新往復」を録音のクリティカルパスから外す。
+
+    暖機のたびに先回りでセッションを有効化しておく。Groq/EL プロキシ呼び出しは内部で
+    ensure_valid_session を呼ぶが、それを事前に済ませておけば録音時の更新往復が消える。
+    未ログインなら何もしない。失敗は無視（録音時に通常経路で更新される）。
+    """
+    if not is_logged_in():
+        return
+    try:
+        from . import auth_client
+        auth_client.ensure_valid_session()
+    except Exception:
+        pass
+
+
 def format_text(text: str) -> str:
     """Groq テキスト整形プロキシ（モデル/プロンプトはサーバー固定。text のみ送る）。
 

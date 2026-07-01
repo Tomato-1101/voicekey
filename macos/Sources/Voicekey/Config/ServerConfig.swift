@@ -34,6 +34,9 @@ enum ServerConfig {
     static let ephemeralPath = "/api/v1/auth/ephemeral"
     /// 正確性モード（ElevenLabs scribe）のプロキシ
     static let elevenLabsProxyPath = "/api/v1/transcribe/elevenlabs"
+    /// 高速モード（Groq whisper・普通入力）のプロキシ。Groq は短命トークンが無いので
+    /// ElevenLabs と同じくサーバー中継（Edge・東京）。短尺前提で全量バッファ転送。
+    static let groqTranscribeProxyPath = "/api/v1/transcribe/groq"
     /// Groq テキスト整形プロキシ
     static let formatProxyPath = "/api/v1/format"
     /// アプリ内フィードバック送信（認証は任意＝未ログインでも送れる）

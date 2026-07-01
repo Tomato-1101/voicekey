@@ -73,6 +73,9 @@ final class AppController: ObservableObject {
 
     /// /ephemeral 関数を一定間隔で温め続けるタイマー（Deepgram ストリーミング利用時の cold start 回避）
     private var warmTimer: Timer?
+    /// App Nap 抑止トークン。放置中も暖機ループ（セッション/トークンの温存）を間引かせないための
+    /// もの＝「放置後の初回録音が遅い」の根治。ログイン中のみ保持し、shutdown で解放する。
+    private var antiNapActivity: NSObjectProtocol?
 
     init() {
         rebuildTranscribers()
@@ -145,6 +148,15 @@ final class AppController: ObservableObject {
             if BackendClient.isLoggedIn {
                 Task { await self.warmBackendsNow() }  // 有料・無料とも短命トークン先読み（消費ゼロ）
                 startEphemeralWarmLoop()  // 以後も数分間隔でプロキシ関数を温存（cold start 回避）
+                // 放置中も暖機ループ（セッション/トークン温存）が確実に回るよう App Nap を抑止する。
+                // .background＝システムスリープは妨げず、アイドル時のタイマー間引き（nap）だけ止める。
+                // これで長時間放置後の初回でもセッション/トークンが手元に温存され、更新往復を踏まない。
+                if antiNapActivity == nil {
+                    antiNapActivity = ProcessInfo.processInfo.beginActivity(
+                        options: .background,
+                        reason: "keep auth session and transcription token warm"
+                    )
+                }
                 // スリープ復帰直後は serverless 関数が冷え・短命トークンも失効済み＝「放置後の
                 // 初回録音が遅い」の主因。復帰イベントで即・暖機＋（有料は）トークン先読みして、
                 // 復帰後の話し始めの待ちを消す（暖機タイマーは最大4分後までしか効かないため）。
@@ -165,6 +177,10 @@ final class AppController: ObservableObject {
         hotkeys.stop()
         warmTimer?.invalidate()
         warmTimer = nil
+        if let activity = antiNapActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            antiNapActivity = nil
+        }
     }
 
     /// 製品版で使用中のプロキシ関数（/ephemeral・/transcribe/elevenlabs）を一定間隔で温める。
@@ -186,8 +202,14 @@ final class AppController: ObservableObject {
     /// 無料: 枠を守るためトークンは取らず、消費なしの GET で関数だけ温める（実トークンは録音時取得）。
     private func warmBackendsNow() async {
         guard BackendClient.isLoggedIn else { return }
+        // 放置後初回の「セッション期限切れ→更新往復」を録音時に踏まないよう、暖機のたびに
+        // 先回りでセッションを有効化しておく（Groq/EL プロキシは録音時に ensureValidSession を
+        // 呼ぶが、それを事前に済ませておけば録音のクリティカルパスから更新往復が消える）。
+        // App Nap でこのループが間引かれても、スリープ復帰ハンドラ経由で必ず通る。
+        try? await AuthClient.ensureValidSession()
         let usesDeepgramStreaming = config.streamingEnabled
             && (config.slot(1).backend == .deepgram || config.slot(2).backend == .deepgram)
+        let usesGroq = config.slot(1).backend == .groq || config.slot(2).backend == .groq
         let usesElevenLabs = config.slot(1).backend == .elevenlabs
             || config.slot(2).backend == .elevenlabs
         if usesDeepgramStreaming {
@@ -195,6 +217,10 @@ final class AppController: ObservableObject {
             // 先読み自体は無料枠を消費しない（消費は録音成立後の非同期 confirm で数える）。これで
             // 「無料の話し始めが遅い」の主因だった録音ごとのトークン取り直し（cold start 込み）を根絶する。
             _ = try? await BackendClient.fetchEphemeralToken()
+        }
+        if usesGroq {
+            // 普通入力=Groq プロキシの関数・接続を温める（Edge なので cold start はほぼ無いが導線統一）。
+            await BackendClient.warmGroqTranscribe()
         }
         if usesElevenLabs {
             await BackendClient.warmElevenLabs()
@@ -473,6 +499,10 @@ final class AppController: ObservableObject {
             }
 
             // --- REST 経路（従来の 正規化 → VAD → API → 貼り付け）---
+            // [計測] 録音停止→貼付までを段階別に刻む。release と main の速度差の在り処を実測するため。
+            // release は普通入力=Groq プロキシ・ハンズフリー=EL プロキシとも、この REST 経路を通る
+            // （高速リアルタイム=Deepgram を選択肢から外したのでストリーミング経路は不使用）。
+            let restT0 = ProcessInfo.processInfo.systemUptime
             let duration = Double(samples.count) / AudioRecorder.sampleRate
             guard duration >= kMinAudioSec else {
                 log.info("録音が短すぎるためスキップ (\(String(format: "%.2f", duration))s)")
@@ -488,8 +518,10 @@ final class AppController: ObservableObject {
                 }
                 return
             }
+            let vadMs = Int((ProcessInfo.processInfo.systemUptime - restT0) * 1000)
 
             // 3. API 文字起こし（長文は無音区間で分割し並列送信して待ち時間を短縮）
+            let sttStart = ProcessInfo.processInfo.systemUptime
             let text: String
             do {
                 text = try await Self.transcribeWithOptionalSplit(
@@ -504,6 +536,7 @@ final class AppController: ObservableObject {
                 hud.notice("文字起こしに失敗しました")
                 return
             }
+            let sttMs = Int((ProcessInfo.processInfo.systemUptime - sttStart) * 1000)
             guard !text.isEmpty else {
                 log.info("文字起こし結果が空でした")
                 return
@@ -511,16 +544,22 @@ final class AppController: ObservableObject {
 
             // 4. テキスト貼り付け（+ ダブルタップ時は Enter 自動送信）
             // 整形が有効なら貼り付け前に LLM で整形（失敗時は原文が返る）
+            let fmtStart = ProcessInfo.processInfo.systemUptime
             let formatted = formatEnabled
                 ? await formatter.format(text, prompt: formatPrompt, model: formatModel)
                 : text
+            let fmtMs = Int((ProcessInfo.processInfo.systemUptime - fmtStart) * 1000)
             // ユーザー辞書の確定置換を適用（API を通さないので遅延ゼロ）
             let output = config.applyReplacements(formatted)
             // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する
             history.add(output)
             // 実績を集計（貼り付け後のローカル処理なので遅延に影響しない）
             stats.recordSession(characters: output.count, recordingSeconds: duration)
+            let pasteStart = ProcessInfo.processInfo.systemUptime
             await Paster.paste(output)
+            let pasteMs = Int((ProcessInfo.processInfo.systemUptime - pasteStart) * 1000)
+            let totalMs = Int((ProcessInfo.processInfo.systemUptime - restT0) * 1000)
+            log.info("[計測] \(transcriber.backend.label, privacy: .public) 録音停止→貼付 総計\(totalMs)ms（VAD \(vadMs) / 文字起こし \(sttMs) / 整形 \(fmtMs) / 貼付 \(pasteMs)）")
             if autoEnter {
                 try? await Task.sleep(for: .milliseconds(max(0, delayMs)))
                 Paster.pressEnter()

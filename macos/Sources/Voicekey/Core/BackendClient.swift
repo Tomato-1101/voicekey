@@ -391,6 +391,39 @@ enum BackendClient {
         _ = try? await session.data(for: req)
     }
 
+    /// Groq「高速」プロキシで文字起こしする（普通入力・WAV を multipart 送信）。
+    ///
+    /// Groq は Deepgram のような client 直叩き用の短命トークンが無いので、ElevenLabs と同じく
+    /// サーバープロキシ経由。サーバー(Edge・東京)は formData(file + language)を受けて Groq 形式
+    /// (model=whisper-large-v3-turbo / response_format=text)へ組み直して中継する＝クライアントは
+    /// file と language だけ送る（EL の passthrough とは違い透過フラグは付けない）。
+    /// サーバーは consume:true で無料枠を同期消費するので、クライアント側の confirm は不要
+    /// （Deepgram の再利用トークン方式とは別＝1 プロキシ呼び出し=1 消費）。
+    static func transcribeGroq(wav: Data, language: String) async throws -> String {
+        try? await AuthClient.ensureValidSession()  // 失効間際なら先にリフレッシュ
+        var req = try authorizedRequest(path: ServerConfig.groqTranscribeProxyPath)
+        req.httpMethod = "POST"
+        let boundary = "vk-\(UUID().uuidString)"
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        // 普通入力は短尺（ホールド発話）なので token 取得用の短い既定(15s)を少しだけ延長する程度でよい
+        // （長文の EL=90s とは別事情）。
+        req.timeoutInterval = 60
+        req.httpBody = groqMultipartBody(boundary: boundary, wav: wav, language: language)
+        let data = try await send(req)
+        struct Resp: Decodable { let text: String? }
+        return (try? JSONDecoder().decode(Resp.self, from: data))?.text ?? ""
+    }
+
+    /// Groq「高速」プロキシ（/api/v1/transcribe/groq）の serverless 関数を温める。
+    /// Edge なので cold start はほぼ無いが、EL/format と同じ暖機導線で TLS・接続を先に温めておく。
+    /// GET は無料枠を消費せず・Groq も Supabase も叩かない（即 200）。認証ヘッダは付けない。失敗は無視。
+    static func warmGroqTranscribe() async {
+        guard isLoggedIn else { return }
+        guard let url = ServerConfig.url(ServerConfig.groqTranscribeProxyPath) else { return }
+        let req = URLRequest(url: url)  // GET（既定メソッド）。認証不要・消費なし。
+        _ = try? await session.data(for: req)
+    }
+
     /// Groq テキスト整形プロキシ（モデル/プロンプトはサーバー固定。text のみ送る）。
     /// 失敗時は呼び出し側で原文フォールバックする想定なので throw で返す。
     static func formatText(_ text: String) async throws -> String {
@@ -526,6 +559,25 @@ enum BackendClient {
         if !language.isEmpty {
             append("--\(boundary)\r\n")
             append("Content-Disposition: form-data; name=\"language_code\"\r\n\r\n")
+            append("\(language)\r\n")
+        }
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n")
+        append("Content-Type: audio/wav\r\n\r\n")
+        body.append(wav)
+        append("\r\n--\(boundary)--\r\n")
+        return body
+    }
+
+    /// Groq プロキシ用の multipart ボディ。サーバー(Edge)が formData で受けて Groq 形式
+    /// （model/response_format はサーバー側で固定）へ組み直すため、クライアントは
+    /// file(WAV) と language(任意) だけ入れる。
+    private static func groqMultipartBody(boundary: String, wav: Data, language: String) -> Data {
+        var body = Data()
+        func append(_ s: String) { body.append(Data(s.utf8)) }
+        if !language.isEmpty {
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"language\"\r\n\r\n")
             append("\(language)\r\n")
         }
         append("--\(boundary)\r\n")

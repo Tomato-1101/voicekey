@@ -161,9 +161,10 @@ final class Transcriber: @unchecked Sendable {
                 )
             }
             switch backend {
+            case .groq: return try await transcribeGroqViaProxy(samples: samples)
             case .elevenlabs: return try await transcribeElevenLabsViaProxy(samples: samples)
             case .deepgram: return try await transcribeDeepgramViaJWT(samples: samples)
-            case .openai, .groq:
+            case .openai:
                 throw TranscriptionError(message: "この文字起こし方式は配布版では利用できません")
             }
         }
@@ -171,12 +172,13 @@ final class Transcriber: @unchecked Sendable {
         // 開発ビルド: 従来の並存ガード（ログイン時はサーバー経路、未ログインは設定キー直叩き）。
         // 高速リアルタイム=Deepgram は短命 JWT で直叩き（低レイテンシ核心を維持）、
         // 正確性=ElevenLabs はサーバープロキシ経由（バッチは短命キー非対応）。
-        // OpenAI/Groq は製品版の文字起こし選択肢に無いため従来の直叩きに委ねる。
+        // 高速=Groq もサーバープロキシ経由（普通入力・バッチ）。OpenAI は選択肢に無いため直叩きに委ねる。
         if BackendClient.isLoggedIn {
             switch backend {
+            case .groq: return try await transcribeGroqViaProxy(samples: samples)
             case .elevenlabs: return try await transcribeElevenLabsViaProxy(samples: samples)
             case .deepgram: return try await transcribeDeepgramViaJWT(samples: samples)
-            case .openai, .groq: break
+            case .openai: break
             }
         }
 
@@ -206,6 +208,25 @@ final class Transcriber: @unchecked Sendable {
         do {
             let text = TextNormalize.stripCJKSpaces(
                 try await BackendClient.transcribeElevenLabs(
+                    wav: WavEncoder.encode(samples), language: language
+                ).trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+            let elapsed = Int(Date().timeIntervalSince(start) * 1000)
+            log.info("\(self.backend.label, privacy: .public) 文字起こし完了: \(elapsed)ms, \(text.count) 文字")
+            return text
+        } catch let e as BackendClient.BackendError {
+            throw TranscriptionError(message: e.userMessage)
+        }
+    }
+
+    /// 高速（Groq）: サーバープロキシ経由で文字起こしする（普通入力・バッチ）。
+    /// サーバー契約は WAV を期待するため FLAC ではなく WAV を送る。
+    /// main（自分用）の Groq 直叩きに対し、release はこの 1 ホップ（Vercel Edge・東京）だけが差分。
+    private func transcribeGroqViaProxy(samples: [Float]) async throws -> String {
+        let start = Date()
+        do {
+            let text = TextNormalize.stripCJKSpaces(
+                try await BackendClient.transcribeGroq(
                     wav: WavEncoder.encode(samples), language: language
                 ).trimmingCharacters(in: .whitespacesAndNewlines)
             )

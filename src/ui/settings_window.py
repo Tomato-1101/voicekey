@@ -87,10 +87,11 @@ _BACKEND_PROVIDER_NAMES = {
 }
 
 # 製品版（release）で文字起こしに選べる 2 択（表示順）。
-# Deepgram=「高速リアルタイム」/ ElevenLabs=「正確性」。モデルは推奨固定で非選択。
+# Groq=「高速」（普通入力・whisper-large-v3-turbo・プロキシ経由）/ ElevenLabs=「正確性」（ハンズフリー）。
+# Deepgram（旧「高速リアルタイム」）は選択肢から外した。モデルは推奨固定で非選択。
 # Mac 版 Backend.selectableCases / Backend.label と一致させる。
 _TRANSCRIBE_BACKEND_LABELS = [
-    (TranscriptionBackend.DEEPGRAM.value, "高速リアルタイム"),
+    (TranscriptionBackend.GROQ.value, "高速"),
     (TranscriptionBackend.ELEVENLABS.value, "正確性"),
 ]
 

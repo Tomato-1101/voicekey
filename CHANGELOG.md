@@ -5,6 +5,21 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased]
 
 ### Changed
+- **製品版の文字起こしを「普通入力＝高速(Groq) / ハンズフリー＝正確性(ElevenLabs)」の 2 択に変更（両 OS・release＋サーバ）**。
+  速度改善の一環。旧「高速リアルタイム(Deepgram)」を選択肢から外し、普通入力を **Groq(whisper-large-v3-turbo)** に置き換えた。
+  Groq は Deepgram のような短命トークンが不要なので、あなたが遅いと感じていた**「録音開始時のトークン取得」ステップ自体が消える**。
+  - **サーバ**（voicekey-site）: `POST /api/v1/transcribe/groq` を新設。**Edge Runtime＋東京(hnd1)** で Node の cold start を排除
+    （普通入力は短尺なので Edge で全量バッファ→Groq へ中継）。`consume:true`（1 プロキシ呼び出し=無料枠 1 消費）。
+    `GROQ_API_KEY` は整形用の既設のものを流用。暖機 GET 付き。EL「正確性」プロキシは長文 passthrough のため Node 据え置き。
+  - **クライアント**（Mac=Swift / Windows=Python）: 文字起こし 2 択を `Deepgram/ElevenLabs` → `Groq/ElevenLabs` に変更。
+    Groq もサーバープロキシ経由（`transcribeGroq`/`transcribe_groq`）。既定スロットを **1=普通入力(Groq・押している間) /
+    2=ハンズフリー(ElevenLabs・トグル)** に。保存済みで deepgram を選んでいたスロットは **groq へ自動移行**する。
+    暖機に Groq プロキシを追加。
+- **放置後の初回録音の遅さを根治（両 OS・release）**。長時間放置後の初回で「ログインセッション期限切れ→更新往復」を
+  録音のクリティカルパスで踏んでいたのを、暖機のたびに**先回りでセッションを有効化**（`warm_session`/`ensureValidSession`）して解消。
+  Mac は加えて **App Nap を抑止**（`beginActivity(.background)`）してアイドル中も暖機ループを間引かせない＝放置後もセッション/トークンが手元に温存される。
+- **段階別タイミングログを追加（Mac・release）**。録音停止→貼付を「VAD / 文字起こし / 整形 / 貼付」に分解して 1 行で出力し、
+  main との速度差の在り処を実測できるようにした（`[計測] … 総計Xms（VAD … / 文字起こし … / 整形 … / 貼付 …）`）。
 - **無料も有料と同じ「再利用トークン方式」に統一＝無料の録音開始のサーバー往復をゼロに（段階3・両 OS・release＋サーバ）**。
   無料が有料より遅い主因は「無料枠の回数計測を録音開始のクリティカルパスでサーバーにやらせていた」こと。
   無料は録音ごとに使い捨てトークンを取り直す設計だったため、回数カウントのためだけに毎録音サーバーを叩いて

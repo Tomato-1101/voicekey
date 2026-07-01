@@ -37,8 +37,9 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
 
     /// 設定 UI に出すバックエンド名（製品版＝release ブランチ）。
-    /// 文字起こしで選べるのは Deepgram=「高速リアルタイム」/ ElevenLabs=「正確性」の 2 択のみ。
-    /// openai/groq は文字起こしには出さない（groq は裏のテキスト整形専用）。
+    /// 文字起こしで選べるのは Groq=「高速」（普通入力）/ ElevenLabs=「正確性」（ハンズフリー）の 2 択のみ。
+    /// Groq は Deepgram のような短命トークンを持たないためサーバープロキシ経由（/api/v1/transcribe/groq）。
+    /// Deepgram（旧「高速リアルタイム」）は選択肢から外した（openai は元から非表示）。
     var label: String {
         switch self {
         case .deepgram: return "高速リアルタイム"
@@ -48,8 +49,9 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    /// 製品版で文字起こしバックエンドとして選べる 2 択（表示順）
-    static var selectableCases: [Backend] { [.deepgram, .elevenlabs] }
+    /// 製品版で文字起こしバックエンドとして選べる 2 択（表示順）。
+    /// 普通入力=Groq「高速」（whisper-large-v3-turbo・プロキシ経由）/ ハンズフリー=ElevenLabs「正確性」。
+    static var selectableCases: [Backend] { [.groq, .elevenlabs] }
 
     /// 提供元名（API キー欄でどのキーかを示すためだけに使う。配布版では
     /// API キータブ自体を隠すので、開発時にしか表示されない）
@@ -107,10 +109,11 @@ extension SlotConfig {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         hotkey = try c.decodeIfPresent([String].self, forKey: .hotkey) ?? []
         mode = try c.decodeIfPresent(HotkeyMode.self, forKey: .mode) ?? .hold
-        // 製品版は文字起こし 2 択（deepgram/elevenlabs）のみ。保存済み openai/groq は
-        // 選択肢に無いので deepgram（高速リアルタイム）へ移行する
-        let decoded = try c.decodeIfPresent(Backend.self, forKey: .backend) ?? .deepgram
-        let migrated = Backend.selectableCases.contains(decoded) ? decoded : .deepgram
+        // 製品版は文字起こし 2 択（groq/elevenlabs）のみ。保存済み deepgram/openai は
+        // 選択肢に無いので groq（高速・普通入力）へ移行する。
+        // ＝旧「高速リアルタイム」(Deepgram) を選んでいた既存ユーザーの slot1 は自動で Groq になる。
+        let decoded = try c.decodeIfPresent(Backend.self, forKey: .backend) ?? .groq
+        let migrated = Backend.selectableCases.contains(decoded) ? decoded : .groq
         backend = migrated
         let decodedModel = try c.decodeIfPresent(String.self, forKey: .model) ?? ""
         // バックエンドを移行した（または保存モデルが当該バックエンドのものでない）場合は
@@ -152,9 +155,9 @@ extension ReplacementRule {
 @MainActor
 final class ConfigStore: ObservableObject {
 
-    /// スロット 1（既定: 右⌘ 長押し → OpenAI gpt-4o-transcribe）
+    /// スロット 1＝普通入力（既定: 右⌘ 押している間 → Groq「高速」whisper-large-v3-turbo）
     @Published var slot1: SlotConfig
-    /// スロット 2（既定: 右⌥ 長押し → Groq whisper-large-v3-turbo）
+    /// スロット 2＝ハンズフリー（既定: 右⌥ トグル → ElevenLabs「正確性」scribe_v1）
     @Published var slot2: SlotConfig
     /// 言語コード（"ja" など。空なら API 側の自動判定）
     @Published var language: String
@@ -201,13 +204,14 @@ final class ConfigStore: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
 
-        // 製品版の既定: スロット1=高速リアルタイム(Deepgram nova-3) / スロット2=正確性(ElevenLabs scribe_v1)
+        // 製品版の既定: スロット1=普通入力(右⌘・押している間・Groq「高速」whisper-large-v3-turbo)
+        //             スロット2=ハンズフリー(右⌥・トグル・ElevenLabs「正確性」scribe_v1)
         slot1 = Self.loadSlot(defaults, key: Keys.slot1) ?? SlotConfig(
-            hotkey: ["cmd_r"], mode: .hold, backend: .deepgram,
-            model: Backend.deepgram.defaultModel, prompt: ""
+            hotkey: ["cmd_r"], mode: .hold, backend: .groq,
+            model: Backend.groq.defaultModel, prompt: ""
         )
         slot2 = Self.loadSlot(defaults, key: Keys.slot2) ?? SlotConfig(
-            hotkey: ["alt_r"], mode: .hold, backend: .elevenlabs,
+            hotkey: ["alt_r"], mode: .toggle, backend: .elevenlabs,
             model: Backend.elevenlabs.defaultModel, prompt: ""
         )
         language = defaults.string(forKey: Keys.language) ?? "ja"

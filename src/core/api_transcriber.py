@@ -315,9 +315,14 @@ class OpenAITranscriber(ApiTranscriber):
 
 
 class GroqTranscriber(ApiTranscriber):
-    """Groq Cloud の Whisper API（OpenAI 互換エンドポイント）。"""
+    """Groq Cloud の Whisper API（OpenAI 互換エンドポイント）。
 
-    display_name = "高速"  # ユーザー向け表示は特徴名（提供元名は伏せる）
+    製品版(release)の「高速」＝普通入力。Groq は Deepgram のような短命トークンが無いため、
+    ログイン済み(製品版)ではサーバープロキシ(/api/v1/transcribe/groq)経由で文字起こしする。
+    未ログイン(開発直叩き)では OpenAI 互換 REST を親クラスで直叩きする（並存ガード）。
+    """
+
+    display_name = "高速"  # 製品版(release)の文字起こし 2 択名（提供元名は伏せる）
     base_url = "https://api.groq.com/openai/v1"
     keychain_service = secrets.SERVICE_GROQ
     env_var = "GROQ_API_KEY"
@@ -325,6 +330,30 @@ class GroqTranscriber(ApiTranscriber):
         "whisper-large-v3-turbo",  # 最速（リアルタイムの 200 倍超）
         "whisper-large-v3",        # 高精度
     )
+
+    def transcribe(self, audio_data: npt.NDArray[np.float32]) -> str:
+        """音声を Groq で文字起こしする（製品版はプロキシ経由・開発は直叩き）。"""
+        if len(audio_data) == 0:
+            return ""
+
+        # 配布版ゲート: ログイン＋アクティベーション必須（Groq はプロキシ対応＝True）
+        self._dist_guard(server_supported=True)
+
+        # 製品版（ログイン済み）はサーバープロキシ経由で文字起こしする。
+        # Groq バッチも短命キー非対応のためプロキシを使う（EL と同じ並存ガード）。
+        if backend_client.is_logged_in():
+            wav_bytes = numpy_to_wav_bytes(audio_data, self.sample_rate)
+            try:
+                # プロキシ経由でも直叩きと同じ正規化を通す（#21・CJK 隣接スペース除去）
+                return strip_cjk_spaces(
+                    backend_client.transcribe_groq(wav_bytes, self.language or "")
+                )
+            except backend_client.BackendError as e:
+                raise TranscriptionError(str(e))
+
+        # 未ログイン（開発直叩き）: OpenAI 互換 REST を親クラスで叩く。
+        # 親の _dist_guard(server_supported=False) は dev ビルドでは no-op なので安全。
+        return super().transcribe(audio_data)
 
 
 class ElevenLabsTranscriber(ApiTranscriber):

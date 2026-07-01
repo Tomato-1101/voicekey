@@ -338,12 +338,23 @@ class VoicekeyApp(QObject):
         """
         if not backend_client.is_logged_in():
             return
+        # 放置後初回の「セッション期限切れ→更新往復」を録音時に踏まないよう、暖機のたびに
+        # 先回りでセッションを有効化しておく（Groq/EL プロキシ呼び出し時の更新往復を消す）。
+        backend_client.warm_session()
         # Deepgram「高速リアルタイム」: ストリーミング ON ＋ Deepgram スロットのとき
         if self._config.get("streaming_enabled", True) and any(
             s.backend == TranscriptionBackend.DEEPGRAM.value for s in self._slots.values()
         ):
             try:
                 backend_client.fetch_ephemeral_token()  # 有料・無料とも消費ゼロでトークンをキャッシュ
+            except Exception:
+                pass
+        # Groq「高速」（普通入力）: Groq スロットがあれば、そのプロキシ関数も消費なしで温める
+        if any(
+            s.backend == TranscriptionBackend.GROQ.value for s in self._slots.values()
+        ):
+            try:
+                backend_client.warm_groq_transcribe()
             except Exception:
                 pass
         # ElevenLabs「正確性」: ElevenLabs スロットがあれば、そのプロキシ関数も消費なしで温める

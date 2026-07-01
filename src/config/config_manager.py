@@ -20,11 +20,12 @@ logger = get_logger(__name__)
 # 対応バックエンド（REST + ストリーミング）。これ以外は openai にフォールバック
 API_BACKENDS = {"groq", "openai", "elevenlabs", "deepgram"}
 # 製品版（release ブランチ）で文字起こしに選べるバックエンド。
-# 高速リアルタイム = deepgram / 正確性 = elevenlabs の 2 択のみ。
-# openai/groq は文字起こしには出さない（groq は裏のテキスト整形専用）。
-RELEASE_TRANSCRIBE_BACKENDS = ("deepgram", "elevenlabs")
-# 製品版で範囲外（openai/groq 等）の保存値を移行する先（高速リアルタイム）
-RELEASE_DEFAULT_BACKEND = "deepgram"
+# 高速 = groq（普通入力・whisper-large-v3-turbo・プロキシ経由）/ 正確性 = elevenlabs（ハンズフリー）の 2 択のみ。
+# deepgram（旧「高速リアルタイム」）は選択肢から外した（openai は元から非表示）。
+# ＝旧 deepgram を選んでいた既存ユーザーの slot は groq へ自動移行する（下の _constrain_release_backends）。
+RELEASE_TRANSCRIBE_BACKENDS = ("groq", "elevenlabs")
+# 製品版で範囲外（deepgram/openai 等）の保存値を移行する先（高速＝普通入力）
+RELEASE_DEFAULT_BACKEND = "groq"
 
 
 def _deep_merge(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
@@ -246,11 +247,12 @@ class ConfigManager:
     @staticmethod
     def _constrain_release_backends(config: Dict[str, Any]) -> None:
         """
-        製品版（release）の文字起こしバックエンドを 2 択（deepgram/elevenlabs）に制限する。
+        製品版（release）の文字起こしバックエンドを 2 択（groq/elevenlabs）に制限する。
 
-        保存済み settings.yaml に openai/groq 等の範囲外バックエンドが残っていても、
-        deepgram（高速リアルタイム）へ移行する。移行時は api_model を空にして
-        default_api_models（deepgram→nova-3）にフォールバックさせる。
+        保存済み settings.yaml に deepgram/openai 等の範囲外バックエンドが残っていても、
+        groq（高速＝普通入力）へ移行する。移行時は api_model を空にして
+        default_api_models（groq→whisper-large-v3-turbo）にフォールバックさせる。
+        ＝旧「高速リアルタイム」(deepgram) を選んでいた既存ユーザーの slot1 は自動で Groq になる。
 
         Args:
             config: 矯正対象の設定辞書（その場で書き換える）
