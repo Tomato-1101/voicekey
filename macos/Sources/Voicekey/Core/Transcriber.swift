@@ -202,13 +202,16 @@ final class Transcriber: @unchecked Sendable {
     // MARK: - 製品版サーバー経路（段階3）
 
     /// 正確性（ElevenLabs）: サーバープロキシ経由で文字起こしする。
-    /// サーバー契約は WAV を期待するため FLAC ではなく WAV を送る。
+    /// アップロードは FLAC（可逆・約半分のサイズ）を優先し、失敗時のみ WAV へフォールバック
+    /// （main の EL 直叩きと同じ符号化。EL passthrough は生ボディを EL へ流すだけなので FLAC がそのまま通る）。
     private func transcribeElevenLabsViaProxy(samples: [Float]) async throws -> String {
         let start = Date()
+        let audio = encodeAudio(samples)
         do {
             let text = TextNormalize.stripCJKSpaces(
                 try await BackendClient.transcribeElevenLabs(
-                    wav: WavEncoder.encode(samples), language: language
+                    audio: audio.data, filename: audio.filename,
+                    contentType: audio.contentType, language: language
                 ).trimmingCharacters(in: .whitespacesAndNewlines)
             )
             let elapsed = Int(Date().timeIntervalSince(start) * 1000)
@@ -220,14 +223,17 @@ final class Transcriber: @unchecked Sendable {
     }
 
     /// 高速（Groq）: サーバープロキシ経由で文字起こしする（普通入力・バッチ）。
-    /// サーバー契約は WAV を期待するため FLAC ではなく WAV を送る。
-    /// main（自分用）の Groq 直叩きに対し、release はこの 1 ホップ（Vercel Edge・東京）だけが差分。
+    /// アップロードは FLAC（可逆・約半分のサイズ）を優先し、失敗時のみ WAV へフォールバック。
+    /// main（自分用）の Groq 直叩きと同じ符号化にすることで、release との差は「1 ホップ
+    /// （Vercel Edge・東京）＋整形」だけになる（従来は WAV 送信で main の約2倍のアップロードだった）。
     private func transcribeGroqViaProxy(samples: [Float]) async throws -> String {
         let start = Date()
+        let audio = encodeAudio(samples)
         do {
             let text = TextNormalize.stripCJKSpaces(
                 try await BackendClient.transcribeGroq(
-                    wav: WavEncoder.encode(samples), language: language
+                    audio: audio.data, filename: audio.filename,
+                    contentType: audio.contentType, language: language
                 ).trimmingCharacters(in: .whitespacesAndNewlines)
             )
             let elapsed = Int(Date().timeIntervalSince(start) * 1000)

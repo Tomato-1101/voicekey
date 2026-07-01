@@ -358,12 +358,16 @@ enum BackendClient {
             selfDaily: selfDaily)
     }
 
-    /// ElevenLabs「正確性」プロキシで文字起こしする（WAV を multipart 送信）。
+    /// ElevenLabs「正確性」プロキシで文字起こしする（FLAC/WAV を multipart 送信）。
     ///
     /// multipart は ElevenLabs がそのまま受け取れる形（file + model_id=scribe_v1 + language_code）で
     /// 組み、`x-vk-passthrough: 1` を付ける。サーバーはこのヘッダを見たらボディを read せず
     /// EL へストリーム透過する（formData の全量バッファ＋再構築をやめる＝中継の二度手間を削減）。
-    static func transcribeElevenLabs(wav: Data, language: String) async throws -> String {
+    /// audio は FLAC（可逆・約半分）を優先＝アップロード時間を短縮する。EL は FLAC を受理する
+    /// （main の EL 直叩きが FLAC で実証済み）ため、passthrough でもそのまま通る。
+    static func transcribeElevenLabs(
+        audio: Data, filename: String, contentType: String, language: String
+    ) async throws -> String {
         try? await AuthClient.ensureValidSession()  // 失効間際なら先にリフレッシュ
         var req = try authorizedRequest(path: ServerConfig.elevenLabsProxyPath)
         req.httpMethod = "POST"
@@ -374,7 +378,10 @@ enum BackendClient {
         // 短く設定したセッション既定(15s)のままだと長文で応答前に切れ「通信に失敗」になるため、
         // このリクエストだけ余裕を持たせる（セッション既定をリクエスト単位で上書き）。
         req.timeoutInterval = 90
-        req.httpBody = multipartBody(boundary: boundary, wav: wav, language: language)
+        req.httpBody = multipartBody(
+            boundary: boundary, audio: audio, filename: filename,
+            contentType: contentType, language: language
+        )
         let data = try await send(req)
         struct Resp: Decodable { let text: String? }
         return (try? JSONDecoder().decode(Resp.self, from: data))?.text ?? ""
@@ -399,7 +406,11 @@ enum BackendClient {
     /// file と language だけ送る（EL の passthrough とは違い透過フラグは付けない）。
     /// サーバーは consume:true で無料枠を同期消費するので、クライアント側の confirm は不要
     /// （Deepgram の再利用トークン方式とは別＝1 プロキシ呼び出し=1 消費）。
-    static func transcribeGroq(wav: Data, language: String) async throws -> String {
+    /// audio は FLAC（可逆・約半分）を優先。サーバーはクライアントの filename をそのまま Groq へ
+    /// 転送するので、拡張子で FLAC/WAV を Groq に伝えられる（Groq は OpenAI 互換で FLAC を受理）。
+    static func transcribeGroq(
+        audio: Data, filename: String, contentType: String, language: String
+    ) async throws -> String {
         try? await AuthClient.ensureValidSession()  // 失効間際なら先にリフレッシュ
         var req = try authorizedRequest(path: ServerConfig.groqTranscribeProxyPath)
         req.httpMethod = "POST"
@@ -408,7 +419,10 @@ enum BackendClient {
         // 普通入力は短尺（ホールド発話）なので token 取得用の短い既定(15s)を少しだけ延長する程度でよい
         // （長文の EL=90s とは別事情）。
         req.timeoutInterval = 60
-        req.httpBody = groqMultipartBody(boundary: boundary, wav: wav, language: language)
+        req.httpBody = groqMultipartBody(
+            boundary: boundary, audio: audio, filename: filename,
+            contentType: contentType, language: language
+        )
         let data = try await send(req)
         struct Resp: Decodable { let text: String? }
         return (try? JSONDecoder().decode(Resp.self, from: data))?.text ?? ""
@@ -547,9 +561,12 @@ enum BackendClient {
     }
 
     /// ElevenLabs がそのまま受け取れる multipart ボディ（透過用）。
-    /// field: model_id=scribe_v1（モデル固定・製品版仕様）, language_code（任意）, file=audio.wav。
-    /// サーバーは x-vk-passthrough を見てこのボディを EL へ無加工で流す。
-    private static func multipartBody(boundary: String, wav: Data, language: String) -> Data {
+    /// field: model_id=scribe_v1（モデル固定・製品版仕様）, language_code（任意）, file=audio.flac/wav。
+    /// サーバーは x-vk-passthrough を見てこのボディを EL へ無加工で流すので、filename/Content-Type は
+    /// クライアントが決めたものが EL に届く（FLAC を FLAC として伝えられる）。
+    private static func multipartBody(
+        boundary: String, audio: Data, filename: String, contentType: String, language: String
+    ) -> Data {
         var body = Data()
         func append(_ s: String) { body.append(Data(s.utf8)) }
         // モデルは scribe_v1 固定（サーバーが透過するため、クライアント側で EL 形式に含める）
@@ -562,17 +579,19 @@ enum BackendClient {
             append("\(language)\r\n")
         }
         append("--\(boundary)\r\n")
-        append("Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n")
-        append("Content-Type: audio/wav\r\n\r\n")
-        body.append(wav)
+        append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n")
+        append("Content-Type: \(contentType)\r\n\r\n")
+        body.append(audio)
         append("\r\n--\(boundary)--\r\n")
         return body
     }
 
     /// Groq プロキシ用の multipart ボディ。サーバー(Edge)が formData で受けて Groq 形式
     /// （model/response_format はサーバー側で固定）へ組み直すため、クライアントは
-    /// file(WAV) と language(任意) だけ入れる。
-    private static func groqMultipartBody(boundary: String, wav: Data, language: String) -> Data {
+    /// file(FLAC/WAV) と language(任意) だけ入れる。サーバーは filename を Groq へ引き継ぐ。
+    private static func groqMultipartBody(
+        boundary: String, audio: Data, filename: String, contentType: String, language: String
+    ) -> Data {
         var body = Data()
         func append(_ s: String) { body.append(Data(s.utf8)) }
         if !language.isEmpty {
@@ -581,9 +600,9 @@ enum BackendClient {
             append("\(language)\r\n")
         }
         append("--\(boundary)\r\n")
-        append("Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n")
-        append("Content-Type: audio/wav\r\n\r\n")
-        body.append(wav)
+        append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n")
+        append("Content-Type: \(contentType)\r\n\r\n")
+        body.append(audio)
         append("\r\n--\(boundary)--\r\n")
         return body
     }

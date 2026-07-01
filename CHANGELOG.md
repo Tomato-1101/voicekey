@@ -17,6 +17,18 @@ voicekeyの変更履歴を記録するファイルです。
     Groq もサーバープロキシ経由（`transcribeGroq`/`transcribe_groq`）。既定スロットは **1=普通入力(正確性=Groq・押している間) /
     2=ハンズフリー(高精度=ElevenLabs・トグル)**。保存済み deepgram はそのまま維持（範囲外の openai のみ groq へ移行）。
     暖機に Groq プロキシを追加。
+- **製品版のアップロードを FLAC 化して STT の通信時間を約半分に（Mac・release＋サーバ）**。
+  従来サーバープロキシ経路（Groq「正確性」/ ElevenLabs「高精度」）だけ生 WAV を送っていたため、
+  main（自分用・直叩き）の約 2 倍のバイト数を日本↔東京↔米国へアップロードしていた。可逆圧縮の
+  **FLAC**（main の直叩きが両プロバイダーへ FLAC で実証済み・16bit 量子化は WAV と同一で精度への影響ゼロ）に
+  そろえ、**アップロード量を約 43%（実測音源で 234KB→100KB）に削減**＝「1 ホップ」の体感差をさらに縮めた。
+  - **サーバ**（voicekey-site）: Groq プロキシがクライアントの filename をそのまま Groq へ引き継ぐよう修正
+    （`audio.flac` なら FLAC として復号される）。後方互換（filename 未指定/`.wav` は従来どおり）。EL は passthrough で
+    生ボディを EL へ流すためサーバー変更不要。
+  - **クライアント**（Mac=Swift）: Groq/EL プロキシ送信を `WavEncoder`→`encodeAudio`（FLAC 優先・失敗時 WAV）に。
+  - **Windows は当面 WAV 据え置き**（Python に無料の FLAC エンコーダが無く、native lib 同梱は onnxruntime 同梱バグと同種の
+    リスクを実機テスト不可の Windows ビルドに負うため。出力テキストは完全同一・退行なし＝VAD が Mac=RMS/Win=ONNX と
+    実装分岐しているのと同じ「OS 固有内部実装」の範疇）。
 - **放置後の初回録音の遅さを根治（両 OS・release）**。長時間放置後の初回で「ログインセッション期限切れ→更新往復」を
   録音のクリティカルパスで踏んでいたのを、暖機のたびに**先回りでセッションを有効化**（`warm_session`/`ensureValidSession`）して解消。
   Mac は加えて **App Nap を抑止**（`beginActivity(.background)`）してアイドル中も暖機ループを間引かせない＝放置後もセッション/トークンが手元に温存される。
