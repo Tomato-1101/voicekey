@@ -189,11 +189,15 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
   - Mac: `cd macos && ./scripts/build_dmg.sh --version X.Y.Z`（Info.plist 自動 bump・署名・zip/DMG/appcast 生成）
     → DMG を `voicekey-site/downloads/`、`voicekey-X.Y.Z.zip`＋`voicekeyN-M.delta`＋`appcast.xml` を
     `voicekey-site/mac/` へコピー → `downloads.json` の mac を更新。
-  - Windows: `gh workflow run windows-build.yml -f version=X.Y.Z` → `gh run watch`（約15分）→
-    `gh run download -n voicekey-windows-installer -D /tmp/vk_ci/` → setup.exe を
+  - Windows: `gh workflow run windows-build.yml --ref release -f version=X.Y.Z`（**--ref release 必須**）→
+    `gh run watch`（約15分）→ 成果物は転送用 Release `winci-X.Y.Z` にあるので
+    `gh release download winci-X.Y.Z --repo Tomato-1101/voicekey` で取得 →
+    **`venv/bin/python scripts/build/sign_update.py --exe <setup.exe> --version-json <version.json>` で
+    Ed25519 署名を version.json に付与（このステップを飛ばすと公開鍵入りビルドが自動更新を拒否する。
+    v1.7.0 で漏れた実績あり・必須）** → setup.exe を
     `voicekey-releases` の GitHub Releases（タグ `vX.Y.Z`）へ `gh release create` で公開 →
-    CI が出力した `version.json`（GitHub Releases の URL を含む）を `voicekey-site/windows/` へ置き、
-    `downloads.json` の windows を更新（sha256・size も）。
+    署名済み `version.json` を `voicekey-site/windows/` へ置き、
+    `downloads.json` の windows を更新（sha256・size も）→ 転送用 `winci-X.Y.Z` を削除。
   - 仕上げ: `cd voicekey-site && vercel deploy --prod`（既存ユーザーへ自動更新が配信される）→
     アプリ本体リポで Info.plist/CHANGELOG/README のコミット。
   - 詳細は docs/BUILD_WINDOWS.md。
