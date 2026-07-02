@@ -16,6 +16,14 @@ import os.log
 
 private let log = Logger(subsystem: "com.voicekey.app", category: "main")
 
+/// オンボーディング状態の UserDefaults キー（初回起動セットアップ・Phase 5）。
+private enum OnboardingKeys {
+    /// オンボーディングを完了（またはスキップ）したか
+    static let didComplete = "didCompleteOnboarding"
+    /// 入力監視の再起動などで中断した位置（再起動後にそこから再開する）
+    static let savedStep = "onboardingStep"
+}
+
 @main
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -72,9 +80,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let controller = AppController()
         self.controller = controller
-        statusBar = StatusItemController(controller: controller)
-        controller.startup()
+        let statusBar = StatusItemController(controller: controller)
+        self.statusBar = statusBar
+
+        // --- 初回起動オンボーディング（Phase 5）の分岐 ---
+        // 未完了なら startup() を「呼ばず」にセットアップを表示し、完了/クローズ時に startup()
+        // を呼ぶ（説明前にいきなりマイクダイアログが出る事故を防ぐ）。
+        let defaults = UserDefaults.standard
+        // 既存ユーザー判定に使う自動起動フラグは、登録で true になる「前」に読む
+        let didComplete = defaults.bool(forKey: OnboardingKeys.didComplete)
+        let didSetupLaunch = defaults.bool(forKey: "didSetupLaunchAtLogin")
+        let savedStep = defaults.object(forKey: OnboardingKeys.savedStep) as? Int
+        // デバッグ再表示: VOICEKEY_OPEN_ONBOARDING（env / defaults）があれば強制表示（読み取り後に削除）
+        let forceOnboarding = (defaults.string(forKey: "VOICEKEY_OPEN_ONBOARDING")
+            ?? ProcessInfo.processInfo.environment["VOICEKEY_OPEN_ONBOARDING"]) != nil
+        if forceOnboarding {
+            defaults.removeObject(forKey: "VOICEKEY_OPEN_ONBOARDING")
+        }
+
+        let action = OnboardingDecider.launchAction(
+            didCompleteOnboarding: didComplete,
+            didSetupLaunchAtLogin: didSetupLaunch,
+            savedStep: savedStep
+        )
+        var startNow = true
+        var onboardingStep: Int?
+        switch action {
+        case .skip:
+            startNow = true
+        case .autoComplete:
+            // 既存ユーザー: 完了フラグを補完して以後は出さない（本体はそのまま起動）
+            defaults.set(true, forKey: OnboardingKeys.didComplete)
+            startNow = true
+        case .show(let step):
+            // 完了/クローズ時に startup() を呼ぶ（ここでは開始しない）
+            startNow = false
+            onboardingStep = step
+        }
+        // デバッグ強制表示: 完了済みでも重ねて開く（本体は通常どおり起動する）
+        if forceOnboarding, onboardingStep == nil {
+            onboardingStep = 0
+        }
+
+        if startNow {
+            controller.startup()
+        }
         registerLaunchAtLoginIfFirstRun()
+        if let onboardingStep {
+            statusBar.showOnboarding(fromStep: onboardingStep)
+        }
 
         // デバッグ用: 起動直後に設定ウィンドウを開く（一回限り、読み取り後に削除）
         // 使い方: defaults write com.voicekey.app VOICEKEY_OPEN_SETTINGS -string 3 → 起動
@@ -83,7 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let debugTab {
             UserDefaults.standard.removeObject(forKey: "VOICEKEY_OPEN_SETTINGS")
             log.info("デバッグ: 設定ウィンドウを自動表示します (tab=\(debugTab, privacy: .public))")
-            statusBar?.showSettings(initialTab: Int(debugTab) ?? 0)
+            statusBar.showSettings(initialTab: Int(debugTab) ?? 0)
         }
     }
 
@@ -113,7 +167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 /// アイコンは `AppController.state` の変化を購読して更新する
 /// （idle: テンプレート / 録音中: 赤・紫 / 文字起こし中: オレンジ）。
 @MainActor
-final class StatusItemController: NSObject {
+final class StatusItemController: NSObject, NSWindowDelegate {
 
     private let statusItem: NSStatusItem
     private let stateMenuItem: NSMenuItem
@@ -121,6 +175,10 @@ final class StatusItemController: NSObject {
     private var stateObservation: AnyCancellable?
     private var settingsWindow: NSWindow?
     private var feedbackWindow: NSWindow?
+    /// 初回セットアップ（オンボーディング）ウィンドウ
+    private var onboardingWindow: NSWindow?
+    /// オンボーディングを完了/再起動処理済みか（クローズでの二重処理を防ぐ）
+    private var onboardingFinished = false
 
     init(controller: AppController) {
         self.controller = controller
@@ -163,6 +221,15 @@ final class StatusItemController: NSObject {
         )
         feedback.target = self
         menu.addItem(feedback)
+
+        // 初回セットアップをいつでも開き直せるようにする（Phase 5）
+        let guide = NSMenuItem(
+            title: "セットアップガイド…",
+            action: #selector(openOnboarding),
+            keyEquivalent: ""
+        )
+        guide.target = self
+        menu.addItem(guide)
         menu.addItem(.separator())
 
         let quit = NSMenuItem(title: "voicekey を終了", action: #selector(quitApp), keyEquivalent: "q")
@@ -212,6 +279,83 @@ final class StatusItemController: NSObject {
         // アクセサリアプリはそのままだと前面に出ないため明示的にアクティブ化する
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+    }
+
+    /// メニューからいつでもオンボーディングを開き直す（Phase 5）。
+    @objc private func openOnboarding() {
+        showOnboarding(fromStep: 0)
+    }
+
+    /// 初回セットアップ（オンボーディング）ウィンドウを表示する。
+    /// FeedbackView と同じ NSWindow + NSHostingController パターン。
+    func showOnboarding(fromStep: Int) {
+        guard let controller else { return }
+        // 既存ウィンドウがあれば作り直す（前回の進行状態を残さない）
+        onboardingWindow?.close()
+        onboardingFinished = false
+
+        let model = OnboardingModel(
+            startStep: OnboardingStep(rawValue: fromStep) ?? .welcome,
+            config: controller.config,
+            onFinish: { [weak self] in self?.finishOnboarding() },
+            onRestart: { [weak self] in self?.restartForInputMonitoring() }
+        )
+        let hosting = NSHostingController(rootView: OnboardingView(model: model))
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "VoiceKey へようこそ"
+        window.styleMask = [.titled, .closable]
+        window.isReleasedWhenClosed = false
+        window.delegate = self  // クローズ（×）をスキップ扱いにするため
+        window.center()
+        onboardingWindow = window
+        // アクセサリアプリはそのままだと前面に出ないため明示的にアクティブ化する
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    /// 「使い始める」= 完了。フラグを立てて本体を開始し、ウィンドウを閉じる。
+    private func finishOnboarding() {
+        guard !onboardingFinished else { return }
+        onboardingFinished = true
+        markOnboardingComplete()
+        // 権限案内は済んでいるので NSAlert を二重に出さない
+        controller?.startup(showPermissionAlert: false)
+        onboardingWindow?.close()  // windowWillClose は onboardingFinished=true で二重処理しない
+    }
+
+    /// 入力監視の反映にプロセス再起動が必要なとき: 現在ステップを保存して再起動する。
+    private func restartForInputMonitoring() {
+        // 再起動後に入力監視ステップから再開する（完了フラグは立てない）
+        UserDefaults.standard.set(OnboardingStep.inputMonitoring.rawValue, forKey: OnboardingKeys.savedStep)
+        // 再起動なのでクローズをスキップ扱いにしない
+        onboardingFinished = true
+        relaunchApp()
+    }
+
+    /// アプリを再起動する（新インスタンスを起動して自分は終了）。
+    private func relaunchApp() {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        proc.arguments = ["-n", Bundle.main.bundlePath]
+        try? proc.run()
+        NSApp.terminate(nil)
+    }
+
+    /// 完了フラグを立て、中断ステップを消す。
+    private func markOnboardingComplete() {
+        let d = UserDefaults.standard
+        d.set(true, forKey: OnboardingKeys.didComplete)
+        d.removeObject(forKey: OnboardingKeys.savedStep)
+    }
+
+    /// ウィンドウの × で閉じた場合はスキップ扱い（完了フラグを立てて毎回は出さない・本体は起動）。
+    func windowWillClose(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === onboardingWindow else { return }
+        onboardingWindow = nil
+        guard !onboardingFinished else { return }  // 「使い始める」/ 再起動で処理済みなら何もしない
+        onboardingFinished = true
+        markOnboardingComplete()
+        controller?.startup(showPermissionAlert: false)
     }
 
     /// 設定ウィンドウを表示する

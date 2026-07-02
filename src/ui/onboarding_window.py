@@ -1,0 +1,377 @@
+"""
+初回起動オンボーディングウィンドウ（Phase 5・Windows）
+
+初回起動でアプリがタスクトレイに黙って常駐すると「何これ？」となるため、
+起動時にセットアップウィンドウを自動表示し、概要 → ログイン → 使い方の 3 ステップを
+案内する。Windows には OS の権限ゲート（マイク/アクセシビリティ/入力監視）が無いので
+権限ステップは持たない（Mac 版は 6 ステップ）。
+
+文言は Phase 4 で刷新した新語彙（録音キー／文字起こしモード／リアルタイム／
+スタンダード／文章を自動で整える）に合わせる。ログインは settings_window と同じ
+login_coordinator を流用し、ブラウザで行う（「あとで」でスキップ可）。
+
+完了/クローズ時に onboarding_finished シグナルを 1 度だけ発火し、
+app 側が settings.yaml の did_complete_onboarding を True にする。
+"""
+
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import (
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+from ..utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+# 文字起こしモード（バックエンド）→ 新語彙の表示名。
+# リアルタイム=Deepgram / スタンダード=Groq（既定）。選択肢外（elevenlabs/openai）は
+# 内部利用のため「スタンダード」表示にフォールバックする。
+_BACKEND_LABELS = {
+    "deepgram": "リアルタイム",
+    "groq": "スタンダード",
+    "elevenlabs": "スタンダード",
+    "openai": "スタンダード",
+}
+# 録音のしかた（モード）→ 新語彙の表示名。
+_MODE_LABELS = {
+    "hold": "押している間だけ",
+    "toggle": "押すたびに開始・停止",
+}
+
+
+class OnboardingWindow(QDialog):
+    """初回セットアップの案内ウィンドウ（3 ステップ）。"""
+
+    # 完了（またはスキップ）時に 1 度だけ発火。app が完了フラグ保存に使う
+    onboarding_finished = Signal()
+
+    def __init__(self, config_manager, parent=None) -> None:
+        super().__init__(parent)
+        self._config = config_manager
+        self._finished_emitted = False
+        self._step = 0
+
+        self.setWindowTitle("VoiceKey へようこそ")
+        self.setMinimumWidth(540)
+        self.setMinimumHeight(440)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # --- ヘッダー（タイトル + ステップドット） ---
+        header = QVBoxLayout()
+        header.setContentsMargins(24, 20, 24, 12)
+        header.setSpacing(10)
+        title = QLabel("VoiceKey へようこそ")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("font-size: 15px; font-weight: 600;")
+        header.addWidget(title)
+        self._dots = _StepDots(count=3)
+        header.addWidget(self._dots, alignment=Qt.AlignmentFlag.AlignCenter)
+        root.addLayout(header)
+        root.addWidget(_hline())
+
+        # --- 本文（3 ステップをスタック） ---
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self._build_welcome_page())
+        self._stack.addWidget(self._build_login_page())
+        self._stack.addWidget(self._build_done_page())
+        root.addWidget(self._stack, 1)
+
+        # --- フッター（戻る / 主ボタン） ---
+        root.addWidget(_hline())
+        footer = QHBoxLayout()
+        footer.setContentsMargins(20, 12, 20, 16)
+        footer.setSpacing(8)
+        self._back_btn = QPushButton("戻る")
+        self._back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._back_btn.clicked.connect(self._on_back)
+        footer.addWidget(self._back_btn)
+        footer.addStretch(1)
+        self._primary_btn = QPushButton("セットアップを始める")
+        self._primary_btn.setDefault(True)
+        self._primary_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._primary_btn.clicked.connect(self._on_primary)
+        footer.addWidget(self._primary_btn)
+        root.addLayout(footer)
+
+        # ログイン待ち/交換中はステータスをポーリングして表示を最新化する
+        # （deep link はブラウザ→OS→アプリと非同期に戻ってくるため）
+        self._login_poll = QTimer(self)
+        self._login_poll.setInterval(800)
+        self._login_poll.timeout.connect(self._refresh_login_status)
+
+        self._update_nav()
+
+    # ------------------------------------------------------------------
+    # ページ生成
+    # ------------------------------------------------------------------
+
+    def _build_welcome_page(self) -> QWidget:
+        return _make_page(
+            heading="録音キーを押して話すだけ",
+            body=(
+                "録音キーを押して話すだけ。離すとカーソル位置に文字が入ります。\n\n"
+                "はじめにログインと使い方を確認します。数十秒で終わります。"
+            ),
+        )
+
+    def _build_login_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(32, 28, 32, 28)
+        layout.setSpacing(14)
+
+        heading = QLabel("ログイン")
+        heading.setStyleSheet("font-size: 20px; font-weight: 700;")
+        layout.addWidget(heading)
+
+        desc = QLabel(
+            "ログインすると無料体験で文字起こしが使えます。ログインはブラウザで行います。"
+            "あとで設定画面からでも可能です。"
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet("color: #8E8E93;")
+        layout.addWidget(desc)
+
+        # ログイン状態の表示行（未ログイン/待ち/処理中/済み）
+        self._login_status = QLabel("")
+        self._login_status.setWordWrap(True)
+        layout.addWidget(self._login_status)
+
+        self._login_btn = QPushButton("ブラウザでログイン")
+        self._login_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._login_btn.clicked.connect(self._on_login_clicked)
+        row = QHBoxLayout()
+        row.addWidget(self._login_btn)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        layout.addStretch(1)
+        return page
+
+    def _build_done_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(32, 28, 32, 28)
+        layout.setSpacing(14)
+
+        heading = QLabel("準備ができました")
+        heading.setStyleSheet("font-size: 20px; font-weight: 700;")
+        layout.addWidget(heading)
+
+        desc = QLabel(
+            "下の録音キーを押して話すと、その場に文字が入ります。"
+            "設定はタスクトレイのアイコンからいつでも変えられます。"
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet("color: #8E8E93;")
+        layout.addWidget(desc)
+
+        # 実際の既定設定を settings.yaml から読んで表示する（ハードコードしない）
+        layout.addWidget(self._usage_card("録音キー 1（メイン）", self._config.get("hotkey1", {})))
+        layout.addWidget(self._usage_card("録音キー 2（サブ）", self._config.get("hotkey2", {})))
+        layout.addStretch(1)
+        return page
+
+    def _usage_card(self, slot_label: str, slot: dict) -> QWidget:
+        """録音キー 1 つ分の使い方カード（キー表記・文字起こしモード・録音のしかた）。"""
+        hotkey = str(slot.get("hotkey", "") or "未設定")
+        backend = str(slot.get("backend", "") or "").lower()
+        mode = str(slot.get("hotkey_mode", "") or "").lower()
+        backend_label = _BACKEND_LABELS.get(backend, "スタンダード")
+        mode_label = _MODE_LABELS.get(mode, mode)
+
+        card = QFrame()
+        card.setObjectName("onboardingCard")
+        card.setStyleSheet(
+            "#onboardingCard { border-radius: 10px; background: rgba(127,127,127,0.10); }"
+        )
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(14, 12, 14, 12)
+        cl.setSpacing(3)
+        name = QLabel(slot_label)
+        name.setStyleSheet("font-weight: 600;")
+        cl.addWidget(name)
+        detail = QLabel(f"キー: {hotkey} ／ {backend_label} ／ {mode_label}")
+        detail.setStyleSheet("color: #8E8E93;")
+        detail.setWordWrap(True)
+        cl.addWidget(detail)
+        return card
+
+    # ------------------------------------------------------------------
+    # ナビゲーション
+    # ------------------------------------------------------------------
+
+    def _on_back(self) -> None:
+        if self._step > 0:
+            self._step -= 1
+            self._go_to(self._step)
+
+    def _on_primary(self) -> None:
+        if self._step >= 2:
+            self._finish()
+            return
+        self._step += 1
+        self._go_to(self._step)
+
+    def _go_to(self, step: int) -> None:
+        self._stack.setCurrentIndex(step)
+        self._update_nav()
+        if step == 1:
+            self._refresh_login_status()
+
+    def _update_nav(self) -> None:
+        """現在ステップに合わせて戻る/主ボタンの表示・文言を更新する。"""
+        self._dots.set_current(self._step)
+        self._back_btn.setVisible(self._step > 0)
+        if self._step == 0:
+            self._primary_btn.setText("セットアップを始める")
+        elif self._step == 1:
+            # ログイン済みなら「次へ」、未ログインなら「あとで」（スキップ可）
+            self._primary_btn.setText("次へ" if self._is_logged_in() else "あとで")
+        else:
+            self._primary_btn.setText("使い始める")
+
+    # ------------------------------------------------------------------
+    # ログイン（settings_window と同じ login_coordinator を流用）
+    # ------------------------------------------------------------------
+
+    def _on_login_clicked(self) -> None:
+        """ログイン開始: state を生成し、既定ブラウザでログインページを開く。"""
+        from ..core import login_coordinator
+
+        url = login_coordinator.shared().begin_login()
+        QDesktopServices.openUrl(QUrl(url))
+        self._refresh_login_status()
+        self._login_poll.start()
+
+    def _is_logged_in(self) -> bool:
+        from ..core import login_coordinator
+
+        return login_coordinator.shared().status == login_coordinator.LoginCoordinator.LOGGED_IN
+
+    def _refresh_login_status(self) -> None:
+        """ログイン状態を表示へ反映する（ポーリング/表示切替時に呼ぶ）。"""
+        from ..core import login_coordinator
+
+        coord = login_coordinator.shared()
+        LC = login_coordinator.LoginCoordinator
+        status = coord.status
+        if status == LC.LOGGED_IN:
+            email = coord.account_email
+            self._login_status.setText(f"ログイン済み（{email}）" if email else "ログイン済み")
+            self._login_status.setStyleSheet("color: #34C759;")
+            self._login_btn.setVisible(False)
+            self._login_poll.stop()
+        elif status == LC.WAITING:
+            self._login_status.setText("ブラウザでログインを完了してください…")
+            self._login_status.setStyleSheet("color: #8E8E93;")
+            self._login_btn.setEnabled(True)
+        elif status == LC.EXCHANGING:
+            self._login_status.setText("ログイン処理中…")
+            self._login_status.setStyleSheet("color: #8E8E93;")
+            self._login_btn.setEnabled(False)
+        elif status == LC.FAILED:
+            self._login_status.setText(coord.error or "ログインに失敗しました。")
+            self._login_status.setStyleSheet("color: #FF9F0A;")
+            self._login_btn.setVisible(True)
+            self._login_btn.setEnabled(True)
+            self._login_poll.stop()
+        else:  # IDLE（未ログイン）
+            self._login_status.setText("")
+            self._login_btn.setVisible(True)
+            self._login_btn.setEnabled(True)
+        # ログイン済みになったら主ボタンを「次へ」に更新する
+        if self._step == 1:
+            self._primary_btn.setText("次へ" if self._is_logged_in() else "あとで")
+
+    # ------------------------------------------------------------------
+    # 完了/クローズ（スキップも完了扱いにして毎回は出さない）
+    # ------------------------------------------------------------------
+
+    def _finish(self) -> None:
+        self._emit_finished_once()
+        self.close()
+
+    def _emit_finished_once(self) -> None:
+        if self._finished_emitted:
+            return
+        self._finished_emitted = True
+        self._login_poll.stop()
+        self.onboarding_finished.emit()
+
+    def reject(self) -> None:
+        """Esc/キャンセル。スキップ扱いで完了フラグを立てる（毎回は出さない）。"""
+        self._emit_finished_once()
+        super().reject()
+
+    def closeEvent(self, event) -> None:
+        """× で閉じた場合もスキップ扱いで完了フラグを立てる。"""
+        self._emit_finished_once()
+        super().closeEvent(event)
+
+
+class _StepDots(QWidget):
+    """ステップ進行を示す小さなドット列（現在＝アクセント／通過＝半透明）。"""
+
+    def __init__(self, count: int, parent=None) -> None:
+        super().__init__(parent)
+        self._current = 0
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self._dots = []
+        for _ in range(count):
+            dot = QLabel()
+            dot.setFixedSize(8, 8)
+            self._dots.append(dot)
+            layout.addWidget(dot)
+        self.set_current(0)
+
+    def set_current(self, current: int) -> None:
+        self._current = current
+        for i, dot in enumerate(self._dots):
+            if i == current:
+                color = "#0A84FF"
+            elif i < current:
+                color = "rgba(10,132,255,0.5)"
+            else:
+                color = "rgba(127,127,127,0.35)"
+            dot.setStyleSheet(f"background: {color}; border-radius: 4px;")
+
+
+def _make_page(heading: str, body: str) -> QWidget:
+    """見出し + 本文だけの単純ページ（ようこそ用）。"""
+    page = QWidget()
+    layout = QVBoxLayout(page)
+    layout.setContentsMargins(32, 28, 32, 28)
+    layout.setSpacing(14)
+    h = QLabel(heading)
+    h.setStyleSheet("font-size: 20px; font-weight: 700;")
+    h.setWordWrap(True)
+    layout.addWidget(h)
+    b = QLabel(body)
+    b.setWordWrap(True)
+    b.setStyleSheet("color: #8E8E93;")
+    layout.addWidget(b)
+    layout.addStretch(1)
+    return page
+
+
+def _hline() -> QFrame:
+    """水平の区切り線。"""
+    line = QFrame()
+    line.setFrameShape(QFrame.Shape.HLine)
+    line.setFrameShadow(QFrame.Shadow.Sunken)
+    line.setStyleSheet("color: rgba(127,127,127,0.25);")
+    return line

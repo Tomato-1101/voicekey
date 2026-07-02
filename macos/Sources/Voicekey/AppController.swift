@@ -129,8 +129,10 @@ final class AppController: ObservableObject {
 
     private var started = false
 
-    /// アプリ起動時に呼ぶ（権限確認 → 監視開始）。多重呼び出しは無視する
-    func startup() {
+    /// アプリ起動時に呼ぶ（権限確認 → 監視開始）。多重呼び出しは無視する。
+    /// - Parameter showPermissionAlert: 権限不足時の NSAlert を出すか。オンボーディング完了直後は
+    ///   すでに権限を案内済みなので false を渡し、案内が二重に出ないようにする。
+    func startup(showPermissionAlert: Bool = true) {
         guard !started else { return }
         started = true
         Task {
@@ -172,7 +174,7 @@ final class AppController: ObservableObject {
 
             // 入力監視・アクセシビリティ権限の確認と監視開始
             let tapOK = hotkeys.start()
-            checkPermissions(micGranted: micOK, tapCreated: tapOK)
+            checkPermissions(micGranted: micOK, tapCreated: tapOK, showAlert: showPermissionAlert)
         }
     }
 
@@ -753,7 +755,7 @@ final class AppController: ObservableObject {
 
     // MARK: - 権限確認
 
-    private func checkPermissions(micGranted: Bool, tapCreated: Bool) {
+    private func checkPermissions(micGranted: Bool, tapCreated: Bool, showAlert: Bool = true) {
         let axTrusted = AXIsProcessTrusted()
 
         var problems: [String] = []
@@ -767,6 +769,12 @@ final class AppController: ObservableObject {
             problems.append("「マイク」が許可されていません（録音できません）")
         }
         guard !problems.isEmpty else { return }
+        // オンボーディング完了直後は権限案内を済ませているため、NSAlert を二重に出さない
+        // （不足はログにだけ残す）
+        guard showAlert else {
+            log.warning("権限不足（オンボーディング後のためアラートは抑止）: \(problems.joined(separator: " / "), privacy: .public)")
+            return
+        }
 
         let alert = NSAlert()
         alert.messageText = "voicekey に権限が必要です"

@@ -94,6 +94,27 @@ final class HotkeyMonitor {
         return true
     }
 
+    /// 入力監視権限の実効チェック用に、listen-only タップを試作して即破棄する（オンボーディング用）。
+    /// 権限（TCC）が付いていても、プロセス起動時にタップが作れなかった環境では再起動するまで
+    /// 有効化されないことが実測である。作成できたかどうかだけを返し、監視は開始しない。
+    static func canCreateEventTap() -> Bool {
+        let mask: CGEventMask = 1 << CGEventType.keyDown.rawValue
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .listenOnly,
+            eventsOfInterest: mask,
+            callback: { _, _, event, _ in Unmanaged.passUnretained(event) },
+            userInfo: nil
+        ) else {
+            return false
+        }
+        // 実際には駆動しないので、作った直後に無効化して破棄する
+        CGEvent.tapEnable(tap: tap, enable: false)
+        CFMachPortInvalidate(tap)
+        return true
+    }
+
     /// 監視を停止する
     func stop() {
         if let tap {

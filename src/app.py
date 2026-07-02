@@ -32,7 +32,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from typing import Dict, Optional, Set
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, QThread, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox
 from pynput import keyboard
 
@@ -319,6 +319,12 @@ class VoicekeyApp(QObject):
 
         # macOS の権限不足は「ホットキーが無言で効かない」となるため起動時に明示
         self._check_permissions()
+
+        # 初回起動オンボーディング（Phase 5）。未完了なら初回だけセットアップウィンドウを出す。
+        # イベントループ開始後に表示するため singleShot(0) で後回しにする（__init__ 中に
+        # モーダルを出すと初期化が止まるため）。参照を保持してウィンドウが GC されないようにする。
+        self._onboarding_window = None
+        QTimer.singleShot(0, self._maybe_show_onboarding)
 
         logger.info("アプリケーション準備完了")
         self._emit_state()
@@ -1278,6 +1284,35 @@ class VoicekeyApp(QObject):
     # ------------------------------------------------------------------
     # UI アクション
     # ------------------------------------------------------------------
+
+    def _maybe_show_onboarding(self) -> None:
+        """初回起動なら初回セットアップウィンドウを表示する（Phase 5）。
+
+        - 完了済み（did_complete_onboarding=True）→ 出さない。
+        - 既存ユーザー（起動時に settings.yaml が既にあった）→ フラグを補完して出さない。
+        - 完全な初回起動（ファイルが無かった）→ 表示する。
+        閉じる/スキップ/完了のいずれでも onboarding_finished で完了フラグを立て、以後は出さない。
+        """
+        if self._config.get("did_complete_onboarding", False):
+            return
+        if getattr(self._config, "config_file_existed", True):
+            # 既存ユーザー: いきなり出すと戸惑うので、フラグを補完して以後出さない
+            self._config.save({"did_complete_onboarding": True})
+            return
+
+        from .ui.onboarding_window import OnboardingWindow
+
+        win = OnboardingWindow(self._config)
+        win.onboarding_finished.connect(self._on_onboarding_finished)
+        self._onboarding_window = win
+        win.show()
+        win.raise_()
+        win.activateWindow()
+        self._platform.bring_to_front(win)
+
+    def _on_onboarding_finished(self) -> None:
+        """オンボーディング完了/スキップ時に完了フラグを保存する。"""
+        self._config.save({"did_complete_onboarding": True})
 
     def _open_settings(self) -> None:
         """設定ウィンドウを開いて確実に前面化する。"""

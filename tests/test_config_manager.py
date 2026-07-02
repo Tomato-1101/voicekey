@@ -202,5 +202,32 @@ class TestAtomicSave(unittest.TestCase):
                 os.unlink(path + ".tmp")
 
 
+class TestFirstRunFlag(unittest.TestCase):
+    """初回起動判定（config_file_existed）と did_complete_onboarding 既定値（Phase 5）。"""
+
+    def test_existing_file_marks_existed_true(self):
+        # 起動時に settings.yaml が既にある＝既存ユーザー扱い
+        handle = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False, encoding="utf-8")
+        yaml.dump({"language": "ja"}, handle, allow_unicode=True)
+        handle.close()
+        try:
+            mgr = ConfigManager(config_path=handle.name)
+            self.assertTrue(mgr.config_file_existed)
+        finally:
+            os.unlink(handle.name)
+
+    def test_missing_file_marks_existed_false(self):
+        # ファイルが無い＝完全な初回起動 → オンボーディングを出す対象
+        path = os.path.join(tempfile.gettempdir(), "voicekey_nonexistent_config_xyz.yaml")
+        if os.path.exists(path):
+            os.unlink(path)
+        mgr = ConfigManager(config_path=path)
+        self.assertFalse(mgr.config_file_existed)
+
+    def test_did_complete_onboarding_default_false(self):
+        self.assertIn("did_complete_onboarding", DEFAULT_CONFIG)
+        self.assertFalse(DEFAULT_CONFIG["did_complete_onboarding"])
+
+
 if __name__ == "__main__":
     unittest.main()

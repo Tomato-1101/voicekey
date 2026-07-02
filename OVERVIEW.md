@@ -44,6 +44,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 
 | 機能 | 概要 | Mac | Win |
 |---|---|:--:|:--:|
+| 初回セットアップガイド | 初回起動時にオンボーディングを自動表示（Mac=6 ステップ・権限を順に案内／Win=3 ステップ）。既存ユーザーには出さない・完了フラグで再表示抑止（詳細は CHANGELOG） | ✅ | ✅ |
 | デュアルホットキー | 2 スロットを独立設定（キー/モード/バックエンド） | ✅ | ✅ |
 | hold / toggle モード | 押している間 / トグルで録音 | ✅ | ✅ |
 | ハンズフリー録音 | 切替キーで開始・停止（録音中は HUD 表示） | ✅ | ✅ |
@@ -75,6 +76,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | VAD / マイク自動検出 / 履歴 | `Core/VoiceActivity.swift` / `MicAutoDetector.swift` / `HistoryStore.swift` | `core/vad.py` / `mic_auto_detect.py` / `history.py` |
 | 使用実績（統計・レベル） | `Core/StatsStore.swift` | `core/stats.py` |
 | 設定画面 UI | `UI/SettingsView.swift` / `HotkeyRecorderView.swift` | `ui/settings_window.py` / `styles.py` |
+| 初回セットアップ（オンボーディング） | `UI/OnboardingView.swift`（起動分岐は `VoicekeyApp.swift`） | `ui/onboarding_window.py`（表示配線は `app.py`） |
 | HUD / トレイ | `UI/Hud.swift` / `VoicekeyApp.swift`（メニューバー） | `ui/hud.py` / `system_tray.py` |
 | API キー保管 | `Core/Keychain.swift` / `Config/EmbeddedKeys.generated.swift` | `utils/secrets.py` / `.env` |
 | 自動更新 | `Core/UpdaterController.swift`（Sparkle） | `utils/updater.py` |

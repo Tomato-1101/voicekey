@@ -4,6 +4,15 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased]
 
+### Added
+- **初回起動オンボーディング（初回セットアップガイド）を追加（両 OS・release）**。初回起動でアプリが黙って常駐して「何これ？」となるのを解消し、権限取得を場当たりでなく順に案内する。
+  - **Mac（6 ステップ）**: ようこそ → マイク → アクセシビリティ → 入力監視 → ログイン → 完了。各権限ステップは 1 秒ポーリングで許可されたら✓を出して次へ進める。マイクは拒否済みならシステム設定を開くボタンへ切替。入力監視は許可後に `CGEventTap` の作成を試し、失敗したら「アプリを再起動」ボタンを出す（反映にプロセス再起動が要る実測ケース）。再起動時は現在ステップを保存して再開する。ログインは既存の `LoginCoordinator` を購読し「あとで」でスキップ可。完了ページは実際の既定設定（録音キー・文字起こしモード・録音のしかた）を `ConfigStore` から読んで表示する。
+  - **Windows（3 ステップ）**: ようこそ → ログイン（`login_coordinator` を流用・「あとで」可）→ 使い方（既定ホットキーを表示）。Windows は OS 権限ゲートが無いため権限ステップは持たない。
+  - **起動シーケンス**: 初回未完了なら本体の `startup()` を呼ばずにセットアップを表示し、完了/クローズ時に開始する（説明前にいきなりマイクダイアログが出る事故を防ぐ）。**既存ユーザー**（Mac=`didSetupLaunchAtLogin` が既に true／Windows=起動時に `settings.yaml` が既に存在）には出さず、完了フラグを補完する。ウィンドウを閉じてもスキップ扱いで完了フラグを立て、毎回は出さない。完了直後の権限チェック NSAlert は二重に出さないよう抑止する。
+  - **デバッグ再表示**: Mac=環境変数/UserDefaults `VOICEKEY_OPEN_ONBOARDING` で強制表示＋メニューバーに「セットアップガイド…」を追加していつでも開ける。
+  - 文言は Phase 4 の新語彙（録音キー／文字起こしモード／リアルタイム／スタンダード／ハンズフリーキー／文章を自動で整える）に統一（「バックエンド」「トグル」「LLM」等の旧語彙は不使用）。製品名表記は「VoiceKey」。
+  - フラグ: Mac=`UserDefaults`（`didCompleteOnboarding` / 中断再開用 `onboardingStep`）／Windows=`settings.yaml` の `did_complete_onboarding`（既存キーの deep merge で消えない）。保存キー・既存設定の互換は不変。
+
 ### Changed
 - **設定 UI の文言を一般ユーザー向けに刷新（両 OS・release・表示文言のみ）**。専門用語（バックエンド / LLM / トグル 等）を日常語へ言い換えた。保存キー・enum の rawValue・settings.yaml のキー名は一切変更していない（decode/マイグレーション互換を維持）。
   - 設定行ラベル: 「バックエンド」→「文字起こしモード」、「動作」→「録音のしかた」（選択肢「押している間」→「押している間だけ」/「トグル」→「押すたびに開始・停止」）、「テキスト整形（LLM）」→「文章を自動で整える」、「自動 Enter の遅延」→「ダブルタップ送信の待ち時間」、「ハンズフリー切替キー」→「ハンズフリーキー」、「入力デバイス」→「マイク」。
@@ -34,6 +43,7 @@ voicekeyの変更履歴を記録するファイルです。
 - **Mac（`macos/Sources/Voicekey/`）**: `Backend.selectableCases` を `[.deepgram, .groq]` に縮小。`AppController` に `handsfreeTranscriber`（EL scribe_v1・`rebuildTranscribers` で言語追随）を常設し、`beginRecording` で `effectiveMode == .toggle && slot.backend == .groq` のとき `RecordContext.transcriber` を差し替え＋prewarm。`warmBackendsNow` の EL 暖機条件を「groq スロットが toggle か、ハンズフリー切替キー設定あり」に変更。`SettingsView.SlotSettingsTab` にモード説明キャプションを追加。
 - **Windows（`src/`）**: `RELEASE_TRANSCRIBE_BACKENDS = ("deepgram", "groq")`。`app.py` に `_build_handsfree_transcriber` / `_maybe_handsfree_slot`（`self._handsfree_transcriber`）を追加し、`_begin_recording` のスナップショットへ EL スロットを渡す（ログ「ハンズフリー: 内部エンジン切替 (groq→elevenlabs)」）。`_warm_backends_now` の EL 暖機条件を Mac と同一化。`settings_window.py` に `_backend_caption_text` とキャプション更新（`_update_backend_caption`）を追加。DEFAULT_CONFIG の hotkey2 backend を groq に。
 - **テスト**: Mac `SlotConfigMigrationTests`（旧保存値 JSON の decode 移行を検証）を新規追加。Windows `test_handsfree_logic`（`_maybe_handsfree_slot` の toggle/hold/deepgram 分岐）・`test_config_manager`（elevenlabs→groq 移行）を更新。
+- **オンボーディング（Phase 5）**: Mac=`UI/OnboardingView.swift`（`OnboardingStep` / `OnboardingModel` / `OnboardingDecider` / `OnboardingView`）新規、`VoicekeyApp.swift`（起動分岐・`showOnboarding`・`NSWindowDelegate`・再起動イディオム・メニュー項目）改修、`AppController.startup(showPermissionAlert:)` と `HotkeyMonitor.canCreateEventTap()` を追加。Windows=`ui/onboarding_window.py`（`OnboardingWindow`）新規、`app.py`（`_maybe_show_onboarding` / `_on_onboarding_finished`・`QTimer.singleShot`）、`config_manager.config_file_existed`・`constants.DEFAULT_CONFIG["did_complete_onboarding"]` を追加。テスト=Mac `OnboardingDeciderTests`（起動時分岐の純関数）、Windows `test_onboarding_window`（offscreen スモーク）・`test_config_manager` の初回起動フラグ。
 - **製品版の「高速リアルタイム」(Deepgram ストリーミング) が main と違い「話した瞬間に出ない／ローディングが入る」遅延を根治（Mac・release）**。
   原因は文字起こし処理でも通信でもなく、**WebSocket を開くタイミング**だった。main（自分用・未ログイン）は
   親キーで **`connect()` を同期実行**＝ホットキーを押した瞬間に WS ハンドシェイクを始めるのに対し、

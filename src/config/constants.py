@@ -146,6 +146,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "audio_preprocess": {
         "volume_normalize": True,
     },
+
+    # 初回起動オンボーディング（Phase 5）を完了/スキップしたか。
+    # False かつ「起動時に settings.yaml が存在しなかった（＝完全な初回起動）」ときだけ
+    # セットアップウィンドウを出す。既存ユーザー（ファイルが既にあった）は補完して出さない。
+    "did_complete_onboarding": False,
 }
 
 # ============================================

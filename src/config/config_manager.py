@@ -77,6 +77,10 @@ class ConfigManager:
         """
         self.config_path = self._resolve_config_path(config_path)
         self.last_mtime: Optional[float] = None  # ファイル更新時刻
+        # 起動時（＝この初回ロード時）に settings.yaml が既に存在していたか。
+        # 「完全な初回起動（新規インストール）」か「既存ユーザー」かの判定に使う
+        # （初回オンボーディング表示要否・Phase 5）。以後の save/reload では変えない。
+        self.config_file_existed: bool = os.path.exists(self.config_path)
         # config は listener / 設定監視 / UI の各スレッドから read/write されるため保護する
         self._lock = threading.RLock()
         self.config: Dict[str, Any] = self._load_config()
