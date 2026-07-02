@@ -1,7 +1,7 @@
 """
 設定ウィンドウモジュール
 
-Mac 版 SettingsView.swift と同じ 5 ページ構成（一般 / ホットキー 1 / ホットキー 2 / 履歴 / API キー）
+Mac 版 SettingsView.swift と同じ 5 ページ構成（一般 / 録音キー 1（メイン）/ 録音キー 2（サブ）/ 履歴 / API キー）
 ・同じ日本語文言で設定を管理する。
 レイアウトは macOS System Settings 風の「左サイドバーナビ + カード型セクション」。
 ダーク/ライトテーマ切り替えに対応（Qt は OS テーマに自動追従しないため Windows 版のみ）。
@@ -106,8 +106,8 @@ _API_KEY_BACKENDS = [
 
 # ホットキー動作モードの表示順と UI ラベル（Mac 版 HotkeyMode.label と完全一致させる）
 _MODE_LABELS = [
-    (HotkeyMode.HOLD.value, "押している間"),
-    (HotkeyMode.TOGGLE.value, "トグル"),
+    (HotkeyMode.HOLD.value, "押している間だけ"),
+    (HotkeyMode.TOGGLE.value, "押すたびに開始・停止"),
 ]
 
 # 言語選択肢（Mac 版の Picker と完全一致。空文字 = API 側の自動判定）
@@ -224,8 +224,8 @@ def _add_row(
 # ページタイトル → アイコン名のマッピング
 _NAV_ICON_NAME = {
     "一般": "general",
-    "ホットキー 1": "hotkey1",
-    "ホットキー 2": "hotkey2",
+    "録音キー 1（メイン）": "hotkey1",
+    "録音キー 2（サブ）": "hotkey2",
     "実績": "stats",
     "履歴": "history",
     "ユーザー辞書": "dictionary",
@@ -744,7 +744,7 @@ class SettingsWindow(QWidget):
     """
     アプリケーション設定ウィンドウ。
 
-    Mac 版と同じ 5 タブ（一般 / ホットキー 1 / ホットキー 2 / 履歴 / API キー）で設定を管理する。
+    Mac 版と同じ 5 タブ（一般 / 録音キー 1（メイン）/ 録音キー 2（サブ）/ 履歴 / API キー）で設定を管理する。
     設定は settings.yaml に保存し、アプリ側のホットリロードで即反映される。
     """
 
@@ -886,8 +886,8 @@ class SettingsWindow(QWidget):
         self._pages = QStackedWidget()
         page_defs = [
             ("一般", self._create_general_page()),
-            ("ホットキー 1", self._create_slot_page(1)),
-            ("ホットキー 2", self._create_slot_page(2)),
+            ("録音キー 1（メイン）", self._create_slot_page(1)),
+            ("録音キー 2（サブ）", self._create_slot_page(2)),
             ("実績", self._create_stats_page()),
             ("履歴", self._create_history_page()),
         ]
@@ -1044,7 +1044,7 @@ class SettingsWindow(QWidget):
         device_layout.setSpacing(6)
         device_head = QHBoxLayout()
         device_head.setSpacing(8)
-        device_head.addWidget(QLabel("入力デバイス"))
+        device_head.addWidget(QLabel("マイク"))
         device_head.addStretch()
         device_head.addWidget(refresh_button)
         device_head.addWidget(self._mic_detect_button)
@@ -1092,8 +1092,8 @@ class SettingsWindow(QWidget):
         delay_row_layout.addWidget(self._auto_enter_delay_slider)
         delay_row_layout.addWidget(self._auto_enter_delay_label)
         _add_row(
-            cl, "自動 Enter の遅延", delay_row,
-            caption="ホットキーを素早く 2 回押すと、貼り付け後に Enter を送信します。",
+            cl, "ダブルタップ送信の待ち時間", delay_row,
+            caption="録音キーを素早く2回押したとき、貼り付け後に Enter を自動で押すまでの待ち時間です。",
         )
 
         # ハンズフリー切替キー（この切替キー＋ホットキーで toggle 録音になる。空＝無効）
@@ -1110,17 +1110,15 @@ class SettingsWindow(QWidget):
         handsfree_row_layout.addWidget(handsfree_clear)
         handsfree_row_layout.addStretch()
         _add_row(
-            cl, "ハンズフリー切替キー", handsfree_row,
-            caption=(
-                "切替キー＋ホットキーで、トグル録音（1 回で開始・もう 1 回で停止）になります。"
-                "修飾キー（右 Shift など）を推奨。"
-            ),
+            cl, "ハンズフリーキー", handsfree_row,
+            caption="このキーを押しながら録音キーを押すと、押しっぱなしにしなくても録音が続きます"
+            "（もう一度録音キーを押すと停止）。修飾キー（右 Shift など）がおすすめです。",
         )
 
         layout.addWidget(card)
 
         # 製品版はテキスト整形のモデル・指示文を固定（UI 非公開）。
-        # オンオフはホットキー各タブの「テキスト整形（LLM）」トグルで切り替える。
+        # オンオフは録音キー各タブの「文章を自動で整える」トグルで切り替える。
 
         # --- カード: 起動 ---
         card, cl = _make_card()
@@ -1172,7 +1170,7 @@ class SettingsWindow(QWidget):
             mode_combo.addItem(label, value)
         mode_combo.setMinimumWidth(160)
         setattr(self, f"_mode{slot_id}_combo", mode_combo)
-        _add_row(cl, "動作", mode_combo)
+        _add_row(cl, "録音のしかた", mode_combo)
 
         # バックエンド選択（製品版は 2 択: リアルタイム / スタンダード）。
         # モデルは推奨固定で非選択（Deepgram=nova-3 / Groq=whisper-large-v3-turbo）。
@@ -1195,13 +1193,16 @@ class SettingsWindow(QWidget):
         backend_combo.currentIndexChanged.connect(
             lambda _i, sid=slot_id: self._apply_format_default_for_backend(sid)
         )
-        _add_row(cl, "バックエンド", backend_combo, caption_widget=backend_caption)
+        _add_row(cl, "文字起こしモード", backend_combo, caption_widget=backend_caption)
 
-        # テキスト整形（LLM）: 貼り付け前に高速 LLM で 1 回整形する
+        # 文章を自動で整える: 貼り付け前に高速 LLM で 1 回整形する
         # （整形内容は LLM が自動判断。指示は「一般」ページで編集可。Mac 版と構成を一致させる）
         format_check = self._make_toggle()
         setattr(self, f"_format{slot_id}_check", format_check)
-        _add_row(cl, "テキスト整形（LLM）", format_check)
+        _add_row(
+            cl, "文章を自動で整える", format_check,
+            caption="「えー」「あの」などの言いよどみを除去し、句読点や改行を整えます。",
+        )
 
         layout.addWidget(card)
         layout.addStretch()

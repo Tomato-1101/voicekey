@@ -21,8 +21,8 @@ enum HotkeyMode: String, Codable, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .hold: return "押している間"
-        case .toggle: return "トグル"
+        case .hold: return "押している間だけ"
+        case .toggle: return "押すたびに開始・停止"
         }
     }
 }

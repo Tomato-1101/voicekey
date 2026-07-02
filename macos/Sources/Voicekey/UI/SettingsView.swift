@@ -33,8 +33,8 @@ struct SettingsView: View {
     private var navItems: [NavItem] {
         var items: [NavItem] = [
             .init(id: 0, title: "一般", icon: "gearshape"),
-            .init(id: 1, title: "ホットキー 1", icon: "1.circle"),
-            .init(id: 2, title: "ホットキー 2", icon: "2.circle"),
+            .init(id: 1, title: "録音キー 1（メイン）", icon: "1.circle"),
+            .init(id: 2, title: "録音キー 2（サブ）", icon: "2.circle"),
             .init(id: 3, title: "実績", icon: "trophy"),
             .init(id: 4, title: "履歴", icon: "clock.arrow.circlepath"),
             .init(id: 8, title: "ユーザー辞書", icon: "character.book.closed"),
@@ -138,8 +138,8 @@ struct SettingsView: View {
     @ViewBuilder private var content: some View {
         switch selectedTab {
         case 0: GeneralSettingsTab(config: config)
-        case 1: SlotSettingsTab(title: "ホットキー 1", slot: $config.slot1)
-        case 2: SlotSettingsTab(title: "ホットキー 2", slot: $config.slot2)
+        case 1: SlotSettingsTab(title: "録音キー 1（メイン）", slot: $config.slot1)
+        case 2: SlotSettingsTab(title: "録音キー 2（サブ）", slot: $config.slot2)
         case 3: StatsTab(stats: stats)
         case 4: HistoryTab(history: history)
         case 8: DictionaryTab(config: config)
@@ -171,7 +171,7 @@ private struct GeneralSettingsTab: View {
                 Text("自動判定").tag("")
             }
 
-            LabeledContent("入力デバイス") {
+            LabeledContent("マイク") {
                 HStack(spacing: 8) {
                     Picker("", selection: $config.inputDeviceUID) {
                         Text("システム既定").tag("")
@@ -205,7 +205,7 @@ private struct GeneralSettingsTab: View {
                     .font(.caption)
                     .foregroundStyle(isDetectingMic ? Color.accentColor : .secondary)
             }
-            LabeledContent("自動 Enter の遅延") {
+            LabeledContent("ダブルタップ送信の待ち時間") {
                 HStack {
                     TextField(
                         "",
@@ -218,11 +218,11 @@ private struct GeneralSettingsTab: View {
                     Text("ms")
                 }
             }
-            Text("ホットキーを素早く 2 回押すと、貼り付け後に Enter を送信します。")
+            Text("録音キーを素早く2回押したとき、貼り付け後に Enter を自動で押すまでの待ち時間です。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            LabeledContent("ハンズフリー切替キー") {
+            LabeledContent("ハンズフリーキー") {
                 HStack(spacing: 8) {
                     HotkeyRecorderView(hotkey: $config.handsfreeKey)
                     if !config.handsfreeKey.isEmpty {
@@ -231,12 +231,12 @@ private struct GeneralSettingsTab: View {
                     }
                 }
             }
-            Text("切替キー＋ホットキーで、トグル録音（1 回で開始・もう 1 回で停止）になります。修飾キー（右⇧ など）を推奨。")
+            Text("このキーを押しながら録音キーを押すと、押しっぱなしにしなくても録音が続きます（もう一度録音キーを押すと停止）。修飾キー（右⇧ など）がおすすめです。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             // 製品版はテキスト整形のモデル・指示文を固定（UI 非公開）。
-            // オンオフはホットキー各タブの「テキスト整形（LLM）」トグルで切り替える。
+            // オンオフは録音キー各タブの「文章を自動で整える」トグルで切り替える。
 
             Divider()
 
@@ -297,7 +297,7 @@ private struct SlotSettingsTab: View {
                     .frame(width: 220)
             }
 
-            Picker("動作", selection: $slot.mode) {
+            Picker("録音のしかた", selection: $slot.mode) {
                 ForEach(HotkeyMode.allCases) { mode in
                     Text(mode.label).tag(mode)
                 }
@@ -305,7 +305,7 @@ private struct SlotSettingsTab: View {
             .pickerStyle(.segmented)
 
             // 製品版は文字起こし 2 択（リアルタイム / スタンダード）のみ。モデルは推奨固定で非選択。
-            Picker("バックエンド", selection: $slot.backend) {
+            Picker("文字起こしモード", selection: $slot.backend) {
                 ForEach(Backend.selectableCases) { backend in
                     Text(backend.label).tag(backend)
                 }
@@ -325,7 +325,12 @@ private struct SlotSettingsTab: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            Toggle("テキスト整形（LLM）", isOn: $slot.formatEnabled)
+            Toggle("文章を自動で整える", isOn: $slot.formatEnabled)
+            Text("「えー」「あの」などの言いよどみを除去し、句読点や改行を整えます。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .formStyle(.grouped)
         .padding(.vertical, 8)
