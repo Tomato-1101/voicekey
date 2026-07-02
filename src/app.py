@@ -29,7 +29,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, Optional, Set
 
 from PySide6.QtCore import QObject, QThread, Signal
@@ -227,6 +227,9 @@ class VoicekeyApp(QObject):
 
         # --- ホットキースロット ---
         self._slots: Dict[int, HotkeySlot] = self._build_slots()
+        # ハンズフリー(toggle 実効)録音で groq スロットの代わりに使う EL(scribe_v1) を常設する
+        # （長時間録音の精度対策）。設定再適用時に作り直す。
+        self._handsfree_transcriber: ElevenLabsTranscriber = self._build_handsfree_transcriber()
         # ハンズフリー切替キー（この切替キー＋スロットキーで toggle 録音。空＝無効）
         self._handsfree_keys: Set[str] = self._parse_hotkey(
             self._config.get("handsfree_key", "")
@@ -357,9 +360,13 @@ class VoicekeyApp(QObject):
                 backend_client.warm_groq_transcribe()
             except Exception:
                 pass
-        # ElevenLabs「正確性」: ElevenLabs スロットがあれば、そのプロキシ関数も消費なしで温める
+        # ハンズフリーで内部利用する EL を温める条件: groq スロットが toggle か、または
+        # ハンズフリー切替キーが設定されている（hold スロットも切替キー併用で toggle 実効になる）。
+        # EL は選択肢から外れたので、backend == elevenlabs では永久に温まらない（Mac と同条件）。
+        handsfree_configured = bool(self._handsfree_keys)
         if any(
-            s.backend == TranscriptionBackend.ELEVENLABS.value
+            s.backend == TranscriptionBackend.GROQ.value
+            and (s.hotkey_mode == HotkeyMode.TOGGLE.value or handsfree_configured)
             for s in self._slots.values()
         ):
             try:
@@ -517,6 +524,45 @@ class VoicekeyApp(QObject):
             )
             logger.info(f"ホットキー{slot_id}: {hotkey} ({mode}) -> {backend}/{model}")
         return slots
+
+    def _build_handsfree_transcriber(self) -> ElevenLabsTranscriber:
+        """ハンズフリー(toggle 実効)録音で groq スロットの代わりに使う EL(scribe_v1) を作る。
+
+        スタンダード(groq)をハンズフリーで使うと長時間録音になりやすいため、内部で
+        ElevenLabs(scribe_v1)へ切り替えて精度を確保する（保存値 groq は変えない）。
+        言語・既定モデルは _build_slots と同じく設定から取る。設定再適用時に作り直す。
+        """
+        language = self._config.get("language", "ja")
+        defaults = self._config.get("default_api_models", {}) or {}
+        model = defaults.get(TranscriptionBackend.ELEVENLABS.value, "scribe_v1")
+        return ElevenLabsTranscriber(model=model, language=language, prompt="")
+
+    def _maybe_handsfree_slot(self, slot: HotkeySlot, effective_mode: str) -> HotkeySlot:
+        """ハンズフリー(toggle 実効)録音で groq スロットのとき、内部エンジンを
+        ElevenLabs(scribe_v1)へ差し替えたスロットを返す（長時間録音の精度対策）。
+
+        保存値(groq)は変えない。この録音の処理に使うスロットだけを差し替える。
+        それ以外（hold 実効・groq 以外）は元のスロットをそのまま返す（Mac の usesHandsfreeEL と対）。
+
+        Args:
+            slot: 元のホットキースロット
+            effective_mode: この録音の実効モード（ハンズフリー切替キー併用時は toggle）
+
+        Returns:
+            切替後のスロット（差し替え不要なら元のスロットそのもの）
+        """
+        if (
+            effective_mode == HotkeyMode.TOGGLE.value
+            and slot.backend == TranscriptionBackend.GROQ.value
+        ):
+            logger.info("ハンズフリー: 内部エンジン切替 (groq→elevenlabs)")
+            return replace(
+                slot,
+                backend=TranscriptionBackend.ELEVENLABS.value,
+                api_model="scribe_v1",
+                transcriber=self._handsfree_transcriber,
+            )
+        return slot
 
     def _snapshot_context(self, slot: HotkeySlot) -> TaskContext:
         """録音開始時点の処理コンテキストを不変スナップショットとして返す。
@@ -739,15 +785,18 @@ class VoicekeyApp(QObject):
         with self._state_lock:
             if self._recording_slot is not None:
                 return
+            # ハンズフリー(toggle 実効)で groq スロットのときは、この録音の処理に使うスロットだけ
+            # 内部で EL(scribe_v1) へ差し替える（長時間録音の精度対策。保存値 groq は変えない）。
+            # hold 実効・groq 以外は元スロットのまま返る。
+            slot = self._maybe_handsfree_slot(self._slots[slot_id], effective_mode)
             self._recording_slot = slot_id
             self._recording_effective_mode = effective_mode
             self._recording_started = time.monotonic()
             self._auto_enter = auto_enter
             # 録音開始時点の slot/provider/model/language/処理フラグを不変スナップショット化する。
             # 設定 hot-reload やスロット変更が録音中〜処理開始に挟まっても開始時の設定で完遂する
-            self._active_context = self._snapshot_context(self._slots[slot_id])
+            self._active_context = self._snapshot_context(slot)
 
-        slot = self._slots[slot_id]
         logger.info(
             f"録音開始要求 (スロット{slot_id}, backend={slot.backend}"
             + (", auto_enter" if auto_enter else "") + ")"
@@ -1117,7 +1166,10 @@ class VoicekeyApp(QObject):
 
         # スロットを常に再構築（生成は軽量。ネットワークアクセスなし）
         old_slots = self._slots
+        old_handsfree = self._handsfree_transcriber
         self._slots = self._build_slots()
+        # ハンズフリー用 EL(scribe_v1) も言語変更等に追随して作り直す
+        self._handsfree_transcriber = self._build_handsfree_transcriber()
         # ハンズフリー切替キーもホットリロードで更新する
         self._handsfree_keys = self._parse_hotkey(self._config.get("handsfree_key", ""))
 
@@ -1126,6 +1178,10 @@ class VoicekeyApp(QObject):
             timer = threading.Timer(_RETIRE_CLOSE_DELAY_SEC, old.transcriber.close)
             timer.daemon = True
             timer.start()
+        # ハンズフリー用 EL も同様に遅延 close（処理中タスクが参照している可能性がある）
+        handsfree_timer = threading.Timer(_RETIRE_CLOSE_DELAY_SEC, old_handsfree.close)
+        handsfree_timer.daemon = True
+        handsfree_timer.start()
 
         # HUD 表示の有効/無効を反映
         self._hud.enabled = bool(self._config.get("hud_enabled", True))

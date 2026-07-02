@@ -4,7 +4,23 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased]
 
+### Changed
+- **製品版の文字起こしモードを 2 択に整理し、スタンダードのハンズフリー録音時は内部で高精度エンジンへ自動切替（両 OS・release）**。
+  ユーザーが選ぶモードを従来の 3 択から **「リアルタイム」（=Deepgram nova-3・話しながら表示）/「スタンダード」（=Groq whisper-large-v3-turbo・録音後にきれいに整形・既定）** の 2 択に絞った。
+  - **「スタンダード」をハンズフリー録音（toggle 実効＝トグルモード or ハンズフリー切替キー併用）で使うときは、録音の処理エンジンだけ内部で ElevenLabs（scribe_v1）へ自動切替する**（長時間録音の精度対策）。保存値・UI 表示は「スタンダード（Groq）」のまま変わらず、切替はアプリが内部で行う（設定不要）。
+  - UI: バックエンド選択の直下に選択中モードの説明を追加（リアルタイム=「話しながら文字が表示されます（最速）」／スタンダード=「録音後にきれいな文章にして入力します（おすすめ）」＋「ハンズフリー録音のときは、長い録音に強いエンジンへ自動で切り替わります。」）。
+  - **既定スロットを両ホットキーとも「スタンダード」（Groq）に統一**（従来はハンズフリー側が高精度=ElevenLabs 固定）。ハンズフリーの精度は上記の内部自動切替で担保する。
+- **設計方針**: バックエンドの enum・保存値は 4 値（deepgram/groq/elevenlabs/openai）のまま維持し、「ユーザーが選べる集合」だけを 2 値に絞った（保存データの decode 互換・ElevenLabs の内部利用継続・main とのコード形状差の最小化のため）。
+
 ### Fixed
+- **旧保存値のマイグレーション**: 既存ユーザーが**ハンズフリー側などに「高精度」（ElevenLabs）を明示選択していた場合は「スタンダード」（Groq）へ移行される**（openai も同様に移行）。deepgram（リアルタイム）・groq（スタンダード）はそのまま維持。移行時はモデル指定を空にして各バックエンドの推奨モデルへフォールバックさせる（Mac=`SlotConfig` decode / Windows=`_constrain_release_backends`）。
+- **Windows 設定画面のバックエンド表示の化けを予防**: 保存値が選択肢に無い（旧 elevenlabs 等）場合の判定を「combo に存在するか（`findData >= 0`）」に修正し、無ければ「スタンダード」（groq）へフォールバックするようにした（従来は `max(0, -1)` で先頭＝リアルタイムに化ける芽があった）。
+- **Mac の「高精度」/「OpenAI」ラベル重複バグを修正**: 内部利用の elevenlabs=「スタンダード（ハンズフリー）」、選択肢外の openai=「OpenAI（開発用）」に整理（計測ログ・エラーメッセージ用）。
+
+### Technical Details
+- **Mac（`macos/Sources/Voicekey/`）**: `Backend.selectableCases` を `[.deepgram, .groq]` に縮小。`AppController` に `handsfreeTranscriber`（EL scribe_v1・`rebuildTranscribers` で言語追随）を常設し、`beginRecording` で `effectiveMode == .toggle && slot.backend == .groq` のとき `RecordContext.transcriber` を差し替え＋prewarm。`warmBackendsNow` の EL 暖機条件を「groq スロットが toggle か、ハンズフリー切替キー設定あり」に変更。`SettingsView.SlotSettingsTab` にモード説明キャプションを追加。
+- **Windows（`src/`）**: `RELEASE_TRANSCRIBE_BACKENDS = ("deepgram", "groq")`。`app.py` に `_build_handsfree_transcriber` / `_maybe_handsfree_slot`（`self._handsfree_transcriber`）を追加し、`_begin_recording` のスナップショットへ EL スロットを渡す（ログ「ハンズフリー: 内部エンジン切替 (groq→elevenlabs)」）。`_warm_backends_now` の EL 暖機条件を Mac と同一化。`settings_window.py` に `_backend_caption_text` とキャプション更新（`_update_backend_caption`）を追加。DEFAULT_CONFIG の hotkey2 backend を groq に。
+- **テスト**: Mac `SlotConfigMigrationTests`（旧保存値 JSON の decode 移行を検証）を新規追加。Windows `test_handsfree_logic`（`_maybe_handsfree_slot` の toggle/hold/deepgram 分岐）・`test_config_manager`（elevenlabs→groq 移行）を更新。
 - **製品版の「高速リアルタイム」(Deepgram ストリーミング) が main と違い「話した瞬間に出ない／ローディングが入る」遅延を根治（Mac・release）**。
   原因は文字起こし処理でも通信でもなく、**WebSocket を開くタイミング**だった。main（自分用・未ログイン）は
   親キーで **`connect()` を同期実行**＝ホットキーを押した瞬間に WS ハンドシェイクを始めるのに対し、

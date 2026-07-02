@@ -60,7 +60,7 @@ class TestMigration(unittest.TestCase):
             self.assertIn("hotkey1", cfg)
             self.assertNotIn("hotkey", cfg)
             self.assertEqual(cfg["hotkey1"]["hotkey"], "<f4>")
-            # 製品版(release)は文字起こし 2 択(groq/elevenlabs)。groq は有効なのでそのまま保持する
+            # 製品版(release)の文字起こしは 2 択(deepgram/groq)。groq は有効なのでそのまま保持する
             self.assertEqual(cfg["hotkey1"]["backend"], "groq")
             self.assertIn("hotkey2", cfg)
         finally:
@@ -89,16 +89,19 @@ class TestMigration(unittest.TestCase):
         finally:
             os.unlink(path)
 
-    def test_release_keeps_elevenlabs(self):
-        # 高精度(elevenlabs)は製品版の有効な選択肢なのでそのまま保持する
+    def test_release_migrates_elevenlabs_to_groq(self):
+        # 旧「高精度」= elevenlabs はユーザーが選べる 2 択（deepgram/groq）から外したため、
+        # スタンダード(groq)へ移行する。api_model は空にして default_api_models へフォールバックさせる。
+        # （EL は enum としては残り、スタンダードのハンズフリー録音時に内部でのみ使われる）
         mgr, path = self._manager_for({
             "hotkey1": {
                 "hotkey": "<f2>", "hotkey_mode": "hold",
-                "backend": "elevenlabs", "api_model": "",
+                "backend": "elevenlabs", "api_model": "scribe_v1",
             },
         })
         try:
-            self.assertEqual(mgr.config["hotkey1"]["backend"], "elevenlabs")
+            self.assertEqual(mgr.config["hotkey1"]["backend"], "groq")
+            self.assertEqual(mgr.config["hotkey1"]["api_model"], "")
         finally:
             os.unlink(path)
 

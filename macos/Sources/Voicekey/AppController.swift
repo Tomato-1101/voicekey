@@ -41,6 +41,9 @@ final class AppController: ObservableObject {
 
     /// スロット ID → トランスクライバ（設定変更時に作り直す）
     private var transcribers: [Int: Transcriber] = [:]
+    /// ハンズフリー(toggle 実効)録音で groq スロットの代わりに使う ElevenLabs(scribe_v1) トランスクライバ。
+    /// 長時間録音の精度対策。言語変更時も rebuildTranscribers で作り直す（backend/model は固定）。
+    private var handsfreeTranscriber: Transcriber?
 
     // --- 録音状態 ---
     private var recordingSlot: Int?
@@ -210,8 +213,13 @@ final class AppController: ObservableObject {
         let usesDeepgramStreaming = config.streamingEnabled
             && (config.slot(1).backend == .deepgram || config.slot(2).backend == .deepgram)
         let usesGroq = config.slot(1).backend == .groq || config.slot(2).backend == .groq
-        let usesElevenLabs = config.slot(1).backend == .elevenlabs
-            || config.slot(2).backend == .elevenlabs
+        // ハンズフリーで内部利用する EL を温める条件: groq スロットが toggle か、または
+        // ハンズフリー切替キーが設定されている（hold スロットも切替キー併用で toggle 実効になる）。
+        // EL は選択肢から外れたので、backend == .elevenlabs では永久に温まらない。
+        let handsfreeConfigured = !config.handsfreeKey.isEmpty
+        let usesElevenLabs =
+            (config.slot(1).backend == .groq && (config.slot(1).mode == .toggle || handsfreeConfigured))
+            || (config.slot(2).backend == .groq && (config.slot(2).mode == .toggle || handsfreeConfigured))
         if usesDeepgramStreaming {
             // 段階3: 有料も無料も再利用可トークンを先読みしてキャッシュを温める＝録音開始のサーバー往復ゼロ。
             // 先読み自体は無料枠を消費しない（消費は録音成立後の非同期 confirm で数える）。これで
@@ -351,10 +359,19 @@ final class AppController: ObservableObject {
         let slot = config.slot(slotId)
         log.info("録音開始 (スロット\(slotId), \(slot.backend.rawValue, privacy: .public)\(autoEnter ? ", auto_enter" : "", privacy: .public))")
 
+        // ハンズフリー(toggle 実効)で groq スロットのときは、この録音の処理エンジンだけ内部で
+        // ElevenLabs(scribe_v1) に差し替える（長時間録音の精度対策。保存値 groq は変えない）。
+        // それ以外（hold 実効・groq 以外）は選択中スロットの transcriber をそのまま使う。
+        let usesHandsfreeEL = effectiveMode == .toggle && slot.backend == .groq
+        let activeTranscriber = usesHandsfreeEL ? handsfreeTranscriber : transcribers[slotId]
+        if usesHandsfreeEL {
+            log.info("ハンズフリー: 内部エンジン切替 (groq→elevenlabs)")
+        }
+
         // 録音開始時点の transcriber（プロバイダー）と処理フラグを不変スナップショット化する。
         // 設定 hot-reload やスロット変更が録音中〜処理開始に挟まっても開始時の設定で完遂する
         recordContext = RecordContext(
-            transcriber: transcribers[slotId],
+            transcriber: activeTranscriber,
             vadEnabled: config.vadEnabled,
             splitEnabled: config.splitParallelEnabled,
             autoEnterDelayMs: config.autoEnterDelayMs,
@@ -398,8 +415,8 @@ final class AppController: ObservableObject {
             }
         }
 
-        // 録音中に TLS 接続を事前確立して、停止後の初回 API 往復を短縮
-        transcribers[slotId]?.prewarm()
+        // 録音中に TLS 接続を事前確立して、停止後の初回 API 往復を短縮（切替時は EL 側を温める）
+        activeTranscriber?.prewarm()
         // 整形が有効なら整形 LLM への接続も録音中に温めておく
         if slot.formatEnabled {
             formatter.prewarm()
@@ -685,6 +702,20 @@ final class AppController: ObservableObject {
                     prompt: slot.prompt
                 )
             }
+        }
+        // ハンズフリー(toggle 実効)で groq スロットが使われるときに差し替える EL(scribe_v1) を常設する。
+        // 言語変更でも作り直されるよう、スロット transcriber と同じ再構築フローに乗せる（backend/model は固定）。
+        if let existing = handsfreeTranscriber, existing.backend == .elevenlabs {
+            existing.model = Backend.elevenlabs.defaultModel
+            existing.language = config.language
+            existing.prompt = ""
+        } else {
+            handsfreeTranscriber = Transcriber(
+                backend: .elevenlabs,
+                model: Backend.elevenlabs.defaultModel,
+                language: config.language,
+                prompt: ""
+            )
         }
     }
 

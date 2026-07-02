@@ -304,7 +304,7 @@ private struct SlotSettingsTab: View {
             }
             .pickerStyle(.segmented)
 
-            // 製品版は文字起こし 2 択（高速リアルタイム / 正確性）のみ。モデルは推奨固定で非選択。
+            // 製品版は文字起こし 2 択（リアルタイム / スタンダード）のみ。モデルは推奨固定で非選択。
             Picker("バックエンド", selection: $slot.backend) {
                 ForEach(Backend.selectableCases) { backend in
                     Text(backend.label).tag(backend)
@@ -314,6 +314,13 @@ private struct SlotSettingsTab: View {
                 // バックエンド変更時はそのバックエンドの推奨モデルに固定で切り替える
                 slot.model = newBackend.defaultModel
             }
+
+            // 選択中モードの説明（薄字）。スタンダード(groq)はハンズフリー自動切替の1行も添える。
+            Text(Self.backendCaption(slot.backend))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("プロンプト（任意）")
@@ -326,6 +333,20 @@ private struct SlotSettingsTab: View {
         }
         .formStyle(.grouped)
         .padding(.vertical, 8)
+    }
+
+    /// 選択中の文字起こしモードの説明文（Windows 版 _backend_caption_text と同一文言）。
+    /// スタンダード(groq)はハンズフリー録音時に内部で高精度エンジン(ElevenLabs)へ切替する旨も添える。
+    private static func backendCaption(_ backend: Backend) -> String {
+        switch backend {
+        case .deepgram:
+            return "話しながら文字が表示されます（最速）"
+        case .groq:
+            return "録音後にきれいな文章にして入力します（おすすめ）\n"
+                + "ハンズフリー録音のときは、長い録音に強いエンジンへ自動で切り替わります。"
+        default:
+            return ""
+        }
     }
 }
 

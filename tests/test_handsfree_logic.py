@@ -13,7 +13,8 @@ SimpleNamespace のダミー self で unbound 呼び出ししてロジックを�
 import unittest
 from types import SimpleNamespace
 
-from src.app import VoicekeyApp
+from src.app import HotkeySlot, VoicekeyApp
+from src.config import HotkeyMode, TranscriptionBackend
 
 
 class TestSlotMatches(unittest.TestCase):
@@ -75,6 +76,62 @@ class TestHandsfreePressed(unittest.TestCase):
         # 複数キーの切替キーは全部押されていないと False
         fs = self._fake({"cmd_r", "shift_r"}, {"f2", "cmd_r"})
         self.assertFalse(VoicekeyApp._handsfree_pressed(fs))
+
+
+class TestMaybeHandsfreeSlot(unittest.TestCase):
+    """ハンズフリー(toggle 実効)で groq スロットのとき、内部で EL(scribe_v1) に差し替える判定。
+
+    _maybe_handsfree_slot は self._handsfree_transcriber しか見ないため、SimpleNamespace の
+    ダミー self で unbound 呼び出しして検証する（VoicekeyApp 全体を構築しない）。
+    """
+
+    def _slot(self, backend, mode):
+        return HotkeySlot(
+            slot_id=1,
+            hotkey="<f2>",
+            hotkey_mode=mode,
+            required_keys={"f2"},
+            backend=backend,
+            api_model="whisper-large-v3-turbo",
+            api_prompt="",
+            format_enabled=True,
+            transcriber=object(),
+        )
+
+    def test_toggle_groq_swaps_to_elevenlabs(self):
+        # toggle 実効の groq スロットは EL(scribe_v1) にスナップショット差し替えされる
+        fake_el = object()
+        fake = SimpleNamespace(_handsfree_transcriber=fake_el)
+        groq_slot = self._slot(TranscriptionBackend.GROQ.value, HotkeyMode.HOLD.value)
+        result = VoicekeyApp._maybe_handsfree_slot(
+            fake, groq_slot, HotkeyMode.TOGGLE.value
+        )
+        self.assertEqual(result.backend, TranscriptionBackend.ELEVENLABS.value)
+        self.assertEqual(result.api_model, "scribe_v1")
+        self.assertIs(result.transcriber, fake_el)
+        # 整形可否など他フィールドは維持される
+        self.assertTrue(result.format_enabled)
+        # 元スロットは不変（保存値 groq を汚さない）
+        self.assertEqual(groq_slot.backend, TranscriptionBackend.GROQ.value)
+        self.assertIsNot(result.transcriber, groq_slot.transcriber)
+
+    def test_hold_groq_stays_groq(self):
+        # hold 実効（自動 Enter 用の通常押下）の groq スロットは差し替えない
+        fake = SimpleNamespace(_handsfree_transcriber=object())
+        groq_slot = self._slot(TranscriptionBackend.GROQ.value, HotkeyMode.HOLD.value)
+        result = VoicekeyApp._maybe_handsfree_slot(
+            fake, groq_slot, HotkeyMode.HOLD.value
+        )
+        self.assertIs(result, groq_slot)
+
+    def test_toggle_deepgram_stays(self):
+        # deepgram(リアルタイム)は toggle でも差し替えない（groq のときだけ）
+        fake = SimpleNamespace(_handsfree_transcriber=object())
+        dg_slot = self._slot(TranscriptionBackend.DEEPGRAM.value, HotkeyMode.TOGGLE.value)
+        result = VoicekeyApp._maybe_handsfree_slot(
+            fake, dg_slot, HotkeyMode.TOGGLE.value
+        )
+        self.assertIs(result, dg_slot)
 
 
 if __name__ == "__main__":

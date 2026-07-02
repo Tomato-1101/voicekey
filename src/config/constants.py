@@ -92,7 +92,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # 各要素: {"from": 置換元, "to": 置換先, "enabled": 有効か}
     "replacements": [],
 
-    # ホットキー1 設定＝普通入力（製品版の既定: 高速 = Groq whisper-large-v3-turbo・押している間）
+    # ホットキー1 設定＝普通入力（製品版の既定: スタンダード = Groq whisper-large-v3-turbo・押している間）
     "hotkey1": {
         "hotkey": "<f2>",
         "hotkey_mode": HotkeyMode.HOLD.value,
@@ -102,11 +102,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "format_enabled": True,         # 製品版は裏でテキスト整形（既定オン）
     },
 
-    # ホットキー2 設定＝ハンズフリー（製品版の既定: 正確性 = ElevenLabs scribe_v1・トグル）
+    # ホットキー2 設定＝ハンズフリー（製品版の既定: スタンダード = Groq whisper-large-v3-turbo・トグル）。
+    # toggle 録音では app._maybe_handsfree_slot が内部で ElevenLabs(scribe_v1) へ自動切替する
+    # （長時間録音の精度対策。保存値 groq は変えない）。
     "hotkey2": {
         "hotkey": "<f3>",
         "hotkey_mode": HotkeyMode.TOGGLE.value,
-        "backend": "elevenlabs",
+        "backend": "groq",
         "api_model": "",
         "api_prompt": "",
         "format_enabled": True,         # 製品版は裏でテキスト整形（既定オン）

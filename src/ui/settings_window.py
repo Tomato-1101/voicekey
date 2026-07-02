@@ -86,15 +86,14 @@ _BACKEND_PROVIDER_NAMES = {
     TranscriptionBackend.DEEPGRAM.value: "Deepgram",
 }
 
-# 製品版（release）で文字起こしに選べる 3 択（表示順）。モードは「リアルタイム」「正確性」の 2 系統:
-# 高速リアルタイム=Deepgram（nova-3・短命トークン直叩き＋ストリーミング）/
-# 正確性=Groq（普通入力の既定・whisper-large-v3-turbo・プロキシ経由）/
-# 高精度=ElevenLabs（ハンズフリーの既定・scribe_v1・プロキシ経由）。モデルは推奨固定で非選択。
+# 製品版（release）でユーザーが文字起こしに選べる 2 択（表示順）。モデルは推奨固定で非選択:
+# リアルタイム=Deepgram（nova-3・短命トークン直叩き＋ストリーミング。話しながらライブ表示）/
+# スタンダード=Groq（既定・whisper-large-v3-turbo・プロキシ経由。録音後にきれいに整形）。
+# ElevenLabs（scribe_v1）は選択肢から外し、スタンダードのハンズフリー録音時に内部でのみ使う。
 # Mac 版 Backend.selectableCases / Backend.label と一致させる。
 _TRANSCRIBE_BACKEND_LABELS = [
-    (TranscriptionBackend.DEEPGRAM.value, "高速リアルタイム"),
-    (TranscriptionBackend.GROQ.value, "正確性"),
-    (TranscriptionBackend.ELEVENLABS.value, "高精度"),
+    (TranscriptionBackend.DEEPGRAM.value, "リアルタイム"),
+    (TranscriptionBackend.GROQ.value, "スタンダード"),
 ]
 
 # 製品版の API キータブに出すバックエンド（開発ビルドのみ表示）。
@@ -124,6 +123,21 @@ def _make_caption(text: str) -> QLabel:
     label.setWordWrap(True)
     label.setObjectName("caption")
     return label
+
+
+def _backend_caption_text(backend: str) -> str:
+    """選択中の文字起こしモードの説明文（Mac 版 SlotSettingsTab.backendCaption と同一文言）。
+
+    スタンダード(groq)はハンズフリー録音時に内部で高精度エンジン(ElevenLabs)へ自動切替する旨も添える。
+    """
+    if backend == TranscriptionBackend.DEEPGRAM.value:
+        return "話しながら文字が表示されます（最速）"
+    if backend == TranscriptionBackend.GROQ.value:
+        return (
+            "録音後にきれいな文章にして入力します（おすすめ）\n"
+            "ハンズフリー録音のときは、長い録音に強いエンジンへ自動で切り替わります。"
+        )
+    return ""
 
 
 # ----------------------------------------------------------------------
@@ -173,8 +187,13 @@ def _add_row(
     label_text: str,
     control: Optional[QWidget] = None,
     caption: str = "",
+    caption_widget: Optional[QWidget] = None,
 ) -> None:
-    """カードへ標準行（左ラベル + 右コントロール、任意で下に補足）を追加する。"""
+    """カードへ標準行（左ラベル + 右コントロール、任意で下に補足）を追加する。
+
+    caption_widget を渡すと、その QLabel を補足として使う（動的に更新したい場合に使用。
+    caption 文字列より優先）。
+    """
     if card_layout.count() > 0:
         card_layout.addWidget(_make_hairline())
     row = QWidget()
@@ -191,7 +210,9 @@ def _add_row(
         h.addWidget(control)
     v.addLayout(h)
 
-    if caption:
+    if caption_widget is not None:
+        v.addWidget(caption_widget)
+    elif caption:
         v.addWidget(_make_caption(caption))
     card_layout.addWidget(row)
 
@@ -1153,14 +1174,21 @@ class SettingsWindow(QWidget):
         setattr(self, f"_mode{slot_id}_combo", mode_combo)
         _add_row(cl, "動作", mode_combo)
 
-        # バックエンド選択（製品版は 3 択: 高速リアルタイム / 正確性 / 高精度）。
-        # モデルは推奨固定で非選択（Deepgram=nova-3 / ElevenLabs=scribe_v1）。
+        # バックエンド選択（製品版は 2 択: リアルタイム / スタンダード）。
+        # モデルは推奨固定で非選択（Deepgram=nova-3 / Groq=whisper-large-v3-turbo）。
         backend_combo = QComboBox()
         for value, label in _TRANSCRIBE_BACKEND_LABELS:
             backend_combo.addItem(label, value)
         backend_combo.setMinimumWidth(180)
         setattr(self, f"_backend{slot_id}_combo", backend_combo)
-        _add_row(cl, "バックエンド", backend_combo)
+        # 選択中モードの説明（薄字。Mac 版 SlotSettingsTab のキャプションと同一文言）。
+        # combo 変更で更新する（スタンダード時はハンズフリー自動切替の1行も出る）。
+        backend_caption = _make_caption("")
+        setattr(self, f"_backend{slot_id}_caption", backend_caption)
+        backend_combo.currentIndexChanged.connect(
+            lambda _i, sid=slot_id: self._update_backend_caption(sid)
+        )
+        _add_row(cl, "バックエンド", backend_combo, caption_widget=backend_caption)
 
         # プロンプト入力（文字起こしのヒント）
         prompt_input = QLineEdit()
@@ -1184,6 +1212,12 @@ class SettingsWindow(QWidget):
         layout.addStretch()
 
         return self._wrap_scroll(page)
+
+    def _update_backend_caption(self, slot_id: int) -> None:
+        """バックエンド combo の選択に合わせて、直下のモード説明キャプションを更新する。"""
+        combo = getattr(self, f"_backend{slot_id}_combo")
+        caption = getattr(self, f"_backend{slot_id}_caption")
+        caption.setText(_backend_caption_text(combo.currentData()))
 
     # ------------------------------------------------------------------
     # 履歴ページ（Mac 版 HistoryTab と同構成。クリックでクリップボードにコピー）
@@ -2255,8 +2289,9 @@ class SettingsWindow(QWidget):
             lang_index = self._lang_combo.count() - 1
         self._lang_combo.setCurrentIndex(lang_index)
 
-        # ホットキー 1 / 2（製品版の既定: 普通入力=正確性(groq) / ハンズフリー=高精度(elevenlabs)）
-        slot_defaults = {1: ("<f2>", "deepgram"), 2: ("<f3>", "elevenlabs")}
+        # ホットキー 1 / 2（製品版の既定: 両スロットとも スタンダード(groq)。DEFAULT_CONFIG と揃える。
+        # ハンズフリー(toggle)録音では groq を内部で ElevenLabs(scribe_v1) へ自動切替する）
+        slot_defaults = {1: ("<f2>", "groq"), 2: ("<f3>", "groq")}
         for slot_id, (default_hotkey, default_backend) in slot_defaults.items():
             hotkey_config = config.get(f"hotkey{slot_id}", {}) or {}
 
@@ -2272,11 +2307,18 @@ class SettingsWindow(QWidget):
                 mode_index = mode_combo.findData(HotkeyMode.TOGGLE.value)
             mode_combo.setCurrentIndex(mode_index)
 
+            # 保存値が combo に「存在するか」で判定する（_BACKEND_TO_SERVICE 所属では判定しない）。
+            # combo は 2 択（deepgram/groq）なので、範囲外の保存値（旧 elevenlabs/openai）は
+            # findData が -1 を返す → スタンダード(groq)へフォールバックする（先頭 deepgram に化けない）。
             backend = hotkey_config.get("backend", default_backend)
-            if backend not in _BACKEND_TO_SERVICE:
-                backend = default_backend
             backend_combo = getattr(self, f"_backend{slot_id}_combo")
-            backend_combo.setCurrentIndex(max(0, backend_combo.findData(backend)))
+            index = backend_combo.findData(backend)
+            if index < 0:
+                index = backend_combo.findData(TranscriptionBackend.GROQ.value)
+            backend_combo.setCurrentIndex(max(0, index))
+            # 選択に合わせてキャプションを初期化（setCurrentIndex が同一 index だと
+            # currentIndexChanged が発火しないため明示的に呼ぶ）
+            self._update_backend_caption(slot_id)
 
             getattr(self, f"_api{slot_id}_prompt_input").setText(
                 hotkey_config.get("api_prompt", "")

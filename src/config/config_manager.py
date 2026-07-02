@@ -19,13 +19,15 @@ from .constants import DEFAULT_CONFIG, SETTINGS_FILE_NAME
 logger = get_logger(__name__)
 # 対応バックエンド（REST + ストリーミング）。これ以外は openai にフォールバック
 API_BACKENDS = {"groq", "openai", "elevenlabs", "deepgram"}
-# 製品版（release ブランチ）で文字起こしに選べるバックエンド（モードは「リアルタイム」「正確性」の 2 系統）。
-# 高速リアルタイム = deepgram（nova-3・短命トークン直叩き＋ストリーミング）/
-# 正確性 = groq（普通入力の既定・whisper-large-v3-turbo・プロキシ経由）/
-# 高精度 = elevenlabs（ハンズフリーの既定・scribe_v1・プロキシ経由）。openai は元から非表示。
-# ＝範囲外（openai 等）の保存値だけ groq へ自動移行する（下の _constrain_release_backends）。deepgram は維持。
-RELEASE_TRANSCRIBE_BACKENDS = ("deepgram", "groq", "elevenlabs")
-# 製品版で範囲外（openai 等）の保存値を移行する先（正確性＝普通入力の既定）
+# 製品版（release ブランチ）でユーザーが文字起こしに選べるバックエンド（2 択）。
+# リアルタイム = deepgram（nova-3・短命トークン直叩き＋ストリーミング。話しながらライブ表示）/
+# スタンダード = groq（既定・whisper-large-v3-turbo・プロキシ経由。録音後にきれいに整形）。
+# elevenlabs（scribe_v1）は選択肢から外し、スタンダードのハンズフリー録音時に内部でのみ使う
+# （長時間録音の精度対策・app._maybe_handsfree_slot）。openai は開発用のみ。
+# ＝範囲外（旧 elevenlabs / openai 等）の保存値だけ groq へ自動移行する（下の _constrain_release_backends）。
+# deepgram は選択肢に残るため維持。バックエンドの enum・保存値は 4 値のまま（「選べる集合」だけを絞る）。
+RELEASE_TRANSCRIBE_BACKENDS = ("deepgram", "groq")
+# 製品版で範囲外（旧 elevenlabs / openai 等）の保存値を移行する先（スタンダード＝既定）
 RELEASE_DEFAULT_BACKEND = "groq"
 
 
@@ -248,12 +250,14 @@ class ConfigManager:
     @staticmethod
     def _constrain_release_backends(config: Dict[str, Any]) -> None:
         """
-        製品版（release）の文字起こしバックエンドを 3 択（deepgram/groq/elevenlabs）に制限する。
+        製品版（release）の文字起こしバックエンドを 2 択（deepgram/groq）に制限する。
 
-        保存済み settings.yaml に openai 等の範囲外バックエンドが残っていても、
-        groq（正確性＝普通入力の既定）へ移行する。移行時は api_model を空にして
+        保存済み settings.yaml に範囲外バックエンド（旧 elevenlabs / openai 等）が残っていても、
+        groq（スタンダード＝既定）へ移行する。移行時は api_model を空にして
         default_api_models（groq→whisper-large-v3-turbo）にフォールバックさせる。
-        deepgram（高速リアルタイム）は選択肢に残したので、保存済み deepgram はそのまま維持される。
+        deepgram（リアルタイム）は選択肢に残したので、保存済み deepgram はそのまま維持される。
+        elevenlabs は enum としては残す（スタンダードのハンズフリー録音時に内部でのみ使う）が、
+        ユーザーが直接選ぶ保存値としては許可しない（「選べる集合」だけを絞る）。
 
         Args:
             config: 矯正対象の設定辞書（その場で書き換える）
