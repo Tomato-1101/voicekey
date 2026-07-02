@@ -152,3 +152,20 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 # ファイル名
 # ============================================
 SETTINGS_FILE_NAME: str = "settings.yaml"
+
+
+def default_format_enabled(backend: str) -> bool:
+    """モード別のテキスト整形の既定 ON/OFF（Mac 版 Backend.defaultFormatEnabled と一致）。
+
+    リアルタイム(deepgram)は速度全振りのため既定 OFF（トグルで ON は可能）、
+    スタンダード(groq)ほかは録音後にきれいに整形するため既定 ON。設定 UI でモードを
+    切り替えたとき整形トグルをこの既定へ追従させる（config_manager の一回限り
+    マイグレーションと settings_window の backend 変更ハンドラで共用する）。
+
+    Args:
+        backend: バックエンド識別子（"deepgram" / "groq" 等）
+
+    Returns:
+        そのモードの整形既定（deepgram のみ False、他は True）
+    """
+    return str(backend).lower() != "deepgram"

@@ -313,6 +313,9 @@ private struct SlotSettingsTab: View {
             .onChange(of: slot.backend) { _, newBackend in
                 // バックエンド変更時はそのバックエンドの推奨モデルに固定で切り替える
                 slot.model = newBackend.defaultModel
+                // 整形トグルはそのモードの既定へ追従させる（リアルタイム=既定 OFF・
+                // スタンダード=既定 ON）。ユーザーはこの後トグルで自由に上書きできる。
+                slot.formatEnabled = newBackend.defaultFormatEnabled
             }
 
             // 選択中モードの説明（薄字）。スタンダード(groq)はハンズフリー自動切替の1行も添える。
@@ -321,13 +324,6 @@ private struct SlotSettingsTab: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("プロンプト（任意）")
-                TextField("専門用語や固有名詞のヒントを入力", text: $slot.prompt, axis: .vertical)
-                    .lineLimit(2...4)
-                    .textFieldStyle(.roundedBorder)
-            }
 
             Toggle("テキスト整形（LLM）", isOn: $slot.formatEnabled)
         }

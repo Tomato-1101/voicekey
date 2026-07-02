@@ -398,7 +398,7 @@ def warm_elevenlabs() -> None:
         pass
 
 
-def transcribe_groq(wav_bytes: bytes, language: str = "") -> str:
+def transcribe_groq(wav_bytes: bytes, language: str = "", server_format: bool = False) -> str:
     """Groq「高速」プロキシで文字起こしする（普通入力・WAV を multipart 送信）。
 
     Groq は Deepgram のような client 直叩き用の短命トークンが無いので、ElevenLabs と同じく
@@ -410,9 +410,13 @@ def transcribe_groq(wav_bytes: bytes, language: str = "") -> str:
     Args:
         wav_bytes: WAV バイト列
         language: 言語コード（空なら送らない＝サーバー/プロバイダ自動判定）
+        server_format: multipart に format=1 を付けるか。True にするとサーバー内で STT→整形まで
+            行い、整形済みテキストを text で返す（STT と整形を 1 リクエストに統合＝録音後の
+            クライアント整形の往復を省く）。整形失敗時でも text に STT 原文が入って返るので、
+            呼び出し側は text をそのまま最終テキストとして使う（再整形はしない）。
 
     Returns:
-        文字起こし結果テキスト
+        文字起こし結果テキスト（server_format 時は整形済み）
 
     Raises:
         BackendError: 認証・サブスク・通信エラー
@@ -421,14 +425,17 @@ def transcribe_groq(wav_bytes: bytes, language: str = "") -> str:
     data = {}
     if language:
         data["language"] = language
+    # サーバー統合整形の依頼フラグ。サーバーはこれを見たら STT→Groq 整形まで行い整形済みを返す。
+    if server_format:
+        data["format"] = "1"
     resp = _post(
         constants.API_GROQ_TRANSCRIBE_PROXY_PATH,
         headers=_auth_headers(),
         files=files,
         data=data,
         # 普通入力は短尺（ホールド発話）だが、cold start・越境往復に備え少し余裕を持たせる
-        # （長文の EL=90s とは別事情）。接続は短く、全体は 60s。
-        timeout=httpx.Timeout(60.0, connect=5.0),
+        # （長文の EL=90s とは別事情）。統合整形時はサーバーで LLM 整形も走るため 90s に広げる。
+        timeout=httpx.Timeout(90.0 if server_format else 60.0, connect=5.0),
     )
     return resp.json().get("text", "") or ""
 

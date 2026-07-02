@@ -422,8 +422,14 @@ enum BackendClient {
     /// （Deepgram の再利用トークン方式とは別＝1 プロキシ呼び出し=1 消費）。
     /// audio は FLAC（可逆・約半分）を優先。サーバーはクライアントの filename をそのまま Groq へ
     /// 転送するので、拡張子で FLAC/WAV を Groq に伝えられる（Groq は OpenAI 互換で FLAC を受理）。
+    ///
+    /// - Parameter format: multipart に `format=1` を付けるか。true にするとサーバー内で
+    ///   STT→整形まで行い、整形済みテキストを `text` で返す（STT と整形を 1 リクエストに統合＝
+    ///   録音後のクライアント整形の往復を省く）。整形失敗時でも `text` に STT 原文が入って返るので、
+    ///   呼び出し側は `text` をそのまま最終テキストとして使う（再整形はしない）。
     static func transcribeGroq(
-        audio: Data, filename: String, contentType: String, language: String
+        audio: Data, filename: String, contentType: String, language: String,
+        format: Bool = false
     ) async throws -> String {
         try? await AuthClient.ensureValidSession()  // 失効間際なら先にリフレッシュ
         var req = try authorizedRequest(path: ServerConfig.groqTranscribeProxyPath)
@@ -431,11 +437,11 @@ enum BackendClient {
         let boundary = "vk-\(UUID().uuidString)"
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         // 普通入力は短尺（ホールド発話）なので token 取得用の短い既定(15s)を少しだけ延長する程度でよい
-        // （長文の EL=90s とは別事情）。
-        req.timeoutInterval = 60
+        // （長文の EL=90s とは別事情）。整形統合時はサーバーで LLM 整形も走るため少し余裕を持たせる。
+        req.timeoutInterval = format ? 90 : 60
         req.httpBody = groqMultipartBody(
             boundary: boundary, audio: audio, filename: filename,
-            contentType: contentType, language: language
+            contentType: contentType, language: language, format: format
         )
         let data = try await send(req)
         struct Resp: Decodable { let text: String? }
@@ -603,8 +609,10 @@ enum BackendClient {
     /// Groq プロキシ用の multipart ボディ。サーバー(Edge)が formData で受けて Groq 形式
     /// （model/response_format はサーバー側で固定）へ組み直すため、クライアントは
     /// file(FLAC/WAV) と language(任意) だけ入れる。サーバーは filename を Groq へ引き継ぐ。
+    /// format=true のときは `format=1` を付け、サーバーに STT→整形の統合実行を依頼する。
     private static func groqMultipartBody(
-        boundary: String, audio: Data, filename: String, contentType: String, language: String
+        boundary: String, audio: Data, filename: String, contentType: String, language: String,
+        format: Bool = false
     ) -> Data {
         var body = Data()
         func append(_ s: String) { body.append(Data(s.utf8)) }
@@ -612,6 +620,12 @@ enum BackendClient {
             append("--\(boundary)\r\n")
             append("Content-Disposition: form-data; name=\"language\"\r\n\r\n")
             append("\(language)\r\n")
+        }
+        // サーバー統合整形の依頼フラグ。サーバーはこれを見たら STT→Groq 整形まで行い整形済みを返す。
+        if format {
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"format\"\r\n\r\n")
+            append("1\r\n")
         }
         append("--\(boundary)\r\n")
         append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n")

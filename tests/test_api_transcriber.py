@@ -106,6 +106,28 @@ class TestServerRouting(unittest.TestCase):
             with self.assertRaises(TranscriptionError):
                 t.transcribe(self._audio())
 
+    def test_groq_uses_proxy_and_propagates_server_format(self):
+        """高速（Groq）はログイン時プロキシを使い、server_format をそのまま伝搬する。"""
+        t = GroqTranscriber("whisper-large-v3-turbo", "ja")
+        with patch.object(api_transcriber.backend_client, "is_logged_in", return_value=True), \
+                patch.object(api_transcriber.backend_client, "transcribe_groq",
+                             return_value="整形済み") as proxy, \
+                patch.object(t, "_get_client") as direct:
+            self.assertEqual(t.transcribe(self._audio(), server_format=True), "整形済み")
+            proxy.assert_called_once()
+            self.assertEqual(proxy.call_args.args[1], "ja")           # language を渡す
+            self.assertTrue(proxy.call_args.kwargs["server_format"])  # 統合整形フラグを伝搬
+            direct.assert_not_called()
+
+    def test_groq_default_no_server_format(self):
+        """server_format 未指定なら False を伝搬（統合整形しない）。"""
+        t = GroqTranscriber("whisper-large-v3-turbo", "ja")
+        with patch.object(api_transcriber.backend_client, "is_logged_in", return_value=True), \
+                patch.object(api_transcriber.backend_client, "transcribe_groq",
+                             return_value="生") as proxy:
+            t.transcribe(self._audio())
+            self.assertFalse(proxy.call_args.kwargs["server_format"])
+
     def test_deepgram_uses_jwt_when_logged_in(self):
         """高速リアルタイム（Deepgram）はログイン時 短命 JWT で直叩き（低レイテンシ維持）。"""
         t = DeepgramTranscriber("nova-3", "ja")

@@ -145,9 +145,12 @@ final class Transcriber: @unchecked Sendable {
     }
 
     /// 音声を文字起こしする
-    /// - Parameter samples: 音声データ（Float32, 16kHz, モノラル）
-    /// - Returns: 文字起こし結果（前後空白除去済み）
-    func transcribe(samples: [Float]) async throws -> String {
+    /// - Parameters:
+    ///   - samples: 音声データ（Float32, 16kHz, モノラル）
+    ///   - serverFormat: groq × ログイン済みプロキシ経路のときだけ有効。true にすると
+    ///     サーバー内で STT→整形まで統合実行し整形済みテキストを返す（他バックエンド・直叩きは無視）。
+    /// - Returns: 文字起こし結果（前後空白除去済み。serverFormat 時は整形済み）
+    func transcribe(samples: [Float], serverFormat: Bool = false) async throws -> String {
         guard !samples.isEmpty else { return "" }
 
         // 配布版（製品版ビルド）は「アクティベーション必須」。埋め込みキーへはフォールバックしない。
@@ -161,7 +164,7 @@ final class Transcriber: @unchecked Sendable {
                 )
             }
             switch backend {
-            case .groq: return try await transcribeGroqViaProxy(samples: samples)
+            case .groq: return try await transcribeGroqViaProxy(samples: samples, serverFormat: serverFormat)
             case .elevenlabs: return try await transcribeElevenLabsViaProxy(samples: samples)
             case .deepgram: return try await transcribeDeepgramViaJWT(samples: samples)
             case .openai:
@@ -175,7 +178,7 @@ final class Transcriber: @unchecked Sendable {
         // 高速=Groq もサーバープロキシ経由（普通入力・バッチ）。OpenAI は選択肢に無いため直叩きに委ねる。
         if BackendClient.isLoggedIn {
             switch backend {
-            case .groq: return try await transcribeGroqViaProxy(samples: samples)
+            case .groq: return try await transcribeGroqViaProxy(samples: samples, serverFormat: serverFormat)
             case .elevenlabs: return try await transcribeElevenLabsViaProxy(samples: samples)
             case .deepgram: return try await transcribeDeepgramViaJWT(samples: samples)
             case .openai: break
@@ -226,14 +229,17 @@ final class Transcriber: @unchecked Sendable {
     /// アップロードは FLAC（可逆・約半分のサイズ）を優先し、失敗時のみ WAV へフォールバック。
     /// main（自分用）の Groq 直叩きと同じ符号化にすることで、release との差は「1 ホップ
     /// （Vercel Edge・東京）＋整形」だけになる（従来は WAV 送信で main の約2倍のアップロードだった）。
-    private func transcribeGroqViaProxy(samples: [Float]) async throws -> String {
+    ///
+    /// serverFormat=true のときは `format=1` を付けてサーバーで STT→整形まで統合実行させ、
+    /// 整形済みテキストを受け取る（録音後のクライアント整形の往復を省く＝単発送信時のみ使う）。
+    private func transcribeGroqViaProxy(samples: [Float], serverFormat: Bool = false) async throws -> String {
         let start = Date()
         let audio = encodeAudio(samples)
         do {
             let text = TextNormalize.stripCJKSpaces(
                 try await BackendClient.transcribeGroq(
                     audio: audio.data, filename: audio.filename,
-                    contentType: audio.contentType, language: language
+                    contentType: audio.contentType, language: language, format: serverFormat
                 ).trimmingCharacters(in: .whitespacesAndNewlines)
             )
             let elapsed = Int(Date().timeIntervalSince(start) * 1000)

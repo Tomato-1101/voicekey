@@ -128,6 +128,40 @@ class TestMigration(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_migrate_format_defaults_forces_deepgram_off_once(self):
+        # モード別整形既定の一回限りマイグレーション（初回）。マーカー無しの既存ユーザーは、
+        # リアルタイム(deepgram)スロットの整形を既定 OFF へ矯正する。スタンダード(groq)は既定 ON のまま。
+        mgr, path = self._manager_for({
+            "hotkey1": {
+                "hotkey": "<f2>", "hotkey_mode": "hold",
+                "backend": "deepgram", "api_model": "nova-3", "format_enabled": True,
+            },
+            "hotkey2": {
+                "hotkey": "<f3>", "hotkey_mode": "toggle",
+                "backend": "groq", "api_model": "", "format_enabled": True,
+            },
+        })
+        try:
+            self.assertFalse(mgr.config["hotkey1"]["format_enabled"])  # deepgram は矯正
+            self.assertTrue(mgr.config["hotkey2"]["format_enabled"])   # groq は据え置き
+            self.assertTrue(mgr.config["migrated_format_defaults"])    # 矯正済みマーカー
+        finally:
+            os.unlink(path)
+
+    def test_migrate_format_defaults_respects_user_choice_second_time(self):
+        # 二度目（マーカー済み）＝ユーザーが deepgram の整形を ON に戻している → 尊重する。
+        mgr, path = self._manager_for({
+            "migrated_format_defaults": True,
+            "hotkey1": {
+                "hotkey": "<f2>", "hotkey_mode": "hold",
+                "backend": "deepgram", "api_model": "nova-3", "format_enabled": True,
+            },
+        })
+        try:
+            self.assertTrue(mgr.config["hotkey1"]["format_enabled"])  # ON のまま尊重
+        finally:
+            os.unlink(path)
+
 
 class TestAtomicSave(unittest.TestCase):
     """#12: settings.yaml の保存は一時ファイル経由のアトミック置換にする。"""

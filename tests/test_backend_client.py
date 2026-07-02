@@ -293,6 +293,41 @@ class TestElevenLabs(_Base):
         self.assertFalse(seen["body_has_lang"])
 
 
+class TestGroqTranscribe(_Base):
+    """Groq「高速」プロキシ文字起こし。統合整形フラグ(format)の送出を検証する。"""
+
+    def test_success_without_format(self):
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["path"] = request.url.path
+            seen["has_file"] = b"audio.wav" in request.content
+            seen["has_format"] = b'name="format"' in request.content
+            return httpx.Response(200, json={"text": "こんにちは"})
+
+        _install_mock(handler)
+        text = backend_client.transcribe_groq(b"RIFFxxxx", language="ja")
+        self.assertEqual(text, "こんにちは")
+        self.assertEqual(seen["path"], "/api/v1/transcribe/groq")
+        self.assertTrue(seen["has_file"])
+        self.assertFalse(seen["has_format"])  # 既定は整形統合しない（format フィールドを付けない）
+
+    def test_server_format_sends_flag(self):
+        """server_format=True なら multipart に format=1 を付ける（サーバーで STT→整形統合）。"""
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["has_format"] = b'name="format"' in request.content
+            seen["format_value"] = b"\r\n\r\n1\r\n" in request.content
+            return httpx.Response(200, json={"text": "整形済み。"})
+
+        _install_mock(handler)
+        out = backend_client.transcribe_groq(b"RIFF", language="ja", server_format=True)
+        self.assertEqual(out, "整形済み。")
+        self.assertTrue(seen["has_format"])
+        self.assertTrue(seen["format_value"])  # 値は "1"
+
+
 class TestFormat(_Base):
     def test_success_json(self):
         seen = {}

@@ -59,7 +59,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import ConfigManager, HotkeyMode, TranscriptionBackend
-from ..config.constants import APP_VERSION
+from ..config.constants import APP_VERSION, default_format_enabled
 from ..core.audio_recorder import AudioRecorder
 from ..core.history import MAX_ITEMS as HISTORY_MAX_ITEMS, HistoryStore
 from ..core.stats import StatsStore
@@ -1188,19 +1188,14 @@ class SettingsWindow(QWidget):
         backend_combo.currentIndexChanged.connect(
             lambda _i, sid=slot_id: self._update_backend_caption(sid)
         )
+        # モード（backend）を切り替えたら整形トグルをそのモードの既定へ追従させる
+        # （リアルタイム=既定 OFF・スタンダード=既定 ON）。ユーザーはこの後トグルで自由に上書き可。
+        # _load_settings では setCurrentIndex の後に明示 setChecked で保存値へ戻すため、
+        # 読み込み時にこのハンドラが走っても最終的な整形トグルは保存値になる。
+        backend_combo.currentIndexChanged.connect(
+            lambda _i, sid=slot_id: self._apply_format_default_for_backend(sid)
+        )
         _add_row(cl, "バックエンド", backend_combo, caption_widget=backend_caption)
-
-        # プロンプト入力（文字起こしのヒント）
-        prompt_input = QLineEdit()
-        prompt_input.setPlaceholderText("専門用語や固有名詞のヒントを入力")
-        setattr(self, f"_api{slot_id}_prompt_input", prompt_input)
-        prompt_block = QWidget()
-        prompt_layout = QVBoxLayout(prompt_block)
-        prompt_layout.setContentsMargins(0, 0, 0, 0)
-        prompt_layout.setSpacing(6)
-        prompt_layout.addWidget(QLabel("プロンプト（任意）"))
-        prompt_layout.addWidget(prompt_input)
-        _add_block(cl, prompt_block)
 
         # テキスト整形（LLM）: 貼り付け前に高速 LLM で 1 回整形する
         # （整形内容は LLM が自動判断。指示は「一般」ページで編集可。Mac 版と構成を一致させる）
@@ -1218,6 +1213,17 @@ class SettingsWindow(QWidget):
         combo = getattr(self, f"_backend{slot_id}_combo")
         caption = getattr(self, f"_backend{slot_id}_caption")
         caption.setText(_backend_caption_text(combo.currentData()))
+
+    def _apply_format_default_for_backend(self, slot_id: int) -> None:
+        """バックエンド変更に合わせて整形トグルをそのモードの既定へ追従させる。
+
+        リアルタイム(deepgram)=既定 OFF・スタンダード(groq)=既定 ON。ユーザーはこの後トグルで
+        自由に上書きできる（Mac 版 SlotSettingsTab の .onChange(of: slot.backend) と対）。
+        """
+        combo = getattr(self, f"_backend{slot_id}_combo")
+        getattr(self, f"_format{slot_id}_check").setChecked(
+            default_format_enabled(combo.currentData())
+        )
 
     # ------------------------------------------------------------------
     # 履歴ページ（Mac 版 HistoryTab と同構成。クリックでクリップボードにコピー）
@@ -2320,11 +2326,10 @@ class SettingsWindow(QWidget):
             # currentIndexChanged が発火しないため明示的に呼ぶ）
             self._update_backend_caption(slot_id)
 
-            getattr(self, f"_api{slot_id}_prompt_input").setText(
-                hotkey_config.get("api_prompt", "")
-            )
+            # プロンプト（api_prompt）入力欄は UI から撤去したので読み込まない
+            # （保存値は _collect_slot_config が既存値をそのまま維持する）。
 
-            # テキスト整形設定
+            # テキスト整形設定（backend 追従で上書きされうるため、保存値を最後に明示適用する）
             getattr(self, f"_format{slot_id}_check").setChecked(
                 bool(hotkey_config.get("format_enabled", False))
             )
@@ -2440,12 +2445,15 @@ class SettingsWindow(QWidget):
         Returns:
             hotkey1 / hotkey2 セクションに保存する設定辞書
         """
+        # api_prompt の入力欄は UI から撤去したため、既存の保存値をそのまま維持する
+        # （保存フィールド自体は互換のため残す。空文字で上書きしない）。
+        existing_slot = self._config_manager.get(f"hotkey{slot_id}", {}) or {}
         return {
             "hotkey": getattr(self, f"_hotkey{slot_id}_input").text(),
             "hotkey_mode": getattr(self, f"_mode{slot_id}_combo").currentData(),
             "backend": getattr(self, f"_backend{slot_id}_combo").currentData(),
             # 製品版はモデル非選択。空にして default_api_models（deepgram=nova-3 等）へフォールバック
             "api_model": "",
-            "api_prompt": getattr(self, f"_api{slot_id}_prompt_input").text(),
+            "api_prompt": existing_slot.get("api_prompt", ""),
             "format_enabled": getattr(self, f"_format{slot_id}_check").isChecked(),
         }

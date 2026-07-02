@@ -88,6 +88,17 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
 
     /// 既定モデル（＝設定 UI で「（推奨）」表記するモデル）
     var defaultModel: String { knownModels[0] }
+
+    /// モード別のテキスト整形の既定 ON/OFF。
+    /// リアルタイム(deepgram)は速度全振りのため既定 OFF（トグルで ON は可能）、
+    /// スタンダード(groq)ほかは録音後にきれいに整形するため既定 ON。
+    /// 設定 UI でモードを切り替えたときに整形トグルをこの既定へ追従させる。
+    var defaultFormatEnabled: Bool {
+        switch self {
+        case .deepgram: return false
+        case .groq, .elevenlabs, .openai: return true
+        }
+    }
 }
 
 /// ホットキースロット 1 つ分の設定
@@ -207,6 +218,8 @@ final class ConfigStore: ObservableObject {
         static let handsfreeKey = "handsfreeKey"
         static let splitParallelEnabled = "splitParallelEnabled"
         static let replacements = "replacements"
+        /// モード別整形既定の一回限りマイグレーション済みフラグ（v1.8）
+        static let didMigrateModeDefaultsV18 = "didMigrateModeDefaultsV18"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -243,6 +256,19 @@ final class ConfigStore: ObservableObject {
         handsfreeKey = (defaults.array(forKey: Keys.handsfreeKey) as? [String]) ?? []
         splitParallelEnabled = true
         replacements = Self.loadReplacements(defaults) ?? []
+
+        // 一回限りのマイグレーション（モード別整形既定の導入・v1.8）。
+        // 既存ユーザーは formatEnabled=true が明示保存されているため、リアルタイム(deepgram)
+        // スロットの整形を初回だけ既定 OFF（速度全振り）へ矯正する。以後は二度と触らないので、
+        // ユーザーが deepgram で整形 ON にしたらそれを尊重する。decode 内ではやらない
+        // （decode は保存値をそのまま復元する役目で、一回限りの副作用を持たせない）。
+        if !defaults.bool(forKey: Keys.didMigrateModeDefaultsV18) {
+            if slot1.backend == .deepgram { slot1.formatEnabled = false }
+            if slot2.backend == .deepgram { slot2.formatEnabled = false }
+            saveSlot(slot1, key: Keys.slot1)
+            saveSlot(slot2, key: Keys.slot2)
+            defaults.set(true, forKey: Keys.didMigrateModeDefaultsV18)
+        }
 
         // 変更を自動保存（起動直後の初期代入は上で完了しているため安全）
         $slot1.dropFirst().sink { [weak self] in self?.saveSlot($0, key: Keys.slot1) }.store(in: &cancellables)

@@ -346,6 +346,10 @@ final class AppController: ObservableObject {
         let formatEnabled: Bool
         let formatPrompt: String
         let formatModel: String
+        /// サーバー統合整形（Groq プロキシで STT と整形を 1 リクエストに）を使えるか。
+        /// groq スロット × 整形 ON × ログイン済み × ハンズフリー EL 差し替えでない、が条件。
+        /// 単発送信のときだけこれを見て serverFormat=true にし、後段のクライアント整形をスキップする。
+        let serverFormatEligible: Bool
     }
 
     private func beginRecording(slotId: Int, autoEnter: Bool, effectiveMode: HotkeyMode = .hold) {
@@ -368,6 +372,13 @@ final class AppController: ObservableObject {
             log.info("ハンズフリー: 内部エンジン切替 (groq→elevenlabs)")
         }
 
+        // サーバー統合整形（Groq プロキシで STT と整形を 1 リクエストに）が使えるか。
+        // 条件: activeTranscriber が groq（＝ハンズフリー EL 差し替えなら backend が .elevenlabs に
+        // なるので自動的に除外される）× 整形 ON × ログイン済み。単発送信のときだけ発動する。
+        let serverFormatEligible = activeTranscriber?.backend == .groq
+            && slot.formatEnabled
+            && BackendClient.isLoggedIn
+
         // 録音開始時点の transcriber（プロバイダー）と処理フラグを不変スナップショット化する。
         // 設定 hot-reload やスロット変更が録音中〜処理開始に挟まっても開始時の設定で完遂する
         recordContext = RecordContext(
@@ -377,7 +388,8 @@ final class AppController: ObservableObject {
             autoEnterDelayMs: config.autoEnterDelayMs,
             formatEnabled: slot.formatEnabled,
             formatPrompt: config.autoFormatPrompt,
-            formatModel: config.formatModel
+            formatModel: config.formatModel,
+            serverFormatEligible: serverFormatEligible
         )
 
         // 設定された入力デバイスを反映（変更がなければ recorder 側では何もしない）
@@ -479,6 +491,7 @@ final class AppController: ObservableObject {
         let formatEnabled = context.formatEnabled
         let formatPrompt = context.formatPrompt
         let formatModel = context.formatModel
+        let serverFormatEligible = context.serverFormatEligible
 
         // 直前のタスク完了を待ってから処理する（録音順のテキスト挿入を保証）
         let previous = pipelineTail
@@ -537,12 +550,16 @@ final class AppController: ObservableObject {
             }
             let vadMs = Int((ProcessInfo.processInfo.systemUptime - restT0) * 1000)
 
-            // 3. API 文字起こし（長文は無音区間で分割し並列送信して待ち時間を短縮）
+            // 3. API 文字起こし（長文は無音区間で分割し並列送信して待ち時間を短縮）。
+            // 単発送信かつサーバー統合整形が使えるときは、STT と整形を 1 リクエストで済ませる
+            // （didServerFormat=true で返る）。分割送信のときは各セグメント整形なし→結合後にクライアント整形。
             let sttStart = ProcessInfo.processInfo.systemUptime
             let text: String
+            let didServerFormat: Bool
             do {
-                text = try await Self.transcribeWithOptionalSplit(
-                    audio, transcriber: transcriber, splitEnabled: splitEnabled
+                (text, didServerFormat) = try await Self.transcribeWithOptionalSplit(
+                    audio, transcriber: transcriber, splitEnabled: splitEnabled,
+                    serverFormat: serverFormatEligible
                 )
             } catch let error as TranscriptionError {
                 log.error("文字起こし失敗: \(error.message, privacy: .public)")
@@ -560,11 +577,19 @@ final class AppController: ObservableObject {
             }
 
             // 4. テキスト貼り付け（+ ダブルタップ時は Enter 自動送信）
-            // 整形が有効なら貼り付け前に LLM で整形（失敗時は原文が返る）
+            // 整形: サーバー統合済み（didServerFormat）なら再整形しない。サーバーが整形失敗
+            // （formatted:false）でも text に STT 原文が入って返るため、ここで再整形すると同じ
+            // Groq 障害で二度失敗するだけ＋遅延増になる。よってクライアント側の再整形はしない。
+            // 統合でなく整形 ON のときだけ貼り付け前に LLM 整形する（失敗時は原文が返る）。
             let fmtStart = ProcessInfo.processInfo.systemUptime
-            let formatted = formatEnabled
-                ? await formatter.format(text, prompt: formatPrompt, model: formatModel)
-                : text
+            let formatted: String
+            if didServerFormat {
+                formatted = text
+            } else if formatEnabled {
+                formatted = await formatter.format(text, prompt: formatPrompt, model: formatModel)
+            } else {
+                formatted = text
+            }
             let fmtMs = Int((ProcessInfo.processInfo.systemUptime - fmtStart) * 1000)
             // ユーザー辞書の確定置換を適用（API を通さないので遅延ゼロ）
             let output = config.applyReplacements(formatted)
@@ -576,7 +601,9 @@ final class AppController: ObservableObject {
             await Paster.paste(output)
             let pasteMs = Int((ProcessInfo.processInfo.systemUptime - pasteStart) * 1000)
             let totalMs = Int((ProcessInfo.processInfo.systemUptime - restT0) * 1000)
-            log.info("[計測] \(transcriber.backend.label, privacy: .public) 録音停止→貼付 総計\(totalMs)ms（VAD \(vadMs) / 文字起こし \(sttMs) / 整形 \(fmtMs) / 貼付 \(pasteMs)）")
+            // 統合時は整形を STT と一緒に済ませたことが分かるよう「整形 サーバー統合」と表記する
+            let fmtDesc = didServerFormat ? "整形 サーバー統合" : "整形 \(fmtMs)"
+            log.info("[計測] \(transcriber.backend.label, privacy: .public) 録音停止→貼付 総計\(totalMs)ms（VAD \(vadMs) / 文字起こし \(sttMs) / \(fmtDesc, privacy: .public) / 貼付 \(pasteMs)）")
             if autoEnter {
                 try? await Task.sleep(for: .milliseconds(max(0, delayMs)))
                 Paster.pressEnter()
@@ -611,25 +638,30 @@ final class AppController: ObservableObject {
         return audio
     }
 
-    /// 文字起こし（分割並列送信オプション付き）。
-    /// 分割有効かつ長文なら無音区間で分割して並列送信し、結合テキストを返す。
+    /// 文字起こし（分割並列送信オプション付き）。戻り値は (テキスト, サーバー統合整形したか)。
+    /// 分割有効かつ長文なら無音区間で分割して並列送信し、結合テキストを返す（各セグメントは
+    /// 整形なしで送るため didServerFormat=false＝呼び出し側が結合後にクライアント整形する）。
     /// 分割送信が失敗（一部セグメントのエラー・429 等）したら全体 1 本送信に自動フォールバックする。
+    /// 単発送信（分割しない/分割失敗フォールバック）では serverFormat をそのまま transcribe へ渡し、
+    /// その値を didServerFormat として返す（serverFormat は groq プロキシ経路でのみ実効＝呼び出し側で
+    /// ログイン済み groq に限定済みなので、true なら必ず整形まで済んだテキストが返る）。
     nonisolated private static func transcribeWithOptionalSplit(
-        _ samples: [Float], transcriber: Transcriber, splitEnabled: Bool
-    ) async throws -> String {
+        _ samples: [Float], transcriber: Transcriber, splitEnabled: Bool, serverFormat: Bool
+    ) async throws -> (text: String, didServerFormat: Bool) {
         if splitEnabled {
             let segments = VoiceActivity.segment(samples)
             if segments.count >= 2 {
                 log.info("長文を \(segments.count) 分割して並列送信します")
                 do {
-                    return try await Self.transcribeParallel(segments, transcriber: transcriber)
+                    // 分割送信は各セグメント整形なし。結合後にクライアント整形するため didServerFormat=false
+                    return (try await Self.transcribeParallel(segments, transcriber: transcriber), false)
                 } catch {
                     // 部分欠落を防ぐため、分割送信に失敗したら全体 1 本送信に切り替える
                     log.warning("分割送信に失敗したため全体送信にフォールバックします: \(error.localizedDescription)")
                 }
             }
         }
-        return try await transcriber.transcribe(samples: samples)
+        return (try await transcriber.transcribe(samples: samples, serverFormat: serverFormat), serverFormat)
     }
 
     /// 各セグメントを並列に文字起こしし、index 昇順に結合する（同時数は URLSession が制限）

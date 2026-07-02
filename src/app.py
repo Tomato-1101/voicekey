@@ -135,6 +135,9 @@ class TaskContext:
         volume_normalize: 音量正規化を行うか
         format_model: テキスト整形に使うモデル名
         format_auto_prompt: テキスト整形プロンプト
+        server_format: サーバー統合整形（Groq プロキシで STT と整形を 1 リクエストに）を使えるか。
+            groq スロット × 整形 ON × ログイン済み × ハンズフリー EL 差し替えでない、が条件。
+            単発送信のときだけこれを見て server_format=True にし、後段のクライアント整形をスキップする。
     """
     slot: HotkeySlot
     language: str
@@ -143,6 +146,7 @@ class TaskContext:
     volume_normalize: bool
     format_model: str
     format_auto_prompt: str
+    server_format: bool
 
 
 class _LoginWorker(QThread):
@@ -571,6 +575,14 @@ class VoicekeyApp(QObject):
         この録音の処理結果には影響させない（キュー処理はこの snapshot だけを使う）。
         """
         preprocess_cfg = self._config.get("audio_preprocess", {}) or {}
+        # サーバー統合整形（Groq プロキシで STT と整形を 1 リクエストに）が使えるか。
+        # slot は _maybe_handsfree_slot 適用後なので、ハンズフリー EL 差し替え時は
+        # slot.backend が elevenlabs になり、この条件が自動的に False になる（Mac と対）。
+        server_format = (
+            slot.backend == TranscriptionBackend.GROQ.value
+            and slot.format_enabled
+            and backend_client.is_logged_in()
+        )
         return TaskContext(
             slot=slot,
             language=self._config.get("language", "ja"),
@@ -579,6 +591,7 @@ class VoicekeyApp(QObject):
             volume_normalize=bool(preprocess_cfg.get("volume_normalize", True)),
             format_model=self._config.get("format_model", "llama-3.1-8b-instant"),
             format_auto_prompt=self._config.get("format_auto_prompt", ""),
+            server_format=server_format,
         )
 
     @staticmethod
@@ -980,13 +993,18 @@ class VoicekeyApp(QObject):
         if vad_on and split_on and duration >= _SPLIT_MIN_SEC:
             segments = self._vad.segment(audio)
 
+        # 単発送信のときだけサーバー統合整形（STT→整形を 1 リクエスト）を使う。
+        # 分割送信は各セグメントを整形なしで送り、結合後にクライアント整形する（従来どおり）。
+        did_server_format = False
         if segments and len(segments) >= 2:
             logger.info(f"長文を {len(segments)} 分割して並列送信します")
             text = self._transcribe_parallel(slot, segments)
             if text is None:
-                # 一部セグメントの失敗（429 等）→ 全体 1 本送信にフォールバック（部分欠落を防ぐ）
+                # 一部セグメントの失敗（429 等）→ 全体 1 本送信にフォールバック（部分欠落を防ぐ）。
+                # 全体 1 本＝単発送信なのでサーバー統合整形を効かせる（Mac の分割失敗フォールバックと対）。
                 logger.warning("分割送信に失敗したため全体送信にフォールバックします")
-                text = slot.transcriber.transcribe(audio)
+                text = slot.transcriber.transcribe(audio, server_format=ctx.server_format)
+                did_server_format = ctx.server_format
         else:
             # VAD: 発話がなければ API に送らない（幻覚と無駄コストの防止）。
             # 推論 1 回で発話判定と無音圧縮（前後トリミング + 発話間の長い無音の短縮）を行う
@@ -1006,16 +1024,23 @@ class VoicekeyApp(QObject):
                     audio = condensed
                 logger.info(f"VAD 処理: {(time.perf_counter() - vad_start) * 1000:.0f}ms")
 
-            text = slot.transcriber.transcribe(audio)
+            text = slot.transcriber.transcribe(audio, server_format=ctx.server_format)
+            did_server_format = ctx.server_format
         if not text:
             logger.info("文字起こし結果が空でした")
             return
 
         total_ms = (time.perf_counter() - task.timestamp) * 1000
-        logger.info(f"文字起こし完了: 音声 {duration:.1f}s → {len(text)} 文字 ({total_ms:.0f}ms)")
+        fmt_desc = "整形: サーバー統合" if did_server_format else "整形: クライアント/なし"
+        logger.info(
+            f"文字起こし完了: 音声 {duration:.1f}s → {len(text)} 文字 ({total_ms:.0f}ms, {fmt_desc})"
+        )
 
-        # 貼り付け前の LLM テキスト整形（失敗時は原文のまま）
-        text = self._maybe_format(text, ctx)
+        # 貼り付け前の LLM テキスト整形。サーバー統合済み（did_server_format）なら再整形しない。
+        # サーバーが整形失敗（formatted:false）でも text に STT 原文が入って返るため、ここで再整形
+        # すると同じ Groq 障害で二度失敗するだけ＋遅延増になる。よってクライアント側の再整形はしない。
+        if not did_server_format:
+            text = self._maybe_format(text, ctx)
 
         # 実績を集計（貼り付け後のローカル処理なので遅延に影響しない）
         self._record_stats(text, task.audio_data)

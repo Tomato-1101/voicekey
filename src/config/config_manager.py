@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional
 import yaml
 
 from ..utils.logger import get_logger
-from .constants import DEFAULT_CONFIG, SETTINGS_FILE_NAME
+from .constants import DEFAULT_CONFIG, SETTINGS_FILE_NAME, default_format_enabled
 
 logger = get_logger(__name__)
 # 対応バックエンド（REST + ストリーミング）。これ以外は openai にフォールバック
@@ -220,6 +220,8 @@ class ConfigManager:
             self._force_always_on(config)
             # 製品版は文字起こしバックエンドを 3 択に制限（範囲外の openai 等は groq へ移行・deepgram は維持）
             self._constrain_release_backends(config)
+            # モード別整形既定の一回限りマイグレーション（deepgram スロットの整形を初回だけ既定 OFF へ）
+            self._migrate_format_defaults(config)
             return config
 
         except Exception as e:
@@ -271,6 +273,32 @@ class ConfigManager:
                 slot["backend"] = RELEASE_DEFAULT_BACKEND
                 # 移行先バックエンドのモデルへフォールバックさせる
                 slot["api_model"] = ""
+
+    @staticmethod
+    def _migrate_format_defaults(config: Dict[str, Any]) -> None:
+        """モード別整形既定を既存ユーザーへ一回限りで適用する（破壊的更新・Mac 版と対）。
+
+        既存ユーザーは format_enabled=true が明示保存されているため、リアルタイム(deepgram)
+        スロットの整形を初回だけ既定 OFF（速度全振り）へ矯正する。矯正済みマーカー
+        （migrated_format_defaults）を立て、以後は二度と触らない＝その後ユーザーが deepgram で
+        整形 ON にしたらそれを尊重する。マーカーは ConfigManager.save の deep merge で保持される
+        （save は self.config を土台にマージするので、_load_config で立てたマーカーが次回保存で
+        settings.yaml へ書き戻る）。deepgram 以外（スタンダード=groq 等）は既定 ON のままなので触らない。
+
+        Args:
+            config: 矯正対象の設定辞書（その場で書き換える）
+        """
+        if config.get("migrated_format_defaults"):
+            return  # 一度矯正したら二度と触らない（ユーザーの選択を尊重）
+        for slot_key in ("hotkey1", "hotkey2"):
+            slot = config.get(slot_key)
+            if not isinstance(slot, dict):
+                continue
+            backend = str(slot.get("backend", "")).lower()
+            # deepgram のみ既定 OFF へ矯正（他バックエンドの既定 ON は明示保存済みなので触らない）
+            if not default_format_enabled(backend):
+                slot["format_enabled"] = False
+        config["migrated_format_defaults"] = True
 
     def reload_if_changed(self) -> bool:
         """

@@ -236,12 +236,17 @@ class ApiTranscriber:
         except Exception as e:
             logger.debug(f"{self.display_name} プリウォーム失敗（無視）: {e}")
 
-    def transcribe(self, audio_data: npt.NDArray[np.float32]) -> str:
+    def transcribe(
+        self, audio_data: npt.NDArray[np.float32], server_format: bool = False
+    ) -> str:
         """
         音声を文字起こしする。
 
         Args:
             audio_data: 音声データ（float32、モノラルの NumPy 配列）
+            server_format: サーバー統合整形（STT と整形を 1 リクエストで）を依頼するか。
+                基底実装（直叩き）では無視する。groq × ログイン済みプロキシ経路のみが実効
+                （GroqTranscriber が backend_client へ伝搬する）。
 
         Returns:
             文字起こし結果のテキスト（前後空白除去済み）。空音声なら空文字
@@ -331,8 +336,14 @@ class GroqTranscriber(ApiTranscriber):
         "whisper-large-v3",        # 高精度
     )
 
-    def transcribe(self, audio_data: npt.NDArray[np.float32]) -> str:
-        """音声を Groq で文字起こしする（製品版はプロキシ経由・開発は直叩き）。"""
+    def transcribe(
+        self, audio_data: npt.NDArray[np.float32], server_format: bool = False
+    ) -> str:
+        """音声を Groq で文字起こしする（製品版はプロキシ経由・開発は直叩き）。
+
+        server_format=True かつプロキシ経路のときは、STT→整形をサーバーで統合実行させ
+        整形済みテキストを受け取る（呼び出し側は再整形しない＝単発送信時のみ使う）。
+        """
         if len(audio_data) == 0:
             return ""
 
@@ -346,12 +357,14 @@ class GroqTranscriber(ApiTranscriber):
             try:
                 # プロキシ経由でも直叩きと同じ正規化を通す（#21・CJK 隣接スペース除去）
                 return strip_cjk_spaces(
-                    backend_client.transcribe_groq(wav_bytes, self.language or "")
+                    backend_client.transcribe_groq(
+                        wav_bytes, self.language or "", server_format=server_format
+                    )
                 )
             except backend_client.BackendError as e:
                 raise TranscriptionError(str(e))
 
-        # 未ログイン（開発直叩き）: OpenAI 互換 REST を親クラスで叩く。
+        # 未ログイン（開発直叩き）: OpenAI 互換 REST を親クラスで叩く（server_format は無視）。
         # 親の _dist_guard(server_supported=False) は dev ビルドでは no-op なので安全。
         return super().transcribe(audio_data)
 
@@ -383,8 +396,10 @@ class ElevenLabsTranscriber(ApiTranscriber):
         """ElevenLabs は Bearer ではなく xi-api-key ヘッダーで認証する。"""
         return {"xi-api-key": api_key}
 
-    def transcribe(self, audio_data: npt.NDArray[np.float32]) -> str:
-        """音声を ElevenLabs Scribe で文字起こしする。"""
+    def transcribe(
+        self, audio_data: npt.NDArray[np.float32], server_format: bool = False
+    ) -> str:
+        """音声を ElevenLabs Scribe で文字起こしする（server_format は無視＝整形統合は Groq のみ）。"""
         if len(audio_data) == 0:
             return ""
 
@@ -536,8 +551,10 @@ class DeepgramTranscriber(ApiTranscriber):
                 ).start()
         return text
 
-    def transcribe(self, audio_data: npt.NDArray[np.float32]) -> str:
-        """音声を Deepgram Listen（事前録音）で文字起こしする。"""
+    def transcribe(
+        self, audio_data: npt.NDArray[np.float32], server_format: bool = False
+    ) -> str:
+        """音声を Deepgram Listen（事前録音）で文字起こしする（server_format は無視＝整形統合は Groq のみ）。"""
         if len(audio_data) == 0:
             return ""
 

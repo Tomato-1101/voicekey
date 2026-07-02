@@ -67,4 +67,47 @@ final class SlotConfigMigrationTests: XCTestCase {
         XCTAssertEqual(slot.backend, .deepgram)
         XCTAssertEqual(slot.model, Backend.deepgram.defaultModel)
     }
+
+    // MARK: - モード別整形既定（v1.8）
+
+    // リアルタイム(deepgram)は速度全振りのため整形既定 OFF、スタンダード(groq)ほかは既定 ON
+    func testDefaultFormatEnabledByBackend() {
+        XCTAssertFalse(Backend.deepgram.defaultFormatEnabled)
+        XCTAssertTrue(Backend.groq.defaultFormatEnabled)
+        XCTAssertTrue(Backend.elevenlabs.defaultFormatEnabled)
+        XCTAssertTrue(Backend.openai.defaultFormatEnabled)
+    }
+
+    // 初回起動: 既存ユーザーの deepgram スロット（formatEnabled=true 明示保存）を既定 OFF へ矯正する
+    @MainActor
+    func testModeDefaultsMigrationForcesDeepgramFormatOff() throws {
+        let suite = "voicekey.test.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let slot = SlotConfig(hotkey: ["cmd_r"], mode: .hold, backend: .deepgram,
+                              model: "nova-3", prompt: "", formatEnabled: true)
+        defaults.set(try JSONEncoder().encode(slot), forKey: "slot1")
+
+        let store = ConfigStore(defaults: defaults)
+        XCTAssertFalse(store.slot1.formatEnabled)  // 矯正されて OFF
+        XCTAssertTrue(defaults.bool(forKey: "didMigrateModeDefaultsV18"))  // フラグが立つ
+    }
+
+    // 二度目は矯正しない＝ユーザーが deepgram で整形 ON に戻したら尊重する
+    @MainActor
+    func testModeDefaultsMigrationRunsOnlyOnce() throws {
+        let suite = "voicekey.test.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        // すでにマイグレーション済み。ユーザーは deepgram の整形を ON に戻している
+        defaults.set(true, forKey: "didMigrateModeDefaultsV18")
+        let slot = SlotConfig(hotkey: ["cmd_r"], mode: .hold, backend: .deepgram,
+                              model: "nova-3", prompt: "", formatEnabled: true)
+        defaults.set(try JSONEncoder().encode(slot), forKey: "slot1")
+
+        let store = ConfigStore(defaults: defaults)
+        XCTAssertTrue(store.slot1.formatEnabled)  // 尊重されて ON のまま
+    }
 }
