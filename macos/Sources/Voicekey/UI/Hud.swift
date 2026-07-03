@@ -273,21 +273,22 @@ struct HudView: View {
                     .background {
                         HudBackdrop()
                             .clipShape(Capsule())
-                            // 既存のリム（.primary 由来なのでライト/ダーク両対応）
-                            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
+                            // 既存のリム（.primary 由来なのでライト/ダーク両対応）。
+                            // ガラスを薄めた（VEV alpha 0.7）ぶん装飾も弱め、存在感を下げる
+                            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.09), lineWidth: 0.5))
                             // 上縁の極薄い白ハイライトでレンズの立ち上がりを補う（フォールバックの
                             // すりガラスは屈折歪みが出ないため特に効く。ダークでも破綻しない控えめ値）。
                             .overlay(
                                 Capsule().strokeBorder(
                                     LinearGradient(
-                                        colors: [Color.white.opacity(0.22), Color.white.opacity(0.0)],
+                                        colors: [Color.white.opacity(0.14), Color.white.opacity(0.0)],
                                         startPoint: .top, endPoint: .bottom
                                     ),
-                                    lineWidth: 0.75
+                                    lineWidth: 0.6
                                 )
                             )
                     }
-                    .shadow(color: .black.opacity(isIdlePill ? 0.15 : 0.25), radius: isIdlePill ? 6 : 12, y: isIdlePill ? 2 : 4)
+                    .shadow(color: .black.opacity(isIdlePill ? 0.10 : 0.16), radius: isIdlePill ? 4 : 8, y: isIdlePill ? 1 : 2)
                     // 中身はカプセルの上に重ね、mode 間では opacity クロスフェードのみで出入りさせる
                     // （scale を使わない＝「消して出し直す」感を排除）。カプセルからはみ出さないよう
                     // カプセル形にクリップし、育つ／広がるのに合わせて中身が現れるようにする。
@@ -550,6 +551,11 @@ private final class VisualEffectPillBackdrop: NSVisualEffectView {
         material = .hudWindow
         blendingMode = .behindWindow    // ウィンドウの「後ろ」＝背後アプリをぼかす
         state = .active
+        // ダークモードの material は tint が強く、背後の文字が「平均色の塊」に塗り潰れる
+        // （8 素材を実測比較済み・どれも文字が透けない）。公開 API にブラー半径の調整は
+        // 無いため、alpha でブラー層と素の背景を線形混合して「軽いガラス」に薄める。
+        // 0.7 前後＝背後の文字がぼんやり透ける・存在感が下がる（1.0=不透明な塊、0.5 以下=素通しすぎ）
+        alphaValue = 0.7
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
