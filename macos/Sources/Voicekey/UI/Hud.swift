@@ -244,6 +244,10 @@ struct HudView: View {
     private var isIdlePill: Bool { model.mode == .idlePill }
     /// 変換中か（明滅アニメを駆動してよいかの判定に使う）
     private var isTranscribing: Bool { model.mode == .transcribing }
+    /// 中身フェードインの遅延/所要。録音開始は即応性優先で最短、変換中はカプセルの
+    /// サイズ変化（spring response 0.3）がほぼ収束してから、その場で静かに現れるようにする
+    private var contentInsertionDelay: Double { isTranscribing ? 0.22 : 0.06 }
+    private var contentInsertionDuration: Double { isTranscribing ? 0.18 : 0.12 }
     // 待機ピルは極小の横長、録音/変換中は通常サイズ。この padding 差でモーフの「育ち」を出す
     private var horizontalPadding: CGFloat { isIdlePill ? 12 : 16 }
     private var verticalPadding: CGFloat { isIdlePill ? 3 : 8 }
@@ -297,8 +301,13 @@ struct HudView: View {
                             // 「カプセルが伸び、伸びた先に中身が現れる」順序を作るための非対称フェード。
                             // 挿入は少し遅らせてフェードイン（カプセルが育ち始めてから新中身が出る）、
                             // 削除は先に速く消す（旧中身を残したまま育たせない）。
+                            // 変換中だけ挿入をさらに遅らせる: カプセル縮小が概ね収まってから
+                            // 「変換中…」をその場でフェードインさせ、「文字が横から流れてくる」
+                            // 見え方（縮小アニメ中に中央寄せ位置が動く）を防ぐ。
                             .transition(.asymmetric(
-                                insertion: .opacity.animation(.easeIn(duration: 0.12).delay(0.06)),
+                                insertion: .opacity.animation(
+                                    .easeIn(duration: contentInsertionDuration)
+                                        .delay(contentInsertionDelay)),
                                 removal: .opacity.animation(.easeOut(duration: 0.08))
                             ))
                             .frame(width: capsuleWidth, height: capsuleHeight)
