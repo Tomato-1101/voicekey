@@ -198,42 +198,88 @@ struct HudView: View {
 
     @ObservedObject var model: HudModel
 
+    /// 中身（アイコン/波形/字幕/変換マーク）の実測サイズ。これに padding を足した値を
+    /// カプセルの .frame に spring で反映することで、mode が変わってもカプセルは削除・挿入
+    /// されず「サイズだけ」が連続変形する（＝形が飛ばない）。初期値は待機ピル相当にしておく。
+    @State private var contentSize: CGSize = CGSize(width: 40, height: 8)
+    /// 変換中マークの明滅トグル。transcribing に入った瞬間だけ true にして往復を開始し、
+    /// 離脱で false に戻す（repeatForever を確実に止め、非表示中に裏で回し続けないため）。
+    @State private var pulseOn = false
+
     /// 待機ピルか（極小サイズ・薄めの mic のみ）
     private var isIdlePill: Bool { model.mode == .idlePill }
+    /// 変換中か（明滅アニメを駆動してよいかの判定に使う）
+    private var isTranscribing: Bool { model.mode == .transcribing }
+    // 待機ピルは極小の横長、録音/変換中は通常サイズ。この padding 差でモーフの「育ち」を出す
+    private var horizontalPadding: CGFloat { isIdlePill ? 12 : 16 }
+    private var verticalPadding: CGFloat { isIdlePill ? 3 : 8 }
+    /// カプセルの目標サイズ（実測した中身＋左右/上下の padding）
+    private var capsuleWidth: CGFloat { contentSize.width + horizontalPadding * 2 }
+    private var capsuleHeight: CGFloat { contentSize.height + verticalPadding * 2 }
 
     var body: some View {
         ZStack {
             if model.mode != .hidden {
-                content
-                    // 待機ピルは極小の横長、録音/変換中は通常サイズ。差でモーフの「育ち」を強調する
-                    .padding(.horizontal, isIdlePill ? 12 : 16)
-                    .padding(.vertical, isIdlePill ? 3 : 8)
+                // 単一 identity のガラスカプセル。中身を switch で差し替えず、カプセル自体は
+                // 常に「Color.clear.frame(実測サイズ) の背景」として同じ identity を保つ。
+                // mode 間ではこの frame の width/height だけが spring 補間される＝連続変形になる
+                // （旧実装は switch した中身に直接カプセルを付けていたため、削除＋挿入の transition
+                // が毎回発火して「消して出し直す・形が飛ぶ」感が出ていた。そこを identity 固定で断つ）。
+                Color.clear
+                    .frame(width: capsuleWidth, height: capsuleHeight)
                     // macOS 26 は本物のガラスピル、旧 OS は極薄マテリアル近似（描画のみ・待ち時間は足さない）
                     .glassCapsule()
                     .shadow(color: .black.opacity(isIdlePill ? 0.15 : 0.25), radius: isIdlePill ? 6 : 12, y: isIdlePill ? 2 : 4)
+                    // 中身はカプセルの上に重ね、mode 間では opacity クロスフェードのみで出入りさせる
+                    // （scale を使わない＝「消して出し直す」感を排除）。カプセルからはみ出さないよう
+                    // カプセル形にクリップし、育つ／広がるのに合わせて中身が現れるようにする。
+                    .overlay {
+                        modeContent(for: model.mode)
+                            .fixedSize()
+                            .transition(.opacity)
+                            .frame(width: capsuleWidth, height: capsuleHeight)
+                            .clipShape(Capsule())
+                    }
+                    // この transition は hidden⇄表示（HUD 自体の出現・消滅）のときだけ発火する。
+                    // mode 間の切替では上位の if が真のまま＝ identity を保つので発火しない。
                     .transition(.opacity.combined(with: .scale(scale: 0.8)))
             }
         }
         .frame(width: Self.width, height: Self.height)
-        // 待機ピル→録音インジケーターへ「大きく育つ」ばね感の変形（所要時間は伸ばさず表現だけ強化）。
-        // 同一 HudView を使い回すため hide→show の作り直しは起きず、サイズがそのまま連続変形する。
+        // カプセルのサイズ決定に使う不可視サイザー（active mode の中身の素の大きさを測る）
+        .background { sizer }
+        // 待機ピル⇄録音インジケーターの連続変形（mode 変化）。所要時間は伸ばさず spring 表現だけで出す。
         .animation(.spring(response: 0.3, dampingFraction: 0.6), value: model.mode)
+        // 波形バー⇄字幕の切替は「空⇄非空」を境に 1 回だけアニメする
+        //（caption 文字列そのものを value にすると毎文字アニメが走るため、isEmpty だけを見る）。
+        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: model.caption.isEmpty)
+        // 実測サイズの変化を spring でカプセル frame に反映する（＝カプセルがサイズだけ連続変形する本体）。
+        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: contentSize)
+        .onPreferenceChange(HudContentSizeKey.self) { contentSize = $0 }
+        // transcribing に入った瞬間に往復開始、離脱で停止（明滅を非表示中に裏で回し続けない）。
+        .onChange(of: isTranscribing) { _, active in pulseOn = active }
     }
 
-    /// 貼り付け先アプリのアイコン（18pt 角丸）。取得失敗時は非表示でレイアウトを崩さない
-    @ViewBuilder
-    private var appIconView: some View {
-        if let icon = model.appIcon {
-            Image(nsImage: icon)
-                .resizable()
-                .frame(width: 18, height: 18)
-                .clipShape(RoundedRectangle(cornerRadius: 4))
-        }
+    /// カプセルのサイズ決定に使う不可視サイザー。active mode の中身だけを素のサイズで描画して測る。
+    /// ここでアニメを走らせると遷移中に旧新の中身が重なって union サイズになり、カプセルが一瞬
+    /// 膨らむため、測定はアニメ無効（transaction.animation = nil）で即時に確定させる。
+    private var sizer: some View {
+        modeContent(for: model.mode)
+            .fixedSize()
+            .background {
+                GeometryReader { geo in
+                    Color.clear.preference(key: HudContentSizeKey.self, value: geo.size)
+                }
+            }
+            .opacity(0)
+            .allowsHitTesting(false)
+            .transaction { $0.animation = nil }
     }
 
+    /// mode ごとの中身。カプセルの上に重ねる本体と、サイザーの測定対象で共用する。
     @ViewBuilder
-    private var content: some View {
-        switch model.mode {
+    private func modeContent(for mode: HudModel.Mode) -> some View {
+        switch mode {
         case .hidden:
             EmptyView()
 
@@ -247,56 +293,91 @@ struct HudView: View {
                 .frame(width: 40, height: 8)  // 余白込みで概ね 64×14 の極小ピルにする
 
         case .recording(let autoEnter, let handsFree):
-            HStack(spacing: 10) {
-                appIconView  // 貼り付け先アプリのアイコン（左端）
-                // 状態ドット: ハンズフリー=ティール / 自動送信=パープル / 通常=レッド
-                Circle()
-                    .fill(handsFree ? Self.handsFreeAccent : (autoEnter ? Color.purple : Color.red))
-                    .frame(width: 8, height: 8)
-                // ハンズフリー中は「いまハンズフリー録音だ」と一目で分かるラベルを出す
-                if handsFree {
-                    Text("ハンズフリー")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Self.handsFreeAccent)
-                        .fixedSize()
-                }
-                // ストリーミング字幕があればそれを、なければ波形バーを表示。
-                // 頭を省略（.head）して常に最新の語尾が見えるようにする
-                if model.caption.isEmpty {
-                    levelBars
-                } else {
-                    Text(model.caption)
-                        .font(.system(size: 13, weight: .medium))
-                        .lineLimit(1)
-                        .truncationMode(.head)
-                        .frame(maxWidth: Self.captionMaxWidth, alignment: .trailing)
-                }
-                if autoEnter {
-                    Image(systemName: "return")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.purple)
-                }
-                // ハンズフリー中は停止方法を控えめに添える（字幕が無いときだけ＝混雑回避）
-                if handsFree && model.caption.isEmpty {
-                    stopHint
-                }
-            }
+            recordingContent(autoEnter: autoEnter, handsFree: handsFree)
 
         case .transcribing:
-            HStack(spacing: 10) {
-                appIconView  // 貼り付け先アプリのアイコン（左端）
-                ProgressView()
-                    .controlSize(.small)
-                Text("変換中…")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
+            transcribingContent
 
         case .notice(let text):
             Text(text)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+        }
+    }
+
+    /// 貼り付け先アプリのアイコン（18pt 角丸）。取得失敗時は非表示でレイアウトを崩さない
+    @ViewBuilder
+    private var appIconView: some View {
+        if let icon = model.appIcon {
+            Image(nsImage: icon)
+                .resizable()
+                .frame(width: 18, height: 18)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+        }
+    }
+
+    /// 録音中の中身（アプリアイコン・状態ドット・波形／字幕・各バッジ）
+    @ViewBuilder
+    private func recordingContent(autoEnter: Bool, handsFree: Bool) -> some View {
+        HStack(spacing: 10) {
+            appIconView  // 貼り付け先アプリのアイコン（左端）
+            // 状態ドット: ハンズフリー=ティール / 自動送信=パープル / 通常=レッド
+            Circle()
+                .fill(handsFree ? Self.handsFreeAccent : (autoEnter ? Color.purple : Color.red))
+                .frame(width: 8, height: 8)
+            // ハンズフリー中は「いまハンズフリー録音だ」と一目で分かるラベルを出す
+            if handsFree {
+                Text("ハンズフリー")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Self.handsFreeAccent)
+                    .fixedSize()
+            }
+            // 字幕が最初に届いたら固定幅 360 へ一度だけ広げ、以後の逐次更新では幅を動かさない。
+            // 固定幅（maxWidth ではなく width）にするのは、短い字幕でも幅が伸縮せず毎文字の
+            // ガタつき・再アニメを防ぐため。頭を省略（.head）して常に最新の語尾を見せる。
+            if model.caption.isEmpty {
+                levelBars
+            } else {
+                Text(model.caption)
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.head)
+                    .frame(width: Self.captionMaxWidth, alignment: .trailing)
+            }
+            if autoEnter {
+                Image(systemName: "return")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.purple)
+            }
+            // ハンズフリー中は停止方法を控えめに添える（字幕が無いときだけ＝混雑回避）
+            if handsFree && model.caption.isEmpty {
+                stopHint
+            }
+        }
+    }
+
+    /// 変換中の中身。スピナー（くるくる）は廃止し、waveform マークを「ふわんふわん」明滅させる
+    private var transcribingContent: some View {
+        HStack(spacing: 10) {
+            appIconView  // 貼り付け先アプリのアイコン（左端）
+            // opacity 1.0⇄0.35 とごく僅かな scale 0.92⇄1.0 をゆっくり往復させ、柔らかい明滅にする。
+            // repeatForever は transcribing の間だけ（isTranscribing で切替）駆動し、離脱時は非反復
+            // アニメに切り替えて確実に止める＝非表示中に裏で回り続けて CPU を食わないようにする。
+            Image(systemName: "waveform")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .opacity(pulseOn ? 0.35 : 1.0)
+                .scaleEffect(pulseOn ? 0.92 : 1.0)
+                .animation(
+                    isTranscribing
+                        ? .easeInOut(duration: 0.8).repeatForever(autoreverses: true)
+                        : .easeInOut(duration: 0.2),
+                    value: pulseOn
+                )
+            Text("変換中…")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -331,5 +412,15 @@ struct HudView: View {
         let minH: CGFloat = 3
         let maxH: CGFloat = 22
         return minH + (maxH - minH) * CGFloat(min(1, max(0, level)))
+    }
+}
+
+/// 中身の実測サイズをカプセルへ伝える PreferenceKey。
+/// .zero（未測定）は無視して有効値だけを採用し、初期化時の 0 で潰さないようにする。
+private struct HudContentSizeKey: PreferenceKey {
+    static let defaultValue: CGSize = .zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        let next = nextValue()
+        if next != .zero { value = next }
     }
 }
