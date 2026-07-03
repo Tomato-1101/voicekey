@@ -471,6 +471,12 @@ final class StatsStore: ObservableObject {
         dailySeries(days).reduce(0) { $0 + $1.recordingSeconds }
     }
 
+    /// 直近 n 日の合計回数（ホームの期間カードで文字数・録音時間と並べて出す用）。
+    /// 既存の charactersInLast / recordingSecondsInLast と同じ日次系列から合算する。
+    func sessionsInLast(days: Int) -> Int {
+        dailySeries(days).reduce(0) { $0 + $1.sessions }
+    }
+
     // MARK: - アカウント同期（#10）
 
     // #11: 当日分の送信を「アカウント単位で直列化＋coalesce」する単一フライト制御。

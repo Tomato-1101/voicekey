@@ -19,6 +19,9 @@ struct HomeView: View {
     /// 直近にコピーした履歴エントリ（行に「コピーしました」を一時表示する）
     @State private var copiedId: UUID?
 
+    /// 期間カードの選択（1=今日 / 7=今週）。UserDefaults に保存し、次回起動でも維持する。
+    @AppStorage("home.periodDays") private var periodDays: Int = 1
+
     var body: some View {
         // レイアウト v2.1: 島で全面を包まない。MainWindowView の frosted backdrop の上に
         // 控えめなカードをフラットに敷く（大きな島で画面を分割しない）。
@@ -101,55 +104,106 @@ struct HomeView: View {
 
     // MARK: - 統計カード
 
-    /// 今日 / 今週 / 累計のタイルと、レベル・節約時間をまとめた 1 枚のカード。
+    /// 統計セクション。上段に「累計文字数」「節約できた時間」を横並び、
+    /// 下段に期間切替つきの「期間カード」を全幅で置く 2 段構成。
+    /// 主役の指標（文字数・節約時間・期間文字数）を大きく見せ、回数や録音時間などの
+    /// 補足は小さく下へ回す（ユーザー指示: 重要でないものは小さく下に）。
     private var statsCard: some View {
         VStack(spacing: 12) {
-            HStack(spacing: 12) {
-                statTile(title: "今日", value: stats.charactersInLast(days: 1),
-                         sub: "\(todaySessions) 回")
-                Divider().frame(height: 46)
-                statTile(title: "今週", value: stats.charactersInLast(days: 7),
-                         sub: "録音 \(formattedShort(stats.recordingSecondsInLast(days: 7)))")
-                Divider().frame(height: 46)
-                statTile(title: "累計", value: stats.totalCharacters,
-                         sub: "Lv.\(stats.level)")
+            // 上段: 累計と節約は横並び。高さが揃うよう alignment .top（dashCard 側で伸長）。
+            HStack(alignment: .top, spacing: 12) {
+                cumulativeCard
+                savedCard
             }
-            Divider()
-            // レベル進捗と推定節約時間（既存 StatsTab の主要指標を簡潔に）
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("レベル \(stats.level)").font(.headline)
-                    Spacer()
-                    Text("推定節約時間 \(formattedSaved)")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                ProgressView(value: stats.levelProgress)
-                Text("あと \(stats.xpToNextLevel) 文字でレベル \(stats.level + 1)")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
+            // 下段: 期間カードはセグメント切替を右上に置くため全幅で 1 枚に。
+            periodCard
         }
-        .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: 12).fill(fillColor)
-        )
     }
 
-    /// 今日の入力回数（サマリー補足用）
-    private var todaySessions: Int { stats.dailySeries(1).last?.sessions ?? 0 }
-
-    /// サマリー 1 枚（ラベル＋大きな数字＋補足）
-    private func statTile(title: String, value: Int, sub: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
-            HStack(alignment: .firstTextBaseline, spacing: 2) {
-                Text("\(value)")
-                    .font(.system(size: 22, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                Text("文字").font(.caption2).foregroundStyle(.secondary)
+    /// カード「累計文字数」。主役に累計文字数、補足に回数・録音時間、
+    /// 下部にレベル制のゲーミフィケーション（進捗バー・次レベルまで）を統合する。
+    private var cumulativeCard: some View {
+        dashCard {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("累計入力").font(.caption).foregroundStyle(.secondary)
+                // 主役: 累計文字数（カンマ区切り・等幅数字で堂々と）
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                    bigNumberText(grouped(stats.totalCharacters))
+                    Text("文字").font(.subheadline).foregroundStyle(.secondary)
+                }
+                // 補足: 累計回数・累計録音時間（重要度が低いので小さく）
+                HStack(spacing: 12) {
+                    Label("\(grouped(stats.totalSessions)) 回", systemImage: "mic.fill")
+                    Label(formattedDuration(stats.totalRecordingSeconds), systemImage: "waveform")
+                }
+                .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                Divider().padding(.top, 2)
+                // 遊び要素: 累計文字数を経験値としたレベル制（続けたくなる仕掛けを残す）
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("レベル \(stats.level)").font(.subheadline.weight(.semibold))
+                        Spacer(minLength: 6)
+                        Text("あと \(grouped(stats.xpToNextLevel)) 文字で Lv.\(stats.level + 1)")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    ProgressView(value: stats.levelProgress)
+                }
             }
-            Text(sub).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// カード「節約できた時間」。主役に推定節約時間、下に身近なものへの換算を 1 行添える
+    /// （遊び要素: 到達した最大のマイルストーンを自動選択して個数を出す）。
+    private var savedCard: some View {
+        dashCard {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("節約できた時間").font(.caption).foregroundStyle(.secondary)
+                // 主役: 推定節約時間（時間表記で桁が伸びやすいので少し小さめに）
+                bigNumberText(formattedDuration(stats.savedSeconds), size: 28)
+                // 実感できる換算の一言。SF Symbols アイコンで彩る（絵文字は使わない）
+                Label(savedComparison.text, systemImage: savedComparison.symbol)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// カード「期間」。右上のセグメントで今日 / 今週を切り替える（選択は UserDefaults に保存）。
+    /// 主役は期間内の入力文字数、補足に録音時間・回数。切替時は数値がロールする。
+    private var periodCard: some View {
+        dashCard {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("この期間").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    // 今日=直近1日 / 今週=直近7日（既存 charactersInLast の日数と対応）
+                    Picker("期間", selection: $periodDays) {
+                        Text("今日").tag(1)
+                        Text("今週").tag(7)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()  // 内容幅に収め、右上のコンパクトなトグルにする
+                }
+                // 主役: 期間内の入力文字数（切替でロールするよう numericText を付与）
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                    bigNumberText(grouped(stats.charactersInLast(days: periodDays)))
+                        .contentTransition(.numericText())
+                    Text("文字").font(.subheadline).foregroundStyle(.secondary)
+                }
+                // 補足: 期間内の録音時間・回数
+                HStack(spacing: 14) {
+                    Label(formattedDuration(stats.recordingSecondsInLast(days: periodDays)), systemImage: "waveform")
+                        .contentTransition(.numericText())
+                    Label("\(grouped(stats.sessionsInLast(days: periodDays))) 回", systemImage: "mic.fill")
+                        .contentTransition(.numericText())
+                }
+                .font(.caption).foregroundStyle(.secondary)
+            }
+            // periodDays の変化を 1 つのトランザクションにまとめ、numericText を滑らかに走らせる
+            .animation(.snappy, value: periodDays)
+        }
     }
 
     // MARK: - アプリ別使用率
@@ -344,19 +398,65 @@ struct HomeView: View {
         return f
     }()
 
-    /// 累計節約時間を「X 時間 Y 分」等に整形する（StatsTab と同一表記）
-    private var formattedSaved: String {
-        let total = Int(stats.savedSeconds.rounded())
-        if total >= 3600 { return "\(total / 3600) 時間 \((total % 3600) / 60) 分" }
-        if total >= 60 { return "\(total / 60) 分 \(total % 60) 秒" }
-        return "\(total) 秒"
-    }
-
-    /// 録音秒数を短く整形する（サマリー補足用）
-    private func formattedShort(_ seconds: Double) -> String {
+    /// 秒数を「X時間Y分」等に整形する（節約時間の主役表示・録音時間の補足で共用）。
+    /// 桁が伸びすぎないよう分・秒単位で丸め、カードに収まる短さに保つ。
+    private func formattedDuration(_ seconds: Double) -> String {
         let total = Int(seconds.rounded())
         if total >= 3600 { return "\(total / 3600)時間\((total % 3600) / 60)分" }
-        if total >= 60 { return "\(total / 60)分" }
+        if total >= 60 { return "\(total / 60)分\(total % 60)秒" }
         return "\(total)秒"
+    }
+
+    /// 3 桁区切り（カンマ）の数値文字列。主役の大きな数字を読みやすくする。
+    private static let groupingFormatter: NumberFormatter = {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.groupingSeparator = ","
+        return f
+    }()
+    private func grouped(_ n: Int) -> String {
+        Self.groupingFormatter.string(from: NSNumber(value: n)) ?? "\(n)"
+    }
+
+    /// 主役の大きな数字の共通スタイル（太字・角丸・等幅数字）。
+    /// 桁あふれ時は縮小して 1 行に収める（0 件でも「0」で自然に表示される）。
+    private func bigNumberText(_ text: String, size: CGFloat = 30) -> some View {
+        Text(text)
+            .font(.system(size: size, weight: .bold, design: .rounded))
+            .monospacedDigit()
+            .lineLimit(1)
+            .minimumScaleFactor(0.55)
+    }
+
+    /// カードの共通コンテナ（既存スタイル: 角丸 12＋控えめなフィル）。
+    /// maxHeight を伸ばして横並びカード同士の高さを揃え、内容は左上に寄せる。
+    private func dashCard<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        content()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(16)
+            .background(RoundedRectangle(cornerRadius: 12).fill(fillColor))
+    }
+
+    /// 節約時間を身近なものへ換算した一言（遊び要素）。
+    /// 到達した最大のマイルストーンを選び、その個数を添える。段階は monotonic に大きくなる。
+    /// 3 分未満（新規ユーザー含む）は換算せず前向きな一言を返す＝0 でも破綻しない。
+    private var savedComparison: (text: String, symbol: String) {
+        let s = stats.savedSeconds
+        if s >= 86400 {                       // まる 1 日（24 時間）
+            return ("まるっと \(Int(s / 86400)) 日ぶんの時間", "sun.max.fill")
+        }
+        if s >= 28800 {                       // ぐっすり睡眠（8 時間）
+            return ("ぐっすり睡眠 \(Int(s / 28800)) 回ぶん", "bed.double.fill")
+        }
+        if s >= 7200 {                        // 映画（2 時間）
+            return ("映画 \(Int(s / 7200)) 本ぶんの尺", "film.fill")
+        }
+        if s >= 1800 {                        // 通勤（片道 30 分）
+            return ("通勤 \(Int(s / 1800)) 回ぶんの移動時間", "tram.fill")
+        }
+        if s >= 180 {                         // カップ麺（3 分）
+            return ("カップ麺 \(Int(s / 180)) 個ぶんの待ち時間", "cup.and.saucer.fill")
+        }
+        return ("これから時間が積み上がっていきます", "hourglass")
     }
 }
