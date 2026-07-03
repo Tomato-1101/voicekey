@@ -476,11 +476,10 @@ class DeepgramTranscriber(ApiTranscriber):
         """
         Deepgram の言語パラメータ。
 
-        nova-3 は日本語の単言語指定に未対応のため多言語モード（multi）を使う。
-        nova-2 以前は ja 等の指定をそのまま使う。
+        nova-3 は当初 ja 単言語指定に未対応で多言語モード（multi）を使っていたが、
+        multi は日本語発話を韓国語等に誤判定することがあり、現在は ja がサポート済み
+        （2026-07 Deepgram ドキュメント確認）のため単言語をそのまま送る。
         """
-        if self.model.startswith("nova-3"):
-            return "multi"
         return self.language or "ja"
 
     def _parse_transcript(self, resp: httpx.Response) -> str:

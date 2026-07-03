@@ -35,8 +35,9 @@ class TestAuthHeaders(unittest.TestCase):
 
 
 class TestDeepgramLanguage(unittest.TestCase):
-    def test_nova3_multi(self):
-        self.assertEqual(DeepgramTranscriber("nova-3", "ja")._dg_language, "multi")
+    def test_nova3_keeps_ja(self):
+        # multi は日本語を韓国語等に誤判定するため廃止（nova-3 は ja サポート済み）
+        self.assertEqual(DeepgramTranscriber("nova-3", "ja")._dg_language, "ja")
 
     def test_nova2_keeps(self):
         self.assertEqual(DeepgramTranscriber("nova-2", "ja")._dg_language, "ja")

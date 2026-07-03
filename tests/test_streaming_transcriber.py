@@ -28,8 +28,9 @@ class TestPcmConversion(unittest.TestCase):
 
 
 class TestStreamLanguage(unittest.TestCase):
-    def test_nova3_is_multi(self):
-        self.assertEqual(StreamingTranscriber("nova-3", "ja")._stream_language, "multi")
+    def test_nova3_keeps_ja(self):
+        # multi は日本語を韓国語等に誤判定するため廃止（nova-3 は ja サポート済み）
+        self.assertEqual(StreamingTranscriber("nova-3", "ja")._stream_language, "ja")
 
     def test_nova2_keeps_language(self):
         self.assertEqual(StreamingTranscriber("nova-2", "ja")._stream_language, "ja")

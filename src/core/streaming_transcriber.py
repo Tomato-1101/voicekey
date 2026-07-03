@@ -122,10 +122,10 @@ class StreamingTranscriber:
         """
         Deepgram の言語パラメータ（REST 側 DeepgramTranscriber と同じ規則）。
 
-        nova-3 は日本語の単言語指定に未対応のため多言語モード（multi）を使う。
+        nova-3 は当初 ja 単言語指定に未対応で multi（多言語自動判定）を使っていたが、
+        multi は日本語発話を韓国語等に誤判定することがあり、現在は ja がサポート済み
+        （2026-07 Deepgram ドキュメント確認）のため単言語をそのまま送る。
         """
-        if self.model.startswith("nova-3"):
-            return "multi"
         return self.language or "ja"
 
     def _resolve_api_key(self) -> Optional[str]:

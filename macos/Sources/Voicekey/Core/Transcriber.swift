@@ -396,10 +396,9 @@ final class Transcriber: @unchecked Sendable {
         if language.isEmpty {
             // 言語未指定（自動判定）の場合は言語検出を有効化する
             query.append(URLQueryItem(name: "detect_language", value: "true"))
-        } else if model.hasPrefix("nova-3") && language != "en" {
-            // nova-3 は英語以外の単言語指定に未対応のため多言語モードを使う
-            query.append(URLQueryItem(name: "language", value: "multi"))
         } else {
+            // nova-3 も現在は ja 等の単言語指定をサポート済み（2026-07 ドキュメント確認）。
+            // 旧実装の multi（多言語自動判定）は日本語を韓国語等に誤判定するため使わない。
             query.append(URLQueryItem(name: "language", value: language))
         }
         components.queryItems = query

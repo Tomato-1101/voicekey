@@ -244,10 +244,6 @@ struct HudView: View {
     private var isIdlePill: Bool { model.mode == .idlePill }
     /// 変換中か（明滅アニメを駆動してよいかの判定に使う）
     private var isTranscribing: Bool { model.mode == .transcribing }
-    /// 中身フェードインの遅延/所要。録音開始は即応性優先で最短、変換中はカプセルの
-    /// サイズ変化（spring response 0.3）がほぼ収束してから、その場で静かに現れるようにする
-    private var contentInsertionDelay: Double { isTranscribing ? 0.22 : 0.06 }
-    private var contentInsertionDuration: Double { isTranscribing ? 0.18 : 0.12 }
     // 待機ピルは極小の横長、録音/変換中は通常サイズ。この padding 差でモーフの「育ち」を出す
     private var horizontalPadding: CGFloat { isIdlePill ? 12 : 16 }
     private var verticalPadding: CGFloat { isIdlePill ? 3 : 8 }
@@ -301,13 +297,10 @@ struct HudView: View {
                             // 「カプセルが伸び、伸びた先に中身が現れる」順序を作るための非対称フェード。
                             // 挿入は少し遅らせてフェードイン（カプセルが育ち始めてから新中身が出る）、
                             // 削除は先に速く消す（旧中身を残したまま育たせない）。
-                            // 変換中だけ挿入をさらに遅らせる: カプセル縮小が概ね収まってから
-                            // 「変換中…」をその場でフェードインさせ、「文字が横から流れてくる」
-                            // 見え方（縮小アニメ中に中央寄せ位置が動く）を防ぐ。
+                            // 録音→変換中はカプセルサイズを凍結する（下の onPreferenceChange 参照）ため、
+                            // 「変換中…」は動かないカプセルの中でその場クロスフェードになる。
                             .transition(.asymmetric(
-                                insertion: .opacity.animation(
-                                    .easeIn(duration: contentInsertionDuration)
-                                        .delay(contentInsertionDelay)),
+                                insertion: .opacity.animation(.easeIn(duration: 0.12).delay(0.06)),
                                 removal: .opacity.animation(.easeOut(duration: 0.08))
                             ))
                             .frame(width: capsuleWidth, height: capsuleHeight)
@@ -331,7 +324,11 @@ struct HudView: View {
         .animation(.spring(response: 0.3, dampingFraction: 0.82), value: model.mode)
         // 実測サイズの変化を spring でカプセル frame に反映する（＝カプセルがサイズだけ連続変形する本体）。
         .animation(.spring(response: 0.3, dampingFraction: 0.82), value: contentSize)
-        .onPreferenceChange(HudContentSizeKey.self) { contentSize = $0 }
+        // 変換中はカプセルサイズを凍結する: 録音（波形）→変換中（アイコン＋文字）でサイズが
+        // 縮むと、中央寄せの中身が横に流れて見える（ユーザー指摘「左右に動く」）。変換中は直前の
+        // 録音カプセルのまま動かさず、中身だけをその場でクロスフェード＋明滅させる。
+        // （変換中→次の録音/通知/待機ピルでは通常どおり実測サイズへ変形する）
+        .onPreferenceChange(HudContentSizeKey.self) { if !isTranscribing { contentSize = $0 } }
         // transcribing に入った瞬間に往復開始、離脱で停止（明滅を非表示中に裏で回し続けない）。
         .onChange(of: isTranscribing) { _, active in pulseOn = active }
     }
@@ -493,18 +490,22 @@ private struct HudContentSizeKey: PreferenceKey {
 /// それ未満・または VOICEKEY_GLASS_FALLBACK=1 のときは NSVisualEffectView の .behindWindow
 /// （すりガラス）にフォールバックする。
 ///
-/// 注意: パネルは全 Space に居座る（.canJoinAllSpaces + .fullScreenAuxiliary）ため、Space や
-/// フルスクリーンを切り替えると、このバックドロップが旧 Space の内容のまま固まることがある
-/// （同一 Space 内の背景変化にはライブ追従する）。そのため HudController が Space 切替・アプリ
-/// 切替の通知を購読し、表示中はその都度 refreshBackdrop() で再評価（frame 再適用 + 再描画）を蹴る。
+/// 注意: パネルは全 Space に居座る（.canJoinAllSpaces + .fullScreenAuxiliary）。既定の
+/// NSVisualEffectView(.behindWindow) は毎フレーム背後を再合成する＝背景の変化にリアルタイム
+/// 追従する。HudController の Space 切替・アプリ切替通知での refreshBackdrop()（frame 再適用＋
+/// 再描画）は、Space 切替直後の取りこぼしに対する防御として残している。
 private struct HudBackdrop: NSViewRepresentable {
-    /// macOS 26 上でも旧 OS のフォールバック描画を視覚確認するためのフラグ（Glass.swift と同一慣習）。
-    private var forceFallback: Bool {
-        ProcessInfo.processInfo.environment["VOICEKEY_GLASS_FALLBACK"] == "1"
+    /// NSGlassEffectView（Liquid Glass）を試す実験フラグ。既定は常に NSVisualEffectView。
+    /// 理由: NSGlassEffectView の背後サンプルは実質スナップショットで、背後の内容が変わっても
+    /// 次の再レイアウトまで古い映り込みのまま固まる（ユーザーの目視で確認済み。screencapture は
+    /// 撮影自体が再合成を誘発するため、スクショ検証では常に「追従している」ように見えて欺かれる）。
+    /// NSVisualEffectView(.behindWindow) は Dock・メニューバーと同じ合成経路で毎フレーム更新＝真のライブ。
+    private var experimentalLiquid: Bool {
+        ProcessInfo.processInfo.environment["VOICEKEY_HUD_LIQUID"] == "1"
     }
 
     func makeNSView(context: Context) -> NSView {
-        if #available(macOS 26.0, *), !forceFallback {
+        if #available(macOS 26.0, *), experimentalLiquid {
             return GlassPillBackdrop(frame: .zero)
         } else {
             return VisualEffectPillBackdrop(frame: .zero)
@@ -517,8 +518,9 @@ private struct HudBackdrop: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
-/// macOS 26 の本物のガラス（AppKit Liquid Glass）。カプセル形を保つため、SwiftUI の
-/// アニメで連続的に変わる bounds に合わせて layout() ごとに cornerRadius を height/2 に更新する。
+/// macOS 26 の本物のガラス（AppKit Liquid Glass）。屈折は出るが背後サンプルが
+/// スナップショットで固まるため既定では使わない（VOICEKEY_HUD_LIQUID=1 の実験用に残置）。
+/// カプセル形を保つため、bounds に合わせて layout() ごとに cornerRadius を height/2 に更新する。
 @available(macOS 26.0, *)
 private final class GlassPillBackdrop: NSGlassEffectView {
     override init(frame frameRect: NSRect) {
@@ -536,8 +538,8 @@ private final class GlassPillBackdrop: NSGlassEffectView {
     }
 }
 
-/// フォールバック（macOS 26 未満 / VOICEKEY_GLASS_FALLBACK=1）のすりガラス。
-/// .behindWindow でウィンドウ越しの背後をブラーする。カプセル形は maskImage で与え、
+/// 既定のすりガラス。.behindWindow でウィンドウ越しの背後をブラーする（毎フレーム更新＝
+/// 背後の変化にリアルタイム追従する唯一の公開 API）。カプセル形は maskImage で与え、
 /// 高さが変わったときだけ作り直す（幅方向の変化は capInsets の stretch で吸収＝ちらつかない）。
 private final class VisualEffectPillBackdrop: NSVisualEffectView {
     /// 直近に maskImage を生成した高さ。高さが実質変わったときだけ作り直す。
