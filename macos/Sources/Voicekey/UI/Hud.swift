@@ -28,8 +28,6 @@ final class HudModel: ObservableObject {
     @Published var mode: Mode = .hidden
     /// 直近の音声レベル履歴（波形バー描画用）
     @Published var levels: [Float] = Array(repeating: 0, count: HudView.barCount)
-    /// ストリーミング中のライブ字幕（空なら波形バーを表示）
-    @Published var caption: String = ""
     /// 貼り付け先アプリのアイコン（録音中/変換中にピル左端へ表示。nil なら非表示）
     @Published var appIcon: NSImage?
 
@@ -52,11 +50,36 @@ final class HudController {
     private var noticeTask: Task<Void, Never>?
     /// 直近のアプリ状態。通知が消えるとき、進行中ならその表示へ戻すために保持する
     private var lastState: AppState = .idle
+    /// Space / フルスクリーン切替を監視する NSWorkspace オブザーバ（deinit で解除）
+    private var spaceObservers: [NSObjectProtocol] = []
 
     /// HUD を表示するか（設定で無効化可能）
     var enabled = true
     /// 待機中も小型ピルを常時表示するか（config.hudAlwaysVisible）
     var alwaysVisible = false
+
+    init() {
+        // パネルは全 Space に居座る（.canJoinAllSpaces + .fullScreenAuxiliary）ため、Space や
+        // フルスクリーンを切り替えると HudBackdrop（背後サンプルのガラス）が旧 Space の内容のまま
+        // 固まり、次の録音（mode 変化＝再レイアウト）まで映り込みが古いまま、という事象がある。
+        // タイマーの常時ポーリングはアイドル時の電池を食うので張らず、Space 切替・アプリ切替の
+        // イベントで、表示中パネルの再評価（refreshBackdrop）だけをその都度蹴る。
+        let nc = NSWorkspace.shared.notificationCenter
+        for name in [
+            NSWorkspace.activeSpaceDidChangeNotification,
+            NSWorkspace.didActivateApplicationNotification,
+        ] {
+            let token = nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.refreshBackdrop() }
+            }
+            spaceObservers.append(token)
+        }
+    }
+
+    deinit {
+        let nc = NSWorkspace.shared.notificationCenter
+        for token in spaceObservers { nc.removeObserver(token) }
+    }
 
     /// アプリ状態に応じて HUD を更新する
     func update(for state: AppState) {
@@ -68,7 +91,6 @@ final class HudController {
             // 常時表示 ON なら待機中も小型ピル（mic のみ）を残す
             if alwaysVisible {
                 model.appIcon = nil  // 待機中は貼り付け先アイコンを出さない
-                model.caption = ""
                 model.mode = .idlePill
                 show()
             } else {
@@ -76,11 +98,10 @@ final class HudController {
             }
         case .recording(let autoEnter, let handsFree):
             noticeTask?.cancel()
-            // 録音中の auto_enter 昇格（ダブルタップ確定）では波形・字幕を維持する
+            // 録音中の auto_enter 昇格（ダブルタップ確定）では波形を維持する
             // （リセットすると表示が一瞬消えて見える）
             if case .recording = model.mode {} else {
                 model.resetLevels()
-                model.caption = ""  // 新しい録音のたびに字幕をリセット
             }
             model.mode = .recording(autoEnter: autoEnter, handsFree: handsFree)
             show()
@@ -116,18 +137,6 @@ final class HudController {
         if case .recording = model.mode {
             model.pushLevel(value)
         }
-    }
-
-    /// ストリーミングのライブ字幕を更新する（録音中のみ反映）
-    func setCaption(_ text: String) {
-        if case .recording = model.mode {
-            model.caption = text
-        }
-    }
-
-    /// ライブ字幕を消す（確定貼り付け後に呼ぶ）
-    func clearCaption() {
-        model.caption = ""
     }
 
     /// 貼り付け先アプリのアイコンを設定する（録音開始時にスナップショットを渡す）
@@ -177,28 +186,53 @@ final class HudController {
         guard let panel, let screen = NSScreen.main else { return }
         let frame = screen.visibleFrame
         let x = frame.midX - HudView.width / 2
-        let y = frame.minY + 8  // 画面下端近くに配置（ほんの少しだけ浮かせる）
+        // パネル下端をほぼ画面下端に置く。カプセルはパネル内で下端＋6pt に寄せてあるので、
+        // 実際のカプセル下端は画面下端（Dock 上端）+ 約 8pt に固定される。
+        let y = frame.minY + 2
         panel.setFrame(
             NSRect(x: x, y: y, width: HudView.width, height: HudView.height),
             display: true
         )
     }
+
+    /// Space / フルスクリーン切替の通知を受けて、表示中のバックドロップを再評価する。
+    /// パネルが全 Space に居座る都合で、切替後に旧 Space の映り込みで固まることがあるため、
+    /// mode 変化と同じ再評価パス（frame 再適用 + 再レイアウト/再描画）をイベント駆動で強制する。
+    private func refreshBackdrop() {
+        guard let panel, panel.isVisible, model.mode != .hidden else { return }
+        // 1) 正規位置の frame を再適用（setFrame display:true）
+        positionPanel()
+        // 2) contentView 配下（HudBackdrop の NSGlassEffectView / NSVisualEffectView を含む）を
+        //    再レイアウト・再描画させる
+        if let content = panel.contentView { markNeedsRefresh(content) }
+        // 3) 同一 frame の再適用だけでは背後の再サンプルが走らない環境に備え、0.5pt ずらして
+        //    即戻す微小 nudge を入れる（同一イベント内で 2 回 setFrame・視覚的に知覚不能）。
+        let f = panel.frame
+        panel.setFrame(f.offsetBy(dx: 0, dy: 0.5), display: true)
+        panel.setFrame(f, display: true)
+    }
+
+    /// ビュー階層を辿って needsLayout / needsDisplay を立て、次のパスで再描画させる
+    private func markNeedsRefresh(_ view: NSView) {
+        view.needsLayout = true
+        view.needsDisplay = true
+        for sub in view.subviews { markNeedsRefresh(sub) }
+    }
 }
 
 /// HUD の描画（SwiftUI）
 struct HudView: View {
-    // 幅はライブ字幕が入る余白を確保（ピル自体は内容に応じて縮む）
+    // 幅はカプセルが最大に育っても収まる余白（ピル自体は内容に応じて縮む）。
+    // パネルは透明＋クリック透過なので、余った幅による実害はない。
     static let width: CGFloat = 460
     static let height: CGFloat = 56
     static let barCount = 24
-    /// ライブ字幕の最大幅（これを超えると末尾を残して頭を省略表示）
-    static let captionMaxWidth: CGFloat = 360
     /// ハンズフリー録音のアクセント色（赤＝通常録音 / 紫＝自動送信 と区別するティール）
     static let handsFreeAccent = Color(red: 0.0, green: 0.78, blue: 0.72)
 
     @ObservedObject var model: HudModel
 
-    /// 中身（アイコン/波形/字幕/変換マーク）の実測サイズ。これに padding を足した値を
+    /// 中身（アイコン/波形/変換マーク）の実測サイズ。これに padding を足した値を
     /// カプセルの .frame に spring で反映することで、mode が変わってもカプセルは削除・挿入
     /// されず「サイズだけ」が連続変形する（＝形が飛ばない）。初期値は待機ピル相当にしておく。
     @State private var contentSize: CGSize = CGSize(width: 40, height: 8)
@@ -273,17 +307,19 @@ struct HudView: View {
                     // この transition は hidden⇄表示（HUD 自体の出現・消滅）のときだけ発火する。
                     // mode 間の切替では上位の if が真のまま＝ identity を保つので発火しない。
                     .transition(.opacity.combined(with: .scale(scale: 0.8)))
+                    // カプセルを下端に寄せ、下端から 6pt だけ浮かせる（外側 frame を alignment:.bottom に
+                    // した上でこのパディングを効かせることで、どのモードでもカプセル下端が画面下端の
+                    // すぐ上に揃う。モーフィングは下端アンカーで上に育つ＝Dock 的で自然）。
+                    .padding(.bottom, 6)
             }
         }
-        .frame(width: Self.width, height: Self.height)
+        // 外側パネル（460×56）内でカプセルを下揃えにする（極小の待機ピルでも下端が浮かない）。
+        .frame(width: Self.width, height: Self.height, alignment: .bottom)
         // カプセルのサイズ決定に使う不可視サイザー（active mode の中身の素の大きさを測る）
         .background { sizer }
         // 待機ピル⇄録音インジケーターの連続変形（mode 変化）。所要時間は伸ばさず spring 表現だけで出す。
         // dampingFraction を高め（0.82）にして「行き過ぎて戻る」バウンスを消し、ぬるっと一方向に育たせる。
         .animation(.spring(response: 0.3, dampingFraction: 0.82), value: model.mode)
-        // 波形バー⇄字幕の切替は「空⇄非空」を境に 1 回だけアニメする
-        //（caption 文字列そのものを value にすると毎文字アニメが走るため、isEmpty だけを見る）。
-        .animation(.spring(response: 0.3, dampingFraction: 0.82), value: model.caption.isEmpty)
         // 実測サイズの変化を spring でカプセル frame に反映する（＝カプセルがサイズだけ連続変形する本体）。
         .animation(.spring(response: 0.3, dampingFraction: 0.82), value: contentSize)
         .onPreferenceChange(HudContentSizeKey.self) { contentSize = $0 }
@@ -361,40 +397,30 @@ struct HudView: View {
                     .foregroundStyle(Self.handsFreeAccent)
                     .fixedSize()
             }
-            // 字幕が最初に届いたら固定幅 360 へ一度だけ広げ、以後の逐次更新では幅を動かさない。
-            // 固定幅（maxWidth ではなく width）にするのは、短い字幕でも幅が伸縮せず毎文字の
-            // ガタつき・再アニメを防ぐため。頭を省略（.head）して常に最新の語尾を見せる。
-            if model.caption.isEmpty {
-                levelBars
-            } else {
-                Text(model.caption)
-                    .font(.system(size: 13, weight: .medium))
-                    .lineLimit(1)
-                    .truncationMode(.head)
-                    .frame(width: Self.captionMaxWidth, alignment: .trailing)
-            }
+            // 音声レベル連動の波形バー
+            levelBars
             if autoEnter {
                 Image(systemName: "return")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(.purple)
             }
-            // ハンズフリー中は停止方法を控えめに添える（字幕が無いときだけ＝混雑回避）
-            if handsFree && model.caption.isEmpty {
+            // ハンズフリー中は停止方法を控えめに添える
+            if handsFree {
                 stopHint
             }
         }
     }
 
-    /// 変換中の中身。スピナー（くるくる）は廃止し、waveform マークを「ふわんふわん」明滅させる
+    /// 変換中の中身。揺れる waveform マークは廃止し、「変換中…」の文字自体をゆっくり明滅させる
     private var transcribingContent: some View {
         HStack(spacing: 10) {
-            appIconView  // 貼り付け先アプリのアイコン（左端）
-            // opacity 1.0⇄0.35 をゆっくり往復させる明滅のみ（scale は使わない＝サイズが揺れる
-            // 「ふわんふわん揺れ」を撤去し、その場で明るさだけが呼吸する落ち着いた明滅にする）。
+            appIconView  // 貼り付け先アプリのアイコン（左端・残す）
+            // 「変換中…」の文字を opacity 1.0⇄0.35 でゆっくり往復させる明滅のみ（scale は使わない＝
+            // サイズが揺れる「ふわんふわん揺れ」を撤去し、その場で明るさだけが呼吸する落ち着いた明滅）。
             // repeatForever は transcribing の間だけ（isTranscribing で切替）駆動し、離脱時は非反復
             // アニメに切り替えて確実に止める＝非表示中に裏で回り続けて CPU を食わないようにする。
-            Image(systemName: "waveform")
-                .font(.system(size: 15, weight: .semibold))
+            Text("変換中…")
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
                 .opacity(pulseOn ? 0.35 : 1.0)
                 .animation(
@@ -403,9 +429,6 @@ struct HudView: View {
                         : .easeInOut(duration: 0.2),
                     value: pulseOn
                 )
-            Text("変換中…")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
         }
     }
 
@@ -460,6 +483,11 @@ private struct HudContentSizeKey: PreferenceKey {
 /// サンプルできる。macOS 26 では NSGlassEffectView（屈折込みの Liquid Glass）を使い、
 /// それ未満・または VOICEKEY_GLASS_FALLBACK=1 のときは NSVisualEffectView の .behindWindow
 /// （すりガラス）にフォールバックする。
+///
+/// 注意: パネルは全 Space に居座る（.canJoinAllSpaces + .fullScreenAuxiliary）ため、Space や
+/// フルスクリーンを切り替えると、このバックドロップが旧 Space の内容のまま固まることがある
+/// （同一 Space 内の背景変化にはライブ追従する）。そのため HudController が Space 切替・アプリ
+/// 切替の通知を購読し、表示中はその都度 refreshBackdrop() で再評価（frame 再適用 + 再描画）を蹴る。
 private struct HudBackdrop: NSViewRepresentable {
     /// macOS 26 上でも旧 OS のフォールバック描画を視覚確認するためのフラグ（Glass.swift と同一慣習）。
     private var forceFallback: Bool {

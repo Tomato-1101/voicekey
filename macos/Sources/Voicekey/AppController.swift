@@ -430,14 +430,11 @@ final class AppController: ObservableObject {
         // 設定された入力デバイスを反映（変更がなければ recorder 側では何もしない）
         recorder.inputDeviceUID = config.inputDeviceUID
 
-        // Deepgram かつストリーミング有効なら WebSocket を開いてライブ字幕を出す。
+        // Deepgram かつストリーミング有効なら WebSocket を開いて低遅延で確定テキストを得る。
         // 開始できなければ（キー無し等）chunkHandler を張らないため REST 経路に自動フォールバック。
         // chunkHandler は録音開始前に張る必要がある（最初のチャンクを取りこぼさない）
         if config.streamingEnabled, slot.backend == .deepgram {
             let stream = StreamingTranscriber(model: slot.model, language: config.language)
-            stream.onInterim = { [weak self] text in
-                DispatchQueue.main.async { self?.hud.setCaption(text) }
-            }
             if stream.start() {
                 streamer = stream
                 recorder.chunkHandler = { [weak stream] chunk in stream?.send(chunk) }
@@ -540,7 +537,6 @@ final class AppController: ObservableObject {
             // --- ストリーミング経路: Deepgram の確定テキストを受け取って貼り付け ---
             if let streamer {
                 let streamed = await streamer.finish()
-                hud.clearCaption()
                 if !streamed.isEmpty {
                     // 整形が有効なら貼り付け前に LLM で整形（失敗時は原文が返る）
                     let formatted = formatEnabled
