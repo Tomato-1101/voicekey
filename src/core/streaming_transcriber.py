@@ -87,7 +87,7 @@ class StreamingTranscriber:
 
         Args:
             model: Deepgram モデル名（nova-3 / nova-2）
-            language: 言語コード（nova-3 では内部的に multi に変換される）
+            language: 言語コード（空なら ja）
             on_interim: 暫定テキスト更新コールバック
         """
         self.model = model
