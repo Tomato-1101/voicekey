@@ -177,7 +177,7 @@ final class HudController {
         guard let panel, let screen = NSScreen.main else { return }
         let frame = screen.visibleFrame
         let x = frame.midX - HudView.width / 2
-        let y = frame.minY + 24  // 画面下部に少し浮かせる
+        let y = frame.minY + 8  // 画面下端近くに配置（ほんの少しだけ浮かせる）
         panel.setFrame(
             NSRect(x: x, y: y, width: HudView.width, height: HudView.height),
             display: true
@@ -227,8 +227,18 @@ struct HudView: View {
                 // が毎回発火して「消して出し直す・形が飛ぶ」感が出ていた。そこを identity 固定で断つ）。
                 Color.clear
                     .frame(width: capsuleWidth, height: capsuleHeight)
-                    // macOS 26 は本物のガラスピル、旧 OS は極薄マテリアル近似（描画のみ・待ち時間は足さない）
-                    .glassCapsule()
+                    // なぜ glassEffect（macOS 26）を使わないか: glassEffect は同一ウィンドウ内の背後
+                    // コンテンツしかサンプルできず、中身が透明な HUD パネルでは何もブラーできずガラスの
+                    // 素材色（濃いグレーの不透明な塊）だけが出てしまう。HUD は他アプリの上に重なるが
+                    // ウィンドウ越しの背景はこの API では取得できないため、チューニングでは直らない。
+                    // そこでブラーに依存しない半透明カプセルを自前で描く。windowBackgroundColor 由来なので
+                    // ライト＝白っぽく／ダーク＝黒っぽくアピアランスに追従し、灰色の塊バグが構造的に消える。
+                    // （設定画面など背後に VisualEffect がある画面の glassCapsule() はそのまま活かす）
+                    .background {
+                        Capsule()
+                            .fill(Color(nsColor: .windowBackgroundColor).opacity(0.82))
+                            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
+                    }
                     .shadow(color: .black.opacity(isIdlePill ? 0.15 : 0.25), radius: isIdlePill ? 6 : 12, y: isIdlePill ? 2 : 4)
                     // 中身はカプセルの上に重ね、mode 間では opacity クロスフェードのみで出入りさせる
                     // （scale を使わない＝「消して出し直す」感を排除）。カプセルからはみ出さないよう
@@ -236,7 +246,13 @@ struct HudView: View {
                     .overlay {
                         modeContent(for: model.mode)
                             .fixedSize()
-                            .transition(.opacity)
+                            // 「カプセルが伸び、伸びた先に中身が現れる」順序を作るための非対称フェード。
+                            // 挿入は少し遅らせてフェードイン（カプセルが育ち始めてから新中身が出る）、
+                            // 削除は先に速く消す（旧中身を残したまま育たせない）。
+                            .transition(.asymmetric(
+                                insertion: .opacity.animation(.easeIn(duration: 0.12).delay(0.06)),
+                                removal: .opacity.animation(.easeOut(duration: 0.08))
+                            ))
                             .frame(width: capsuleWidth, height: capsuleHeight)
                             .clipShape(Capsule())
                     }
@@ -249,12 +265,13 @@ struct HudView: View {
         // カプセルのサイズ決定に使う不可視サイザー（active mode の中身の素の大きさを測る）
         .background { sizer }
         // 待機ピル⇄録音インジケーターの連続変形（mode 変化）。所要時間は伸ばさず spring 表現だけで出す。
-        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: model.mode)
+        // dampingFraction を高め（0.82）にして「行き過ぎて戻る」バウンスを消し、ぬるっと一方向に育たせる。
+        .animation(.spring(response: 0.3, dampingFraction: 0.82), value: model.mode)
         // 波形バー⇄字幕の切替は「空⇄非空」を境に 1 回だけアニメする
         //（caption 文字列そのものを value にすると毎文字アニメが走るため、isEmpty だけを見る）。
-        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: model.caption.isEmpty)
+        .animation(.spring(response: 0.3, dampingFraction: 0.82), value: model.caption.isEmpty)
         // 実測サイズの変化を spring でカプセル frame に反映する（＝カプセルがサイズだけ連続変形する本体）。
-        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: contentSize)
+        .animation(.spring(response: 0.3, dampingFraction: 0.82), value: contentSize)
         .onPreferenceChange(HudContentSizeKey.self) { contentSize = $0 }
         // transcribing に入った瞬間に往復開始、離脱で停止（明滅を非表示中に裏で回し続けない）。
         .onChange(of: isTranscribing) { _, active in pulseOn = active }
@@ -284,12 +301,9 @@ struct HudView: View {
             EmptyView()
 
         case .idlePill:
-            // 待機中の常時表示ピル（本当に小さい横長・mic のみ・薄め）。
-            // 録音開始でこのピルがそのまま大きく育って録音インジケーターになる（モーフの起点）。
-            Image(systemName: "mic.fill")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .opacity(0.5)
+            // 待機中の常時表示ピル（中身なしの極小ピル・本当に小さい横長）。
+            // 録音開始でこのカプセルがそのまま大きく育って録音インジケーターになる（モーフの起点）。
+            Color.clear
                 .frame(width: 40, height: 8)  // 余白込みで概ね 64×14 の極小ピルにする
 
         case .recording(let autoEnter, let handsFree):
@@ -361,14 +375,14 @@ struct HudView: View {
     private var transcribingContent: some View {
         HStack(spacing: 10) {
             appIconView  // 貼り付け先アプリのアイコン（左端）
-            // opacity 1.0⇄0.35 とごく僅かな scale 0.92⇄1.0 をゆっくり往復させ、柔らかい明滅にする。
+            // opacity 1.0⇄0.35 をゆっくり往復させる明滅のみ（scale は使わない＝サイズが揺れる
+            // 「ふわんふわん揺れ」を撤去し、その場で明るさだけが呼吸する落ち着いた明滅にする）。
             // repeatForever は transcribing の間だけ（isTranscribing で切替）駆動し、離脱時は非反復
             // アニメに切り替えて確実に止める＝非表示中に裏で回り続けて CPU を食わないようにする。
             Image(systemName: "waveform")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .opacity(pulseOn ? 0.35 : 1.0)
-                .scaleEffect(pulseOn ? 0.92 : 1.0)
                 .animation(
                     isTranscribing
                         ? .easeInOut(duration: 0.8).repeatForever(autoreverses: true)
