@@ -159,6 +159,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             log.info("デバッグ: ホーム画面を自動表示します")
             statusBar.showHome()
         }
+
+        // デバッグ用: 起動直後にサイドノッチの履歴パネルを開く（一回限り、読み取り後に削除）
+        // 使い方: defaults write com.voicekey.app VOICEKEY_OPEN_NOTCH 1 → 起動
+        let openNotch = UserDefaults.standard.string(forKey: "VOICEKEY_OPEN_NOTCH")
+            ?? ProcessInfo.processInfo.environment["VOICEKEY_OPEN_NOTCH"]
+        if openNotch != nil {
+            UserDefaults.standard.removeObject(forKey: "VOICEKEY_OPEN_NOTCH")
+            log.info("デバッグ: サイドノッチの履歴パネルを自動表示します")
+            statusBar.openSideNotchHistoryForDebug()
+        }
     }
 
     /// 初回起動時にログイン時自動起動を登録する。
@@ -202,10 +212,13 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private let stateMenuItem: NSMenuItem
     private weak var controller: AppController?
     private var stateObservation: AnyCancellable?
-    private var settingsWindow: NSWindow?
-    /// ホーム画面（起動 / 再オープンで開くメインウィンドウ・Phase B）
-    private var homeWindow: NSWindow?
+    /// ダッシュボード + 設定を統合したメインウィンドウ（v3.1・別ウィンドウの設定は廃止）
+    private var mainWindow: NSWindow?
+    /// メインウィンドウの表示モデル（メニュー等から dashboard / settings を差し込む）
+    private var mainWindowModel: MainWindowModel?
     private var feedbackWindow: NSWindow?
+    /// 画面端のサイドノッチ（履歴スリット→クリックで履歴パネル・Phase C）
+    private var sideNotch: SideNotchController?
     /// 初回セットアップ（オンボーディング）ウィンドウ
     private var onboardingWindow: NSWindow?
     /// オンボーディングを完了/再起動処理済みか（クローズでの二重処理を防ぐ）
@@ -271,7 +284,16 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         stateObservation = controller.$state.sink { [weak self] state in
             self?.statusItem.button?.image = StatusIcon.image(for: state)
             self?.stateMenuItem.title = state.label
+            // サイドノッチの点灯を録音状態に連動（既存 emitState/HUD 連動に相乗り）
+            self?.sideNotch?.setRecording(state.isRecording)
         }
+
+        // 画面端のサイドノッチ（履歴スリット）を常駐させる。「ホームを開く」は統合メインウィンドウへ。
+        sideNotch = SideNotchController(
+            history: controller.history,
+            config: controller.config,
+            onOpenHome: { [weak self] in self?.showHome() }
+        )
     }
 
     // MARK: - ウィンドウ配置・Dock 表示の共通ヘルパ
@@ -302,7 +324,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private func restoreAccessoryPolicyIfNoUserWindows(closing: NSWindow?) {
         // Dock 常時表示 ON のときは、ウィンドウを閉じても Dock アイコンを引っ込めない
         if controller?.config.dockIconAlwaysVisible == true { return }
-        let userWindows = [settingsWindow, homeWindow, feedbackWindow, onboardingWindow]
+        let userWindows = [mainWindow, feedbackWindow, onboardingWindow]
         let anyRemainingVisible = userWindows.contains { win in
             guard let win, win !== closing else { return false }
             return win.isVisible
@@ -453,63 +475,62 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         restoreAccessoryPolicyIfNoUserWindows(closing: closing)
     }
 
-    /// 設定ウィンドウを表示する
-    func showSettings(initialTab: Int) {
-        log.info("設定ウィンドウを表示します (tab=\(initialTab), 既存=\(self.settingsWindow != nil))")
-        var isNewWindow = false
-        if settingsWindow == nil, let controller {
-            let hosting = NSHostingController(
-                rootView: SettingsView(
-                    config: controller.config,
-                    initialTab: initialTab
-                )
-            )
-            let window = NSWindow(contentViewController: hosting)
-            window.title = "voicekey 設定"
-            window.styleMask = [.titled, .closable]
-            window.isReleasedWhenClosed = false
-            GlassWindow.applyFrostedChrome(to: window)  // すりガラス化（Part B）
-            window.delegate = self  // クローズ時に Dock アイコンを引っ込めるため
-            settingsWindow = window
-            isNewWindow = true
+    /// メインウィンドウ（ダッシュボード or 設定）を表示する。設定は別ウィンドウを作らず、
+    /// 同じウィンドウ内でモード切替する（v3.1）。
+    /// - Parameter settingsTab: nil ならダッシュボード、値があればその設定タブを開く。
+    func showMainWindow(settingsTab: Int?) {
+        // 表示モデルを用意（無ければ作る）。既存ウィンドウでもモード/タブを差し込めるようにする。
+        let model = mainWindowModel ?? MainWindowModel()
+        mainWindowModel = model
+        if let settingsTab {
+            model.settingsTab = settingsTab
+            model.showingSettings = true
+        } else {
+            model.showingSettings = false
         }
-        // Dock にアイコンを出し前面へ（アクセサリのままだと前面に出ない）
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
-        settingsWindow?.makeKeyAndOrderFront(nil)
-        // 中央配置は表示後に行う（NSHostingController のウィンドウは初回表示まで frame が
-        // サイズ 0 のことがあり、表示前に計算すると右上へずれる）。再表示時は前回位置を尊重する
-        if isNewWindow, let settingsWindow { centerOnScreen(settingsWindow) }
-    }
+        log.info("メインウィンドウを表示します (settings=\(model.showingSettings), tab=\(model.settingsTab), 既存=\(self.mainWindow != nil))")
 
-    /// ホーム画面を表示する（設定ウィンドウと同じ frosted chrome・真の中央・キャッシュ再利用）。
-    func showHome() {
         var isNewWindow = false
-        if homeWindow == nil, let controller {
+        if mainWindow == nil, let controller {
             let hosting = NSHostingController(
-                rootView: HomeView(
+                rootView: MainWindowView(
                     config: controller.config,
                     history: controller.history,
                     stats: controller.stats,
                     updater: UpdaterController.shared,
-                    onOpenSettings: { [weak self] in self?.showSettings(initialTab: 0) }
+                    model: model
                 )
             )
             let window = NSWindow(contentViewController: hosting)
             window.title = "voicekey"
             window.styleMask = [.titled, .closable]
             window.isReleasedWhenClosed = false
-            GlassWindow.applyFrostedChrome(to: window)  // すりガラス化（設定と同じ）
+            GlassWindow.applyFrostedChrome(to: window)  // すりガラス化
             window.delegate = self  // クローズ時に Dock アイコンを引っ込めるため
-            homeWindow = window
+            mainWindow = window
             isNewWindow = true
         }
         // Dock にアイコンを出し前面へ（アクセサリのままだと前面に出ない）
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
-        homeWindow?.makeKeyAndOrderFront(nil)
+        mainWindow?.makeKeyAndOrderFront(nil)
         // 中央配置は表示後（frame 確定後）に行う。再表示時は前回位置を尊重する
-        if isNewWindow, let homeWindow { centerOnScreen(homeWindow) }
+        if isNewWindow, let mainWindow { centerOnScreen(mainWindow) }
+    }
+
+    /// 設定を開く（メインウィンドウを設定モードで開く）。従来の呼び出し名を維持する。
+    func showSettings(initialTab: Int) {
+        showMainWindow(settingsTab: initialTab)
+    }
+
+    /// ホーム（メインウィンドウのダッシュボード面）を開く。
+    func showHome() {
+        showMainWindow(settingsTab: nil)
+    }
+
+    /// デバッグ用: サイドノッチの履歴パネルを開く（スクリーンショット確認用）。
+    func openSideNotchHistoryForDebug() {
+        sideNotch?.openHistory()
     }
 
     @objc private func quitApp() {

@@ -198,20 +198,26 @@ struct HudView: View {
 
     @ObservedObject var model: HudModel
 
+    /// 待機ピルか（極小サイズ・薄めの mic のみ）
+    private var isIdlePill: Bool { model.mode == .idlePill }
+
     var body: some View {
         ZStack {
             if model.mode != .hidden {
                 content
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
+                    // 待機ピルは極小の横長、録音/変換中は通常サイズ。差でモーフの「育ち」を強調する
+                    .padding(.horizontal, isIdlePill ? 12 : 16)
+                    .padding(.vertical, isIdlePill ? 3 : 8)
                     // macOS 26 は本物のガラスピル、旧 OS は極薄マテリアル近似（描画のみ・待ち時間は足さない）
                     .glassCapsule()
-                    .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
-                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                    .shadow(color: .black.opacity(isIdlePill ? 0.15 : 0.25), radius: isIdlePill ? 6 : 12, y: isIdlePill ? 2 : 4)
+                    .transition(.opacity.combined(with: .scale(scale: 0.8)))
             }
         }
         .frame(width: Self.width, height: Self.height)
-        .animation(.easeOut(duration: 0.15), value: model.mode)
+        // 待機ピル→録音インジケーターへ「大きく育つ」ばね感の変形（所要時間は伸ばさず表現だけ強化）。
+        // 同一 HudView を使い回すため hide→show の作り直しは起きず、サイズがそのまま連続変形する。
+        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: model.mode)
     }
 
     /// 貼り付け先アプリのアイコン（18pt 角丸）。取得失敗時は非表示でレイアウトを崩さない
@@ -232,11 +238,13 @@ struct HudView: View {
             EmptyView()
 
         case .idlePill:
-            // 待機中の常時表示ピル（mic アイコンのみ・薄め）
+            // 待機中の常時表示ピル（本当に小さい横長・mic のみ・薄め）。
+            // 録音開始でこのピルがそのまま大きく育って録音インジケーターになる（モーフの起点）。
             Image(systemName: "mic.fill")
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .opacity(0.6)
+                .opacity(0.5)
+                .frame(width: 40, height: 8)  // 余白込みで概ね 64×14 の極小ピルにする
 
         case .recording(let autoEnter, let handsFree):
             HStack(spacing: 10) {

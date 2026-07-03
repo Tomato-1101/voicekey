@@ -1,11 +1,10 @@
 //
 //  HomeView.swift
-//  ホーム画面（起動 / 再オープン時のメインウィンドウ）
+//  ダッシュボード面（メインウィンドウのホーム側コンテンツ）
 //
-//  設定から移設した実績・履歴に加え、アプリ別使用率・アップデート導線をまとめた
-//  「今どれだけ使ったか」が一目で分かるダッシュボード。設定ウィンドウと同じ frosted
-//  chrome を持つが、レイアウトは v2.1 規則（島で全面を包まず、frosted backdrop の上に
-//  控えめなカードをフラットに敷く）に従う。
+//  実績・履歴・アプリ別使用率・アップデート導線をまとめた「今どれだけ使ったか」が
+//  一目で分かるダッシュボード。ブランド行やサイドバー・すりガラス下地は MainWindowView が
+//  持つため、ここはコンテンツ面だけを描く（v2.1: フラット背景の上に控えめなカードを敷く）。
 //
 
 import AppKit
@@ -16,15 +15,13 @@ struct HomeView: View {
     @ObservedObject var history: HistoryStore
     @ObservedObject var stats: StatsStore
     @ObservedObject var updater: UpdaterController
-    /// 「設定を開く」ギアボタンの動作（StatusItemController.showSettings を呼ぶ）
-    let onOpenSettings: () -> Void
 
     /// 直近にコピーした履歴エントリ（行に「コピーしました」を一時表示する）
     @State private var copiedId: UUID?
 
     var body: some View {
-        // レイアウト v2.1: 島で全面を包まない。frosted backdrop の上に控えめなカードを
-        // フラットに敷く（大きな島で画面を分割しない）。
+        // レイアウト v2.1: 島で全面を包まない。MainWindowView の frosted backdrop の上に
+        // 控えめなカードをフラットに敷く（大きな島で画面を分割しない）。
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header
@@ -34,35 +31,32 @@ struct HomeView: View {
             }
             .padding(20)
         }
-        .frame(width: 760, height: 560)
-        .frostedWindowBackground()  // ウィンドウ全面のすりガラス下地（設定と同じ）
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - ヘッダ
 
-    /// ヘッダ行。左＝更新ピル（あるとき）or アプリアイコン＋名称、右＝設定ギア。
+    /// ヘッダ行。左＝更新ピル（検知時だけ）or ダッシュボードの見出し＋今日の一言。
+    /// ブランド行と設定導線はサイドバー（MainWindowView）に移したためここには置かない。
     private var header: some View {
         HStack(spacing: 10) {
             if showUpdatePill {
                 updatePill
             } else {
-                brand
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("ダッシュボード").font(.title3.weight(.semibold))
+                    Text(todayGreeting).font(.caption).foregroundStyle(.secondary)
+                }
             }
             Spacer(minLength: 0)
-            settingsButton
         }
         .padding(.top, 6)  // タイトルバー帯からヘッダを逃がす
     }
 
-    /// アプリアイコン＋「voicekey」（更新が無いときのヘッダ左）
-    private var brand: some View {
-        HStack(spacing: 8) {
-            Image(nsImage: NSApp.applicationIconImage ?? NSImage())
-                .resizable()
-                .frame(width: 26, height: 26)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-            Text("voicekey").font(.title3.weight(.semibold))
-        }
+    /// 今日の入力量の一言（ダッシュボードのあいさつ）
+    private var todayGreeting: String {
+        let today = stats.charactersInLast(days: 1)
+        return today > 0 ? "今日はここまで \(today) 文字を入力しました" : "今日はまだ入力していません"
     }
 
     /// 新バージョン検知時だけ出す更新ピル。落ち着いた青系・小さめの横長角丸ピル。
@@ -103,26 +97,6 @@ struct HomeView: View {
     /// 更新ピルを出すか（配布ビルドで新バージョン検知時のみ）
     private var showUpdatePill: Bool {
         updater.isAvailable && updater.updateAvailable
-    }
-
-    /// 「設定を開く」ギアボタン
-    private var settingsButton: some View {
-        Button {
-            onOpenSettings()
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: "gearshape")
-                Text("設定を開く").font(.system(size: 12))
-            }
-            .padding(.horizontal, 11)
-            .padding(.vertical, 6)
-            .foregroundStyle(.primary)
-            .background(
-                Capsule().fill(fillColor)
-            )
-        }
-        .buttonStyle(.plain)
-        .help("設定ウィンドウを開く")
     }
 
     // MARK: - 統計カード

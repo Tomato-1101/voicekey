@@ -15,6 +15,12 @@ enum AppState: Equatable {
     /// 文字起こし中
     case transcribing
 
+    /// 録音中か（サイドノッチの点灯など、録音状態だけを見たい箇所で使う）
+    var isRecording: Bool {
+        if case .recording = self { return true }
+        return false
+    }
+
     /// メニューに表示する日本語ラベル
     var label: String {
         switch self {

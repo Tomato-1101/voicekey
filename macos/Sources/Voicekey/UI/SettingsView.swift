@@ -1,39 +1,58 @@
 //
 //  SettingsView.swift
-//  設定ウィンドウ（一般 / ホットキー / API キー）
+//  メインウィンドウ（ダッシュボード + 設定を 1 枚に統合）と各設定タブ
+//
+//  v3.1: 別ウィンドウの設定を廃止し、ホーム（ダッシュボード）と設定を 1 つの
+//  MainWindowView に統合した。浮くガラス島は「サイドバーだけ」（v2.1）で、サイドバーの
+//  「ダッシュボード」/「設定」でコンテンツ面を切り替える。右のコンテンツはフラット背景。
 //
 
 import ServiceManagement
 import SwiftUI
 
-struct SettingsView: View {
-    @ObservedObject var config: ConfigStore
-    @State private var selectedTab: Int
-    /// サイドバーを畳んでいるか（true ならアイコンのみのレール）
-    @State private var sidebarCollapsed = false
-    /// ホバー中のナビ項目 id（非選択項目に薄いハイライトを出すため）
-    @State private var hoveredNav: Int?
+/// メインウィンドウの表示モデル（StatusItemController が保持し、メニュー等から状態を差し込む）。
+/// showingSettings=false でダッシュボード、true で設定モード（settingsTab が選択タブ）。
+@MainActor
+final class MainWindowModel: ObservableObject {
+    /// 設定モードか（false=ダッシュボード）
+    @Published var showingSettings: Bool
+    /// 設定モードのときの選択タブ（旧 SettingsView のタグ値を踏襲）
+    @Published var settingsTab: Int
 
-    // 実績・履歴はホーム画面へ移設したため、設定は config だけを受け取る（Phase B）。
-    init(config: ConfigStore, initialTab: Int = 0) {
-        self.config = config
-        _selectedTab = State(initialValue: initialTab)
+    init(showingSettings: Bool = false, settingsTab: Int = 0) {
+        self.showingSettings = showingSettings
+        self.settingsTab = settingsTab
     }
+}
 
-    /// サイドバーの 1 項目（id は selectedTab のタグと一致）
-    private struct NavItem: Identifiable {
+/// ダッシュボードと設定を統合したメインウィンドウ。
+/// サイドバー（浮遊ガラス島）で「ダッシュボード」/「設定」を切り替え、設定は同じウィンドウ内で
+/// タブ表示する。コンテンツ側はフラット背景（v2.1）。別ウィンドウの設定は廃止した。
+struct MainWindowView: View {
+    @ObservedObject var config: ConfigStore
+    @ObservedObject var history: HistoryStore
+    @ObservedObject var stats: StatsStore
+    @ObservedObject var updater: UpdaterController
+    @ObservedObject var model: MainWindowModel
+    /// アカウント行の表示（メール・ログイン状態）に使う。deep link ログインで自動更新される。
+    @ObservedObject private var login = LoginCoordinator.shared
+
+    /// ホバー中のナビ項目（非選択項目に薄いハイライトを出すため）
+    @State private var hoveredNav: String?
+
+    /// サイドバーの 1 項目（id は settingsTab のタグと一致）
+    private struct SettingsNavItem: Identifiable {
         let id: Int
         let title: String
         let icon: String
     }
 
-    /// 表示するナビ項目（配布ビルドでは API キーを出さない）
-    private var navItems: [NavItem] {
-        var items: [NavItem] = [
+    /// 設定タブのナビ項目（配布ビルドでは API キーを出さない）
+    private var settingsNavItems: [SettingsNavItem] {
+        var items: [SettingsNavItem] = [
             .init(id: 0, title: "一般", icon: "gearshape"),
             .init(id: 1, title: "録音キー 1（メイン）", icon: "1.circle"),
             .init(id: 2, title: "録音キー 2（サブ）", icon: "2.circle"),
-            // 実績（旧 tag 3）・履歴（旧 tag 4）はホーム画面へ移設した（Phase B）
             .init(id: 8, title: "ユーザー辞書", icon: "character.book.closed"),
             .init(id: 6, title: "アカウント", icon: "person.crop.circle"),
             .init(id: 7, title: "バージョン情報", icon: "info.circle"),
@@ -47,142 +66,102 @@ struct SettingsView: View {
 
     var body: some View {
         // レイアウト v2.1: 浮くガラス島は「サイドバーだけ」。右のコンテンツはウィンドウの
-        // 背景面としてフラットに敷き、島（角丸・影・リム）にしない（Claude デスクトップの
-        // サイドバー＋本文と同じ関係）。frosted backdrop とウォッシュはウィンドウ全面に残す。
+        // 背景面としてフラットに敷き、島にしない。frosted backdrop はウィンドウ全面に残す。
         HStack(spacing: 12) {
             sidebar
-                .clipShape(RoundedRectangle(cornerRadius: 18))  // ナビのスクロールが角からはみ出さないように
+                .clipShape(RoundedRectangle(cornerRadius: 18))  // スクロールが角からはみ出さないように
                 .glassIsland(cornerRadius: 18)
                 .padding(.leading, 12)   // 島の左に下地を見せる
                 .padding(.vertical, 12)  // 島の上下に下地を見せる
-            contentPane                  // 右ペインはウィンドウ端まで広がるフラットな背景面（島にしない）
+            contentPane                  // 右ペインはウィンドウ端まで広がるフラットな背景面
         }
-        // ウィンドウ幅は据え置き（サイドバー島のマージン込みで 700x600）
-        .frame(width: 700, height: 600)
+        // 設定・ホーム共用のウィンドウサイズ（サイドバー島のマージン込み）
+        .frame(width: 760, height: 600)
         .glassButtons()             // 配下の Button を一括ガラス化（.plain 明示ボタンは影響なし）
         .frostedWindowBackground()  // ウィンドウ全面のすりガラス下地
     }
 
-    /// 左サイドバー（ブランド＋開閉トグル＋スクロール可能なナビ）。背景は body 側で島にする。
+    // MARK: - サイドバー
+
+    /// 左サイドバー。上=ブランド＋ダッシュボード、中段=設定モード時のタブ群、下=設定＋アカウント行。
     private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 2) {
             brandHeader
-            // ナビ（項目が増えても届くようスクロール可能にする）
-            ScrollView {
-                VStack(spacing: 2) {
-                    ForEach(navItems) { item in
-                        navButton(item)
+            navRow(title: "ダッシュボード", icon: "square.grid.2x2", selected: !model.showingSettings) {
+                model.showingSettings = false
+            }
+            .padding(.horizontal, 8)
+
+            // 設定モードのときだけ、中段に既存の設定タブ群を出す
+            if model.showingSettings {
+                Divider().padding(.horizontal, 14).padding(.vertical, 6)
+                ScrollView {
+                    VStack(spacing: 2) {
+                        ForEach(settingsNavItems) { item in
+                            navRow(title: item.title, icon: item.icon, selected: model.settingsTab == item.id) {
+                                model.settingsTab = item.id
+                            }
+                        }
                     }
+                    .padding(.horizontal, 8)
                 }
+            }
+
+            Spacer(minLength: 8)
+
+            // 下部: 設定への入口（設定モードでは選択表示）＋アカウント行
+            navRow(title: "設定", icon: "gearshape", selected: model.showingSettings) {
+                model.showingSettings = true
+            }
+            .padding(.horizontal, 8)
+            Divider().padding(.horizontal, 14).padding(.vertical, 4)
+            accountRow
                 .padding(.horizontal, 8)
-                .padding(.bottom, 8)
-            }
+                .padding(.bottom, 6)
         }
-        .frame(width: sidebarCollapsed ? 60 : 192)
+        .frame(width: 200)
     }
 
-    /// サイドバー先頭のブランド行（アプリアイコン＋名称＋開閉トグル）。畳み時はアイコン＋トグルを縦積み。
+    /// サイドバー先頭のブランド行（アプリアイコン＋名称）
     private var brandHeader: some View {
-        Group {
-            if sidebarCollapsed {
-                VStack(spacing: 8) {
-                    appIcon
-                    collapseToggle
-                }
-                .frame(maxWidth: .infinity)
-            } else {
-                HStack(spacing: 8) {
-                    appIcon
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text("voicekey").font(.headline)
-                        Text("設定").font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 0)
-                    collapseToggle
-                }
-            }
+        HStack(spacing: 8) {
+            Image(nsImage: NSApp.applicationIconImage ?? NSImage())
+                .resizable()
+                .frame(width: 30, height: 30)
+                .clipShape(RoundedRectangle(cornerRadius: 7))
+            Text("voicekey").font(.headline)
+            Spacer(minLength: 0)
         }
-        .padding(.horizontal, sidebarCollapsed ? 0 : 14)
+        .padding(.horizontal, 14)
         .padding(.top, 14)
-        .padding(.bottom, 10)
+        .padding(.bottom, 8)
     }
 
-    /// アプリアイコン（ブランド格上げ用・角丸表示）
-    private var appIcon: some View {
-        Image(nsImage: NSApp.applicationIconImage ?? NSImage())
-            .resizable()
-            .frame(width: 30, height: 30)
-            .clipShape(RoundedRectangle(cornerRadius: 7))
-    }
-
-    /// サイドバー開閉トグル（アイコンのみのレール ⇄ ラベル付き）
-    private var collapseToggle: some View {
-        Button {
-            withAnimation(.easeInOut(duration: 0.22)) { sidebarCollapsed.toggle() }
-        } label: {
-            Image(systemName: "sidebar.left")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.secondary)
-        }
-        .buttonStyle(.plain)
-        .help(sidebarCollapsed ? "サイドバーを開く" : "サイドバーを閉じる")
-    }
-
-    /// 右のコンテンツ島（現在タブ名のヘッダ＋選択中ページ）。
-    /// 右ペイン（現在タブの中身）。島にはせず、ウィンドウの背景面としてフラットに敷く。
-    /// 角丸・影・リムは付けない（frosted backdrop がそのまま透ける。Form 側は
-    /// scrollContentBackground(.hidden) 済みなので下地が見える）。
-    private var contentPane: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            contentHeader
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.top, 12)  // タイトルバー帯からヘッダを逃がす（右・下はウィンドウ端まで広げる）
-    }
-
-    /// コンテンツ島の上部ヘッダ（現在タブ名）。System Settings 的な階層感を出す。
-    private var contentHeader: some View {
-        Text(navItems.first { $0.id == selectedTab }?.title ?? "")
-            .font(.title3.weight(.semibold))
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, 16)
-            .padding(.horizontal, 20)
-            .padding(.bottom, 4)
-    }
-
-    /// ナビ 1 項目のボタン（選択中はアクセントのグラデピル。ホバーで薄いハイライト。畳むとアイコンのみ）
-    private func navButton(_ item: NavItem) -> some View {
-        let selected = selectedTab == item.id
-        let hovered = hoveredNav == item.id
-        return Button {
-            selectedTab = item.id
-        } label: {
+    /// ナビ 1 行（選択中＝アクセントのグラデピル。ホバーで薄いハイライト）
+    private func navRow(title: String, icon: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
             HStack(spacing: 10) {
-                Image(systemName: item.icon)
+                Image(systemName: icon)
                     .font(.system(size: 14))
                     .frame(width: 20)
-                if !sidebarCollapsed {
-                    Text(item.title)
-                        .font(.system(size: 13))
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                }
+                Text(title)
+                    .font(.system(size: 13))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
             }
             .padding(.vertical, 6)
-            .padding(.horizontal, sidebarCollapsed ? 0 : 10)
-            .frame(maxWidth: .infinity, alignment: sidebarCollapsed ? .center : .leading)
-            .background(navBackground(selected: selected, hovered: hovered))
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(navBackground(selected: selected, hovered: hoveredNav == title))
             .foregroundStyle(selected ? Color.white : Color.primary)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovering in
-            if hovering { hoveredNav = item.id }
-            else if hoveredNav == item.id { hoveredNav = nil }
+            if hovering { hoveredNav = title }
+            else if hoveredNav == title { hoveredNav = nil }
         }
-        .help(item.title)
+        .help(title)
     }
 
     /// ナビ項目の背景。選択中＝アクセントのグラデピル＋白リム＋グロー影、ホバー＝薄いフィル、他＝透明。
@@ -210,9 +189,102 @@ struct SettingsView: View {
         }
     }
 
-    /// 選択中ページ（タグは旧 TabView と同じ値を踏襲）
-    @ViewBuilder private var content: some View {
-        switch selectedTab {
+    /// アカウント行（アバター円＋メール。未ログインは「ログイン」。クリックで設定のアカウントタブへ）
+    private var accountRow: some View {
+        Button {
+            model.settingsTab = 6
+            model.showingSettings = true
+        } label: {
+            HStack(spacing: 8) {
+                avatar
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(accountPrimary)
+                        .font(.system(size: 12, weight: .medium))
+                        .lineLimit(1)
+                    Text(accountSecondary)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 7)
+            .padding(.horizontal, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("アカウント設定を開く")
+    }
+
+    /// アバター円（ログイン中はメール頭文字、未ログインは人物アイコン）
+    private var avatar: some View {
+        ZStack {
+            Circle().fill(LinearGradient(
+                colors: [Color.accentColor, Color.accentColor.opacity(0.7)],
+                startPoint: .top, endPoint: .bottom
+            ))
+            if isLoggedIn, let first = login.accountEmail?.first {
+                Text(String(first).uppercased())
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.white)
+            } else {
+                Image(systemName: "person.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white)
+            }
+        }
+        .frame(width: 26, height: 26)
+    }
+
+    /// ログイン済みか
+    private var isLoggedIn: Bool {
+        if case .loggedIn = login.status { return true }
+        return false
+    }
+
+    /// アカウント行の主表示（メール or 「ログイン」）
+    private var accountPrimary: String {
+        if isLoggedIn { return login.accountEmail ?? "ログイン済み" }
+        return "ログイン"
+    }
+
+    /// アカウント行の副表示
+    private var accountSecondary: String {
+        isLoggedIn ? "アカウント" : "クリックしてログイン"
+    }
+
+    // MARK: - コンテンツ面
+
+    /// 右のコンテンツ面（ダッシュボード or 設定タブ）。島にはせずフラットに敷く（v2.1）。
+    private var contentPane: some View {
+        Group {
+            if model.showingSettings {
+                VStack(alignment: .leading, spacing: 0) {
+                    settingsHeader
+                    settingsContent(tab: model.settingsTab)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            } else {
+                HomeView(config: config, history: history, stats: stats, updater: updater)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.top, 12)  // タイトルバー帯からヘッダを逃がす
+    }
+
+    /// 設定モードの上部ヘッダ（現在タブ名）
+    private var settingsHeader: some View {
+        Text(settingsNavItems.first { $0.id == model.settingsTab }?.title ?? "")
+            .font(.title3.weight(.semibold))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 16)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 4)
+    }
+
+    /// 選択中の設定ページ（タグは旧 SettingsView と同じ値を踏襲・既存タブ View を使い回す）
+    @ViewBuilder private func settingsContent(tab: Int) -> some View {
+        switch tab {
         case 0: GeneralSettingsTab(config: config)
         case 1: SlotSettingsTab(title: "録音キー 1（メイン）", slot: $config.slot1)
         case 2: SlotSettingsTab(title: "録音キー 2（サブ）", slot: $config.slot2)
