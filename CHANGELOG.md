@@ -5,6 +5,8 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased] - 2026-07-03
 
 ### Added
+- **Mac: ホーム画面を新設（大型機能追加 Phase B・release）**（`UI/HomeView.swift`・新規）。起動 / Dock・Finder からの再オープン / メニューの「ホーム」で開くメインダッシュボード。設定と同じ frosted chrome・真の中央・約 760×560。レイアウトは v2.1（島で全面を包まず、frosted backdrop の上に控えめなカードをフラットに敷く）。構成: ヘッダ（更新ピル or アプリアイコン＋名称／右に「設定を開く」）、統計カード（今日/今週/累計の入力文字数・レベル/XP・推定節約時間）、アプリ別使用状況（累計文字数上位 5 アプリをアイコン＋横バーで表示・空状態あり）、最近の履歴（直近 8 件・アプリアイコン＋相対時刻・クリックでコピー・「消去」）。**実績・履歴タブは設定から撤去してホームへ移設**。
+- **Mac: アップデート導線をホームの「更新ピル」に刷新（Phase B・release）**。新バージョンをサイレントに検知（Sparkle の `checkForUpdateInformation()` を起動 5 分後＋以後 6 時間ごと・UI を一切出さない）し、検知時だけホーム左上に落ち着いた青系の小さな横長ピル「⬆ v{version} に更新する」を表示。クリックで更新フロー（DL→インストール）を開始する。バックグラウンド検知でダイアログを勝手に出さない。手動チェックは設定「バージョン情報」タブのボタンに集約し、メニューバーの「アップデートを確認…」項目は削除。
 - **Mac: 大型機能追加 Phase A（基盤＋設定項目・release）**。競合パリティのための新機能群を追加（ノッチ・ホーム画面は後続フェーズ）。
   - **操作音**（`Core/SoundFX.swift`・新規）: 録音開始＝2 音上昇 / 停止＝下降の短いブリップをコードで合成再生（音源ファイル不要）。録音用エンジンとは独立した再生専用 `AVAudioEngine`＋撃ちっぱなし再生で、音声入力パイプラインに待ちを足さない。設定「サウンド」の「操作音」で ON/OFF（既定 ON）。
   - **メディア音量ダッキング**（`Core/MediaDucker.swift`・新規）: 録音中だけ既定出力デバイスの音量を **12%** へ下げ、停止で元へ戻す。現在音量が既に 12% 以下なら何もしない（音量を引き上げる逆転を防止）。異常終了に備え「元音量・実行中フラグ」を UserDefaults へ退避し、次回起動で残存していれば巻き戻す。設定「サウンド」の「音声入力中はメディアの音量を下げる」で ON/OFF（既定 ON）。
@@ -29,6 +31,10 @@ voicekeyの変更履歴を記録するファイルです。
 - **Mac: セットアップガイドが「初回起動時だけ」を確実に守るように修正**。アプリが強制終了（SIGKILL・ビルド検証の kill 等）されるとウィンドウクローズ処理が走らず完了フラグが保存されないため、次回起動でも再表示される穴があった。自動表示を決めた時点で完了フラグを即保存する方式に変更（メニューの「セットアップガイド…」からの手動再表示・入力監視の権限反映再起動からの再開は従来どおり）。
 
 ### Technical Details
+- **Phase B / VoicekeyApp.swift**: `homeWindow` と `showHome()` を追加（設定と同じ生成・キャッシュ再利用・真の中央）。`handleReopen` の遷移先を設定→ホームへ変更、メニューに「ホーム」項目を追加し「アップデートを確認…」を削除。`restoreAccessoryPolicyIfNoUserWindows` の判定に `homeWindow` を追加。デバッグ用 `VOICEKEY_OPEN_HOME`（env/defaults・読み取り後削除）で起動時に自動表示。`SettingsView` の生成引数から `history` / `stats` を削除
+- **Phase B / HomeView.swift（新規）**: `HomeView(config:history:stats:updater:onOpenSettings:)`。統計は `StatsStore` の既存 API（`charactersInLast` / `totalCharacters` / `level` / `levelProgress` / `savedSeconds` 等）、アプリ別は `stats.data.appUsage` の上位 5 件、履歴は `history.items.prefix(8)`。アイコンは `NSWorkspace.urlForApplication(withBundleIdentifier:)`→`icon(forFile:)`（未解決は `app.dashed`）。カードは `glassFormRows` と同じ半透明フィルで島化しない
+- **Phase B / UpdaterController.swift**: `availableVersion`（@Published・単一情報源）を導入し `updateAvailable` / `availableVersionString`（AboutTab 互換の別名）を導出。Sparkle の自動バックグラウンドチェックを `automaticallyChecksForUpdates = false` で停止し、`Timer` で 5 分後＋6 時間ごとに `checkForUpdateInformation()`（UI なし）を実行。検知は `SPUUpdaterDelegate` の `didFindValidUpdate` / `updaterDidNotFindUpdate` で反映
+- **Phase B / SettingsView.swift**: `navItems` から実績（tag 3）・履歴（tag 4）を削除、`content` の該当 case と `StatsTab` / `HistoryTab` / `StatsPeriod` / `AnimatedNumber` / `HistoryRow` の各 View 実装、および未使用になった `import Charts` を削除（実装はホームへ移設）
 - **VoicekeyApp.swift**: `centerOnScreen` / `restoreAccessoryPolicyIfNoUserWindows` / `handleReopen` を追加。設定/フィードバックにも `NSWindowDelegate` を配線し、`windowWillClose` で可視ウィンドウ数を見て `.accessory` へ復帰
 - **Glass.swift（新規）**: `glassSurface` / `glassCapsule` / `glassIsland`（島＝リムライト＋影）/ `glassFormRows`（行フィル半透明化）/ `glassButtons` / `glassProminentButton` / `LiquidButtonStyle`（全 OS 共通・非 prominent は透けるガラス、prominent はアクセントグラデ）/ `VisualEffectBackdrop`（`.hudWindow`＋ウォッシュ）/ `GlassWindow.applyFrostedChrome` / `GlassGroup`
 - **SettingsView**: サイドバーのみガラス島（`sidebar` に `glassIsland`＋四周マージン）・右コンテンツは島にしないフラットな `contentPane`（`HStack(spacing:12)`・Divider 廃止・700×600）・ブランド行・ページ見出し・ナビのグラデ選択ピルとホバー・全タブに `glassFormRows`。Phase A で「一般」に再貼り付け行、「表示 / サウンド / 履歴」セクションを追加

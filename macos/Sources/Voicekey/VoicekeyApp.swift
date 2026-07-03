@@ -149,6 +149,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             log.info("デバッグ: 設定ウィンドウを自動表示します (tab=\(debugTab, privacy: .public))")
             statusBar.showSettings(initialTab: Int(debugTab) ?? 0)
         }
+
+        // デバッグ用: 起動直後にホーム画面を開く（一回限り、読み取り後に削除）
+        // 使い方: defaults write com.voicekey.app VOICEKEY_OPEN_HOME 1 → 起動
+        let openHome = UserDefaults.standard.string(forKey: "VOICEKEY_OPEN_HOME")
+            ?? ProcessInfo.processInfo.environment["VOICEKEY_OPEN_HOME"]
+        if openHome != nil {
+            UserDefaults.standard.removeObject(forKey: "VOICEKEY_OPEN_HOME")
+            log.info("デバッグ: ホーム画面を自動表示します")
+            statusBar.showHome()
+        }
     }
 
     /// 初回起動時にログイン時自動起動を登録する。
@@ -170,7 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Dock アイコンや Finder からアプリを再度開いたときの挙動。
     /// メニューバー常駐アプリは通常ウィンドウを持たないため、標準では何も起きない。
     /// ユーザーの「開き直したい」意図に応えて、オンボーディング表示中ならそれを前面へ、
-    /// それ以外は設定ウィンドウを開く（行き止まりを作らない）。
+    /// それ以外はホーム画面を開く（行き止まりを作らない・Phase B）。
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         statusBar?.handleReopen()
         return true
@@ -193,6 +203,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private weak var controller: AppController?
     private var stateObservation: AnyCancellable?
     private var settingsWindow: NSWindow?
+    /// ホーム画面（起動 / 再オープンで開くメインウィンドウ・Phase B）
+    private var homeWindow: NSWindow?
     private var feedbackWindow: NSWindow?
     /// 初回セットアップ（オンボーディング）ウィンドウ
     private var onboardingWindow: NSWindow?
@@ -218,20 +230,17 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         menu.addItem(stateMenuItem)  // 状態表示（action なし = 自動で無効表示）
         menu.addItem(.separator())
 
+        // ホーム（実績・履歴・アプリ別使用率をまとめたメイン画面・Phase B）
+        let home = NSMenuItem(title: "ホーム", action: #selector(openHome), keyEquivalent: "")
+        home.target = self
+        menu.addItem(home)
+
         let settings = NSMenuItem(title: "設定…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
 
-        // 配布ビルドのみ: Sparkle の手動アップデート確認
-        if UpdaterController.shared.isAvailable {
-            let update = NSMenuItem(
-                title: "アップデートを確認…",
-                action: #selector(checkForUpdates),
-                keyEquivalent: ""
-            )
-            update.target = self
-            menu.addItem(update)
-        }
+        // アップデートの手動確認は設定「バージョン情報」タブのボタンに集約した（Phase B）。
+        // 新バージョン検知はサイレントに行い、ホーム左上の更新ピルだけで通知する。
 
         let feedback = NSMenuItem(
             title: "フィードバックを送る…",
@@ -293,7 +302,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private func restoreAccessoryPolicyIfNoUserWindows(closing: NSWindow?) {
         // Dock 常時表示 ON のときは、ウィンドウを閉じても Dock アイコンを引っ込めない
         if controller?.config.dockIconAlwaysVisible == true { return }
-        let userWindows = [settingsWindow, feedbackWindow, onboardingWindow]
+        let userWindows = [settingsWindow, homeWindow, feedbackWindow, onboardingWindow]
         let anyRemainingVisible = userWindows.contains { win in
             guard let win, win !== closing else { return false }
             return win.isVisible
@@ -304,23 +313,23 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     }
 
     /// Dock / Finder からの再オープン: オンボーディング表示中ならそれを前面へ、
-    /// それ以外は設定ウィンドウ（一般タブ）を開く。
+    /// それ以外はホーム画面を開く（Phase B。設定はメニュー「設定…」から）。
     func handleReopen() {
         if let onboardingWindow, onboardingWindow.isVisible {
             NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
             onboardingWindow.makeKeyAndOrderFront(nil)
         } else {
-            showSettings(initialTab: 0)
+            showHome()
         }
+    }
+
+    @objc private func openHome() {
+        showHome()
     }
 
     @objc private func openSettings() {
         showSettings(initialTab: 0)
-    }
-
-    @objc private func checkForUpdates() {
-        UpdaterController.shared.checkForUpdates()
     }
 
     /// フィードバック入力フォームを開く（本文を自社サーバーへ送信する）。
@@ -452,8 +461,6 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             let hosting = NSHostingController(
                 rootView: SettingsView(
                     config: controller.config,
-                    history: controller.history,
-                    stats: controller.stats,
                     initialTab: initialTab
                 )
             )
@@ -473,6 +480,36 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         // 中央配置は表示後に行う（NSHostingController のウィンドウは初回表示まで frame が
         // サイズ 0 のことがあり、表示前に計算すると右上へずれる）。再表示時は前回位置を尊重する
         if isNewWindow, let settingsWindow { centerOnScreen(settingsWindow) }
+    }
+
+    /// ホーム画面を表示する（設定ウィンドウと同じ frosted chrome・真の中央・キャッシュ再利用）。
+    func showHome() {
+        var isNewWindow = false
+        if homeWindow == nil, let controller {
+            let hosting = NSHostingController(
+                rootView: HomeView(
+                    config: controller.config,
+                    history: controller.history,
+                    stats: controller.stats,
+                    updater: UpdaterController.shared,
+                    onOpenSettings: { [weak self] in self?.showSettings(initialTab: 0) }
+                )
+            )
+            let window = NSWindow(contentViewController: hosting)
+            window.title = "voicekey"
+            window.styleMask = [.titled, .closable]
+            window.isReleasedWhenClosed = false
+            GlassWindow.applyFrostedChrome(to: window)  // すりガラス化（設定と同じ）
+            window.delegate = self  // クローズ時に Dock アイコンを引っ込めるため
+            homeWindow = window
+            isNewWindow = true
+        }
+        // Dock にアイコンを出し前面へ（アクセサリのままだと前面に出ない）
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        homeWindow?.makeKeyAndOrderFront(nil)
+        // 中央配置は表示後（frame 確定後）に行う。再表示時は前回位置を尊重する
+        if isNewWindow, let homeWindow { centerOnScreen(homeWindow) }
     }
 
     @objc private func quitApp() {

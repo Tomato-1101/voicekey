@@ -3,24 +3,20 @@
 //  設定ウィンドウ（一般 / ホットキー / API キー）
 //
 
-import Charts
 import ServiceManagement
 import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var config: ConfigStore
-    @ObservedObject var history: HistoryStore
-    @ObservedObject var stats: StatsStore
     @State private var selectedTab: Int
     /// サイドバーを畳んでいるか（true ならアイコンのみのレール）
     @State private var sidebarCollapsed = false
     /// ホバー中のナビ項目 id（非選択項目に薄いハイライトを出すため）
     @State private var hoveredNav: Int?
 
-    init(config: ConfigStore, history: HistoryStore, stats: StatsStore, initialTab: Int = 0) {
+    // 実績・履歴はホーム画面へ移設したため、設定は config だけを受け取る（Phase B）。
+    init(config: ConfigStore, initialTab: Int = 0) {
         self.config = config
-        self.history = history
-        self.stats = stats
         _selectedTab = State(initialValue: initialTab)
     }
 
@@ -37,8 +33,7 @@ struct SettingsView: View {
             .init(id: 0, title: "一般", icon: "gearshape"),
             .init(id: 1, title: "録音キー 1（メイン）", icon: "1.circle"),
             .init(id: 2, title: "録音キー 2（サブ）", icon: "2.circle"),
-            .init(id: 3, title: "実績", icon: "trophy"),
-            .init(id: 4, title: "履歴", icon: "clock.arrow.circlepath"),
+            // 実績（旧 tag 3）・履歴（旧 tag 4）はホーム画面へ移設した（Phase B）
             .init(id: 8, title: "ユーザー辞書", icon: "character.book.closed"),
             .init(id: 6, title: "アカウント", icon: "person.crop.circle"),
             .init(id: 7, title: "バージョン情報", icon: "info.circle"),
@@ -221,8 +216,6 @@ struct SettingsView: View {
         case 0: GeneralSettingsTab(config: config)
         case 1: SlotSettingsTab(title: "録音キー 1（メイン）", slot: $config.slot1)
         case 2: SlotSettingsTab(title: "録音キー 2（サブ）", slot: $config.slot2)
-        case 3: StatsTab(stats: stats)
-        case 4: HistoryTab(history: history)
         case 8: DictionaryTab(config: config)
         case 6: AccountTab()
         case 7: AboutTab()
@@ -461,299 +454,6 @@ private struct SlotSettingsTab: View {
         default:
             return ""
         }
-    }
-}
-
-// MARK: - 実績
-
-/// チャートの期間（棒グラフの集計単位）
-private enum StatsPeriod: String, CaseIterable, Identifiable {
-    case week = "週"
-    case month = "月"
-    case year = "年"
-    var id: String { rawValue }
-}
-
-/// 使用実績タブ。
-/// 「今日 / 今週 / 累計」のサマリーと、期間を切り替えられる入力量チャートで
-/// どれだけ使ったかを可視化し、継続利用の達成感につなげる。
-/// すべて貼り付け後のローカル集計なので、音声入力の速度には影響しない。
-private struct StatsTab: View {
-    @ObservedObject var stats: StatsStore
-    @State private var period: StatsPeriod = .week
-    /// 棒が 0 から伸びる初期アニメーション用
-    @State private var animateBars = false
-    /// サマリー数値のカウントアップ用
-    @State private var appeared = false
-
-    var body: some View {
-        Form {
-            // レベルと次レベルまでの進捗
-            Section {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("レベル \(stats.level)")
-                        .font(.title2).bold()
-                    Spacer()
-                    Text("経験値 \(stats.xp)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                ProgressView(value: stats.levelProgress)
-                Text("あと \(stats.xpToNextLevel) 文字でレベル \(stats.level + 1)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            // サマリー（今日 / 今週 / 累計）。大きな数字をカウントアップして達成感を出す
-            Section {
-                HStack(spacing: 12) {
-                    statTile(title: "今日", value: todayChars,
-                             sub: "\(todaySessions) 回")
-                    Divider()
-                    statTile(title: "今週", value: weekChars,
-                             sub: "録音 \(formattedMinutes(stats.recordingSecondsInLast(days: 7)))")
-                    Divider()
-                    statTile(title: "累計", value: stats.totalCharacters,
-                             sub: "Lv.\(stats.level)")
-                }
-                .frame(height: 58)
-            }
-
-            // 入力量チャート（期間切替・棒グラフ）
-            Section {
-                Picker("期間", selection: $period) {
-                    ForEach(StatsPeriod.allCases) { p in Text(p.rawValue).tag(p) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-
-                if hasData {
-                    chart.frame(height: 170)
-                } else {
-                    Text("まだデータがありません。音声入力すると、ここに入力量が表示されます。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: .infinity, minHeight: 120, alignment: .center)
-                }
-            } header: {
-                Text("入力量（文字数）")
-            }
-
-            // 累計の実績
-            Section {
-                LabeledContent("推定節約時間", value: formattedSaved)
-                LabeledContent("累計文字数", value: "\(stats.totalCharacters) 文字")
-                LabeledContent("音声入力した回数", value: "\(stats.totalSessions) 回")
-                LabeledContent("連続利用日数", value: streakText)
-            }
-            Text("「推定節約時間」は、同じ文章をキーボードで打つ場合と比べて短縮できた時間の目安です（タイピングより遅くなる短い入力は 0 として数えます）。実績はリセットできません。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
-        .glassFormRows()                   // 行フィルを半透明化して島の中で「ガラスの棚」に見せる
-        .formStyle(.grouped)
-        .padding(.vertical, 8)
-        .onAppear {
-            // 数値のカウントアップと棒の伸びを開いた瞬間に走らせる
-            withAnimation(.easeOut(duration: 0.9)) { appeared = true }
-            withAnimation(.easeOut(duration: 0.7)) { animateBars = true }
-        }
-    }
-
-    // MARK: サマリー
-
-    /// サマリー 1 枚（タイトル + 大きな数字 + 補足）
-    private func statTile(title: String, value: Int, sub: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
-            HStack(alignment: .firstTextBaseline, spacing: 2) {
-                AnimatedNumber(value: appeared ? Double(value) : 0)
-                    .font(.system(size: 22, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                Text("文字").font(.caption2).foregroundStyle(.secondary)
-            }
-            Text(sub).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var todayChars: Int { stats.charactersInLast(days: 1) }
-    private var weekChars: Int { stats.charactersInLast(days: 7) }
-    private var todaySessions: Int { stats.dailySeries(1).last?.sessions ?? 0 }
-
-    // MARK: チャート
-
-    /// 期間に応じたバー列
-    private var buckets: [UsagePoint] {
-        switch period {
-        case .week: return stats.dailySeries(7)
-        case .month: return stats.dailySeries(30)
-        case .year: return stats.monthlySeries(12)
-        }
-    }
-
-    /// 1 本でも入力があるか（無ければ空状態の案内を出す）
-    private var hasData: Bool { buckets.contains { $0.characters > 0 } }
-
-    private var chart: some View {
-        Chart(buckets) { b in
-            BarMark(
-                x: .value("日付", b.date, unit: period == .year ? .month : .day),
-                y: .value("文字数", animateBars ? b.characters : 0)
-            )
-            .foregroundStyle(Color.accentColor.gradient)
-            .cornerRadius(3)
-        }
-        .chartYAxis {
-            AxisMarks(position: .leading)
-        }
-        .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: xAxisDesiredCount)) { value in
-                AxisGridLine()
-                AxisValueLabel {
-                    if let d = value.as(Date.self) {
-                        Text(xAxisLabel(d))
-                    }
-                }
-            }
-        }
-        .animation(.easeInOut(duration: 0.4), value: period)
-    }
-
-    private var xAxisDesiredCount: Int {
-        switch period {
-        case .week: return 7
-        case .month: return 6
-        case .year: return 12
-        }
-    }
-
-    /// 期間ごとの X 軸ラベル（曜日 / 日 / 月）
-    private func xAxisLabel(_ d: Date) -> String {
-        switch period {
-        case .week: return d.formatted(.dateTime.weekday(.narrow))
-        case .month: return d.formatted(.dateTime.day())
-        case .year: return d.formatted(.dateTime.month(.abbreviated))
-        }
-    }
-
-    // MARK: 整形
-
-    /// 累計節約時間を「X 時間 Y 分」等に整形する
-    private var formattedSaved: String {
-        let total = Int(stats.savedSeconds.rounded())
-        if total >= 3600 {
-            return "\(total / 3600) 時間 \((total % 3600) / 60) 分"
-        }
-        if total >= 60 {
-            return "\(total / 60) 分 \(total % 60) 秒"
-        }
-        return "\(total) 秒"
-    }
-
-    /// 録音秒数を短く整形する（サマリー補足用）
-    private func formattedMinutes(_ seconds: Double) -> String {
-        let total = Int(seconds.rounded())
-        if total >= 3600 { return "\(total / 3600)時間\((total % 3600) / 60)分" }
-        if total >= 60 { return "\(total / 60)分" }
-        return "\(total)秒"
-    }
-
-    private var streakText: String {
-        "\(stats.currentStreak) 日（最長 \(stats.longestStreak) 日）"
-    }
-}
-
-/// カウントアップ表示用の数字（Animatable で 0→値 を滑らかに補間する）
-private struct AnimatedNumber: View, Animatable {
-    var value: Double
-    var animatableData: Double {
-        get { value }
-        set { value = newValue }
-    }
-    var body: some View {
-        Text("\(Int(value.rounded()))")
-    }
-}
-
-// MARK: - 履歴
-
-/// 音声入力履歴タブ。
-/// 直近 10 件をクリックでクリップボードにコピーできる（誤貼り付け・貼り付け失敗時の救出用）。
-private struct HistoryTab: View {
-    @ObservedObject var history: HistoryStore
-    /// 直近にコピーしたエントリ（行に「コピーしました」を一時表示する）
-    @State private var copiedId: UUID?
-
-    var body: some View {
-        Form {
-            if history.items.isEmpty {
-                Text("まだ履歴がありません。音声入力すると、ここに直近 10 件が残ります。")
-                    .foregroundStyle(.secondary)
-            } else {
-                // 設定タブでは直近 10 件のみ表示（全 200 件はホーム画面で扱う予定＝Phase B）
-                ForEach(Array(history.items.prefix(10))) { entry in
-                    HistoryRow(entry: entry, copied: copiedId == entry.id) {
-                        copyToClipboard(entry)
-                    }
-                }
-                Button("履歴を消去", role: .destructive) {
-                    history.clear()
-                }
-            }
-        }
-        .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
-        .glassFormRows()                   // 行フィルを半透明化して島の中で「ガラスの棚」に見せる
-        .formStyle(.grouped)
-        .padding(.vertical, 8)
-    }
-
-    private func copyToClipboard(_ entry: HistoryItem) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(entry.text, forType: .string)
-        copiedId = entry.id
-        // 1.5 秒後にフィードバック表示を消す（その間に別の行が押されたら上書きされる）
-        Task {
-            try? await Task.sleep(for: .seconds(1.5))
-            if copiedId == entry.id { copiedId = nil }
-        }
-    }
-}
-
-private struct HistoryRow: View {
-    let entry: HistoryItem
-    let copied: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(entry.text)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                HStack {
-                    Text(entry.date.formatted(date: .abbreviated, time: .shortened))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    if copied {
-                        Label("コピーしました", systemImage: "checkmark.circle.fill")
-                            .font(.caption)
-                            .foregroundStyle(.green)
-                    } else {
-                        Image(systemName: "doc.on.doc")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            // 行全体をクリック領域にする（テキスト部分だけだと押しにくい）
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 }
 
