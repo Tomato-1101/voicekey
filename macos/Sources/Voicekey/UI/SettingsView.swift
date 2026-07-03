@@ -502,16 +502,51 @@ private struct SlotSettingsTab: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             Toggle("文章を自動で整える", isOn: $slot.formatEnabled)
-            Text("「えー」「あの」などの言いよどみを除去し、句読点や改行を整えます。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            // 整形 ON のときだけ「整え方」プリセットを選ばせる（削り方の強さを切り替える）。
+            // 既定 standard は言いよどみだけ除去して話した内容は残す（「内容を削るのは NG」への対応）。
+            // モデル/プロンプトはサーバー固定（release 方針）なので、ここではプリセットのみ選ばせる。
+            if slot.formatEnabled {
+                Picker("整え方", selection: $slot.formatPresetId) {
+                    ForEach(Self.formatPresets, id: \.id) { preset in
+                        Text(preset.label).tag(preset.id)
+                    }
+                }
+                .pickerStyle(.menu)
+                Text(Self.formatPresetCaption(slot.formatPresetId))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
         .glassFormRows()                   // 行フィルを半透明化して島の中で「ガラスの棚」に見せる
         .formStyle(.grouped)
         .padding(.vertical, 8)
+    }
+
+    /// 整形プリセット（サーバー lib/format.ts の preset_id と一致）。id → UI ラベル。
+    /// 既定は standard。配列順がそのまま Picker の表示順。
+    private static let formatPresets: [(id: String, label: String)] = [
+        ("standard", "標準（言いよどみだけ除去）"),
+        ("punctuation", "そのまま（句読点だけ整える）"),
+        ("clean", "すっきり（言い直しを整理）"),
+        ("bullets", "箇条書き（リストに整理）"),
+    ]
+
+    /// 選択中の整形プリセットの一行説明（Picker 下に薄字で出す）。
+    /// 「発言内容は削らない」ことが伝わる文言にする（クレーム対応の主眼）。
+    private static func formatPresetCaption(_ id: String) -> String {
+        switch id {
+        case "punctuation":
+            return "言葉は一切消さず、句読点・改行だけを整えます。"
+        case "clean":
+            return "言いよどみに加え、言い直し（例: 火曜いや水曜）も最終形に整理します。内容は残します。"
+        case "bullets":
+            return "箇条書きにできる部分をリストに整理します。各項目の内容は残します。"
+        default:  // standard
+            return "「えー」「あの」などの言いよどみだけを消し、話した内容はそのまま残します。"
+        }
     }
 
     /// 選択中の文字起こしモードの説明文（Windows 版 _backend_caption_text と同一文言）。

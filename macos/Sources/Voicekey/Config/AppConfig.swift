@@ -111,6 +111,9 @@ struct SlotConfig: Codable, Equatable {
     var prompt: String
     /// 貼り付け前に LLM でテキスト整形するか（製品版は既定オン＝裏で整形）
     var formatEnabled: Bool = true
+    /// 整形プリセット（standard/punctuation/clean/bullets）。サーバーへ preset_id として送り、
+    /// 整形の「削り方」を切り替える。既定は standard（フィラーだけ除去・言い直しは残す）。
+    var formatPresetId: String = "standard"
 
     /// 人間が読める表記（例: "右⌘"、"⌃+Space"）
     var hotkeyLabel: String {
@@ -141,6 +144,8 @@ extension SlotConfig {
         prompt = try c.decodeIfPresent(String.self, forKey: .prompt) ?? ""
         // 製品版は整形を既定オン（裏で整形）。保存値が無ければ true
         formatEnabled = try c.decodeIfPresent(Bool.self, forKey: .formatEnabled) ?? true
+        // 整形プリセット。フィールドが無い旧保存 JSON でも壊れないよう standard へフォールバック
+        formatPresetId = try c.decodeIfPresent(String.self, forKey: .formatPresetId) ?? "standard"
     }
 }
 
@@ -246,13 +251,14 @@ final class ConfigStore: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
 
-        // 製品版の既定: スロット1=普通入力(右⌘・押している間・Groq「スタンダード」whisper-large-v3-turbo)
-        //             スロット2=ハンズフリー(右⌥・トグル・同じく Groq「スタンダード」)
+        // 製品版の既定: スロット1=メイン(右⌘・押している間・Deepgram「リアルタイム」nova-3)
+        //             スロット2=ハンズフリー(右⌥・トグル・Groq「スタンダード」)
         //             ハンズフリー(toggle)録音では groq を内部で ElevenLabs(scribe_v1) に自動切替する。
-        //             リアルタイム(Deepgram)は選択肢として選べる（ストリーミング・既定では未使用）
+        //             （2026-07-03 ユーザー指示: 新規ユーザーはメイン=リアルタイム長押しで始める。
+        //              既存ユーザーは保存値が優先されるため影響しない）
         slot1 = Self.loadSlot(defaults, key: Keys.slot1) ?? SlotConfig(
-            hotkey: ["cmd_r"], mode: .hold, backend: .groq,
-            model: Backend.groq.defaultModel, prompt: ""
+            hotkey: ["cmd_r"], mode: .hold, backend: .deepgram,
+            model: Backend.deepgram.defaultModel, prompt: ""
         )
         slot2 = Self.loadSlot(defaults, key: Keys.slot2) ?? SlotConfig(
             hotkey: ["alt_r"], mode: .toggle, backend: .groq,

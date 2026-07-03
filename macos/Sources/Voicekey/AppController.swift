@@ -372,6 +372,9 @@ final class AppController: ObservableObject {
         let formatEnabled: Bool
         let formatPrompt: String
         let formatModel: String
+        /// 整形プリセット（standard/punctuation/clean/bullets）。サーバー統合整形・
+        /// クライアント整形のどちらの経路にも渡し、整形の「削り方」を切り替える。
+        let formatPresetId: String
         /// サーバー統合整形（Groq プロキシで STT と整形を 1 リクエストに）を使えるか。
         /// groq スロット × 整形 ON × ログイン済み × ハンズフリー EL 差し替えでない、が条件。
         /// 単発送信のときだけこれを見て serverFormat=true にし、後段のクライアント整形をスキップする。
@@ -420,6 +423,7 @@ final class AppController: ObservableObject {
             formatEnabled: slot.formatEnabled,
             formatPrompt: config.autoFormatPrompt,
             formatModel: config.formatModel,
+            formatPresetId: slot.formatPresetId,
             serverFormatEligible: serverFormatEligible
         )
 
@@ -524,6 +528,7 @@ final class AppController: ObservableObject {
         let formatEnabled = context.formatEnabled
         let formatPrompt = context.formatPrompt
         let formatModel = context.formatModel
+        let formatPresetId = context.formatPresetId
         let serverFormatEligible = context.serverFormatEligible
 
         // 直前のタスク完了を待ってから処理する（録音順のテキスト挿入を保証）
@@ -539,7 +544,7 @@ final class AppController: ObservableObject {
                 if !streamed.isEmpty {
                     // 整形が有効なら貼り付け前に LLM で整形（失敗時は原文が返る）
                     let formatted = formatEnabled
-                        ? await formatter.format(streamed, prompt: formatPrompt, model: formatModel)
+                        ? await formatter.format(streamed, prompt: formatPrompt, model: formatModel, presetId: formatPresetId)
                         : streamed
                     // ユーザー辞書の確定置換を適用（API を通さないので遅延ゼロ）
                     let output = config.applyReplacements(formatted)
@@ -597,7 +602,7 @@ final class AppController: ObservableObject {
             do {
                 (text, didServerFormat) = try await Self.transcribeWithOptionalSplit(
                     audio, transcriber: transcriber, splitEnabled: splitEnabled,
-                    serverFormat: serverFormatEligible
+                    serverFormat: serverFormatEligible, presetId: formatPresetId
                 )
             } catch let error as TranscriptionError {
                 log.error("文字起こし失敗: \(error.message, privacy: .public)")
@@ -624,7 +629,7 @@ final class AppController: ObservableObject {
             if didServerFormat {
                 formatted = text
             } else if formatEnabled {
-                formatted = await formatter.format(text, prompt: formatPrompt, model: formatModel)
+                formatted = await formatter.format(text, prompt: formatPrompt, model: formatModel, presetId: formatPresetId)
             } else {
                 formatted = text
             }
@@ -689,7 +694,8 @@ final class AppController: ObservableObject {
     /// その値を didServerFormat として返す（serverFormat は groq プロキシ経路でのみ実効＝呼び出し側で
     /// ログイン済み groq に限定済みなので、true なら必ず整形まで済んだテキストが返る）。
     nonisolated private static func transcribeWithOptionalSplit(
-        _ samples: [Float], transcriber: Transcriber, splitEnabled: Bool, serverFormat: Bool
+        _ samples: [Float], transcriber: Transcriber, splitEnabled: Bool, serverFormat: Bool,
+        presetId: String = "standard"
     ) async throws -> (text: String, didServerFormat: Bool) {
         if splitEnabled {
             let segments = VoiceActivity.segment(samples)
@@ -704,7 +710,7 @@ final class AppController: ObservableObject {
                 }
             }
         }
-        return (try await transcriber.transcribe(samples: samples, serverFormat: serverFormat), serverFormat)
+        return (try await transcriber.transcribe(samples: samples, serverFormat: serverFormat, presetId: presetId), serverFormat)
     }
 
     /// 各セグメントを並列に文字起こしし、index 昇順に結合する（同時数は URLSession が制限）

@@ -59,6 +59,26 @@ final class SlotConfigMigrationTests: XCTestCase {
         XCTAssertEqual(slot.model, "whisper-large-v3-turbo")
     }
 
+    // formatPresetId フィールドが無い旧保存 JSON でも decode が壊れず、既定 standard へフォールバックする
+    // （フィールド追加で既存ユーザーのホットキー設定がリセットされないことの保証）
+    func testFormatPresetIdDefaultsToStandardWhenMissing() throws {
+        let slot = try decode(
+            #"{"hotkey":["cmd_r"],"mode":"hold","backend":"groq","model":"whisper-large-v3-turbo","prompt":"","formatEnabled":true}"#
+        )
+        XCTAssertEqual(slot.formatPresetId, "standard")
+        // 他フィールドも従来どおり読める
+        XCTAssertEqual(slot.backend, .groq)
+        XCTAssertTrue(slot.formatEnabled)
+    }
+
+    // 保存済み formatPresetId は尊重される（standard 以外を選んだユーザーの設定が保持される）
+    func testFormatPresetIdPreserved() throws {
+        let slot = try decode(
+            #"{"hotkey":["cmd_r"],"mode":"hold","backend":"groq","model":"whisper-large-v3-turbo","prompt":"","formatPresetId":"clean"}"#
+        )
+        XCTAssertEqual(slot.formatPresetId, "clean")
+    }
+
     // バックエンドは維持されても、保存モデルがそのバックエンドの既知モデルでなければ推奨へ揃える
     func testModelRealignedWhenNotInKnownModels() throws {
         let slot = try decode(

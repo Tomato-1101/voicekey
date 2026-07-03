@@ -427,9 +427,10 @@ enum BackendClient {
     ///   STT→整形まで行い、整形済みテキストを `text` で返す（STT と整形を 1 リクエストに統合＝
     ///   録音後のクライアント整形の往復を省く）。整形失敗時でも `text` に STT 原文が入って返るので、
     ///   呼び出し側は `text` をそのまま最終テキストとして使う（再整形はしない）。
+    /// - Parameter presetId: 統合整形時の整形プリセット（`preset_id` として送る。format=true のとき有効）。
     static func transcribeGroq(
         audio: Data, filename: String, contentType: String, language: String,
-        format: Bool = false
+        format: Bool = false, presetId: String = "standard"
     ) async throws -> String {
         try? await AuthClient.ensureValidSession()  // 失効間際なら先にリフレッシュ
         var req = try authorizedRequest(path: ServerConfig.groqTranscribeProxyPath)
@@ -441,7 +442,7 @@ enum BackendClient {
         req.timeoutInterval = format ? 90 : 60
         req.httpBody = groqMultipartBody(
             boundary: boundary, audio: audio, filename: filename,
-            contentType: contentType, language: language, format: format
+            contentType: contentType, language: language, format: format, presetId: presetId
         )
         let data = try await send(req)
         struct Resp: Decodable { let text: String? }
@@ -458,16 +459,17 @@ enum BackendClient {
         _ = try? await session.data(for: req)
     }
 
-    /// Groq テキスト整形プロキシ（モデル/プロンプトはサーバー固定。text のみ送る）。
+    /// Groq テキスト整形プロキシ（モデル/プロンプトはサーバー固定。text と preset_id を送る）。
+    /// preset_id は整形プリセット（standard/punctuation/clean/bullets）でサーバーの整形方針を切り替える。
     /// 失敗時は呼び出し側で原文フォールバックする想定なので throw で返す。
-    static func formatText(_ text: String) async throws -> String {
+    static func formatText(_ text: String, presetId: String = "standard") async throws -> String {
         try? await AuthClient.ensureValidSession()  // 失効間際なら先にリフレッシュ
         var req = try authorizedRequest(path: ServerConfig.formatProxyPath)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         // 整形も長文だと時間がかかる。token 取得用の短いセッション既定(15s)を上書きして余裕を持たせる。
         req.timeoutInterval = 60
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ["text": text])
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["text": text, "preset_id": presetId])
         let data = try await send(req)
         struct Resp: Decodable { let text: String? }
         return (try? JSONDecoder().decode(Resp.self, from: data))?.text ?? text
@@ -610,9 +612,10 @@ enum BackendClient {
     /// （model/response_format はサーバー側で固定）へ組み直すため、クライアントは
     /// file(FLAC/WAV) と language(任意) だけ入れる。サーバーは filename を Groq へ引き継ぐ。
     /// format=true のときは `format=1` を付け、サーバーに STT→整形の統合実行を依頼する。
+    /// 統合整形時は `preset_id` も添えて整形プリセットを伝える（format=false のときは無視される）。
     private static func groqMultipartBody(
         boundary: String, audio: Data, filename: String, contentType: String, language: String,
-        format: Bool = false
+        format: Bool = false, presetId: String = "standard"
     ) -> Data {
         var body = Data()
         func append(_ s: String) { body.append(Data(s.utf8)) }
@@ -622,10 +625,14 @@ enum BackendClient {
             append("\(language)\r\n")
         }
         // サーバー統合整形の依頼フラグ。サーバーはこれを見たら STT→Groq 整形まで行い整形済みを返す。
+        // 併せて整形プリセット（preset_id）も送る（サーバーは format 時のみ参照する）。
         if format {
             append("--\(boundary)\r\n")
             append("Content-Disposition: form-data; name=\"format\"\r\n\r\n")
             append("1\r\n")
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"preset_id\"\r\n\r\n")
+            append("\(presetId)\r\n")
         }
         append("--\(boundary)\r\n")
         append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n")

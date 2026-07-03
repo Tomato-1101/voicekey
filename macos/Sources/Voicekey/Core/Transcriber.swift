@@ -149,8 +149,9 @@ final class Transcriber: @unchecked Sendable {
     ///   - samples: 音声データ（Float32, 16kHz, モノラル）
     ///   - serverFormat: groq × ログイン済みプロキシ経路のときだけ有効。true にすると
     ///     サーバー内で STT→整形まで統合実行し整形済みテキストを返す（他バックエンド・直叩きは無視）。
+    ///   - presetId: 統合整形時の整形プリセット（serverFormat=true の groq 経路でのみ実効）。
     /// - Returns: 文字起こし結果（前後空白除去済み。serverFormat 時は整形済み）
-    func transcribe(samples: [Float], serverFormat: Bool = false) async throws -> String {
+    func transcribe(samples: [Float], serverFormat: Bool = false, presetId: String = "standard") async throws -> String {
         guard !samples.isEmpty else { return "" }
 
         // 配布版（製品版ビルド）は「アクティベーション必須」。埋め込みキーへはフォールバックしない。
@@ -164,7 +165,7 @@ final class Transcriber: @unchecked Sendable {
                 )
             }
             switch backend {
-            case .groq: return try await transcribeGroqViaProxy(samples: samples, serverFormat: serverFormat)
+            case .groq: return try await transcribeGroqViaProxy(samples: samples, serverFormat: serverFormat, presetId: presetId)
             case .elevenlabs: return try await transcribeElevenLabsViaProxy(samples: samples)
             case .deepgram: return try await transcribeDeepgramViaJWT(samples: samples)
             case .openai:
@@ -178,7 +179,7 @@ final class Transcriber: @unchecked Sendable {
         // 高速=Groq もサーバープロキシ経由（普通入力・バッチ）。OpenAI は選択肢に無いため直叩きに委ねる。
         if BackendClient.isLoggedIn {
             switch backend {
-            case .groq: return try await transcribeGroqViaProxy(samples: samples, serverFormat: serverFormat)
+            case .groq: return try await transcribeGroqViaProxy(samples: samples, serverFormat: serverFormat, presetId: presetId)
             case .elevenlabs: return try await transcribeElevenLabsViaProxy(samples: samples)
             case .deepgram: return try await transcribeDeepgramViaJWT(samples: samples)
             case .openai: break
@@ -232,14 +233,15 @@ final class Transcriber: @unchecked Sendable {
     ///
     /// serverFormat=true のときは `format=1` を付けてサーバーで STT→整形まで統合実行させ、
     /// 整形済みテキストを受け取る（録音後のクライアント整形の往復を省く＝単発送信時のみ使う）。
-    private func transcribeGroqViaProxy(samples: [Float], serverFormat: Bool = false) async throws -> String {
+    /// presetId は統合整形時の整形プリセット（サーバーへ preset_id として送る）。
+    private func transcribeGroqViaProxy(samples: [Float], serverFormat: Bool = false, presetId: String = "standard") async throws -> String {
         let start = Date()
         let audio = encodeAudio(samples)
         do {
             let text = TextNormalize.stripCJKSpaces(
                 try await BackendClient.transcribeGroq(
                     audio: audio.data, filename: audio.filename,
-                    contentType: audio.contentType, language: language, format: serverFormat
+                    contentType: audio.contentType, language: language, format: serverFormat, presetId: presetId
                 ).trimmingCharacters(in: .whitespacesAndNewlines)
             )
             let elapsed = Int(Date().timeIntervalSince(start) * 1000)
