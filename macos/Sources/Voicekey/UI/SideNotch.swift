@@ -3,13 +3,15 @@
 //  画面左端のサイドノッチ（履歴スリット → クリックで履歴パネル）
 //
 //  方針:
-//  - 常駐スリット: 画面左端・垂直中央に非アクティベーティングの細いバー（アクセント色）。
-//    ホバーで少し太くなり、録音中は明るく点灯する。config.sideNotchEnabled で表示切替。
-//  - クリックで履歴パネル（glass 島）が左端から出る。行クリックでコピー、下部に
-//    「ホームを開く」「消去」。外側クリック or スリット再クリックで閉じる。
-//  - 最重要: フォーカスを奪わない。パネルは非アクティベーティング NSPanel で makeKey せず、
-//    非キーでもクリックが届くよう acceptsFirstMouse=true にする（音声入力の入力先を壊さない）。
-//    描画更新はメインスレッドの軽い処理だけで、録音パイプラインには一切干渉しない。
+//  - 常駐スリット: 画面左端・垂直中央に非アクティベーティングの細いバー（黒基調＋うっすら外枠）。
+//    ホバーで少し太くなり、録音中はアクセント色のグローで点灯する。config.sideNotchEnabled で表示切替。
+//  - クリックで履歴パネル（glass 島）が左端から出る。上部に検索フィールド、行クリックでコピー、
+//    下部に「ホームを開く」。外側クリック or スリット再クリックで閉じる（全消去はホーム側だけに置く）。
+//  - クリック透過の完全禁止（v3.2）: macOS は「透明ピクセル」のクリックを下のアプリへ通してしまう。
+//    スリット・履歴パネルとも、可視要素の外側まで含めてパネル全域に極薄の実体塗りを敷き、透明ピクセルを残さない。
+//  - フォーカス制御: スリットは非キーのまま。履歴パネルは検索フィールドへキー入力を届けるため
+//    canBecomeKey=true の NSPanel サブクラスで makeKey するが、.nonactivatingPanel は維持してアプリ全体は
+//    前面化しない（音声入力の入力先アプリを奪わない）。描画更新は軽い処理だけで録音パイプラインに干渉しない。
 //
 
 import AppKit
@@ -44,6 +46,9 @@ final class SideNotchSlitView: NSView {
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.masksToBounds = false           // 録音中グローがバーの外へ滲めるように
+        // クリック透過防止（v3.2）: 可視バーは細いが、パネル全域を極薄で塗って透明ピクセルを消す。
+        // これで 2px バーの外側（ホバー拡大の余白）をクリックしても下のアプリへ抜けない。
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.02).cgColor
         bar.masksToBounds = false
         // 右側 2 隅だけ角丸（左端は画面の縁にぴったり付く）
         bar.maskedCorners = [.layerMaxXMinYCorner, .layerMaxXMaxYCorner]
@@ -68,9 +73,12 @@ final class SideNotchSlitView: NSView {
         if animated { CATransaction.setAnimationDuration(0.15) }
         bar.frame = NSRect(x: 0, y: y, width: w, height: h)  // 左端に密着
         bar.cornerRadius = min(w, 4)
-        bar.backgroundColor = accentCGColor()
+        // 黒基調（v3.2）＋うっすら外枠で輪郭を出す
+        bar.backgroundColor = barFillColor()
+        bar.borderWidth = 0.75
+        bar.borderColor = barBorderColor()
         if recording {
-            // 録音中は同色のソフトグローで「点灯」を表す
+            // 録音中はアクセント色のソフトグローで「点灯」を表す（バーの基調は黒のまま）
             bar.shadowColor = NSColor.controlAccentColor.cgColor
             bar.shadowOpacity = 0.9
             bar.shadowRadius = 4
@@ -81,10 +89,19 @@ final class SideNotchSlitView: NSView {
         CATransaction.commit()
     }
 
-    /// 状態別のアクセント色（録音中は最も明るく、ホバーで中間、通常は控えめ）
-    private func accentCGColor() -> CGColor {
-        let alpha: CGFloat = recording ? 1.0 : (hovering ? 0.85 : 0.55)
-        return NSColor.controlAccentColor.withAlphaComponent(alpha).cgColor
+    /// バーの塗り（黒基調。録音中・ホバーで不透明度だけ上げ、色味は黒のまま保つ）
+    private func barFillColor() -> CGColor {
+        let alpha: CGFloat = recording ? 0.92 : (hovering ? 0.85 : 0.7)
+        return NSColor.black.withAlphaComponent(alpha).cgColor
+    }
+
+    /// バーの外枠（通常は薄グレーの細線で輪郭。録音中だけアクセント寄りに点灯させる）
+    private func barBorderColor() -> CGColor {
+        if recording {
+            return NSColor.controlAccentColor.withAlphaComponent(0.9).cgColor
+        }
+        let alpha: CGFloat = hovering ? 0.4 : 0.28
+        return NSColor.white.withAlphaComponent(alpha).cgColor
     }
 
     /// 録音状態を反映する（AppState 連動。値が変わったときだけ再描画）
@@ -127,6 +144,17 @@ final class SideNotchSlitView: NSView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
+// MARK: - 履歴パネル本体（検索フィールドへキー入力を届けるためのサブクラス）
+
+/// 履歴パネル用の NSPanel。ボーダーレスパネルは既定で canBecomeKey=false のため検索フィールドに
+/// 入力できない。canBecomeKey=true を返してキーウィンドウになれるようにするが、styleMask の
+/// .nonactivatingPanel は維持するのでアプリ全体はアクティベートされない（前面アプリ＝音声入力の
+/// 入力先は奪わない）。
+@MainActor
+final class SideNotchHistoryPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+}
+
 // MARK: - 履歴パネルのホスティングビュー（非キーでもボタンを 1 クリックで押せるように）
 
 /// NSHostingView のサブクラス。非アクティベーティング＝非キーのパネル上でも、
@@ -149,26 +177,47 @@ struct SideNotchHistoryView: View {
 
     /// 直近にコピーした行に「コピーしました」を一時表示する
     @State private var copiedId: UUID?
+    /// 検索クエリ（部分一致・大文字小文字無視・アプリ名も対象）
+    @State private var query: String = ""
+    /// 検索フィールドのフォーカス（開いた直後に自動でフォーカスして即入力できるようにする）
+    @FocusState private var searchFocused: Bool
     @Environment(\.colorScheme) private var colorScheme
 
     static let panelWidth: CGFloat = 320
     static let panelHeight: CGFloat = 440
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-            Divider().opacity(0.5)
-            if history.items.isEmpty {
-                emptyState
-            } else {
-                list
-            }
-            Divider().opacity(0.5)
-            footer
+    /// クエリで絞り込んだ履歴（空クエリなら全件）。テキストとアプリ名の両方を大文字小文字無視で部分一致。
+    private var filteredItems: [HistoryItem] {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return history.items }
+        return history.items.filter { item in
+            item.text.localizedCaseInsensitiveContains(q)
+                || (item.appName?.localizedCaseInsensitiveContains(q) ?? false)
         }
-        .frame(width: Self.panelWidth, height: Self.panelHeight)
-        .glassIsland(cornerRadius: 18)  // 浮遊するガラス島（HUD と同系の質感）
-        .padding(12)                    // 島の影が出る余白（パネルは一回り大きい）
+    }
+
+    var body: some View {
+        // クリック透過防止（v3.2）: 島の影ぶんの余白まで含めてパネル全域を極薄で塗り、
+        // 透明ピクセルを残さない（透明部分をクリックすると下のアプリへ抜けてしまうため）。
+        ZStack {
+            Color.black.opacity(0.02)
+            VStack(alignment: .leading, spacing: 0) {
+                header
+                searchField
+                Divider().opacity(0.5)
+                if filteredItems.isEmpty {
+                    emptyState
+                } else {
+                    list
+                }
+                Divider().opacity(0.5)
+                footer
+            }
+            .frame(width: Self.panelWidth, height: Self.panelHeight)
+            .glassIsland(cornerRadius: 18)  // 浮遊するガラス島（HUD と同系の質感）
+            .padding(12)                    // 島の影が出る余白（パネルは一回り大きい）
+        }
+        .onAppear { searchFocused = true }  // 開いた直後に検索フィールドへフォーカス
     }
 
     // MARK: ヘッダ
@@ -194,14 +243,47 @@ struct SideNotchHistoryView: View {
         .padding(.vertical, 12)
     }
 
+    // MARK: 検索フィールド
+
+    /// 履歴上部の検索フィールド。非キーだと入力できないため、パネル側で makeKey している
+    /// （canBecomeKey=true / .nonactivatingPanel 維持でアプリ全体はアクティベートしない）。
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            TextField("履歴を検索", text: $query)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .focused($searchFocused)
+            if !query.isEmpty {
+                Button {
+                    query = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("検索をクリア")
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
+        .padding(.horizontal, 14)
+        .padding(.bottom, 10)
+    }
+
     // MARK: リスト
 
     private var list: some View {
         ScrollView {
             VStack(spacing: 0) {
-                ForEach(Array(history.items.enumerated()), id: \.element.id) { index, entry in
+                let items = filteredItems
+                ForEach(Array(items.enumerated()), id: \.element.id) { index, entry in
                     row(entry)
-                    if index < history.items.count - 1 {
+                    if index < items.count - 1 {
                         Divider().padding(.leading, 42).opacity(0.5)
                     }
                 }
@@ -261,21 +343,7 @@ struct SideNotchHistoryView: View {
             .help("ホーム画面を開く")
 
             Spacer()
-
-            if !history.items.isEmpty {
-                Button {
-                    history.clear()
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "trash")
-                        Text("消去").font(.system(size: 12))
-                    }
-                    .foregroundStyle(.red)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("履歴をすべて消去する")
-            }
+            // 全消去ボタンはここには置かない（v3.2）。履歴の全削除はホーム画面の「最近の履歴」からのみ行う。
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
@@ -286,10 +354,18 @@ struct SideNotchHistoryView: View {
     private var emptyState: some View {
         VStack {
             Spacer()
-            Text("音声入力すると、ここに履歴が残ります。\nクリックでコピーできます。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+            // 検索中でヒット無しか、そもそも履歴が空かでメッセージを出し分ける
+            if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text("「\(query)」に一致する履歴はありません。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            } else {
+                Text("音声入力すると、ここに履歴が残ります。\nクリックでコピーできます。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -428,6 +504,7 @@ final class SideNotchController {
         panel.backgroundColor = .clear
         panel.hasShadow = false
         panel.hidesOnDeactivate = false
+        panel.ignoresMouseEvents = false   // クリック透過防止（v3.2）: スリットはマウスイベントを必ず受ける
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
 
         let view = SideNotchSlitView(
@@ -468,6 +545,8 @@ final class SideNotchController {
         if historyPanel == nil { makeHistoryPanel() }
         positionHistory()
         historyPanel?.orderFrontRegardless()
+        // 検索フィールドへキー入力を届けるためキーウィンドウにする（.nonactivatingPanel なのでアプリは前面化しない）
+        historyPanel?.makeKey()
         // 開いている間だけ、他アプリのクリックで閉じるグローバル監視を張る
         if outsideClickMonitor == nil {
             outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
@@ -478,9 +557,11 @@ final class SideNotchController {
         }
     }
 
-    /// 履歴パネルを閉じる（グローバル監視も外す）
+    /// 履歴パネルを閉じる（グローバル監視も外す）。
+    /// 次に開くとき検索クエリを初期化し検索フィールドへ再フォーカスできるよう、パネルは破棄して作り直す。
     func closeHistory() {
         historyPanel?.orderOut(nil)
+        historyPanel = nil
         if let outsideClickMonitor {
             NSEvent.removeMonitor(outsideClickMonitor)
             self.outsideClickMonitor = nil
@@ -491,7 +572,8 @@ final class SideNotchController {
         // パネルはガラス島の影ぶんだけ内容より一回り大きい（padding 12 × 2）
         let width = SideNotchHistoryView.panelWidth + 24
         let height = SideNotchHistoryView.panelHeight + 24
-        let panel = NSPanel(
+        // canBecomeKey=true のサブクラスにして検索フィールドへ入力できるようにする（.nonactivatingPanel は維持）
+        let panel = SideNotchHistoryPanel(
             contentRect: NSRect(x: 0, y: 0, width: width, height: height),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered, defer: false
@@ -501,6 +583,7 @@ final class SideNotchController {
         panel.backgroundColor = .clear            // 背後のデスクトップ/他アプリをガラスがサンプルできる
         panel.hasShadow = false                   // 影は glassIsland 側で描く
         panel.hidesOnDeactivate = false
+        panel.ignoresMouseEvents = false          // クリック透過防止（v3.2）: パネルはマウスイベントを必ず受ける
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
 
         let view = FirstMouseHostingView(
