@@ -18,6 +18,8 @@ import SwiftUI
 final class HudModel: ObservableObject {
     enum Mode: Equatable {
         case hidden
+        /// 待機中も常時表示する小型ピル（mic アイコンのみ・薄め）
+        case idlePill
         case recording(autoEnter: Bool, handsFree: Bool)
         case transcribing
         case notice(String)
@@ -28,6 +30,8 @@ final class HudModel: ObservableObject {
     @Published var levels: [Float] = Array(repeating: 0, count: HudView.barCount)
     /// ストリーミング中のライブ字幕（空なら波形バーを表示）
     @Published var caption: String = ""
+    /// 貼り付け先アプリのアイコン（録音中/変換中にピル左端へ表示。nil なら非表示）
+    @Published var appIcon: NSImage?
 
     func pushLevel(_ value: Float) {
         levels.removeFirst()
@@ -51,6 +55,8 @@ final class HudController {
 
     /// HUD を表示するか（設定で無効化可能）
     var enabled = true
+    /// 待機中も小型ピルを常時表示するか（config.hudAlwaysVisible）
+    var alwaysVisible = false
 
     /// アプリ状態に応じて HUD を更新する
     func update(for state: AppState) {
@@ -59,7 +65,15 @@ final class HudController {
         case .idle:
             // 通知表示中は消さない（通知は自身のタイマーで消える）
             if case .notice = model.mode { return }
-            hide()
+            // 常時表示 ON なら待機中も小型ピル（mic のみ）を残す
+            if alwaysVisible {
+                model.appIcon = nil  // 待機中は貼り付け先アイコンを出さない
+                model.caption = ""
+                model.mode = .idlePill
+                show()
+            } else {
+                hide()
+            }
         case .recording(let autoEnter, let handsFree):
             noticeTask?.cancel()
             // 録音中の auto_enter 昇格（ダブルタップ確定）では波形・字幕を維持する
@@ -114,6 +128,11 @@ final class HudController {
     /// ライブ字幕を消す（確定貼り付け後に呼ぶ）
     func clearCaption() {
         model.caption = ""
+    }
+
+    /// 貼り付け先アプリのアイコンを設定する（録音開始時にスナップショットを渡す）
+    func setAppIcon(_ icon: NSImage?) {
+        model.appIcon = icon
     }
 
     // MARK: - パネル管理
@@ -195,14 +214,33 @@ struct HudView: View {
         .animation(.easeOut(duration: 0.15), value: model.mode)
     }
 
+    /// 貼り付け先アプリのアイコン（18pt 角丸）。取得失敗時は非表示でレイアウトを崩さない
+    @ViewBuilder
+    private var appIconView: some View {
+        if let icon = model.appIcon {
+            Image(nsImage: icon)
+                .resizable()
+                .frame(width: 18, height: 18)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+        }
+    }
+
     @ViewBuilder
     private var content: some View {
         switch model.mode {
         case .hidden:
             EmptyView()
 
+        case .idlePill:
+            // 待機中の常時表示ピル（mic アイコンのみ・薄め）
+            Image(systemName: "mic.fill")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary)
+                .opacity(0.6)
+
         case .recording(let autoEnter, let handsFree):
             HStack(spacing: 10) {
+                appIconView  // 貼り付け先アプリのアイコン（左端）
                 // 状態ドット: ハンズフリー=ティール / 自動送信=パープル / 通常=レッド
                 Circle()
                     .fill(handsFree ? Self.handsFreeAccent : (autoEnter ? Color.purple : Color.red))
@@ -238,6 +276,7 @@ struct HudView: View {
 
         case .transcribing:
             HStack(spacing: 10) {
+                appIconView  // 貼り付け先アプリのアイコン（左端）
                 ProgressView()
                     .controlSize(.small)
                 Text("変換中…")

@@ -83,6 +83,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let statusBar = StatusItemController(controller: controller)
         self.statusBar = statusBar
 
+        // Dock 常時表示が ON なら起動時から Dock にアイコンを出す（既定 OFF は従来どおり動的表示）
+        if controller.config.dockIconAlwaysVisible {
+            NSApp.setActivationPolicy(.regular)
+        }
+
         // --- 初回起動オンボーディング（Phase 5）の分岐 ---
         // 未完了なら startup() を「呼ばず」にセットアップを表示し、完了/クローズ時に startup()
         // を呼ぶ（説明前にいきなりマイクダイアログが出る事故を防ぐ）。
@@ -286,6 +291,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     /// 自身は除外して判定する。設定ウィンドウはキャッシュ再利用され参照が残るので、参照の有無
     /// ではなく isVisible で判定する。
     private func restoreAccessoryPolicyIfNoUserWindows(closing: NSWindow?) {
+        // Dock 常時表示 ON のときは、ウィンドウを閉じても Dock アイコンを引っ込めない
+        if controller?.config.dockIconAlwaysVisible == true { return }
         let userWindows = [settingsWindow, feedbackWindow, onboardingWindow]
         let anyRemainingVisible = userWindows.contains { win in
             guard let win, win !== closing else { return false }

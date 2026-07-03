@@ -51,17 +51,18 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        // 2 島レイアウト: サイドバー島とコンテンツ島が backdrop の上に別々に浮く。
-        // エッジ to エッジの分割・Divider は廃止し、四周・島間に backdrop を見せる。
-        HStack(spacing: 10) {
+        // レイアウト v2.1: 浮くガラス島は「サイドバーだけ」。右のコンテンツはウィンドウの
+        // 背景面としてフラットに敷き、島（角丸・影・リム）にしない（Claude デスクトップの
+        // サイドバー＋本文と同じ関係）。frosted backdrop とウォッシュはウィンドウ全面に残す。
+        HStack(spacing: 12) {
             sidebar
                 .clipShape(RoundedRectangle(cornerRadius: 18))  // ナビのスクロールが角からはみ出さないように
                 .glassIsland(cornerRadius: 18)
-            contentIsland
+                .padding(.leading, 12)   // 島の左に下地を見せる
+                .padding(.vertical, 12)  // 島の上下に下地を見せる
+            contentPane                  // 右ペインはウィンドウ端まで広がるフラットな背景面（島にしない）
         }
-        .padding(12)  // 四周に backdrop のマージンを見せる
-        // 島マージン分だけウィンドウを拡張（680x588 → 700x600）
-        // 高さは fullSizeContentView でタイトルバーと一体化した分の実効高減（約 28pt）を補正済み
+        // ウィンドウ幅は据え置き（サイドバー島のマージン込みで 700x600）
         .frame(width: 700, height: 600)
         .glassButtons()             // 配下の Button を一括ガラス化（.plain 明示ボタンは影響なし）
         .frostedWindowBackground()  // ウィンドウ全面のすりガラス下地
@@ -133,15 +134,17 @@ struct SettingsView: View {
     }
 
     /// 右のコンテンツ島（現在タブ名のヘッダ＋選択中ページ）。
-    private var contentIsland: some View {
+    /// 右ペイン（現在タブの中身）。島にはせず、ウィンドウの背景面としてフラットに敷く。
+    /// 角丸・影・リムは付けない（frosted backdrop がそのまま透ける。Form 側は
+    /// scrollContentBackground(.hidden) 済みなので下地が見える）。
+    private var contentPane: some View {
         VStack(alignment: .leading, spacing: 0) {
             contentHeader
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipShape(RoundedRectangle(cornerRadius: 18))  // Form のスクロールが角からはみ出さないように
-        .glassIsland(cornerRadius: 18)
+        .padding(.top, 12)  // タイトルバー帯からヘッダを逃がす（右・下はウィンドウ端まで広げる）
     }
 
     /// コンテンツ島の上部ヘッダ（現在タブ名）。System Settings 的な階層感を出す。
@@ -313,6 +316,19 @@ private struct GeneralSettingsTab: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            LabeledContent("最後の文字起こしを貼り付け") {
+                HStack(spacing: 8) {
+                    HotkeyRecorderView(hotkey: $config.repasteKey)
+                    if !config.repasteKey.isEmpty {
+                        Button("クリア") { config.repasteKey = [] }
+                            .font(.caption)
+                    }
+                }
+            }
+            Text("このキーを押すと、直前に入力したテキストをもう一度貼り付けます（クリアで無効になります）。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             // 製品版はテキスト整形のモデル・指示文を固定（UI 非公開）。
             // オンオフは録音キー各タブの「文章を自動で整える」トグルで切り替える。
 
@@ -331,6 +347,21 @@ private struct GeneralSettingsTab: View {
                         launchAtLogin = SMAppService.mainApp.status == .enabled
                     }
                 }
+
+            Section("表示") {
+                Toggle("ピルを常に表示", isOn: $config.hudAlwaysVisible)
+                Toggle("サイドノッチを表示", isOn: $config.sideNotchEnabled)
+                Toggle("Dock に表示", isOn: $config.dockIconAlwaysVisible)
+            }
+
+            Section("サウンド") {
+                Toggle("操作音", isOn: $config.soundEffectsEnabled)
+                Toggle("音声入力中はメディアの音量を下げる", isOn: $config.duckMediaEnabled)
+            }
+
+            Section("履歴") {
+                Toggle("履歴を保存", isOn: $config.historyEnabled)
+            }
         }
         .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
         .glassFormRows()                   // 行フィルを半透明化して島の中で「ガラスの棚」に見せる
@@ -659,10 +690,11 @@ private struct HistoryTab: View {
     var body: some View {
         Form {
             if history.items.isEmpty {
-                Text("まだ履歴がありません。音声入力すると、ここに直近 \(HistoryStore.maxItems) 件が残ります。")
+                Text("まだ履歴がありません。音声入力すると、ここに直近 10 件が残ります。")
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(history.items) { entry in
+                // 設定タブでは直近 10 件のみ表示（全 200 件はホーム画面で扱う予定＝Phase B）
+                ForEach(Array(history.items.prefix(10))) { entry in
                     HistoryRow(entry: entry, copied: copiedId == entry.id) {
                         copyToClipboard(entry)
                     }
@@ -678,7 +710,7 @@ private struct HistoryTab: View {
         .padding(.vertical, 8)
     }
 
-    private func copyToClipboard(_ entry: HistoryEntry) {
+    private func copyToClipboard(_ entry: HistoryItem) {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(entry.text, forType: .string)
@@ -692,7 +724,7 @@ private struct HistoryTab: View {
 }
 
 private struct HistoryRow: View {
-    let entry: HistoryEntry
+    let entry: HistoryItem
     let copied: Bool
     let action: () -> Void
 

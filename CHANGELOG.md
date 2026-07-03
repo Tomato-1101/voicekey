@@ -5,21 +5,37 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased] - 2026-07-03
 
 ### Added
+- **Mac: 大型機能追加 Phase A（基盤＋設定項目・release）**。競合パリティのための新機能群を追加（ノッチ・ホーム画面は後続フェーズ）。
+  - **操作音**（`Core/SoundFX.swift`・新規）: 録音開始＝2 音上昇 / 停止＝下降の短いブリップをコードで合成再生（音源ファイル不要）。録音用エンジンとは独立した再生専用 `AVAudioEngine`＋撃ちっぱなし再生で、音声入力パイプラインに待ちを足さない。設定「サウンド」の「操作音」で ON/OFF（既定 ON）。
+  - **メディア音量ダッキング**（`Core/MediaDucker.swift`・新規）: 録音中だけ既定出力デバイスの音量を **12%** へ下げ、停止で元へ戻す。現在音量が既に 12% 以下なら何もしない（音量を引き上げる逆転を防止）。異常終了に備え「元音量・実行中フラグ」を UserDefaults へ退避し、次回起動で残存していれば巻き戻す。設定「サウンド」の「音声入力中はメディアの音量を下げる」で ON/OFF（既定 ON）。
+  - **再貼り付けショートカット**: 最後に入力したテキストをもう一度貼り付けるグローバルキー（既定 ⌃⌘V・クリアで無効化可）。設定「一般」に「最後の文字起こしを貼り付け」行を追加。
+  - **前面アプリ認識**（`Core/FrontAppTracker.swift`・新規）: 貼り付け先アプリ（bundleID・名前・アイコン）を追跡し、HUD へアイコン表示・アプリ別実績集計に使う（自アプリが前面のときは直前の他アプリを保持）。
+  - **HUD 拡張**: 録音中/変換中のピル左端に貼り付け先アプリのアイコン（18pt）を表示。設定「表示」の「ピルを常に表示」ON で待機中も小型ピル（mic のみ）を常時表示（既定 OFF）。
+  - **Dock 常時表示トグル**: 設定「表示」の「Dock に表示」ON で起動時から Dock にアイコンを出し、ウィンドウを閉じても引っ込めない（既定 OFF＝従来の動的表示）。
+  - **アプリ別使用実績の集計**: 貼り付け先アプリごとに回数・文字数・録音秒数を累計（ホーム画面の「アプリ別使用率」用の基盤・Phase B で表示）。
+  - **サイドノッチ表示トグル**（既定 ON）: 設定「表示」に項目を追加（実体は Phase C。今回はフィールドとトグルのみ先行）。
+  - **履歴保存トグル**（既定 ON）: 設定「履歴」の「履歴を保存」OFF で履歴に残さない。
 - **Mac: 設定/セットアップ/フィードバック画面を開いている間だけ Dock にアイコンを表示**（activation policy の `.regular` ⇄ `.accessory` 動的切替）。開いている間は ⌘Tab で普通のアプリのように切り替えられ、全部閉じるとメニューバー常駐だけに戻る。**Finder/Launchpad からアプリを開き直すと設定ウィンドウが前面に開く**（`applicationShouldHandleReopen`）。
 - **Mac: `UI/Glass.swift` を新設**。macOS 26 では本物の Liquid Glass API（`glassEffect` / `Glass.clear.interactive()`）、macOS 14–15 ではマテリアル近似へ自動フォールバックする共通スタイル部品（呼び出し側は `#available` 不要）。`VOICEKEY_GLASS_FALLBACK=1` で近似描画を強制でき、macOS 26 上でも旧 OS の見た目を QA できる。
 
 ### Changed
-- **Mac: 設定・セットアップガイド・フィードバックの全ウィンドウを「浮遊するガラス島」デザインに全面刷新**。ウィンドウ全面は `NSVisualEffectView`（`.hudWindow` / behindWindow）＋アクセント色のグラデーションウォッシュで**デスクトップが強く透ける下地**になり、その上にサイドバーとコンテンツ（設定）／中央カード（セットアップ・フィードバック）が**影と上縁リムライト付きの角丸ガラス島として浮かぶ**（エッジ to エッジの 2 分割と Divider は廃止・島の四周に下地が見える）。ボタンは透けるガラスカプセル（macOS 26 は `Glass.clear.interactive()`）、主要アクションとサイドバー選択ピルは**アクセント色のグラデーション＋白リム＋グロー影**。設定はブランド行（アプリアイコン）とページ見出しを新設し、ナビにホバーハイライトを追加。`Form` の行フィルも半透明化して島の中で層に見えるようにした。
+- **Mac: 設定・セットアップガイド・フィードバックの全ウィンドウを「浮遊するガラス島」デザインに全面刷新**。ウィンドウ全面は `NSVisualEffectView`（`.hudWindow` / behindWindow）＋アクセント色のグラデーションウォッシュで**デスクトップが強く透ける下地**になり、その上に**設定はサイドバーだけ**／セットアップ・フィードバックは中央カードが**影と上縁リムライト付きの角丸ガラス島として浮かぶ**（設定の右コンテンツは島にせず、ウィンドウ背景面としてフラットに敷く＝Claude デスクトップのサイドバー＋本文と同じ関係。エッジ to エッジの 2 分割と Divider は廃止・サイドバー島の四周に下地が見える）。ボタンは透けるガラスカプセル（macOS 26 は `Glass.clear.interactive()`）、主要アクションとサイドバー選択ピルは**アクセント色のグラデーション＋白リム＋グロー影**。設定はブランド行（アプリアイコン）とページ見出しを新設し、ナビにホバーハイライトを追加。`Form` の行フィルも半透明化して層に見えるようにした。
 - **Mac: ウィンドウを画面の「真の中央」に表示**。`NSWindow.center()` は Apple 仕様で中央より上に置くため、`visibleFrame` から原点を手計算に変更。あわせて `NSHostingController` の初回レイアウト前は frame がサイズ 0 で中央計算が右上にずれる問題を `fittingSize` による事前サイズ確定で修正。
 - **Windows: 設定・セットアップガイドを「浮遊するガラス島」風の配色に刷新**。対角の深いグラデーション（アクセント色を帯びた下地）の上に、サイドバー・コンテンツ・セットアップ本体が**角丸 16px の半透明パネル（上縁リムライト＋下縁の沈み込み）として浮かぶ**構成（最外レイアウトに 12px マージン・島間 10px で下地を覗かせる）。ボタンはカプセル寄りの半透明ガラス、プライマリとサイドバー選択は鮮やかなアクセントグラデ＋白リム上縁（ウィンドウ透過・DWM API は不使用＝環境非依存）。セットアップガイドは `MacTheme` のスタイルシートを適用し、設定画面とテーマ系統を統一。
+- **Mac: 履歴の保持件数を 10 → 200 件に拡張し、各エントリにメタデータ（貼り付け先アプリ・文字数・日時）を保持**（Phase A）。旧フォーマット（文字列配列・メタデータ無しの旧 `HistoryItem`）は読み込み時に自動移行する。実績にも**アプリ別の集計**（回数・文字数・録音秒数）を追加（旧 `stats.json` は後方互換で読み込み）。
 
 ### Fixed
+- **Mac: ホットキーを離した瞬間の HUD 反応が最大 0.4 秒遅れていた問題を修正**。短いタップの離鍵後、ダブルタップ 2 打目を「録音を止めずに」`kDoubleTapWindow`(0.4 秒) 待ってから確定していたため、無音でキーを離してもインジケーターが 0.4 秒消えず、発話ありでも「変換中…」への切替が遅れて見えていた。離鍵で**即座に確定**する方式へ変更（UI 状態更新はパイプライン処理を待たず離鍵直後に走る）。ダブルタップ（auto_enter）は 2 打目の押下時に直近の離鍵記録から検出し、新しい録音を auto_enter で開始する（連続録音の仕組みを流用）。
 - **Mac: セットアップガイドが「初回起動時だけ」を確実に守るように修正**。アプリが強制終了（SIGKILL・ビルド検証の kill 等）されるとウィンドウクローズ処理が走らず完了フラグが保存されないため、次回起動でも再表示される穴があった。自動表示を決めた時点で完了フラグを即保存する方式に変更（メニューの「セットアップガイド…」からの手動再表示・入力監視の権限反映再起動からの再開は従来どおり）。
 
 ### Technical Details
 - **VoicekeyApp.swift**: `centerOnScreen` / `restoreAccessoryPolicyIfNoUserWindows` / `handleReopen` を追加。設定/フィードバックにも `NSWindowDelegate` を配線し、`windowWillClose` で可視ウィンドウ数を見て `.accessory` へ復帰
 - **Glass.swift（新規）**: `glassSurface` / `glassCapsule` / `glassIsland`（島＝リムライト＋影）/ `glassFormRows`（行フィル半透明化）/ `glassButtons` / `glassProminentButton` / `LiquidButtonStyle`（全 OS 共通・非 prominent は透けるガラス、prominent はアクセントグラデ）/ `VisualEffectBackdrop`（`.hudWindow`＋ウォッシュ）/ `GlassWindow.applyFrostedChrome` / `GlassGroup`
-- **SettingsView**: 2 島レイアウト（`HStack`＋`padding(12)`・Divider 廃止・700×600）・ブランド行・ページ見出し・ナビのグラデ選択ピルとホバー・全タブに `glassFormRows`
+- **SettingsView**: サイドバーのみガラス島（`sidebar` に `glassIsland`＋四周マージン）・右コンテンツは島にしないフラットな `contentPane`（`HStack(spacing:12)`・Divider 廃止・700×600）・ブランド行・ページ見出し・ナビのグラデ選択ピルとホバー・全タブに `glassFormRows`。Phase A で「一般」に再貼り付け行、「表示 / サウンド / 履歴」セクションを追加
+- **Phase A 新規 Core**: `SoundFX.swift`（`AVAudioEngine` で開始/停止ブリップをコード合成・撃ちっぱなし）/ `MediaDucker.swift`（CoreAudio `VirtualMainVolume` を 12% へ・逆転ガード・クラッシュ耐性フラグ）/ `FrontAppTracker.swift`（`NSWorkspace.didActivateApplicationNotification` で貼り付け先アプリを追跡）
+- **HistoryStore / StatsStore**: `HistoryItem`（`appBundleID` / `appName` / `characters` を `decodeIfPresent` で旧 JSON 互換）・maxItems 10→200・`AppStat` とアプリ別 `appUsage` 集計を追加。両ストアに `init(directory:)` を足してテスト隔離
+- **AppController**: `pendingTapFinish`（0.4 秒の遅延停止タスク）を廃止し離鍵で即 `finishRecording`。`beginRecording`/`finishRecording` に操作音・ダッキング・貼り付け先アイコン取得を配線。再貼り付けショートカット（`repasteKeyPressed` / `repasteLast`）を追加
+- **ConfigStore**: `soundEffectsEnabled` / `duckMediaEnabled` / `repasteKey` / `hudAlwaysVisible` / `dockIconAlwaysVisible` / `sideNotchEnabled` / `historyEnabled` を追加（`repasteKey` は「未設定＝⌃⌘V」と「空＝明示的に無効」を区別）
 - **OnboardingView / FeedbackView**: 中央 1 島化（`glassIsland`）・ステップアイコンをアクセントグラデ円にヒーロー化（660×588 / 452）
 - **styles.py**: 両パレット刷新＋新属性 `BG_WINDOW`（対角グラデ）/ `CONTENT_BG` / `POPUP_BG` / `GLASS_EDGE`（上縁リム）/ `EDGE_BOTTOM`（下縁の沈み）/ `ACCENT_GRAD` 系（ポップアップは別トップレベルウィンドウで rgba が事故るため不透明 `POPUP_BG` に分離）
 - **settings_window.py**: ルートレイアウトに margins 12px / spacing 10px・右ペインを `QFrame#contentPane` 化（島スタイル適用のため）

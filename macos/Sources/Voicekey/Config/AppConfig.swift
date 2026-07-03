@@ -200,6 +200,20 @@ final class ConfigStore: ObservableObject {
     @Published var splitParallelEnabled: Bool
     /// ユーザー辞書の確定置換ルール（貼り付け直前に from→to を機械置換する）
     @Published var replacements: [ReplacementRule]
+    /// 録音開始/停止の操作音を鳴らすか（既定オン）
+    @Published var soundEffectsEnabled: Bool
+    /// 録音中にメディア（他アプリ）の音量を一時的に下げるか（既定オン）
+    @Published var duckMediaEnabled: Bool
+    /// 最後の文字起こしをもう一度貼り付けるショートカット（空＝無効。既定 ⌃⌘V）
+    @Published var repasteKey: [String]
+    /// 待機中も HUD ピルを常時表示するか（既定オフ＝録音中のみ表示）
+    @Published var hudAlwaysVisible: Bool
+    /// Dock にアイコンを常時表示するか（既定オフ＝ウィンドウを開いている間だけ表示）
+    @Published var dockIconAlwaysVisible: Bool
+    /// 画面端のサイドノッチ（履歴スリット）を表示するか（既定オン・実体は Phase C）
+    @Published var sideNotchEnabled: Bool
+    /// 音声入力の履歴を保存するか（既定オン。オフなら履歴に残さない）
+    @Published var historyEnabled: Bool
 
     private var cancellables: Set<AnyCancellable> = []
     private let defaults: UserDefaults
@@ -218,6 +232,13 @@ final class ConfigStore: ObservableObject {
         static let handsfreeKey = "handsfreeKey"
         static let splitParallelEnabled = "splitParallelEnabled"
         static let replacements = "replacements"
+        static let soundEffectsEnabled = "soundEffectsEnabled"
+        static let duckMediaEnabled = "duckMediaEnabled"
+        static let repasteKey = "repasteKey"
+        static let hudAlwaysVisible = "hudAlwaysVisible"
+        static let dockIconAlwaysVisible = "dockIconAlwaysVisible"
+        static let sideNotchEnabled = "sideNotchEnabled"
+        static let historyEnabled = "historyEnabled"
         /// モード別整形既定の一回限りマイグレーション済みフラグ（v1.8）
         static let didMigrateModeDefaultsV18 = "didMigrateModeDefaultsV18"
     }
@@ -256,6 +277,17 @@ final class ConfigStore: ObservableObject {
         handsfreeKey = (defaults.array(forKey: Keys.handsfreeKey) as? [String]) ?? []
         splitParallelEnabled = true
         replacements = Self.loadReplacements(defaults) ?? []
+        // 操作音・ダッキング・履歴保存は既定オン、ピル/Dock 常時表示は既定オフ、サイドノッチは既定オン
+        soundEffectsEnabled = defaults.object(forKey: Keys.soundEffectsEnabled) as? Bool ?? true
+        duckMediaEnabled = defaults.object(forKey: Keys.duckMediaEnabled) as? Bool ?? true
+        // 未保存なら既定 ⌃⌘V を入れる（空配列は「ユーザーが明示的に無効化した」を表すので区別する）
+        repasteKey = defaults.object(forKey: Keys.repasteKey) == nil
+            ? ["ctrl", "cmd", "v"]
+            : ((defaults.array(forKey: Keys.repasteKey) as? [String]) ?? [])
+        hudAlwaysVisible = defaults.object(forKey: Keys.hudAlwaysVisible) as? Bool ?? false
+        dockIconAlwaysVisible = defaults.object(forKey: Keys.dockIconAlwaysVisible) as? Bool ?? false
+        sideNotchEnabled = defaults.object(forKey: Keys.sideNotchEnabled) as? Bool ?? true
+        historyEnabled = defaults.object(forKey: Keys.historyEnabled) as? Bool ?? true
 
         // 一回限りのマイグレーション（モード別整形既定の導入・v1.8）。
         // 既存ユーザーは formatEnabled=true が明示保存されているため、リアルタイム(deepgram)
@@ -290,6 +322,13 @@ final class ConfigStore: ObservableObject {
         $handsfreeKey.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.handsfreeKey) }.store(in: &cancellables)
         $splitParallelEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.splitParallelEnabled) }.store(in: &cancellables)
         $replacements.dropFirst().sink { [weak self] in self?.saveReplacements($0) }.store(in: &cancellables)
+        $soundEffectsEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.soundEffectsEnabled) }.store(in: &cancellables)
+        $duckMediaEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.duckMediaEnabled) }.store(in: &cancellables)
+        $repasteKey.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.repasteKey) }.store(in: &cancellables)
+        $hudAlwaysVisible.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.hudAlwaysVisible) }.store(in: &cancellables)
+        $dockIconAlwaysVisible.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.dockIconAlwaysVisible) }.store(in: &cancellables)
+        $sideNotchEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.sideNotchEnabled) }.store(in: &cancellables)
+        $historyEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.historyEnabled) }.store(in: &cancellables)
     }
 
     /// ユーザー辞書の確定置換を最終テキストに適用する。

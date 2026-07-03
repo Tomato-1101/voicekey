@@ -21,6 +21,18 @@ struct DayStat: Codable, Equatable {
     var sessions: Int = 0
 }
 
+/// アプリ別の累計集計（貼り付け先アプリごとの利用量）。ホームの「アプリ別使用率」で表示する。
+struct AppStat: Codable, Equatable {
+    /// 表示名（記録時の最新の localizedName で更新する。bundleID しか無ければ空）
+    var appName: String = ""
+    /// このアプリへ入力した回数
+    var sessions: Int = 0
+    /// このアプリへ入力した累計文字数
+    var characters: Int = 0
+    /// このアプリでの累計録音秒数
+    var seconds: Double = 0
+}
+
 /// チャートの棒 1 本ぶん（日次・月次で共用）。
 /// label は曜日 / 日 / 月（View 側で期間に応じて整形）、date は並べ替え・整形の基準。
 struct UsagePoint: Identifiable {
@@ -54,6 +66,9 @@ struct StatsData: Codable, Equatable {
     /// ★これは「この端末で記録した分」だけを保持する＝サーバーへ送る送信元。
     ///   端末横断の表示には accountDaily を使う（二重計上を避けるため別管理）。
     var daily: [String: DayStat] = [:]
+    /// 貼り付け先アプリ別の累計集計（キー = bundleID）。この端末のローカル集計のみ
+    /// （サーバー横断集計はしない＝アプリ別はローカル表示専用）。
+    var appUsage: [String: AppStat] = [:]
 
     // MARK: - アカウント連携（#10。ログイン中のみ・端末横断の取り込み結果を保持）
 
@@ -93,6 +108,7 @@ extension StatsData {
         currentStreak = try c.decodeIfPresent(Int.self, forKey: .currentStreak) ?? 0
         longestStreak = try c.decodeIfPresent(Int.self, forKey: .longestStreak) ?? 0
         daily = try c.decodeIfPresent([String: DayStat].self, forKey: .daily) ?? [:]
+        appUsage = try c.decodeIfPresent([String: AppStat].self, forKey: .appUsage) ?? [:]
         accountDaily = try c.decodeIfPresent([String: DayStat].self, forKey: .accountDaily)
         accountTotalCharacters = try c.decodeIfPresent(Int.self, forKey: .accountTotalCharacters)
         accountTotalSessions = try c.decodeIfPresent(Int.self, forKey: .accountTotalSessions)
@@ -114,9 +130,12 @@ final class StatsStore: ObservableObject {
 
     private let fileURL: URL
 
-    init() {
+    /// - Parameter directory: 保存先ディレクトリ（テスト時に一時ディレクトリを注入する）。
+    ///   nil なら本番の ~/Library/Application Support/voicekey を使う。
+    init(directory: URL? = nil) {
         // ~/Library/Application Support/voicekey/stats.json（HistoryStore と同じ置き場所）
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let dir = directory ?? FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("voicekey", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         fileURL = dir.appendingPathComponent("stats.json")
@@ -147,7 +166,11 @@ final class StatsStore: ObservableObject {
     }
 
     /// 音声入力 1 回分を記録する（貼り付け確定後に呼ぶ）。空入力は無視する。
-    func recordSession(characters: Int, recordingSeconds: Double) {
+    /// appBundleID / appName を渡すと貼り付け先アプリ別にも累計する（nil 許容）。
+    func recordSession(
+        characters: Int, recordingSeconds: Double,
+        appBundleID: String? = nil, appName: String? = nil
+    ) {
         guard characters > 0 else { return }
         let now = Date()
         if data.firstUseDate == nil { data.firstUseDate = now }
@@ -160,6 +183,7 @@ final class StatsStore: ObservableObject {
         data.savedSeconds += max(0, typingSeconds - recSec)
         updateStreak(now: now)
         recordDaily(now: now, characters: characters, recordingSeconds: recSec)
+        recordApp(bundleID: appBundleID, appName: appName, characters: characters, recordingSeconds: recSec)
         save()
         // ログイン中なら当日分（この端末の絶対値）をサーバーへ送る（音声経路には乗らない）
         syncTodayInBackground()
@@ -174,6 +198,18 @@ final class StatsStore: ObservableObject {
         bucket.sessions += 1
         data.daily[day] = bucket
         pruneDaily()
+    }
+
+    /// 貼り付け先アプリ別の累計を積み増す（bundleID が無ければ何もしない）。
+    /// 表示名は記録のたびに最新へ更新する（アプリ名が変わっても最後の名前で出す）。
+    private func recordApp(bundleID: String?, appName: String?, characters: Int, recordingSeconds: Double) {
+        guard let bundleID, !bundleID.isEmpty else { return }
+        var stat = data.appUsage[bundleID] ?? AppStat()
+        if let appName, !appName.isEmpty { stat.appName = appName }
+        stat.sessions += 1
+        stat.characters += characters
+        stat.seconds += recordingSeconds
+        data.appUsage[bundleID] = stat
     }
 
     /// 日次バケットが増えすぎないよう、古い日から落として直近 800 日に保つ

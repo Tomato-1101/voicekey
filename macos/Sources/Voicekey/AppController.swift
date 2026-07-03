@@ -29,10 +29,12 @@ final class AppController: ObservableObject {
 
     let config = ConfigStore()
     let hud = HudController()
-    /// 音声入力履歴（貼り付けたテキストを最大 10 件保持。設定の「履歴」タブで再コピー可）
+    /// 音声入力履歴（貼り付けたテキストを最大 200 件保持。設定の「履歴」タブで再コピー可）
     let history = HistoryStore()
     /// 使用実績（節約時間・レベル・連続日数。設定の「実績」タブで表示。貼り付け後に集計する）
     let stats = StatsStore()
+    /// 前面アプリ（貼り付け先）の追跡。HUD アイコン表示とアプリ別実績の記録に使う
+    let frontApp = FrontAppTracker()
 
     private let recorder = AudioRecorder()
     private let hotkeys = HotkeyMonitor()
@@ -64,9 +66,6 @@ final class AppController: ObservableObject {
     private var lastReleaseSlot: Int?
     /// 録音開始時刻（短いタップ＝ダブルタップ 1 打目の判定用）
     private var recordingStartedAt: TimeInterval = 0
-    /// 短いタップの離鍵後、ダブルタップ 2 打目を待つ間の遅延停止タスク。
-    /// 1 打目で録音を止めない（タップと同時に話し始めた声の冒頭を失わない）ための仕組み
-    private var pendingTapFinish: Task<Void, Never>?
 
     /// 文字起こしパイプラインの直列化チェーン。
     /// 連続録音時も「録音順にテキストが挿入される」ことを保証する
@@ -90,9 +89,19 @@ final class AppController: ObservableObject {
                 guard let self else { return }
                 self.rebuildTranscribers()
                 self.hud.enabled = self.config.hudEnabled
+                // ピル常時表示トグルの変更を即時反映（待機中なら idle 分岐を再評価する）
+                self.hud.alwaysVisible = self.config.hudAlwaysVisible
+                if self.state == .idle { self.hud.update(for: .idle) }
+                // Dock 常時表示 ON なら即 Dock を出す（OFF はウィンドウを閉じたときに戻る）
+                if self.config.dockIconAlwaysVisible {
+                    NSApp.setActivationPolicy(.regular)
+                }
             }
         }
         hud.enabled = config.hudEnabled
+        hud.alwaysVisible = config.hudAlwaysVisible
+        // 起動時に常時表示 ON なら待機ピルを出す（state は初期値 idle のままで変化しないため明示的に呼ぶ）
+        if hud.alwaysVisible { hud.update(for: .idle) }
 
         // 音声レベル → HUD（audio スレッドから来るためメインへホップ）
         recorder.levelHandler = { [weak self] level in
@@ -135,6 +144,8 @@ final class AppController: ObservableObject {
     func startup(showPermissionAlert: Bool = true) {
         guard !started else { return }
         started = true
+        // 前回録音中に異常終了していた場合のダッキング巻き戻し（残存フラグがあれば元音量へ戻す）
+        MediaDucker.restore()
         Task {
             // マイク権限（初回はシステムダイアログ）
             let micOK = await AudioRecorder.requestPermission()
@@ -247,15 +258,17 @@ final class AppController: ObservableObject {
                 finishRecording()
                 return
             }
-            // hold 実効モード: 短いタップ後の待機中に同スロットが再押下されたらダブルタップ確定。
-            // 録音は 1 打目から止めていないため、タップ中・タップ間の音声もすべて残っている
-            if recordingEffectiveMode == .hold, pendingTapFinish != nil, slotMatches(slot, pressed: pressed) {
-                pendingTapFinish?.cancel()
-                pendingTapFinish = nil
-                autoEnter = true
-                emitState()
-                log.info("ダブルタップ検出: 録音を継続して auto_enter を有効化 (スロット\(slotId))")
-            }
+            // hold 実効モードのダブルタップは「離鍵で即確定 → 2 打目の押下時に新録音を
+            // auto_enter で始める」方式に変更したため、録音中の再押下でここに来ることはない
+            // （短いタップは離鍵時点で recordingSlot=nil になる）。連続録音の 2 打目は下の
+            // 非録音経路（isDoubleTap 判定）で auto_enter として開始される。
+            return
+        }
+
+        // 再貼り付けショートカット（録音中でない・キー設定あり・全キー押下）。
+        // 録音キー判定より先に見て、押されていれば録音を始めず直近テキストを貼り付ける。
+        if !config.repasteKey.isEmpty, repasteKeyPressed(pressed) {
+            repasteLast()
             return
         }
 
@@ -300,16 +313,12 @@ final class AppController: ObservableObject {
                 //  auto_enter（Enter 自動送信）になってしまうのを防ぐ）
                 lastReleaseTime = now
                 lastReleaseSlot = slotId
-                // 短いタップ＝ダブルタップの 1 打目の可能性。録音を止めずに 2 打目を待つ
-                // （タップと同時に話し始めた声を失わない。2 打目が来なければ通常どおり確定。
-                //  誤タップで発話が無い場合は通知を出さず静かに捨てる）
-                pendingTapFinish?.cancel()
-                pendingTapFinish = Task { [weak self] in
-                    try? await Task.sleep(for: .seconds(kDoubleTapWindow))
-                    guard let self, !Task.isCancelled else { return }
-                    self.pendingTapFinish = nil
-                    self.finishRecording(quietIfNoSpeech: true)
-                }
+                // 離鍵に対して即座に確定する（quietIfNoSpeech＝無音なら通知を出さず静かに捨てる）。
+                // 以前はここで 2 打目を kDoubleTapWindow(0.4s) 待ってから確定していたため、
+                // HUD の「録音中→変換中/待機」への切替が 0.4 秒遅れ、離鍵の反応が鈍く見えていた。
+                // ダブルタップ（auto_enter）は 2 打目の押下時に handlePress 側が lastRelease から
+                // 検出し、新しい録音を auto_enter で始める（連続録音の仕組みを流用）。
+                finishRecording(quietIfNoSpeech: true)
             } else {
                 finishRecording()
             }
@@ -328,6 +337,21 @@ final class AppController: ObservableObject {
         config.handsfreeKey.allSatisfy { required in
             !KeyToken.acceptableNames(for: required).isDisjoint(with: pressed)
         }
+    }
+
+    /// 再貼り付けキーがすべて押されているか（汎用修飾キーは左右どちらでも可）
+    private func repasteKeyPressed(_ pressed: Set<String>) -> Bool {
+        config.repasteKey.allSatisfy { required in
+            !KeyToken.acceptableNames(for: required).isDisjoint(with: pressed)
+        }
+    }
+
+    /// 履歴の先頭テキストをもう一度貼り付ける（履歴が空なら何もしない）。
+    /// 録音中はこの経路に来ない（handlePress の録音中分岐で return 済み）。
+    private func repasteLast() {
+        guard let last = history.items.first else { return }
+        log.info("再貼り付けショートカット: 直近テキストを貼り付け (\(last.text.count) 文字)")
+        Task { await Paster.paste(last.text) }
     }
 
     // MARK: - 録音制御
@@ -356,6 +380,11 @@ final class AppController: ObservableObject {
 
     private func beginRecording(slotId: Int, autoEnter: Bool, effectiveMode: HotkeyMode = .hold) {
         guard recordingSlot == nil else { return }
+        // 操作音・メディアダッキングを撃ちっぱなしで開始（音声パイプラインは一切待たせない）
+        if config.soundEffectsEnabled { SoundFX.shared.play(.start) }
+        if config.duckMediaEnabled { MediaDucker.duck() }
+        // 貼り付け先アプリのアイコンを HUD に載せる（録音開始時点のスナップショット。emitState 前に設定）
+        hud.setAppIcon(frontApp.currentIcon())
         recordingSlot = slotId
         recordingEffectiveMode = effectiveMode
         self.autoEnter = autoEnter
@@ -449,6 +478,10 @@ final class AppController: ObservableObject {
 
     private func finishRecording(quietIfNoSpeech: Bool = false) {
         guard recordingSlot != nil else { return }
+        // 停止の操作音・メディア音量の復元（撃ちっぱなし）。
+        // restore は無条件で呼ぶ（録音中に設定を OFF にしても、下げた音量を確実に戻すため）。
+        if config.soundEffectsEnabled { SoundFX.shared.play(.stop) }
+        MediaDucker.restore()
         let useAutoEnter = autoEnter
         // ストリーミング送信を打ち切り、確定待ちはパイプライン側で行う
         let activeStreamer = streamer
@@ -458,8 +491,6 @@ final class AppController: ObservableObject {
         recorder.chunkHandler = nil
         recordingSlot = nil
         autoEnter = false
-        pendingTapFinish?.cancel()
-        pendingTapFinish = nil
         failsafeTask?.cancel()
         outstanding += 1
         emitState()
@@ -512,12 +543,17 @@ final class AppController: ObservableObject {
                         : streamed
                     // ユーザー辞書の確定置換を適用（API を通さないので遅延ゼロ）
                     let output = config.applyReplacements(formatted)
-                    // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する
-                    history.add(output)
+                    // 貼り付け先アプリを貼り付け直前に再取得する（録音中に切り替えた場合は今の前面が正）
+                    let target = frontApp.snapshot()
+                    // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する（履歴保存 OFF はスキップ）
+                    if config.historyEnabled {
+                        history.add(output, appBundleID: target.bundleID, appName: target.name)
+                    }
                     // 実績を集計（貼り付け後のローカル処理なので遅延に影響しない）
                     stats.recordSession(
                         characters: output.count,
-                        recordingSeconds: Double(samples.count) / AudioRecorder.sampleRate
+                        recordingSeconds: Double(samples.count) / AudioRecorder.sampleRate,
+                        appBundleID: target.bundleID, appName: target.name
                     )
                     await Paster.paste(output)
                     if autoEnter {
@@ -595,10 +631,15 @@ final class AppController: ObservableObject {
             let fmtMs = Int((ProcessInfo.processInfo.systemUptime - fmtStart) * 1000)
             // ユーザー辞書の確定置換を適用（API を通さないので遅延ゼロ）
             let output = config.applyReplacements(formatted)
-            // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する
-            history.add(output)
+            // 貼り付け先アプリを貼り付け直前に再取得する（録音中に切り替えた場合は今の前面が正）
+            let target = frontApp.snapshot()
+            // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する（履歴保存 OFF はスキップ）
+            if config.historyEnabled {
+                history.add(output, appBundleID: target.bundleID, appName: target.name)
+            }
             // 実績を集計（貼り付け後のローカル処理なので遅延に影響しない）
-            stats.recordSession(characters: output.count, recordingSeconds: duration)
+            stats.recordSession(characters: output.count, recordingSeconds: duration,
+                                appBundleID: target.bundleID, appName: target.name)
             let pasteStart = ProcessInfo.processInfo.systemUptime
             await Paster.paste(output)
             let pasteMs = Int((ProcessInfo.processInfo.systemUptime - pasteStart) * 1000)
