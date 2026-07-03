@@ -101,10 +101,17 @@ enum VoiceActivity {
     /// ポーズの手がかりも残るため精度には影響しない。発話が無ければ nil
     /// 分割並列送信用: この長さを超える無音をセグメント境界にする（秒）
     private static let splitGapSec = 0.7
+    /// 分割並列送信用: splitGapSec で境界が 1 つも取れないとき（0.7 秒の完全な息継ぎが無い
+    /// 一気読みの長文）に一度だけ試す短いギャップ（秒）。speechRegions の語間ポーズ相当なので
+    /// この値で割っても語の途中では切れない
+    private static let retrySplitGapSec = 0.35
     /// 分割並列送信用: 全体がこれ未満なら分割しない（秒）
     private static let minSplitSec = 12.0
     /// 分割並列送信用: これ未満のセグメントは直前に結合して細切れを防ぐ（秒）
     private static let minSegmentSec = 2.0
+    /// 分割並列送信用: この長さ以上なら 3 分割・未満なら 2 分割を狙う（秒）。
+    /// 並列送信は最長セグメントが律速なので、無音境界の数だけ増やさず 2〜3 本に均等化する
+    private static let balancedTargetSec = 24.0
 
     /// 発話フレームの連続区間を、前後 padMs の余白付きサンプル範囲にして返す（マージ前）。
     /// condense と segment の共通前処理（エネルギー基準は hasSpeechEnergy と同一）。
@@ -180,13 +187,24 @@ enum VoiceActivity {
         let total = Double(samples.count) / Double(sampleRate)
         guard total >= minSplitSec else { return [] }
         let regions = speechRegions(samples, padMs: padMs)
-        let merged = mergeRegions(regions, gapSec: splitGapSec)
+        // まず splitGapSec の無音で境界を探す。境界が 1 つも無い（＝1 本のまま）なら、
+        // 0.7 秒の完全な息継ぎが無い一気読みの長文とみなし、より短い retrySplitGapSec で
+        // 一度だけ再探索する（それでも境界が無ければ従来どおり 1 本送信にフォールバック）
+        var merged = mergeRegions(regions, gapSec: splitGapSec)
+        if merged.count < 2 {
+            merged = mergeRegions(regions, gapSec: retrySplitGapSec)
+        }
         guard merged.count >= 2 else { return [] }
         // 短すぎるセグメントは直前に結合して細切れ・送信オーバーヘッドを抑える
         let minLen = Int(Double(sampleRate) * minSegmentSec)
         let slices = merged.map { Array(samples[$0.lower..<$0.upper]) }
         let segments = mergeShortSegments(slices, minLen: minLen)
-        return segments.count >= 2 ? segments : []
+        guard segments.count >= 2 else { return [] }
+        // 並列送信の所要時間は最長セグメントが律速。無音境界の数だけ分割すると無料枠と
+        // 往復オーバーヘッドを無駄に消費するので、目標数（短い録音は 2・長い録音は 3）まで
+        // 隣接セグメントを均等結合して落とす
+        let target = total < balancedTargetSec ? 2 : 3
+        return limitSegmentCount(segments, target: target)
     }
 
     /// 短すぎるセグメント（minLen 未満）を直前へ結合する（#23）。
@@ -204,6 +222,35 @@ enum VoiceActivity {
             }
         }
         return segments
+    }
+
+    /// セグメント数を target 個まで隣接結合で落とす（並列送信の律速＝最長セグメントを抑える）。
+    ///
+    /// 「累積長が 総サンプル数 / target を超えたら次のバケットへ」の貪欲法で、なるべく均等な
+    /// 長さのバケットに詰める。結合は隣接セグメントのみなので順序は絶対に入れ替わらない。
+    /// あわせて、残りセグメントで残りバケットをちょうど埋めきる局面では強制的に区切る
+    /// （末尾に長いセグメントが 1 本ある等で目安長に達せず、バケットが target 未満に潰れて
+    /// ＝並列本数が減って遅くなるのを防ぐ）。セグメント数が target 以下ならそのまま返す。
+    static func limitSegmentCount(_ segments: [[Float]], target: Int) -> [[Float]] {
+        guard target >= 1, segments.count > target else { return segments }
+        let totalLen = segments.reduce(0) { $0 + $1.count }
+        let bucketLen = totalLen / target  // 均等割りした 1 バケットあたりの目安長
+        var result: [[Float]] = []
+        var current: [Float] = []
+        for (i, seg) in segments.enumerated() {
+            current.append(contentsOf: seg)
+            let bucketsLeft = target - result.count  // current を含めこれから埋めるバケット数
+            guard bucketsLeft > 1 else { continue }  // 最後のバケットは残り全部を集める
+            // 残りセグメントちょうどで残りバケットを埋めきるなら以降は 1 本ずつ必要 → 強制区切り
+            let mustClose = (segments.count - i - 1) <= bucketsLeft - 1
+            // 目安長に達したら区切る（＝なるべく均等な長さ）
+            if mustClose || current.count >= bucketLen {
+                result.append(current)
+                current = []
+            }
+        }
+        if !current.isEmpty { result.append(current) }
+        return result
     }
 
     /// セグメントごとの文字起こし結果を、境界の文字種を見て結合する。
