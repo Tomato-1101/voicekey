@@ -75,7 +75,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | 文字入力（貼り付け） | `Core/Paster.swift` | `core/input_handler.py` |
 | VAD / マイク自動検出 / 履歴 | `Core/VoiceActivity.swift` / `MicAutoDetector.swift` / `HistoryStore.swift` | `core/vad.py` / `mic_auto_detect.py` / `history.py` |
 | 使用実績（統計・レベル） | `Core/StatsStore.swift` | `core/stats.py` |
-| 設定画面 UI | `UI/SettingsView.swift` / `HotkeyRecorderView.swift` | `ui/settings_window.py` / `styles.py` |
+| 設定画面 UI | `UI/SettingsView.swift` / `HotkeyRecorderView.swift` / `Glass.swift`（ガラス様式の共通部品） | `ui/settings_window.py` / `styles.py` |
 | 初回セットアップ（オンボーディング） | `UI/OnboardingView.swift`（起動分岐は `VoicekeyApp.swift`） | `ui/onboarding_window.py`（表示配線は `app.py`） |
 | HUD / トレイ | `UI/Hud.swift` / `VoicekeyApp.swift`（メニューバー） | `ui/hud.py` / `system_tray.py` |
 | API キー保管 | `Core/Keychain.swift` / `Config/EmbeddedKeys.generated.swift` | `utils/secrets.py` / `.env` |

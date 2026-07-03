@@ -58,7 +58,10 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         // ウィンドウ自体は固定。サイドバーを畳むと右ページが広がる
-        .frame(width: 680, height: 560)
+        // 高さは fullSizeContentView でタイトルバーと一体化した分の実効高減（約 28pt）を補正（560→588）
+        .frame(width: 680, height: 588)
+        .glassButtons()             // 配下の Button を一括ガラス化（.plain 明示ボタンは影響なし）
+        .frostedWindowBackground()  // ウィンドウ全面のすりガラス下地
     }
 
     /// 左サイドバー（ブランド＋開閉トグル＋スクロール可能なナビ）
@@ -90,9 +93,12 @@ struct SettingsView: View {
 
             // ナビ（項目が増えても届くようスクロール可能にする）
             ScrollView {
-                VStack(spacing: 2) {
-                    ForEach(navItems) { item in
-                        navButton(item)
+                // 選択ピルのガラス形状を 1 パスで合成するためコンテナで包む（層は 2 段まで・ネスト禁止）
+                GlassGroup(spacing: 2) {
+                    VStack(spacing: 2) {
+                        ForEach(navItems) { item in
+                            navButton(item)
+                        }
                     }
                 }
                 .padding(.horizontal, 8)
@@ -100,7 +106,8 @@ struct SettingsView: View {
             }
         }
         .frame(width: sidebarCollapsed ? 62 : 200)
-        .background(.regularMaterial)
+        // 全面 backdrop の上に regularMaterial を重ねるとぼかしが二重になるため、区別は極薄 tint で付ける
+        .background(Color.primary.opacity(0.04).ignoresSafeArea(edges: .top))
     }
 
     /// ナビ 1 項目のボタン（選択中はアクセント色で塗る。畳むとアイコンのみ）
@@ -123,15 +130,28 @@ struct SettingsView: View {
             .padding(.vertical, 6)
             .padding(.horizontal, sidebarCollapsed ? 0 : 10)
             .frame(maxWidth: .infinity, alignment: sidebarCollapsed ? .center : .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 7)
-                    .fill(selected ? Color.accentColor : Color.clear)
-            )
+            // 選択中は色付きガラスピル、非選択は透明（旧 accentColor 塗りをガラス化）
+            .modifier(NavSelectionBackground(selected: selected))
             .foregroundStyle(selected ? Color.white : Color.primary)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(item.title)
+    }
+
+    /// ナビ項目の選択背景。選択中は色付きガラスピル、非選択は透明にする。
+    /// なぜ ViewModifier に切り出すか: glassSurface はビュー修飾子なので選択時だけ条件適用する必要があり、
+    /// 三項演算子の背景差し替えでは表現できないため。
+    private struct NavSelectionBackground: ViewModifier {
+        let selected: Bool
+        @ViewBuilder
+        func body(content: Content) -> some View {
+            if selected {
+                content.glassSurface(cornerRadius: 7, tint: .accentColor)
+            } else {
+                content
+            }
+        }
     }
 
     /// 選択中ページ（タグは旧 TabView と同じ値を踏襲）
@@ -254,6 +274,7 @@ private struct GeneralSettingsTab: View {
                     }
                 }
         }
+        .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
         .formStyle(.grouped)
         .padding(.vertical, 8)
     }
@@ -332,6 +353,7 @@ private struct SlotSettingsTab: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
         .formStyle(.grouped)
         .padding(.vertical, 8)
     }
@@ -438,6 +460,7 @@ private struct StatsTab: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+        .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
         .formStyle(.grouped)
         .padding(.vertical, 8)
         .onAppear {
@@ -588,6 +611,7 @@ private struct HistoryTab: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
         .formStyle(.grouped)
         .padding(.vertical, 8)
     }
@@ -652,6 +676,7 @@ private struct ApiKeysTab: View {
                 ApiKeyRow(backend: backend)
             }
         }
+        .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
         .formStyle(.grouped)
         .padding(.vertical, 8)
     }
@@ -753,6 +778,7 @@ private struct AccountTab: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
         .formStyle(.grouped)
         .padding(.vertical, 8)
         // キー登録が成功して有効になったら入力欄をクリアする
@@ -792,6 +818,7 @@ private struct AccountTab: View {
             EmptyView()  // 処理中は操作させない
         default:
             Button("ログイン") { login.beginLogin() }
+                .glassProminentButton()  // 主要アクション（accent 色ガラス）
         }
     }
 
@@ -879,6 +906,7 @@ private struct AboutTab: View {
                     // 新バージョン検知時のみ「今すぐ更新する」を出す（押すと Sparkle の DL→インストールへ）
                     if updater.availableVersionString != nil {
                         Button("今すぐ更新する") { updater.checkForUpdates() }
+                            .glassProminentButton()  // 主要アクション（accent 色ガラス）
                     }
                 } else {
                     Text("このビルドでは自動アップデートは利用できません")
@@ -887,6 +915,7 @@ private struct AboutTab: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
         .formStyle(.grouped)
         .padding(.vertical, 8)
     }
@@ -951,6 +980,7 @@ private struct DictionaryTab: View {
                         }
                     }
                 }
+                .scrollContentBackground(.hidden)  // List の不透明背景を消してすりガラス下地を透かす
             }
 
             Divider()

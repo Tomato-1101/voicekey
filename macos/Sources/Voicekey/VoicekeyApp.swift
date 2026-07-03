@@ -113,6 +113,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defaults.set(true, forKey: OnboardingKeys.didComplete)
             startNow = true
         case .show(let step):
+            // 表示を決めた時点で「初回は消費済み」扱いにして完了フラグを先に保存する。
+            // なぜここで保存するか: ビルド検証の pgrep kill 等でクローズ処理（markOnboardingComplete）
+            // が走らないまま強制終了されると、フラグ未保存のまま毎回オンボーディングが再表示される穴
+            // が開くため。savedStep による再開は OnboardingDecider が didComplete より優先するので壊れない。
+            defaults.set(true, forKey: OnboardingKeys.didComplete)
             // 完了/クローズ時に startup() を呼ぶ（ここでは開始しない）
             startNow = false
             onboardingStep = step
@@ -155,6 +160,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // swift run など未バンドル実行では失敗するが、動作には影響しない
             log.error("ログイン時自動起動の登録に失敗: \(error.localizedDescription)")
         }
+    }
+
+    /// Dock アイコンや Finder からアプリを再度開いたときの挙動。
+    /// メニューバー常駐アプリは通常ウィンドウを持たないため、標準では何も起きない。
+    /// ユーザーの「開き直したい」意図に応えて、オンボーディング表示中ならそれを前面へ、
+    /// それ以外は設定ウィンドウを開く（行き止まりを作らない）。
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        statusBar?.handleReopen()
+        return true
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -246,6 +260,54 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         }
     }
 
+    // MARK: - ウィンドウ配置・Dock 表示の共通ヘルパ
+
+    /// ウィンドウを画面の「真の中央」へ置く。
+    /// NSWindow.center() は Apple 仕様で中央よりやや上に置くため、visibleFrame
+    /// （メニューバー・Dock を除いた領域）から原点を手計算する（Hud の positionPanel と同方針）。
+    private func centerOnScreen(_ window: NSWindow) {
+        // NSHostingController のウィンドウは SwiftUI の初回レイアウトが走るまで frame が
+        // サイズ 0 のままなので、fittingSize で内容サイズを先に確定させる
+        // （0 のまま中央を計算すると「画面中心が左下角」になり右上へずれて表示される）
+        if window.frame.width < 50, let contentView = window.contentView {
+            window.setContentSize(contentView.fittingSize)
+        }
+        guard let screen = window.screen ?? NSScreen.main else { return }
+        let visible = screen.visibleFrame
+        let size = window.frame.size
+        let x = visible.minX + (visible.width - size.width) / 2
+        let y = visible.minY + (visible.height - size.height) / 2
+        window.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    /// ユーザー向けウィンドウ（設定 / オンボーディング / フィードバック）が 1 つも
+    /// 可視で残らないなら Dock アイコンを引っ込める（.accessory に戻す）。
+    /// windowWillClose は isVisible が false になる「前」に呼ばれるため、いま閉じるウィンドウ
+    /// 自身は除外して判定する。設定ウィンドウはキャッシュ再利用され参照が残るので、参照の有無
+    /// ではなく isVisible で判定する。
+    private func restoreAccessoryPolicyIfNoUserWindows(closing: NSWindow?) {
+        let userWindows = [settingsWindow, feedbackWindow, onboardingWindow]
+        let anyRemainingVisible = userWindows.contains { win in
+            guard let win, win !== closing else { return false }
+            return win.isVisible
+        }
+        if !anyRemainingVisible {
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+
+    /// Dock / Finder からの再オープン: オンボーディング表示中ならそれを前面へ、
+    /// それ以外は設定ウィンドウ（一般タブ）を開く。
+    func handleReopen() {
+        if let onboardingWindow, onboardingWindow.isVisible {
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+            onboardingWindow.makeKeyAndOrderFront(nil)
+        } else {
+            showSettings(initialTab: 0)
+        }
+    }
+
     @objc private func openSettings() {
         showSettings(initialTab: 0)
     }
@@ -274,11 +336,15 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         window.title = "フィードバック"
         window.styleMask = [.titled, .closable]
         window.isReleasedWhenClosed = false
-        window.center()
+        GlassWindow.applyFrostedChrome(to: window)  // すりガラス化（Part B）
+        window.delegate = self  // クローズ時に Dock アイコンを引っ込めるため
         feedbackWindow = window
-        // アクセサリアプリはそのままだと前面に出ないため明示的にアクティブ化する
+        // Dock にアイコンを出し前面へ（アクセサリのままだと前面に出ない）
+        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        // 中央配置は表示後に行う（表示前は frame がサイズ 0 のことがあり右上へずれる）
+        centerOnScreen(window)
     }
 
     /// メニューからいつでもオンボーディングを開き直す（Phase 5）。
@@ -305,12 +371,15 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         window.title = "VoiceKey へようこそ"
         window.styleMask = [.titled, .closable]
         window.isReleasedWhenClosed = false
-        window.delegate = self  // クローズ（×）をスキップ扱いにするため
-        window.center()
+        GlassWindow.applyFrostedChrome(to: window)  // すりガラス化（Part B）
+        window.delegate = self  // クローズ（×）のスキップ扱い＋Dock アイコンを引っ込めるため
         onboardingWindow = window
-        // アクセサリアプリはそのままだと前面に出ないため明示的にアクティブ化する
+        // Dock にアイコンを出し前面へ（アクセサリのままだと前面に出ない）
+        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        // 中央配置は表示後に行う（表示前は frame がサイズ 0 のことがあり右上へずれる）
+        centerOnScreen(window)
     }
 
     /// 「使い始める」= 完了。フラグを立てて本体を開始し、ウィンドウを閉じる。
@@ -348,19 +417,30 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         d.removeObject(forKey: OnboardingKeys.savedStep)
     }
 
-    /// ウィンドウの × で閉じた場合はスキップ扱い（完了フラグを立てて毎回は出さない・本体は起動）。
+    /// ウィンドウのクローズ処理。設定 / オンボーディング / フィードバックの 3 ウィンドウ共通。
+    /// - オンボーディングを × で閉じた場合はスキップ扱い（完了フラグを立てて毎回は出さない・本体は起動）。
+    /// - どのウィンドウであっても、閉じた後に可視ウィンドウが 1 つも残らなければ Dock アイコンを引っ込める。
     func windowWillClose(_ notification: Notification) {
-        guard (notification.object as? NSWindow) === onboardingWindow else { return }
-        onboardingWindow = nil
-        guard !onboardingFinished else { return }  // 「使い始める」/ 再起動で処理済みなら何もしない
-        onboardingFinished = true
-        markOnboardingComplete()
-        controller?.startup(showPermissionAlert: false)
+        let closing = notification.object as? NSWindow
+
+        // オンボーディング固有処理（× で閉じたらスキップ扱い）は従来どおり
+        if closing === onboardingWindow {
+            onboardingWindow = nil
+            if !onboardingFinished {  // 「使い始める」/ 再起動で処理済みなら何もしない
+                onboardingFinished = true
+                markOnboardingComplete()
+                controller?.startup(showPermissionAlert: false)
+            }
+        }
+
+        // ユーザー向けウィンドウがどれも可視でなくなったら Dock アイコンを引っ込める
+        restoreAccessoryPolicyIfNoUserWindows(closing: closing)
     }
 
     /// 設定ウィンドウを表示する
     func showSettings(initialTab: Int) {
         log.info("設定ウィンドウを表示します (tab=\(initialTab), 既存=\(self.settingsWindow != nil))")
+        var isNewWindow = false
         if settingsWindow == nil, let controller {
             let hosting = NSHostingController(
                 rootView: SettingsView(
@@ -374,12 +454,18 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             window.title = "voicekey 設定"
             window.styleMask = [.titled, .closable]
             window.isReleasedWhenClosed = false
-            window.center()
+            GlassWindow.applyFrostedChrome(to: window)  // すりガラス化（Part B）
+            window.delegate = self  // クローズ時に Dock アイコンを引っ込めるため
             settingsWindow = window
+            isNewWindow = true
         }
-        // アクセサリアプリはそのままだと前面に出ないため明示的にアクティブ化する
+        // Dock にアイコンを出し前面へ（アクセサリのままだと前面に出ない）
+        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
+        // 中央配置は表示後に行う（NSHostingController のウィンドウは初回表示まで frame が
+        // サイズ 0 のことがあり、表示前に計算すると右上へずれる）。再表示時は前回位置を尊重する
+        if isNewWindow, let settingsWindow { centerOnScreen(settingsWindow) }
     }
 
     @objc private func quitApp() {

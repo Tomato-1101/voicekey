@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .styles import MacTheme
 from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -58,6 +59,13 @@ class OnboardingWindow(QDialog):
         self._config = config_manager
         self._finished_emitted = False
         self._step = 0
+
+        # 初回起動時のみ・構築時に dark_mode を 1 回だけ読み、設定画面と同一のテーマを適用する
+        # （ライブテーマ切替は載せない）。setObjectName は setStyleSheet より前に付ける必要がある
+        self.setObjectName("onboardingRoot")
+        dark = bool(config_manager.get("dark_mode", False))
+        self._c = MacTheme.Colors(dark)
+        self.setStyleSheet(MacTheme.get_stylesheet(dark))
 
         self.setWindowTitle("VoiceKey へようこそ")
         self.setMinimumWidth(540)
@@ -98,6 +106,7 @@ class OnboardingWindow(QDialog):
         footer.addWidget(self._back_btn)
         footer.addStretch(1)
         self._primary_btn = QPushButton("セットアップを始める")
+        self._primary_btn.setProperty("class", "primary")   # グローバルのアクセント塗りボタンにする
         self._primary_btn.setDefault(True)
         self._primary_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._primary_btn.clicked.connect(self._on_primary)
@@ -123,6 +132,7 @@ class OnboardingWindow(QDialog):
                 "録音キーを押して話すだけ。離すとカーソル位置に文字が入ります。\n\n"
                 "はじめにログインと使い方を確認します。数十秒で終わります。"
             ),
+            secondary=self._c.SECONDARY_TEXT,
         )
 
     def _build_login_page(self) -> QWidget:
@@ -140,7 +150,7 @@ class OnboardingWindow(QDialog):
             "あとで設定画面からでも可能です。"
         )
         desc.setWordWrap(True)
-        desc.setStyleSheet("color: #8E8E93;")
+        desc.setStyleSheet(f"color: {self._c.SECONDARY_TEXT};")
         layout.addWidget(desc)
 
         # ログイン状態の表示行（未ログイン/待ち/処理中/済み）
@@ -174,7 +184,7 @@ class OnboardingWindow(QDialog):
             "設定はタスクトレイのアイコンからいつでも変えられます。"
         )
         desc.setWordWrap(True)
-        desc.setStyleSheet("color: #8E8E93;")
+        desc.setStyleSheet(f"color: {self._c.SECONDARY_TEXT};")
         layout.addWidget(desc)
 
         # 実際の既定設定を settings.yaml から読んで表示する（ハードコードしない）
@@ -192,10 +202,7 @@ class OnboardingWindow(QDialog):
         mode_label = _MODE_LABELS.get(mode, mode)
 
         card = QFrame()
-        card.setObjectName("onboardingCard")
-        card.setStyleSheet(
-            "#onboardingCard { border-radius: 10px; background: rgba(127,127,127,0.10); }"
-        )
+        card.setObjectName("card")   # グローバルの QFrame#card（ガラスカード）スタイルを適用
         cl = QVBoxLayout(card)
         cl.setContentsMargins(14, 12, 14, 12)
         cl.setSpacing(3)
@@ -203,7 +210,7 @@ class OnboardingWindow(QDialog):
         name.setStyleSheet("font-weight: 600;")
         cl.addWidget(name)
         detail = QLabel(f"キー: {hotkey} ／ {backend_label} ／ {mode_label}")
-        detail.setStyleSheet("color: #8E8E93;")
+        detail.setStyleSheet(f"color: {self._c.SECONDARY_TEXT};")
         detail.setWordWrap(True)
         cl.addWidget(detail)
         return card
@@ -270,20 +277,20 @@ class OnboardingWindow(QDialog):
         if status == LC.LOGGED_IN:
             email = coord.account_email
             self._login_status.setText(f"ログイン済み（{email}）" if email else "ログイン済み")
-            self._login_status.setStyleSheet("color: #34C759;")
+            self._login_status.setStyleSheet(f"color: {self._c.SUCCESS};")
             self._login_btn.setVisible(False)
             self._login_poll.stop()
         elif status == LC.WAITING:
             self._login_status.setText("ブラウザでログインを完了してください…")
-            self._login_status.setStyleSheet("color: #8E8E93;")
+            self._login_status.setStyleSheet(f"color: {self._c.SECONDARY_TEXT};")
             self._login_btn.setEnabled(True)
         elif status == LC.EXCHANGING:
             self._login_status.setText("ログイン処理中…")
-            self._login_status.setStyleSheet("color: #8E8E93;")
+            self._login_status.setStyleSheet(f"color: {self._c.SECONDARY_TEXT};")
             self._login_btn.setEnabled(False)
         elif status == LC.FAILED:
             self._login_status.setText(coord.error or "ログインに失敗しました。")
-            self._login_status.setStyleSheet("color: #FF9F0A;")
+            self._login_status.setStyleSheet(f"color: {self._c.WARNING};")
             self._login_btn.setVisible(True)
             self._login_btn.setEnabled(True)
             self._login_poll.stop()
@@ -350,8 +357,8 @@ class _StepDots(QWidget):
             dot.setStyleSheet(f"background: {color}; border-radius: 4px;")
 
 
-def _make_page(heading: str, body: str) -> QWidget:
-    """見出し + 本文だけの単純ページ（ようこそ用）。"""
+def _make_page(heading: str, body: str, secondary: str) -> QWidget:
+    """見出し + 本文だけの単純ページ（ようこそ用）。secondary は本文の二次テキスト色。"""
     page = QWidget()
     layout = QVBoxLayout(page)
     layout.setContentsMargins(32, 28, 32, 28)
@@ -362,16 +369,15 @@ def _make_page(heading: str, body: str) -> QWidget:
     layout.addWidget(h)
     b = QLabel(body)
     b.setWordWrap(True)
-    b.setStyleSheet("color: #8E8E93;")
+    b.setStyleSheet(f"color: {secondary};")
     layout.addWidget(b)
     layout.addStretch(1)
     return page
 
 
 def _hline() -> QFrame:
-    """水平の区切り線。"""
+    """水平の区切り線（グローバルの QFrame#hairline スタイルを使う）。"""
     line = QFrame()
-    line.setFrameShape(QFrame.Shape.HLine)
-    line.setFrameShadow(QFrame.Shadow.Sunken)
-    line.setStyleSheet("color: rgba(127,127,127,0.25);")
+    line.setObjectName("hairline")
+    line.setFixedHeight(1)
     return line

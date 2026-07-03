@@ -246,7 +246,10 @@ struct OnboardingView: View {
             Divider()
             footer
         }
-        .frame(width: 620, height: 520)
+        // 高さは fullSizeContentView でタイトルバーと一体化した分の実効高減（約 28pt）を補正（520→548）
+        .frame(width: 620, height: 548)
+        .glassButtons()             // 配下の Button を一括ガラス化（戻る・あとで等の副ボタンはこれを継承）
+        .frostedWindowBackground()  // ウィンドウ全面のすりガラス下地
         .onAppear { model.startPolling() }
         .onDisappear { model.stopPolling() }
     }
@@ -273,6 +276,10 @@ struct OnboardingView: View {
                     .animation(.easeInOut(duration: 0.2), value: model.step)
             }
         }
+        // ドット列をひとまとまりのガラスチップにする（ドット自体の色ロジックは不変）
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .glassCapsule()
     }
 
     private func color(for s: OnboardingStep) -> Color {
@@ -341,7 +348,7 @@ struct OnboardingView: View {
                             .font(.callout)
                             .foregroundStyle(.orange)
                         Button("アプリを再起動") { model.onRestart() }
-                            .buttonStyle(.borderedProminent)
+                            .glassProminentButton()
                     }
                 }
             }
@@ -361,7 +368,7 @@ struct OnboardingView: View {
 
             if !isLoggedIn {
                 Button("ブラウザでログイン") { login.beginLogin() }
-                    .buttonStyle(.borderedProminent)
+                    .glassProminentButton()
             }
         }
     }
@@ -422,7 +429,7 @@ struct OnboardingView: View {
             Spacer()
         }
         .padding(12)
-        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        .glassSurface(cornerRadius: 10)  // 使い方カードをガラス面に
     }
 
     // MARK: フッター（ナビゲーションボタン）
@@ -445,7 +452,7 @@ struct OnboardingView: View {
         switch model.step {
         case .welcome:
             Button("セットアップを始める") { model.goNext() }
-                .buttonStyle(.borderedProminent)
+                .glassProminentButton()
                 .keyboardShortcut(.defaultAction)
 
         case .microphone:
@@ -479,7 +486,7 @@ struct OnboardingView: View {
             HStack(spacing: 10) {
                 if isLoggedIn {
                     Button("次へ") { model.goNext() }
-                        .buttonStyle(.borderedProminent)
+                        .glassProminentButton()
                         .keyboardShortcut(.defaultAction)
                 } else {
                     Button("あとで") { model.goNext() }
@@ -488,7 +495,7 @@ struct OnboardingView: View {
 
         case .done:
             Button("使い始める") { model.onFinish() }
-                .buttonStyle(.borderedProminent)
+                .glassProminentButton()
                 .keyboardShortcut(.defaultAction)
         }
     }
@@ -508,17 +515,17 @@ struct OnboardingView: View {
         HStack(spacing: 10) {
             if granted {
                 Button("次へ") { model.goNext() }
-                    .buttonStyle(.borderedProminent)
+                    .glassProminentButton()
                     .keyboardShortcut(.defaultAction)
             } else if denied {
                 Button("システム設定を開く") { model.openSettings(pane: deniedPane) }
-                    .buttonStyle(.borderedProminent)
+                    .glassProminentButton()
             } else {
                 if let openSettingsPane {
                     Button("システム設定を開く") { model.openSettings(pane: openSettingsPane) }
                 }
                 Button("許可する") { request() }
-                    .buttonStyle(.borderedProminent)
+                    .glassProminentButton()
             }
         }
     }

@@ -185,10 +185,8 @@ struct HudView: View {
                 content
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .overlay(
-                        Capsule().strokeBorder(.white.opacity(0.1), lineWidth: 0.5)
-                    )
+                    // macOS 26 は本物のガラスピル、旧 OS は極薄マテリアル近似（描画のみ・待ち時間は足さない）
+                    .glassCapsule()
                     .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
                     .transition(.opacity.combined(with: .scale(scale: 0.9)))
             }

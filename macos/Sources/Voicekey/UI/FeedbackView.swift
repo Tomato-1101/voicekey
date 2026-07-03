@@ -42,7 +42,11 @@ struct FeedbackView: View {
             TextEditor(text: $message)
                 .font(.body)
                 .frame(minHeight: 140)
+                // 既定の不透明背景を消してウィンドウの下地を透かす（ガラス化）
+                .scrollContentBackground(.hidden)
                 .padding(4)
+                // 入力欄と分かるよう極薄の下地を敷く（下地が透けすぎて枠だけに見えるのを防ぐ）
+                .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
                 .overlay(
                     RoundedRectangle(cornerRadius: 6)
                         .stroke(Color.secondary.opacity(0.3))
@@ -57,6 +61,7 @@ struct FeedbackView: View {
                 Button(phase == .sent ? "閉じる" : "キャンセル") { onClose() }
                 if phase != .sent {
                     Button("送信") { submit() }
+                        .glassProminentButton()  // 主要アクション（accent 色ガラス）
                         .keyboardShortcut(.defaultAction)
                         .disabled(trimmed.isEmpty || phase == .sending)
                 }
@@ -64,6 +69,8 @@ struct FeedbackView: View {
         }
         .padding(20)
         .frame(width: 420)
+        .glassButtons()             // 配下の Button を一括ガラス化（.plain 明示ボタンは影響なし）
+        .frostedWindowBackground()  // ウィンドウ全面のすりガラス下地
     }
 
     /// 送信状態・結果の表示行
