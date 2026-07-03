@@ -68,7 +68,10 @@ struct FeedbackView: View {
             }
         }
         .padding(20)
-        .frame(width: 420)
+        .clipShape(RoundedRectangle(cornerRadius: 20))  // 内容が島の角からはみ出さないように
+        .glassIsland(cornerRadius: 20)                  // 中央 1 島（影＋リムで浮かせる）
+        .padding(16)                                    // 島の四周に backdrop を見せる
+        .frame(width: 452)          // 島マージン分だけウィンドウを拡張（420 → 452）
         .glassButtons()             // 配下の Button を一括ガラス化（.plain 明示ボタンは影響なし）
         .frostedWindowBackground()  // ウィンドウ全面のすりガラス下地
     }

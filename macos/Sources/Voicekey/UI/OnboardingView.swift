@@ -246,8 +246,12 @@ struct OnboardingView: View {
             Divider()
             footer
         }
-        // 高さは fullSizeContentView でタイトルバーと一体化した分の実効高減（約 28pt）を補正（520→548）
-        .frame(width: 620, height: 548)
+        .clipShape(RoundedRectangle(cornerRadius: 22))  // ヘッダ/フッタが島の角からはみ出さないように
+        .glassIsland(cornerRadius: 22)                  // 中央 1 島（影＋リムで浮かせる）
+        .padding(20)                                    // 島の四周に backdrop を見せる
+        // 島マージン分だけウィンドウを拡張（620x548 → 660x588）
+        // 高さは fullSizeContentView でタイトルバーと一体化した分の実効高減（約 28pt）を補正済み
+        .frame(width: 660, height: 588)
         .glassButtons()             // 配下の Button を一括ガラス化（戻る・あとで等の副ボタンはこれを継承）
         .frostedWindowBackground()  // ウィンドウ全面のすりガラス下地
         .onAppear { model.startPolling() }
@@ -562,15 +566,34 @@ struct OnboardingView: View {
         }
     }
 
-    /// アイコン + 見出し。
+    /// アイコン + 見出し。アイコンは「アプリらしい顔」を作るためガラス島の中でヒーロー化する。
     private func stepHeader(icon: String, title: String) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.system(size: 30))
-                .foregroundStyle(.tint)
-                .frame(width: 40)
+        HStack(spacing: 14) {
+            heroIcon(icon)
             Text(title)
                 .font(.title2).bold()
         }
+    }
+
+    /// ステップのヒーローアイコン（アクセントのグラデ円＋白シンボル＋グロー影）。
+    private func heroIcon(_ icon: String) -> some View {
+        Image(systemName: icon)
+            .font(.system(size: 26, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: 56, height: 56)
+            .background(
+                Circle().fill(LinearGradient(
+                    colors: [Color.accentColor, Color.accentColor.opacity(0.7)],
+                    startPoint: .topLeading, endPoint: .bottomTrailing
+                ))
+            )
+            // 上縁の白リムでガラスの厚み、アクセントのグロー影で「光る顔」を作る
+            .overlay(
+                Circle().strokeBorder(LinearGradient(
+                    colors: [.white.opacity(0.5), .white.opacity(0.0)],
+                    startPoint: .top, endPoint: .bottom
+                ), lineWidth: 1)
+            )
+            .shadow(color: Color.accentColor.opacity(0.45), radius: 10, x: 0, y: 4)
     }
 }

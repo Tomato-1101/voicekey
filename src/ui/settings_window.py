@@ -813,8 +813,10 @@ class SettingsWindow(QWidget):
     def _setup_ui(self) -> None:
         """UIコンポーネントを設定する（左サイドバーナビ + 右コンテンツ）。"""
         root = QHBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        # 四周に backdrop を覗かせ、間にも隙間を空けてサイドバー島とコンテンツ島を「浮かせる」
+        # （v1 の「2 画面分割」に見える問題への対策。styles.py の浮遊ガラス島デザイン参照）
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
 
         # --- 左サイドバー: ブランド + 折りたたみボタン + ナビゲーション ---
         # 画面が狭くてもタブを全部辿れるよう、開閉（アイコンのみ）＋縦スクロールにする
@@ -862,8 +864,11 @@ class SettingsWindow(QWidget):
         sv.addWidget(self._nav, 1)
         root.addWidget(self._sidebar)
 
-        # --- 右コンテンツ: ページタイトル + ページ + 保存/キャンセル ---
-        right = QWidget()
+        # --- 右コンテンツ島: ページタイトル + ページ + 保存/キャンセル ---
+        # QFrame にして objectName を付け、QSS の QFrame#contentPane（浮遊ガラス島）を効かせる
+        # （QWidget だと stylesheet 背景が確実に描画されないため QFrame を使う）
+        right = QFrame()
+        right.setObjectName("contentPane")
         rv = QVBoxLayout(right)
         rv.setContentsMargins(0, 0, 0, 0)
         rv.setSpacing(0)

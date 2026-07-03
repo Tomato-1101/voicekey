@@ -72,8 +72,18 @@ class OnboardingWindow(QDialog):
         self.setMinimumHeight(440)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
+        # 四周に backdrop（対角グラデ）を覗かせ、中身を「中央 1 島」として浮かせる（Mac 版に揃える）
+        root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(0)
+
+        # コンテンツ全体（ヘッダ・ドット・ページ本体・下部ボタン）を 1 つの角丸ガラス島で包む。
+        # 島の面・リムは QSS の QFrame#onboardingIsland（sidebarPane と同様式）が描く
+        island = QFrame()
+        island.setObjectName("onboardingIsland")
+        island_v = QVBoxLayout(island)
+        island_v.setContentsMargins(20, 20, 20, 20)   # 島の内側 padding（角丸の内に中身を収める）
+        island_v.setSpacing(0)
+        root.addWidget(island, 1)
 
         # --- ヘッダー（タイトル + ステップドット） ---
         header = QVBoxLayout()
@@ -85,18 +95,18 @@ class OnboardingWindow(QDialog):
         header.addWidget(title)
         self._dots = _StepDots(count=3)
         header.addWidget(self._dots, alignment=Qt.AlignmentFlag.AlignCenter)
-        root.addLayout(header)
-        root.addWidget(_hline())
+        island_v.addLayout(header)
+        island_v.addWidget(_hline())
 
         # --- 本文（3 ステップをスタック） ---
         self._stack = QStackedWidget()
         self._stack.addWidget(self._build_welcome_page())
         self._stack.addWidget(self._build_login_page())
         self._stack.addWidget(self._build_done_page())
-        root.addWidget(self._stack, 1)
+        island_v.addWidget(self._stack, 1)
 
         # --- フッター（戻る / 主ボタン） ---
-        root.addWidget(_hline())
+        island_v.addWidget(_hline())
         footer = QHBoxLayout()
         footer.setContentsMargins(20, 12, 20, 16)
         footer.setSpacing(8)
@@ -111,7 +121,7 @@ class OnboardingWindow(QDialog):
         self._primary_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._primary_btn.clicked.connect(self._on_primary)
         footer.addWidget(self._primary_btn)
-        root.addLayout(footer)
+        island_v.addLayout(footer)
 
         # ログイン待ち/交換中はステータスをポーリングして表示を最新化する
         # （deep link はブラウザ→OS→アプリと非同期に戻ってくるため）

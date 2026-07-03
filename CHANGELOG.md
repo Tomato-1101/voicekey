@@ -6,22 +6,24 @@ voicekeyの変更履歴を記録するファイルです。
 
 ### Added
 - **Mac: 設定/セットアップ/フィードバック画面を開いている間だけ Dock にアイコンを表示**（activation policy の `.regular` ⇄ `.accessory` 動的切替）。開いている間は ⌘Tab で普通のアプリのように切り替えられ、全部閉じるとメニューバー常駐だけに戻る。**Finder/Launchpad からアプリを開き直すと設定ウィンドウが前面に開く**（`applicationShouldHandleReopen`）。
-- **Mac: `UI/Glass.swift` を新設**。macOS 26 では本物の Liquid Glass API（`glassEffect` / `.buttonStyle(.glass)` / `GlassEffectContainer`）、macOS 14–15 ではマテリアル近似へ自動フォールバックする共通スタイル部品（呼び出し側は `#available` 不要）。`VOICEKEY_GLASS_FALLBACK=1` で近似描画を強制でき、macOS 26 上でも旧 OS の見た目を QA できる。
+- **Mac: `UI/Glass.swift` を新設**。macOS 26 では本物の Liquid Glass API（`glassEffect` / `Glass.clear.interactive()`）、macOS 14–15 ではマテリアル近似へ自動フォールバックする共通スタイル部品（呼び出し側は `#available` 不要）。`VOICEKEY_GLASS_FALLBACK=1` で近似描画を強制でき、macOS 26 上でも旧 OS の見た目を QA できる。
 
 ### Changed
-- **Mac: 設定・セットアップガイド・フィードバックの全ウィンドウを半透明すりガラス（Liquid Glass 風）デザインに全面刷新**。ウィンドウ背景は `NSVisualEffectView`（`.sidebar` / behindWindow）でデスクトップが透け、ボタンは全てガラス状（主要アクションはアクセント色ガラス）、サイドバー選択ピル・ステップドット・カード・録音 HUD のピルも同じガラス部品に統一。可読性優先で「ガラスの上にガラスを重ねない」2 層構成。
+- **Mac: 設定・セットアップガイド・フィードバックの全ウィンドウを「浮遊するガラス島」デザインに全面刷新**。ウィンドウ全面は `NSVisualEffectView`（`.hudWindow` / behindWindow）＋アクセント色のグラデーションウォッシュで**デスクトップが強く透ける下地**になり、その上にサイドバーとコンテンツ（設定）／中央カード（セットアップ・フィードバック）が**影と上縁リムライト付きの角丸ガラス島として浮かぶ**（エッジ to エッジの 2 分割と Divider は廃止・島の四周に下地が見える）。ボタンは透けるガラスカプセル（macOS 26 は `Glass.clear.interactive()`）、主要アクションとサイドバー選択ピルは**アクセント色のグラデーション＋白リム＋グロー影**。設定はブランド行（アプリアイコン）とページ見出しを新設し、ナビにホバーハイライトを追加。`Form` の行フィルも半透明化して島の中で層に見えるようにした。
 - **Mac: ウィンドウを画面の「真の中央」に表示**。`NSWindow.center()` は Apple 仕様で中央より上に置くため、`visibleFrame` から原点を手計算に変更。あわせて `NSHostingController` の初回レイアウト前は frame がサイズ 0 で中央計算が右上にずれる問題を `fittingSize` による事前サイズ確定で修正。
-- **Windows: 設定・セットアップガイドをガラス風配色に刷新**。不透明の微グラデーション土台の上に rgba 半透明のカード/ボタン＋1px の光るトップハイライト＋角丸拡大（8px/12px）で「すりガラスの重なり」を近似（ウィンドウ透過・DWM API は不使用＝環境非依存）。セットアップガイドは `MacTheme` のスタイルシートを適用し、設定画面とテーマ系統を統一。
+- **Windows: 設定・セットアップガイドを「浮遊するガラス島」風の配色に刷新**。対角の深いグラデーション（アクセント色を帯びた下地）の上に、サイドバー・コンテンツ・セットアップ本体が**角丸 16px の半透明パネル（上縁リムライト＋下縁の沈み込み）として浮かぶ**構成（最外レイアウトに 12px マージン・島間 10px で下地を覗かせる）。ボタンはカプセル寄りの半透明ガラス、プライマリとサイドバー選択は鮮やかなアクセントグラデ＋白リム上縁（ウィンドウ透過・DWM API は不使用＝環境非依存）。セットアップガイドは `MacTheme` のスタイルシートを適用し、設定画面とテーマ系統を統一。
 
 ### Fixed
 - **Mac: セットアップガイドが「初回起動時だけ」を確実に守るように修正**。アプリが強制終了（SIGKILL・ビルド検証の kill 等）されるとウィンドウクローズ処理が走らず完了フラグが保存されないため、次回起動でも再表示される穴があった。自動表示を決めた時点で完了フラグを即保存する方式に変更（メニューの「セットアップガイド…」からの手動再表示・入力監視の権限反映再起動からの再開は従来どおり）。
 
 ### Technical Details
 - **VoicekeyApp.swift**: `centerOnScreen` / `restoreAccessoryPolicyIfNoUserWindows` / `handleReopen` を追加。設定/フィードバックにも `NSWindowDelegate` を配線し、`windowWillClose` で可視ウィンドウ数を見て `.accessory` へ復帰
-- **Glass.swift（新規）**: `glassSurface` / `glassCapsule` / `glassButtons` / `glassProminentButton` / `GlassApproxButtonStyle` / `VisualEffectBackdrop` / `GlassWindow.applyFrostedChrome` / `GlassGroup`
-- **SettingsView / OnboardingView / FeedbackView / Hud**: ガラス部品適用・`Form` の `scrollContentBackground(.hidden)`・固定 frame をタイトルバー内包分補正（588/548）
-- **styles.py**: 両パレット刷新＋新属性 `BG_WINDOW` / `POPUP_BG` / `GLASS_EDGE` / `ACCENT_GRAD` 系（ポップアップは別トップレベルウィンドウで rgba が事故るため不透明 `POPUP_BG` に分離）
-- **onboarding_window.py**: `get_stylesheet` を構築時適用・インラインスタイルをグローバル QSS（`QFrame#card` / `#hairline` / `class="primary"`）へ整理
+- **Glass.swift（新規）**: `glassSurface` / `glassCapsule` / `glassIsland`（島＝リムライト＋影）/ `glassFormRows`（行フィル半透明化）/ `glassButtons` / `glassProminentButton` / `LiquidButtonStyle`（全 OS 共通・非 prominent は透けるガラス、prominent はアクセントグラデ）/ `VisualEffectBackdrop`（`.hudWindow`＋ウォッシュ）/ `GlassWindow.applyFrostedChrome` / `GlassGroup`
+- **SettingsView**: 2 島レイアウト（`HStack`＋`padding(12)`・Divider 廃止・700×600）・ブランド行・ページ見出し・ナビのグラデ選択ピルとホバー・全タブに `glassFormRows`
+- **OnboardingView / FeedbackView**: 中央 1 島化（`glassIsland`）・ステップアイコンをアクセントグラデ円にヒーロー化（660×588 / 452）
+- **styles.py**: 両パレット刷新＋新属性 `BG_WINDOW`（対角グラデ）/ `CONTENT_BG` / `POPUP_BG` / `GLASS_EDGE`（上縁リム）/ `EDGE_BOTTOM`（下縁の沈み）/ `ACCENT_GRAD` 系（ポップアップは別トップレベルウィンドウで rgba が事故るため不透明 `POPUP_BG` に分離）
+- **settings_window.py**: ルートレイアウトに margins 12px / spacing 10px・右ペインを `QFrame#contentPane` 化（島スタイル適用のため）
+- **onboarding_window.py**: `get_stylesheet` を構築時適用・コンテンツ全体を `QFrame#onboardingIsland` で 1 島化・インラインスタイルをグローバル QSS（`QFrame#card` / `#hairline` / `class="primary"`）へ整理
 
 ## [1.8.0] - 2026-07-03
 

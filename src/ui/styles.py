@@ -4,13 +4,16 @@ UIスタイル・テーマ定義モジュール
 クロスプラットフォーム向けのUIテーマ（カラー、フォント、スタイルシート）を定義する。
 ダークモード/ライトモードの切り替えに対応。
 
-デザイン方針（2026-07 再設計・Liquid Glass 近似）:
-- Liquid Glass 近似: ルートに不透明の微グラデーション（BG_WINDOW）を敷き、その上へ
-  サイドバー・カード・ボタンを rgba 半透明＋1px の明るいトップエッジ（GLASS_EDGE）＋
-  微グラデで重ねる。QSS の rgba は同一ウィンドウ内の親背景と正しく合成されるため、
-  本物のウィンドウ透過（WA_TranslucentBackground / DWM アクリル・Mica）を使わずに
-  「すりガラスの重なり」の印象を出す。影は無いので深度は明るいトップエッジ＋縦グラデで表現する。
-- 面の色はコンテナ側で明示する（サイドバー / コンテンツ / カード の 3 層）。
+デザイン方針（2026-07 再設計 v2・「浮遊するガラス島」近似）:
+- backdrop（BG_WINDOW）に対角の深いグラデ＋アクセントウォッシュを敷き、その上へ
+  サイドバー島・コンテンツ島・カード・ボタンを rgba 半透明＋1px の明るいトップエッジ
+  （GLASS_EDGE）＋下端の沈み（EDGE_BOTTOM）で「浮いた島」として重ねる。ルートレイアウトに
+  余白を持たせて四周に backdrop を覗かせ、島が浮いて見えるようにする（サイドバーとコンテンツが
+  「2 画面分割」に見えないようにするのが v1 からの主眼）。QSS の rgba は同一ウィンドウ内の親背景と
+  正しく合成されるため、本物のウィンドウ透過（WA_TranslucentBackground / DWM アクリル・Mica）を
+  使わずに「すりガラスの重なり」の印象を出す。影は QSS に無いので、深度は明るいトップエッジ＋
+  下端の暗いエッジ＋縦グラデで表現する。
+- 面の色はコンテナ側で明示する（サイドバー島 / コンテンツ島 / カード の 3 層）。
   グローバルの QWidget には背景を持たせない（カード上のラベル等が背景色で潰れるため）
 - QMenu / QComboBox のドロップダウンは別トップレベルのポップアップウィンドウで、rgba は
   OS 既定色と合成され意図しない色になるため、背景は不透明 hex（POPUP_BG）を必ず使う
@@ -83,12 +86,14 @@ class MacTheme:
         テーマ別カラーパレット（Liquid Glass 近似: 不透明グラデ土台の上に rgba 半透明レイヤ）。
 
         Attributes:
-            BG_WINDOW: ルート/ダイアログの不透明微グラデ（ガラスが透ける土台）
-            BG_SIDEBAR: 左サイドバー背景（rgba: ルートグラデが透ける）
+            BG_WINDOW: ルート/ダイアログの対角グラデ backdrop（島が浮く下地）
+            BG_SIDEBAR: 左サイドバー島の面（rgba: backdrop が透ける）
+            CONTENT_BG: 右コンテンツ島の面（rgba: サイドバー島よりやや薄い）
             BG_CONTENT: QMessageBox 用の不透明フラット背景
-            CARD_BG: 設定カード背景（半透明の縦グラデ）
-            CARD_BORDER: カードの輪郭線
-            GLASS_EDGE: 面の上端 1px ハイライト（border-top-color に使う擬似ハイライト）
+            CARD_BG: 設定カード背景（半透明の縦グラデ・島より一段明るい）
+            CARD_BORDER: 島・カードの基準リム（四辺の輪郭線）
+            GLASS_EDGE: 面の上端 1px ハイライト（border-top-color に使う擬似リムライト）
+            EDGE_BOTTOM: 面の下端を沈める色（border-bottom-color。影の代わり）
             POPUP_BG: QMenu / コンボのドロップダウン背景（別ウィンドウのため不透明 hex 必須）
             HAIRLINE: カード内の行区切り線
             TEXT: テキスト色
@@ -111,50 +116,56 @@ class MacTheme:
                 is_dark: ダークモードの場合True
             """
             if is_dark:
-                # ルート土台。青紫寄りの不透明微グラデ（ガラスが透ける下地）
-                self.BG_WINDOW = ("qlineargradient(x1:0, y1:0, x2:0.4, y2:1, "
-                                  "stop:0 #24252F, stop:0.55 #1C1D25, stop:1 #17181E)")
-                self.BG_SIDEBAR = "rgba(0, 0, 0, 0.18)"        # ルートグラデ上の暗色オーバーレイ
-                self.BG_CONTENT = "#1D1E26"                     # QMessageBox 用の不透明フラット
+                # ルート土台（backdrop）。対角の深いグラデ＋青紫のアクセントウォッシュ。
+                # この上に半透明の「島」（サイドバー / コンテンツ）とカード・ボタンを浮かべる
+                self.BG_WINDOW = ("qlineargradient(x1:0, y1:0, x2:1, y2:1, "
+                                  "stop:0 #232A3D, stop:0.4 #1A1F2E, stop:1 #12141C)")
+                self.BG_SIDEBAR = "rgba(255, 255, 255, 0.05)"   # サイドバー島の面（backdrop が透ける）
+                self.CONTENT_BG = "rgba(255, 255, 255, 0.04)"   # コンテンツ島の面（島側はやや薄く）
+                self.BG_CONTENT = "#1B2130"                     # QMessageBox 用の不透明フラット
                 self.CARD_BG = ("qlineargradient(x1:0, y1:0, x2:0, y2:1, "
-                                "stop:0 rgba(255,255,255,0.09), stop:1 rgba(255,255,255,0.05))")
-                self.CARD_BORDER = "rgba(255, 255, 255, 0.09)"
-                self.GLASS_EDGE = "rgba(255, 255, 255, 0.18)"   # 上端 1px ハイライト
-                self.POPUP_BG = "#2C2D36"                       # ドロップダウンは不透明必須
+                                "stop:0 rgba(255,255,255,0.075), stop:1 rgba(255,255,255,0.045))")
+                self.CARD_BORDER = "rgba(255, 255, 255, 0.10)"  # 島・カードの基準リム（四辺）
+                self.GLASS_EDGE = "rgba(255, 255, 255, 0.30)"   # 上端の明るいリム（ガラスの厚み）
+                self.EDGE_BOTTOM = "rgba(0, 0, 0, 0.35)"        # 下端を沈めて影の代わりにする
+                self.POPUP_BG = "#252B3A"                       # ドロップダウンは不透明必須
                 self.HAIRLINE = "rgba(255, 255, 255, 0.08)"
-                self.TEXT = "#F4F4F9"
-                self.SECONDARY_TEXT = "#A6A6B0"                 # 半透明カード上でも約 5:1・hex 固定
+                self.TEXT = "#F4F5FB"
+                self.SECONDARY_TEXT = "#A8AEBD"                 # 半透明カード上でも約 5:1・hex 固定
                 self.ACCENT = "#0A84FF"                         # hex 維持必須（QColor 消費）
                 self.ACCENT_HOVER = "#2B95FF"
                 self.ACCENT_PRESSED = "#0774E0"
                 self.ACCENT_GRAD = ("qlineargradient(x1:0, y1:0, x2:0, y2:1, "
-                                    "stop:0 #369CFF, stop:1 #0A6FE0)")
+                                    "stop:0 #4AA3FF, stop:1 #0A6FE6)")
                 self.ACCENT_GRAD_HOVER = ("qlineargradient(x1:0, y1:0, x2:0, y2:1, "
-                                          "stop:0 #4FA9FF, stop:1 #1B7CEC)")
+                                          "stop:0 #63B0FF, stop:1 #1B7CF2)")
                 self.ACCENT_GRAD_PRESSED = ("qlineargradient(x1:0, y1:0, x2:0, y2:1, "
-                                            "stop:0 #2489F2, stop:1 #085FC4)")
-                self.INPUT_BG = "rgba(0, 0, 0, 0.28)"           # 沈み込み表現
+                                            "stop:0 #2E90F5, stop:1 #085FC8)")
+                self.INPUT_BG = "rgba(0, 0, 0, 0.25)"           # 沈み込み表現（v1 より透明側へ）
                 self.INPUT_BORDER = "rgba(255, 255, 255, 0.14)"
                 self.BTN_BG = ("qlineargradient(x1:0, y1:0, x2:0, y2:1, "
-                               "stop:0 rgba(255,255,255,0.16), stop:1 rgba(255,255,255,0.08))")
-                self.BTN_HOVER = "rgba(255, 255, 255, 0.20)"
-                self.BTN_PRESSED = "rgba(255, 255, 255, 0.06)"
-                self.BTN_BORDER = "rgba(255, 255, 255, 0.14)"
-                self.HOVER_BG = "rgba(255, 255, 255, 0.07)"
+                               "stop:0 rgba(255,255,255,0.10), stop:1 rgba(255,255,255,0.05))")
+                self.BTN_HOVER = "rgba(255, 255, 255, 0.13)"    # 基準 +0.04 相当
+                self.BTN_PRESSED = "rgba(255, 255, 255, 0.04)"  # 基準 -0.02 相当
+                self.BTN_BORDER = "rgba(255, 255, 255, 0.12)"
+                self.HOVER_BG = "rgba(255, 255, 255, 0.06)"
                 self.SUCCESS = "#32D74B"
                 self.WARNING = "#FF9F0A"
                 self.TOGGLE_OFF = "#48484E"
                 self.SCROLL_HANDLE = "rgba(255, 255, 255, 0.25)"
             else:
-                # ルート土台。寒色寄りの不透明微グラデ（ガラスが透ける下地）
-                self.BG_WINDOW = ("qlineargradient(x1:0, y1:0, x2:0.4, y2:1, "
-                                  "stop:0 #F7F8FC, stop:0.55 #F0F2F7, stop:1 #E9EBF3)")
-                self.BG_SIDEBAR = "rgba(20, 24, 40, 0.045)"
+                # ルート土台（backdrop）。対角の寒色グラデ＋淡いアクセントウォッシュ。
+                # この上に白系半透明の「島」とカード・ボタンを浮かべる
+                self.BG_WINDOW = ("qlineargradient(x1:0, y1:0, x2:1, y2:1, "
+                                  "stop:0 #EEF3FF, stop:0.5 #F4F6FB, stop:1 #E8ECF5)")
+                self.BG_SIDEBAR = "rgba(255, 255, 255, 0.55)"   # サイドバー島の面（白すりガラス）
+                self.CONTENT_BG = "rgba(255, 255, 255, 0.45)"   # コンテンツ島の面（島側はやや薄く）
                 self.BG_CONTENT = "#F2F3F8"                     # QMessageBox 用の不透明フラット
                 self.CARD_BG = ("qlineargradient(x1:0, y1:0, x2:0, y2:1, "
-                                "stop:0 rgba(255,255,255,0.78), stop:1 rgba(255,255,255,0.58))")
-                self.CARD_BORDER = "rgba(0, 0, 0, 0.055)"
-                self.GLASS_EDGE = "rgba(255, 255, 255, 0.92)"   # 上端 1px ハイライト
+                                "stop:0 rgba(255,255,255,0.80), stop:1 rgba(255,255,255,0.62))")
+                self.CARD_BORDER = "rgba(0, 0, 0, 0.06)"        # 島・カードの基準リム（四辺）
+                self.GLASS_EDGE = "rgba(255, 255, 255, 0.95)"   # 上端の明るいリム（ガラスの厚み）
+                self.EDGE_BOTTOM = "rgba(0, 0, 0, 0.05)"        # 下端をわずかに沈める
                 self.POPUP_BG = "#FFFFFF"                       # ドロップダウンは不透明必須
                 self.HAIRLINE = "rgba(0, 0, 0, 0.07)"
                 self.TEXT = "#1C1C21"
@@ -163,19 +174,19 @@ class MacTheme:
                 self.ACCENT_HOVER = "#1A88FF"
                 self.ACCENT_PRESSED = "#0068DA"
                 self.ACCENT_GRAD = ("qlineargradient(x1:0, y1:0, x2:0, y2:1, "
-                                    "stop:0 #1B8CFF, stop:1 #0069DC)")
+                                    "stop:0 #2E9BFF, stop:1 #0069DC)")
                 self.ACCENT_GRAD_HOVER = ("qlineargradient(x1:0, y1:0, x2:0, y2:1, "
-                                          "stop:0 #2E96FF, stop:1 #0074F0)")
+                                          "stop:0 #45A6FF, stop:1 #0074F0)")
                 self.ACCENT_GRAD_PRESSED = ("qlineargradient(x1:0, y1:0, x2:0, y2:1, "
                                             "stop:0 #0F79E8, stop:1 #005BC4)")
-                self.INPUT_BG = "rgba(255, 255, 255, 0.82)"
+                self.INPUT_BG = "rgba(255, 255, 255, 0.70)"     # v1 より透明側へ
                 self.INPUT_BORDER = "rgba(0, 0, 0, 0.13)"
                 self.BTN_BG = ("qlineargradient(x1:0, y1:0, x2:0, y2:1, "
-                               "stop:0 rgba(255,255,255,0.95), stop:1 rgba(255,255,255,0.68))")
-                self.BTN_HOVER = "#FFFFFF"
-                self.BTN_PRESSED = "rgba(222, 226, 236, 0.95)"
+                               "stop:0 rgba(255,255,255,0.88), stop:1 rgba(255,255,255,0.60))")
+                self.BTN_HOVER = "rgba(255, 255, 255, 0.98)"
+                self.BTN_PRESSED = "rgba(228, 232, 242, 0.92)"
                 self.BTN_BORDER = "rgba(0, 0, 0, 0.10)"
-                self.HOVER_BG = "rgba(0, 0, 0, 0.045)"
+                self.HOVER_BG = "rgba(0, 0, 0, 0.05)"
                 # ライトの成功/警告は白カード上で読める濃い目の値にする
                 self.SUCCESS = "#248A3D"
                 self.WARNING = "#C76A00"
@@ -231,15 +242,37 @@ class MacTheme:
         QWidget#settingsRoot, QDialog#onboardingRoot {{
             background-color: {c.BG_WINDOW};
         }}
+        /* 右コンテンツ島（ページ見出し + 各ページ + 保存ボタンを載せる面）。
+           サイドバー島とペアで backdrop の上に浮かせる。面はやや薄めにして層を分ける */
+        QFrame#contentPane {{
+            background-color: {c.CONTENT_BG};
+            border: 1px solid {c.CARD_BORDER};
+            border-top-color: {c.GLASS_EDGE};
+            border-bottom-color: {c.EDGE_BOTTOM};
+            border-radius: 16px;
+        }}
+        /* オンボーディングの中央 1 島（ヘッダ・ページ本体・ボタンを載せる面）。
+           サイドバー島と同じ様式で backdrop の上に浮かせる */
+        QFrame#onboardingIsland {{
+            background-color: {c.BG_SIDEBAR};
+            border: 1px solid {c.CARD_BORDER};
+            border-top-color: {c.GLASS_EDGE};
+            border-bottom-color: {c.EDGE_BOTTOM};
+            border-radius: 16px;
+        }}
         QMessageBox {{
             background-color: {c.BG_CONTENT};
         }}
 
-        /* 左サイドバー（ブランド + ナビゲーション） */
+        /* 左サイドバー島（ブランド + ナビゲーション）。backdrop の上に浮く角丸パネル。
+           border 短縮形の後に border-top-color（明るいリム）と border-bottom-color（沈み）を
+           置いて上書きし、上が光り下が沈むガラスの厚みを近似する */
         QFrame#sidebarPane {{
             background-color: {c.BG_SIDEBAR};
-            border: none;
-            border-right: 1px solid {c.HAIRLINE};
+            border: 1px solid {c.CARD_BORDER};
+            border-top-color: {c.GLASS_EDGE};
+            border-bottom-color: {c.EDGE_BOTTOM};
+            border-radius: 16px;
         }}
         QLabel#brand {{
             font-size: 16px;
@@ -261,6 +294,7 @@ class MacTheme:
             border-radius: {MacTheme.RADIUS_CONTROL}px;
             margin: 1px 2px;
             color: {c.TEXT};
+            border: 1px solid transparent;   /* 選択時のリム分を常に予約し、選択で高さが跳ねないようにする */
         }}
         QListWidget#sidebar::item:hover:!selected {{
             background-color: {c.HOVER_BG};
@@ -268,6 +302,7 @@ class MacTheme:
         QListWidget#sidebar::item:selected {{
             background-color: {c.ACCENT_GRAD};
             color: white;
+            border-top-color: rgba(255, 255, 255, 0.45);   /* 選択チップの上縁だけ白く光らせる */
         }}
 
         /* サイドバー開閉トグル（☰）。控えめなアイコンボタン */
@@ -316,11 +351,12 @@ class MacTheme:
             font-size: {MacTheme.FONT_SIZE_CAPTION}px;
         }}
 
-        /* 設定カードと行区切りヘアライン */
+        /* 設定カード（島より一段明るいガラス面）と行区切りヘアライン */
         QFrame#card {{
             background-color: {c.CARD_BG};
             border: 1px solid {c.CARD_BORDER};
             border-top-color: {c.GLASS_EDGE};   /* 1px の光る上縁。border 短縮形の「後」に置いて上書き */
+            border-bottom-color: {c.EDGE_BOTTOM};   /* 下端は沈めて島の上に浮かせる */
             border-radius: {MacTheme.RADIUS_PANEL}px;
         }}
         QFrame#hairline {{
@@ -328,12 +364,13 @@ class MacTheme:
             border: none;
         }}
 
-        /* ボタン（ガラス面: 半透明グラデ土台＋1px トップハイライトで深度を出す） */
+        /* ボタン（透けるガラス面: 半透明グラデ土台＋1px トップリムで浮きを出す。
+           半径はカプセル寄りにして「透けている軽いピル」に見せる） */
         QPushButton {{
             background-color: {c.BTN_BG};
             border: 1px solid {c.BTN_BORDER};
-            border-top-color: {c.GLASS_EDGE};   /* 上縁ハイライト。border 短縮形の後に置く */
-            border-radius: {MacTheme.RADIUS_CONTROL}px;
+            border-top-color: {c.GLASS_EDGE};   /* 上縁リム。border 短縮形の後に置く */
+            border-radius: 14px;
             padding: 5px 14px;
             min-height: 20px;
             font-weight: 500;
@@ -343,7 +380,7 @@ class MacTheme:
         }}
         QPushButton:pressed {{
             background-color: {c.BTN_PRESSED};
-            border-top-color: {c.BTN_BORDER};   /* 押下でトップハイライトを消す＝沈み込み表現 */
+            border-top-color: {c.BTN_BORDER};   /* 押下でトップリムを消す＝沈み込み表現 */
         }}
         QPushButton:disabled {{
             color: {c.SECONDARY_TEXT};
@@ -353,7 +390,8 @@ class MacTheme:
         QPushButton[class="primary"] {{
             background-color: {c.ACCENT_GRAD};
             color: white;
-            border: 1px solid rgba(255, 255, 255, 0.30);   /* 青地上なので両テーマ共通の直書き */
+            border: 1px solid rgba(255, 255, 255, 0.28);   /* 青地上なので両テーマ共通の直書き */
+            border-top-color: rgba(255, 255, 255, 0.50);   /* 上縁の白リムを強めてガラスの厚みを出す */
             font-weight: 600;
             padding: 5px 17px;   /* border:none→1px 化に伴う -1px 補正（旧 6px 18px） */
         }}

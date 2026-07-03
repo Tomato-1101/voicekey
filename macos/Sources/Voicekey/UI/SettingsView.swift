@@ -14,6 +14,8 @@ struct SettingsView: View {
     @State private var selectedTab: Int
     /// サイドバーを畳んでいるか（true ならアイコンのみのレール）
     @State private var sidebarCollapsed = false
+    /// ホバー中のナビ項目 id（非選択項目に薄いハイライトを出すため）
+    @State private var hoveredNav: Int?
 
     init(config: ConfigStore, history: HistoryStore, stats: StatsStore, initialTab: Int = 0) {
         self.config = config
@@ -49,70 +51,113 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
+        // 2 島レイアウト: サイドバー島とコンテンツ島が backdrop の上に別々に浮く。
+        // エッジ to エッジの分割・Divider は廃止し、四周・島間に backdrop を見せる。
+        HStack(spacing: 10) {
             sidebar
-            Divider()
-            // 選択中ページ（各タブが自前で Form スクロールを持つ）。
-            // 横並びタブをやめ「左の開閉式サイドバー＋右のページ」に変更（タブ溢れ解消）。
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: 18))  // ナビのスクロールが角からはみ出さないように
+                .glassIsland(cornerRadius: 18)
+            contentIsland
         }
-        // ウィンドウ自体は固定。サイドバーを畳むと右ページが広がる
-        // 高さは fullSizeContentView でタイトルバーと一体化した分の実効高減（約 28pt）を補正（560→588）
-        .frame(width: 680, height: 588)
+        .padding(12)  // 四周に backdrop のマージンを見せる
+        // 島マージン分だけウィンドウを拡張（680x588 → 700x600）
+        // 高さは fullSizeContentView でタイトルバーと一体化した分の実効高減（約 28pt）を補正済み
+        .frame(width: 700, height: 600)
         .glassButtons()             // 配下の Button を一括ガラス化（.plain 明示ボタンは影響なし）
         .frostedWindowBackground()  // ウィンドウ全面のすりガラス下地
     }
 
-    /// 左サイドバー（ブランド＋開閉トグル＋スクロール可能なナビ）
+    /// 左サイドバー（ブランド＋開閉トグル＋スクロール可能なナビ）。背景は body 側で島にする。
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 6) {
-                if !sidebarCollapsed {
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text("voicekey").font(.headline)
-                        Text("設定").font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                Spacer(minLength: 0)
-                // 開閉トグル（アイコンのみのレール ⇄ ラベル付き）
-                Button {
-                    withAnimation(.easeInOut(duration: 0.22)) { sidebarCollapsed.toggle() }
-                } label: {
-                    Image(systemName: "sidebar.left")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help(sidebarCollapsed ? "サイドバーを開く" : "サイドバーを閉じる")
-            }
-            .frame(maxWidth: .infinity, alignment: sidebarCollapsed ? .center : .leading)
-            .padding(.horizontal, sidebarCollapsed ? 0 : 14)
-            .padding(.top, 14)
-            .padding(.bottom, 10)
-
+            brandHeader
             // ナビ（項目が増えても届くようスクロール可能にする）
             ScrollView {
-                // 選択ピルのガラス形状を 1 パスで合成するためコンテナで包む（層は 2 段まで・ネスト禁止）
-                GlassGroup(spacing: 2) {
-                    VStack(spacing: 2) {
-                        ForEach(navItems) { item in
-                            navButton(item)
-                        }
+                VStack(spacing: 2) {
+                    ForEach(navItems) { item in
+                        navButton(item)
                     }
                 }
                 .padding(.horizontal, 8)
                 .padding(.bottom, 8)
             }
         }
-        .frame(width: sidebarCollapsed ? 62 : 200)
-        // 全面 backdrop の上に regularMaterial を重ねるとぼかしが二重になるため、区別は極薄 tint で付ける
-        .background(Color.primary.opacity(0.04).ignoresSafeArea(edges: .top))
+        .frame(width: sidebarCollapsed ? 60 : 192)
     }
 
-    /// ナビ 1 項目のボタン（選択中はアクセント色で塗る。畳むとアイコンのみ）
+    /// サイドバー先頭のブランド行（アプリアイコン＋名称＋開閉トグル）。畳み時はアイコン＋トグルを縦積み。
+    private var brandHeader: some View {
+        Group {
+            if sidebarCollapsed {
+                VStack(spacing: 8) {
+                    appIcon
+                    collapseToggle
+                }
+                .frame(maxWidth: .infinity)
+            } else {
+                HStack(spacing: 8) {
+                    appIcon
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("voicekey").font(.headline)
+                        Text("設定").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                    collapseToggle
+                }
+            }
+        }
+        .padding(.horizontal, sidebarCollapsed ? 0 : 14)
+        .padding(.top, 14)
+        .padding(.bottom, 10)
+    }
+
+    /// アプリアイコン（ブランド格上げ用・角丸表示）
+    private var appIcon: some View {
+        Image(nsImage: NSApp.applicationIconImage ?? NSImage())
+            .resizable()
+            .frame(width: 30, height: 30)
+            .clipShape(RoundedRectangle(cornerRadius: 7))
+    }
+
+    /// サイドバー開閉トグル（アイコンのみのレール ⇄ ラベル付き）
+    private var collapseToggle: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.22)) { sidebarCollapsed.toggle() }
+        } label: {
+            Image(systemName: "sidebar.left")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .help(sidebarCollapsed ? "サイドバーを開く" : "サイドバーを閉じる")
+    }
+
+    /// 右のコンテンツ島（現在タブ名のヘッダ＋選択中ページ）。
+    private var contentIsland: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            contentHeader
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipShape(RoundedRectangle(cornerRadius: 18))  // Form のスクロールが角からはみ出さないように
+        .glassIsland(cornerRadius: 18)
+    }
+
+    /// コンテンツ島の上部ヘッダ（現在タブ名）。System Settings 的な階層感を出す。
+    private var contentHeader: some View {
+        Text(navItems.first { $0.id == selectedTab }?.title ?? "")
+            .font(.title3.weight(.semibold))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 16)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 4)
+    }
+
+    /// ナビ 1 項目のボタン（選択中はアクセントのグラデピル。ホバーで薄いハイライト。畳むとアイコンのみ）
     private func navButton(_ item: NavItem) -> some View {
         let selected = selectedTab == item.id
+        let hovered = hoveredNav == item.id
         return Button {
             selectedTab = item.id
         } label: {
@@ -130,27 +175,40 @@ struct SettingsView: View {
             .padding(.vertical, 6)
             .padding(.horizontal, sidebarCollapsed ? 0 : 10)
             .frame(maxWidth: .infinity, alignment: sidebarCollapsed ? .center : .leading)
-            // 選択中は色付きガラスピル、非選択は透明（旧 accentColor 塗りをガラス化）
-            .modifier(NavSelectionBackground(selected: selected))
+            .background(navBackground(selected: selected, hovered: hovered))
             .foregroundStyle(selected ? Color.white : Color.primary)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { hovering in
+            if hovering { hoveredNav = item.id }
+            else if hoveredNav == item.id { hoveredNav = nil }
+        }
         .help(item.title)
     }
 
-    /// ナビ項目の選択背景。選択中は色付きガラスピル、非選択は透明にする。
-    /// なぜ ViewModifier に切り出すか: glassSurface はビュー修飾子なので選択時だけ条件適用する必要があり、
-    /// 三項演算子の背景差し替えでは表現できないため。
-    private struct NavSelectionBackground: ViewModifier {
-        let selected: Bool
-        @ViewBuilder
-        func body(content: Content) -> some View {
-            if selected {
-                content.glassSurface(cornerRadius: 7, tint: .accentColor)
-            } else {
-                content
-            }
+    /// ナビ項目の背景。選択中＝アクセントのグラデピル＋白リム＋グロー影、ホバー＝薄いフィル、他＝透明。
+    @ViewBuilder
+    private func navBackground(selected: Bool, hovered: Bool) -> some View {
+        if selected {
+            RoundedRectangle(cornerRadius: 9)
+                .fill(LinearGradient(
+                    colors: [Color.accentColor, Color.accentColor.opacity(0.75)],
+                    startPoint: .top, endPoint: .bottom
+                ))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9)
+                        .strokeBorder(LinearGradient(
+                            colors: [.white.opacity(0.4), .white.opacity(0.0)],
+                            startPoint: .top, endPoint: .bottom
+                        ), lineWidth: 1)
+                )
+                .shadow(color: Color.accentColor.opacity(0.45), radius: 8, x: 0, y: 3)
+        } else if hovered {
+            RoundedRectangle(cornerRadius: 9)
+                .fill(Color.primary.opacity(0.07))
+        } else {
+            Color.clear
         }
     }
 
@@ -275,6 +333,7 @@ private struct GeneralSettingsTab: View {
                 }
         }
         .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
+        .glassFormRows()                   // 行フィルを半透明化して島の中で「ガラスの棚」に見せる
         .formStyle(.grouped)
         .padding(.vertical, 8)
     }
@@ -354,6 +413,7 @@ private struct SlotSettingsTab: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
+        .glassFormRows()                   // 行フィルを半透明化して島の中で「ガラスの棚」に見せる
         .formStyle(.grouped)
         .padding(.vertical, 8)
     }
@@ -461,6 +521,7 @@ private struct StatsTab: View {
                 .foregroundStyle(.secondary)
         }
         .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
+        .glassFormRows()                   // 行フィルを半透明化して島の中で「ガラスの棚」に見せる
         .formStyle(.grouped)
         .padding(.vertical, 8)
         .onAppear {
@@ -612,6 +673,7 @@ private struct HistoryTab: View {
             }
         }
         .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
+        .glassFormRows()                   // 行フィルを半透明化して島の中で「ガラスの棚」に見せる
         .formStyle(.grouped)
         .padding(.vertical, 8)
     }
@@ -677,6 +739,7 @@ private struct ApiKeysTab: View {
             }
         }
         .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
+        .glassFormRows()                   // 行フィルを半透明化して島の中で「ガラスの棚」に見せる
         .formStyle(.grouped)
         .padding(.vertical, 8)
     }
@@ -779,6 +842,7 @@ private struct AccountTab: View {
             }
         }
         .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
+        .glassFormRows()                   // 行フィルを半透明化して島の中で「ガラスの棚」に見せる
         .formStyle(.grouped)
         .padding(.vertical, 8)
         // キー登録が成功して有効になったら入力欄をクリアする
@@ -916,6 +980,7 @@ private struct AboutTab: View {
             }
         }
         .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
+        .glassFormRows()                   // 行フィルを半透明化して島の中で「ガラスの棚」に見せる
         .formStyle(.grouped)
         .padding(.vertical, 8)
     }
@@ -981,6 +1046,7 @@ private struct DictionaryTab: View {
                     }
                 }
                 .scrollContentBackground(.hidden)  // List の不透明背景を消してすりガラス下地を透かす
+                .glassFormRows()                   // 行フィルを半透明化して島の中で「ガラスの棚」に見せる
             }
 
             Divider()
