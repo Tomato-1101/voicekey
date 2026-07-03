@@ -227,17 +227,31 @@ struct HudView: View {
                 // が毎回発火して「消して出し直す・形が飛ぶ」感が出ていた。そこを identity 固定で断つ）。
                 Color.clear
                     .frame(width: capsuleWidth, height: capsuleHeight)
-                    // なぜ glassEffect（macOS 26）を使わないか: glassEffect は同一ウィンドウ内の背後
-                    // コンテンツしかサンプルできず、中身が透明な HUD パネルでは何もブラーできずガラスの
-                    // 素材色（濃いグレーの不透明な塊）だけが出てしまう。HUD は他アプリの上に重なるが
-                    // ウィンドウ越しの背景はこの API では取得できないため、チューニングでは直らない。
-                    // そこでブラーに依存しない半透明カプセルを自前で描く。windowBackgroundColor 由来なので
-                    // ライト＝白っぽく／ダーク＝黒っぽくアピアランスに追従し、灰色の塊バグが構造的に消える。
-                    // （設定画面など背後に VisualEffect がある画面の glassCapsule() はそのまま活かす）
+                    // 背景は「本物のガラス」を AppKit のバックドロップ系ビューで敷く（HudBackdrop）。
+                    // なぜ SwiftUI の glassEffect / Material を使わないか: これらは同一ウィンドウ内の
+                    // 背後コンテンツしかサンプルできず、中身が透明な HUD パネルでは何もブラーできず
+                    // ガラスの素材色（濃いグレーの不透明な塊）だけが出てしまう。HUD は他アプリの上に
+                    // 重なるが、その「ウィンドウ越しの背景」はこれらの API では取得できない。
+                    // 対して AppKit のバックドロップ系（macOS 26=NSGlassEffectView / 旧OS=NSVisualEffectView
+                    // の .behindWindow）は Dock やメニューバー HUD と同じ仕組みでウィンドウ越しに背後を
+                    // サンプルできるため、他アプリのウィンドウが透けて（歪んで）映り込む本物のガラスになる。
+                    // カプセル形・アニメ中のサイズ追従は HudBackdrop 側で、リム・ハイライトはここで重ねる。
                     .background {
-                        Capsule()
-                            .fill(Color(nsColor: .windowBackgroundColor).opacity(0.82))
+                        HudBackdrop()
+                            .clipShape(Capsule())
+                            // 既存のリム（.primary 由来なのでライト/ダーク両対応）
                             .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
+                            // 上縁の極薄い白ハイライトでレンズの立ち上がりを補う（フォールバックの
+                            // すりガラスは屈折歪みが出ないため特に効く。ダークでも破綻しない控えめ値）。
+                            .overlay(
+                                Capsule().strokeBorder(
+                                    LinearGradient(
+                                        colors: [Color.white.opacity(0.22), Color.white.opacity(0.0)],
+                                        startPoint: .top, endPoint: .bottom
+                                    ),
+                                    lineWidth: 0.75
+                                )
+                            )
                     }
                     .shadow(color: .black.opacity(isIdlePill ? 0.15 : 0.25), radius: isIdlePill ? 6 : 12, y: isIdlePill ? 2 : 4)
                     // 中身はカプセルの上に重ね、mode 間では opacity クロスフェードのみで出入りさせる
@@ -436,5 +450,95 @@ private struct HudContentSizeKey: PreferenceKey {
     static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
         let next = nextValue()
         if next != .zero { value = next }
+    }
+}
+
+// MARK: - ガラス背景（AppKit バックドロップ）
+
+/// HUD ピルの「本物のガラス」背景。SwiftUI の glassEffect は同一ウィンドウ内しかサンプル
+/// できないが、AppKit のバックドロップ系ビューはウィンドウ越しに背後（他アプリのウィンドウ）を
+/// サンプルできる。macOS 26 では NSGlassEffectView（屈折込みの Liquid Glass）を使い、
+/// それ未満・または VOICEKEY_GLASS_FALLBACK=1 のときは NSVisualEffectView の .behindWindow
+/// （すりガラス）にフォールバックする。
+private struct HudBackdrop: NSViewRepresentable {
+    /// macOS 26 上でも旧 OS のフォールバック描画を視覚確認するためのフラグ（Glass.swift と同一慣習）。
+    private var forceFallback: Bool {
+        ProcessInfo.processInfo.environment["VOICEKEY_GLASS_FALLBACK"] == "1"
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        if #available(macOS 26.0, *), !forceFallback {
+            return GlassPillBackdrop(frame: .zero)
+        } else {
+            return VisualEffectPillBackdrop(frame: .zero)
+        }
+    }
+
+    /// レイアウト追従（カプセルの角丸・マスク）は各ビューの layout() が bounds から自律的に
+    /// 更新するため、ここでは何もしない。updateNSView 頼みにしないのは、SwiftUI の spring で
+    /// bounds が毎フレーム連続変化するため、layout() で拾う方が取りこぼしなく滑らかに追従するから。
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+/// macOS 26 の本物のガラス（AppKit Liquid Glass）。カプセル形を保つため、SwiftUI の
+/// アニメで連続的に変わる bounds に合わせて layout() ごとに cornerRadius を height/2 に更新する。
+@available(macOS 26.0, *)
+private final class GlassPillBackdrop: NSGlassEffectView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        style = .clear      // より強く透ける（レンズ感重視・tint なし）
+        tintColor = nil
+        // contentView は空のまま（背後サンプルだけを使い、HUD の中身は SwiftUI 側で上に重ねる）
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layout() {
+        super.layout()
+        cornerRadius = bounds.height / 2   // 常にカプセル形（アニメ中も追従）
+    }
+}
+
+/// フォールバック（macOS 26 未満 / VOICEKEY_GLASS_FALLBACK=1）のすりガラス。
+/// .behindWindow でウィンドウ越しの背後をブラーする。カプセル形は maskImage で与え、
+/// 高さが変わったときだけ作り直す（幅方向の変化は capInsets の stretch で吸収＝ちらつかない）。
+private final class VisualEffectPillBackdrop: NSVisualEffectView {
+    /// 直近に maskImage を生成した高さ。高さが実質変わったときだけ作り直す。
+    private var maskHeight: CGFloat = -1
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        material = .hudWindow
+        blendingMode = .behindWindow    // ウィンドウの「後ろ」＝背後アプリをぼかす
+        state = .active
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layout() {
+        super.layout()
+        let h = bounds.height
+        // 高さが実質変わったときだけマスクを作り直す（幅変化は capInsets で吸収）
+        if abs(h - maskHeight) > 0.5 {
+            maskHeight = h
+            maskImage = Self.capsuleMask(height: h)
+        }
+    }
+
+    /// カプセル形のマスク画像。左右に radius 幅の cap を残し中央 1px を横 stretch させることで、
+    /// 幅が変わってもこの 1 枚で角丸カプセルを保てる（NSVisualEffectView 推奨の resizable マスク）。
+    private static func capsuleMask(height: CGFloat) -> NSImage {
+        let radius = max(1, height / 2)
+        let width = radius * 2 + 1
+        let size = NSSize(width: width, height: height)
+        let image = NSImage(size: size, flipped: false) { rect in
+            let path = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
+            NSColor.black.setFill()
+            path.fill()
+            return true
+        }
+        image.capInsets = NSEdgeInsets(top: 0, left: radius, bottom: 0, right: radius)
+        image.resizingMode = .stretch
+        return image
     }
 }
