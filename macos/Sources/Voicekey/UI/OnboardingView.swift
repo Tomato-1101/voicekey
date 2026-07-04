@@ -22,16 +22,40 @@ import SwiftUI
 // MARK: - ステップ定義
 
 /// オンボーディングのステップ（rawValue は中断再開用に UserDefaults へ保存する）。
+///
+/// 権限・ログインの後ろに「実際に使って気持ちよくなる」体験ステップ（練習）を足す。
+/// 体験は強制ではなく、各ステップから「スキップ」で完了ステップへ飛べる。
 enum OnboardingStep: Int, CaseIterable, Comparable {
     case welcome = 0        // ようこそ（概要）
     case microphone         // マイク権限
     case accessibility      // アクセシビリティ権限
     case inputMonitoring    // 入力監視権限
     case login              // ログイン（あとで可）
+    case practiceBasic      // 体験1: 即時入力（例文を読んで入力してみる）
+    case practiceHandsfree  // 体験2: ハンズフリー（トグル録音）
+    case practiceFormat     // 体験3: 文章整形（フィラーが消える）
+    case featureTour        // 機能ツアー（紹介のみ・カード）
     case done               // 完了（使い方）
+
+    /// 体験（練習）ステップか。エンジン起動・スキップ導線の判定に使う。
+    var isPractice: Bool {
+        self == .practiceBasic || self == .practiceHandsfree || self == .practiceFormat
+    }
 
     static func < (lhs: OnboardingStep, rhs: OnboardingStep) -> Bool {
         lhs.rawValue < rhs.rawValue
+    }
+}
+
+// MARK: - 体験ステップの成功判定（純ロジック・テスト対象）
+
+/// 体験（練習）ステップの成功判定を副作用なしで行う（SwiftUI に依存しないので単体テスト可能）。
+/// Windows 版 onboarding_window._has_practice_input と同じ観点。
+enum OnboardingPractice {
+    /// 練習欄に「文字が入った」と言えるか（前後の空白を除いて 1 文字以上）。
+    /// 録音→文字起こし→貼り付けで練習欄のテキストが変化したら成功とみなす。
+    static func hasInput(_ text: String) -> Bool {
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
 
@@ -95,27 +119,45 @@ final class OnboardingModel: ObservableObject {
     @Published var tapCreatable = false      // 実際に CGEventTap を作れるか
     @Published var needsRestart = false      // 権限はあるがタップ作成に失敗＝再起動が必要
 
-    /// 完了設定の表示（ステップ 6）に使う現在設定
+    // 体験（練習）ステップの成功状態（成功演出を一度だけ出す・進捗表示に使う）
+    @Published var basicPracticeDone = false
+    @Published var handsfreePracticeDone = false
+    @Published var formatPracticeDone = false
+
+    /// 完了設定の表示（完了ステップ）に使う現在設定
     let config: ConfigStore
     /// 「使い始める」/ ウィンドウを閉じたときに呼ぶ（完了扱い）
     let onFinish: () -> Void
     /// 入力監視の反映にプロセス再起動が必要なときに呼ぶ
     let onRestart: () -> Void
+    /// 体験ステップに入ったら録音エンジン（ホットキー監視）を起動する（冪等・権限取得後の初回のみ実効）。
+    /// これで「オンボーディング中に実際に録音キーを押して文字を入れる」体験が成立する。
+    let startEngine: () -> Void
+    /// 整形体験ステップの間だけ整形を強制 ON にする一時オーバーライドを切り替える（保存しない）。
+    let setFormatOverride: (Bool) -> Void
 
     private var pollTimer: Timer?
+    /// エンジン起動を一度だけにするフラグ
+    private var engineStarted = false
 
     init(
         startStep: OnboardingStep,
         config: ConfigStore,
         onFinish: @escaping () -> Void,
-        onRestart: @escaping () -> Void
+        onRestart: @escaping () -> Void,
+        startEngine: @escaping () -> Void = {},
+        setFormatOverride: @escaping (Bool) -> Void = { _ in }
     ) {
         self.step = startStep
         self.config = config
         self.onFinish = onFinish
         self.onRestart = onRestart
+        self.startEngine = startEngine
+        self.setFormatOverride = setFormatOverride
         // 現在ステップの権限状況を即時に一度取り込む（再開時に✓を最初から出すため）
         refreshCurrentPermission()
+        // 再開位置がいきなり体験ステップの場合にも配線を合わせる
+        handleStepEntered()
     }
 
     /// 1 秒間隔のポーリングを開始する（ウィンドウ表示中のみ）。
@@ -212,6 +254,7 @@ final class OnboardingModel: ObservableObject {
         if let next = OnboardingStep(rawValue: step.rawValue + 1) {
             step = next
             refreshCurrentPermission()
+            handleStepEntered()
         }
     }
 
@@ -220,13 +263,42 @@ final class OnboardingModel: ObservableObject {
         if let prev = OnboardingStep(rawValue: step.rawValue - 1) {
             step = prev
             refreshCurrentPermission()
+            handleStepEntered()
         }
+    }
+
+    /// 体験をスキップして完了ステップへ飛ぶ（体験を強制しない）。
+    func skipToDone() {
+        step = .done
+        handleStepEntered()
+    }
+
+    /// 体験ステップの成功を記録する（練習欄にテキストが入ったとき View から呼ぶ）。
+    func markPracticeSucceeded() {
+        switch step {
+        case .practiceBasic: basicPracticeDone = true
+        case .practiceHandsfree: handsfreePracticeDone = true
+        case .practiceFormat: formatPracticeDone = true
+        default: break
+        }
+    }
+
+    /// ステップに入った瞬間の副作用（エンジン起動・整形オーバーライドの切替）をまとめて行う。
+    private func handleStepEntered() {
+        // 体験ステップに入ったら録音エンジンを起動する（権限は前段で取得済み・冪等）。
+        // これで練習欄に実際に音声入力できるようになる。
+        if step.isPractice, !engineStarted {
+            engineStarted = true
+            startEngine()
+        }
+        // 整形体験ステップの間だけ整形を強制 ON（フィラー除去を体験させる）。それ以外では必ず解除。
+        setFormatOverride(step == .practiceFormat)
     }
 }
 
 // MARK: - オンボーディング画面
 
-/// 初回セットアップの案内画面（6 ステップ）。
+/// 初回セットアップの案内画面（権限・ログイン → 体験 → 完了の 10 ステップ）。
 struct OnboardingView: View {
 
     @ObservedObject var model: OnboardingModel
@@ -301,6 +373,10 @@ struct OnboardingView: View {
         case .accessibility: accessibilityStep
         case .inputMonitoring: inputMonitoringStep
         case .login: loginStep
+        case .practiceBasic: practiceBasicStep
+        case .practiceHandsfree: practiceHandsfreeStep
+        case .practiceFormat: practiceFormatStep
+        case .featureTour: featureTourStep
         case .done: doneStep
         }
     }
@@ -399,7 +475,133 @@ struct OnboardingView: View {
         }
     }
 
-    // 6. 完了（使い方カード）
+    // MARK: 体験ステップ（実際に録音キーを押して入力してみる）
+
+    /// ログイン必須の案内（未ログイン時のみ体験ステップに出す）。文字起こしはサーバー経由のため。
+    @ViewBuilder
+    private var loginNoticeIfNeeded: some View {
+        if !isLoggedIn {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("体験するにはログインが必要です（文字起こしはサーバー経由）", systemImage: "exclamationmark.circle")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                Button("ブラウザでログイン") { login.beginLogin() }
+                    .glassProminentButton()
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .glassSurface(cornerRadius: 10)
+        }
+    }
+
+    /// トグル（ハンズフリー）録音に使う録音キー。既定はサブ(右⌥・toggle)。
+    /// ユーザーがモードを入れ替えていても toggle のスロットを優先して案内する。
+    private var handsfreeSlot: SlotConfig {
+        if model.config.slot2.mode == .toggle { return model.config.slot2 }
+        if model.config.slot1.mode == .toggle { return model.config.slot1 }
+        return model.config.slot2
+    }
+
+    // 体験1: 即時入力（押しながら話す）
+    private var practiceBasicStep: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            stepHeader(icon: "waveform", title: "さっそく使ってみましょう")
+            Text("録音キーを押しながら、下の文を声に出して読んでみてください。しゃべり終わってキーを離すと、その場に文字が入ります。")
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            loginNoticeIfNeeded
+            PracticeCard(
+                exampleText: "明日の打ち合わせ、15時に変更でお願いします。",
+                promptText: "⬇ \(model.config.slot1.hotkeyLabel) を押しながら、上の文を読んでみてください",
+                successText: "よくできました！ 声がそのまま文字になりました",
+                hint: nil,
+                done: $model.basicPracticeDone
+            )
+        }
+    }
+
+    // 体験2: ハンズフリー（トグル録音）
+    private var practiceHandsfreeStep: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            stepHeader(icon: "hand.raised.fill", title: "ハンズフリーで話す")
+            Text("キーを押して離すと録音が続きます。手を止めずに長い文章を話せます。もう一度押すと確定して入力されます。")
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            loginNoticeIfNeeded
+            PracticeCard(
+                exampleText: "これはハンズフリーのテストです。手を離したまま、このまま何文か続けて話してみます。",
+                promptText: "⬇ \(handsfreeSlot.hotkeyLabel) を一度押して話し、話し終えたらもう一度押して確定してください",
+                successText: "できました！ 押しっぱなしにしなくても入力できます",
+                hint: "長い議事録のときに便利です。",
+                done: $model.handsfreePracticeDone
+            )
+        }
+    }
+
+    // 体験3: 文章整形（フィラーが自動で消える）
+    private var practiceFormatStep: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            stepHeader(icon: "sparkles", title: "話した言葉を、きれいな文章に")
+            Text("「文章を自動で整える」をオンにして試します。「えーっと」などのフィラーや言い直しはそのまま声に出してみてください。")
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            loginNoticeIfNeeded
+            PracticeCard(
+                exampleText: "えーっと、明日の会議なんですけど、あー、10時から、やっぱり11時からでお願いします",
+                promptText: "⬇ \(model.config.slot1.hotkeyLabel) を押しながら、上の文をそのまま読んでみてください",
+                successText: "フィラーや言い直しが自動で消えました",
+                hint: "整え方は「標準／そのまま／すっきり／箇条書き」の 4 種から選べます（設定でいつでも変更できます）。",
+                done: $model.formatPracticeDone
+            )
+        }
+    }
+
+    // 機能ツアー（紹介のみ・カード）
+    private var featureTourStep: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            stepHeader(icon: "star.fill", title: "できることの紹介")
+            Text("よく使う機能です。あとで設定やメニューバーのアイコンから使えます。")
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            VStack(spacing: 10) {
+                tourCard(icon: "command", title: "2 つ目の録音キー",
+                         body: "録音キー 2 には別のモードを割り当てられます（例: ハンズフリー）。")
+                tourCard(icon: "clock.arrow.circlepath", title: "履歴",
+                         body: "入力したテキストを最大 200 件まで自動保存。クリックでもう一度コピーできます。")
+                tourCard(icon: "chart.bar.fill", title: "統計",
+                         body: "どのアプリでどれだけ入力したか、節約できた時間が見られます。")
+                tourCard(icon: "waveform", title: "録音中の表示（HUD）",
+                         body: "画面下の小さなピルが録音中だけ現れ、状態がひと目で分かります。")
+            }
+        }
+    }
+
+    /// 機能ツアー 1 枚分の紹介カード（アイコン＋見出し＋説明）。
+    private func tourCard(icon: String, title: String, body: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon)
+                .font(.title3)
+                .foregroundStyle(.tint)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.subheadline).bold()
+                Text(body)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassSurface(cornerRadius: 10)
+    }
+
+    // 完了（使い方カード）
     private var doneStep: some View {
         VStack(alignment: .leading, spacing: 16) {
             stepHeader(icon: "checkmark.seal.fill", title: "準備ができました")
@@ -443,6 +645,10 @@ struct OnboardingView: View {
             // 戻る（最初のステップ以外）
             if model.step != .welcome {
                 Button("戻る") { model.goBack() }
+            }
+            // 体験・機能ツアーは強制しない: いつでも完了ステップへ飛べる「スキップ」を常設
+            if model.step.isPractice || model.step == .featureTour {
+                Button("スキップ") { model.skipToDone() }
             }
             Spacer()
             footerPrimaryButtons
@@ -496,6 +702,12 @@ struct OnboardingView: View {
                     Button("あとで") { model.goNext() }
                 }
             }
+
+        case .practiceBasic, .practiceHandsfree, .practiceFormat, .featureTour:
+            // 体験は任意なので「次へ」で常に進める（成功しなくても先に進める＝強制しない）
+            Button("次へ") { model.goNext() }
+                .glassProminentButton()
+                .keyboardShortcut(.defaultAction)
 
         case .done:
             Button("使い始める") { model.onFinish() }
@@ -595,5 +807,94 @@ struct OnboardingView: View {
                 ), lineWidth: 1)
             )
             .shadow(color: Color.accentColor.opacity(0.45), radius: 10, x: 0, y: 4)
+    }
+}
+
+// MARK: - 練習カード（体験ステップ共通）
+
+/// 「例文カード」＋「促し文」＋「自動フォーカスの練習入力欄」＋「成功演出」を 1 枚にまとめた部品。
+///
+/// 録音キーを押して話すと、本体の貼り付け（Paster）が前面ウィンドウの
+/// 練習入力欄（TextEditor）へテキストを入れる。テキストが入った瞬間を onChange で捕まえ、
+/// スプリング演出とともに褒めメッセージを出す。手入力でも成功扱いにする（体験を妨げない）。
+private struct PracticeCard: View {
+    /// 読み上げてもらう例文
+    let exampleText: String
+    /// 「このキーを押しながら話して」の促し文（キー名は呼び出し側で実設定から埋める）
+    let promptText: String
+    /// 成功時に出す褒めメッセージ
+    let successText: String
+    /// 補足のヒント（ハンズフリー手順・整形プリセット紹介など。nil で非表示）
+    let hint: String?
+    /// 成功状態（OnboardingModel の該当フラグにバインドする）
+    @Binding var done: Bool
+
+    /// 練習入力欄の中身（ここへ本体の貼り付けが入る）
+    @State private var typed: String = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // 読む例文（引用符付きで「これを読む」と分かるように）
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "text.quote")
+                    .foregroundStyle(.tint)
+                Text(exampleText)
+                    .font(.system(size: 16, weight: .medium))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .glassSurface(cornerRadius: 10)
+
+            // 促し文
+            Text(promptText)
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let hint {
+                Text(hint)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            // 練習入力欄（自動フォーカス。前面＝このウィンドウなので貼り付けはここに入る）
+            TextEditor(text: $typed)
+                .font(.system(size: 15))
+                .scrollContentBackground(.hidden)
+                .frame(height: 84)
+                .padding(8)
+                .glassSurface(cornerRadius: 10)
+                .focused($focused)
+                .onChange(of: typed) { _, newValue in
+                    // 空→非空になった瞬間だけ成功演出を出す（連続入力で何度も出さない）
+                    if !done, OnboardingPractice.hasInput(newValue) {
+                        withAnimation(.spring(response: 0.45, dampingFraction: 0.6)) {
+                            done = true
+                        }
+                    }
+                }
+                .onAppear {
+                    // 表示直後にフォーカスすると効かないことがあるため次のループで当てる
+                    DispatchQueue.main.async { focused = true }
+                }
+
+            // 成功演出（チェックマークのスプリング＋褒めメッセージ）
+            if done {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(.green)
+                    Text(successText)
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.green)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.top, 2)
+                .transition(.scale(scale: 0.6).combined(with: .opacity))
+            }
+        }
     }
 }

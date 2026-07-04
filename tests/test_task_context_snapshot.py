@@ -67,10 +67,12 @@ class _FakeConfig:
 
 
 class TestSnapshotBindsAtRecordStart(unittest.TestCase):
-    def _fake_self(self, slots: dict, config_values: dict):
+    def _fake_self(self, slots: dict, config_values: dict, practice_format_override: bool = False):
         return SimpleNamespace(
             _slots=slots,
             _config=_FakeConfig(config_values),
+            # オンボーディング整形体験の一時オーバーライド（通常は False）
+            _practice_format_override=practice_format_override,
         )
 
     def test_snapshot_captures_start_slot_and_flags(self):
@@ -112,10 +114,28 @@ class TestSnapshotBindsAtRecordStart(unittest.TestCase):
         with mock.patch("src.core.backend_client.is_logged_in", return_value=False):
             self.assertFalse(VoicekeyApp._snapshot_context(s, slot).server_format)
 
-        # deepgram（リアルタイム）は整形 ON・ログイン済みでも統合整形の対象外
+        # deepgram（即時入力）は整形 ON・ログイン済みでも統合整形の対象外
         dg = _slot(1, "deepgram", "nova-3", _FakeTranscriber("dg", "x"), format_enabled=True)
         with mock.patch("src.core.backend_client.is_logged_in", return_value=True):
             self.assertFalse(VoicekeyApp._snapshot_context(s, dg).server_format)
+
+    def test_practice_format_override_forces_formatting(self):
+        """オンボーディング整形体験中は、整形 OFF のスロットでも整形を強制 ON にする。"""
+        tr = _FakeTranscriber("groq", "x")
+        slot = _slot(1, "groq", "whisper-large-v3-turbo", tr, format_enabled=False)
+        # 通常（オーバーライド無し）は format OFF のままなので統合整形も発動しない
+        s_off = self._fake_self({1: slot}, {}, practice_format_override=False)
+        ctx_off = VoicekeyApp._snapshot_context(s_off, slot)
+        self.assertFalse(ctx_off.slot.format_enabled)
+        self.assertFalse(ctx_off.server_format)
+        # オーバーライド有り＋ログイン済みなら format ON（複製）＋統合整形が発動する
+        s_on = self._fake_self({1: slot}, {}, practice_format_override=True)
+        with mock.patch("src.core.backend_client.is_logged_in", return_value=True):
+            ctx_on = VoicekeyApp._snapshot_context(s_on, slot)
+        self.assertTrue(ctx_on.slot.format_enabled)
+        self.assertTrue(ctx_on.server_format)
+        # 元のスロット（保存値）は書き換えない（複製している）
+        self.assertFalse(slot.format_enabled)
 
 
 class TestConfigChangeBetweenRecordEndAndProcessStart(unittest.TestCase):

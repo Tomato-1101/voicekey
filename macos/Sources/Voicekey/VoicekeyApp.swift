@@ -402,7 +402,11 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             startStep: OnboardingStep(rawValue: fromStep) ?? .welcome,
             config: controller.config,
             onFinish: { [weak self] in self?.finishOnboarding() },
-            onRestart: { [weak self] in self?.restartForInputMonitoring() }
+            onRestart: { [weak self] in self?.restartForInputMonitoring() },
+            // 体験ステップに入ったら録音エンジン（ホットキー監視）を起動する（冪等・完了時の startup と重複しても無害）
+            startEngine: { [weak controller] in controller?.startup(showPermissionAlert: false) },
+            // 整形体験ステップの間だけ整形を強制 ON（保存しない一時オーバーライド）
+            setFormatOverride: { [weak controller] on in controller?.practiceFormatOverride = on }
         )
         let hosting = NSHostingController(rootView: OnboardingView(model: model))
         let window = NSWindow(contentViewController: hosting)
@@ -425,6 +429,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         guard !onboardingFinished else { return }
         onboardingFinished = true
         markOnboardingComplete()
+        // 整形体験の一時オーバーライドが残っていたら必ず解除（体験ステップ上で閉じた場合の保険）
+        controller?.practiceFormatOverride = false
         // 権限案内は済んでいるので NSAlert を二重に出さない
         controller?.startup(showPermissionAlert: false)
         onboardingWindow?.close()  // windowWillClose は onboardingFinished=true で二重処理しない
@@ -467,6 +473,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             if !onboardingFinished {  // 「使い始める」/ 再起動で処理済みなら何もしない
                 onboardingFinished = true
                 markOnboardingComplete()
+                // 整形体験の一時オーバーライドが残っていたら解除してから本体を開始する
+                controller?.practiceFormatOverride = false
                 controller?.startup(showPermissionAlert: false)
             }
         }

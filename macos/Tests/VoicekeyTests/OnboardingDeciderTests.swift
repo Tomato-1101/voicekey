@@ -75,10 +75,25 @@ final class OnboardingDeciderTests: XCTestCase {
         XCTAssertEqual(action, .show(fromStep: 0))
     }
 
-    // ステップ enum の順序（戻る/進むの前提）を固定する
+    // ステップ enum の順序（戻る/進むの前提）を固定する。
+    // 権限・ログインの後ろに体験（練習）3 ステップ＋機能ツアーを足し、最後が完了。
     func testStepOrdering() {
         XCTAssertTrue(OnboardingStep.welcome < OnboardingStep.microphone)
-        XCTAssertTrue(OnboardingStep.login < OnboardingStep.done)
-        XCTAssertEqual(OnboardingStep.allCases.count, 6)
+        XCTAssertTrue(OnboardingStep.login < OnboardingStep.practiceBasic)
+        XCTAssertTrue(OnboardingStep.practiceBasic < OnboardingStep.practiceHandsfree)
+        XCTAssertTrue(OnboardingStep.practiceHandsfree < OnboardingStep.practiceFormat)
+        XCTAssertTrue(OnboardingStep.practiceFormat < OnboardingStep.featureTour)
+        XCTAssertTrue(OnboardingStep.featureTour < OnboardingStep.done)
+        XCTAssertEqual(OnboardingStep.allCases.count, 10)
+    }
+
+    // 体験（練習）ステップの判定（エンジン起動・スキップ導線の前提）
+    func testIsPracticeFlag() {
+        XCTAssertTrue(OnboardingStep.practiceBasic.isPractice)
+        XCTAssertTrue(OnboardingStep.practiceHandsfree.isPractice)
+        XCTAssertTrue(OnboardingStep.practiceFormat.isPractice)
+        XCTAssertFalse(OnboardingStep.featureTour.isPractice)
+        XCTAssertFalse(OnboardingStep.login.isPractice)
+        XCTAssertFalse(OnboardingStep.done.isPractice)
     }
 }

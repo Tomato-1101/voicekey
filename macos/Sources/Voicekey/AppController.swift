@@ -73,6 +73,11 @@ final class AppController: ObservableObject {
 
     private var configObservation: Any?
 
+    /// オンボーディングの整形体験ステップ中だけ整形を強制 ON にする一時フラグ（保存しない）。
+    /// true の間の録音は、スロットの formatEnabled 設定に関わらず整形を実行する
+    /// （フィラー除去を体験させるため）。ステップを出たら必ず false へ戻す。
+    var practiceFormatOverride = false
+
     /// /ephemeral 関数を一定間隔で温め続けるタイマー（Deepgram ストリーミング利用時の cold start 回避）
     private var warmTimer: Timer?
     /// App Nap 抑止トークン。放置中も暖機ループ（セッション/トークンの温存）を間引かせないための
@@ -406,11 +411,14 @@ final class AppController: ObservableObject {
             log.info("ハンズフリー: 内部エンジン切替 (groq→elevenlabs)")
         }
 
+        // オンボーディング体験（整形ステップ）中はスロット設定に関わらず整形を強制 ON にする。
+        let effectiveFormatEnabled = practiceFormatOverride || slot.formatEnabled
+
         // サーバー統合整形（Groq プロキシで STT と整形を 1 リクエストに）が使えるか。
         // 条件: activeTranscriber が groq（＝ハンズフリー EL 差し替えなら backend が .elevenlabs に
         // なるので自動的に除外される）× 整形 ON × ログイン済み。単発送信のときだけ発動する。
         let serverFormatEligible = activeTranscriber?.backend == .groq
-            && slot.formatEnabled
+            && effectiveFormatEnabled
             && BackendClient.isLoggedIn
 
         // 録音開始時点の transcriber（プロバイダー）と処理フラグを不変スナップショット化する。
@@ -420,7 +428,7 @@ final class AppController: ObservableObject {
             vadEnabled: config.vadEnabled,
             splitEnabled: config.splitParallelEnabled,
             autoEnterDelayMs: config.autoEnterDelayMs,
-            formatEnabled: slot.formatEnabled,
+            formatEnabled: effectiveFormatEnabled,
             formatPrompt: config.autoFormatPrompt,
             formatModel: config.formatModel,
             formatPresetId: slot.formatPresetId,
@@ -462,7 +470,7 @@ final class AppController: ObservableObject {
         // 録音中に TLS 接続を事前確立して、停止後の初回 API 往復を短縮（切替時は EL 側を温める）
         activeTranscriber?.prewarm()
         // 整形が有効なら整形 LLM への接続も録音中に温めておく
-        if slot.formatEnabled {
+        if effectiveFormatEnabled {
             formatter.prewarm()
         }
 

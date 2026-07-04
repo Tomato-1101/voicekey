@@ -219,6 +219,11 @@ class VoicekeyApp(QObject):
         # 録音開始時に確定する処理コンテキストのスナップショット（_finish_recording で task へ移す）
         self._active_context: Optional[TaskContext] = None
 
+        # オンボーディングの整形体験ステップ中だけ整形を強制 ON にする一時フラグ（保存しない）。
+        # True の間の録音は、スロットの format_enabled 設定に関わらず整形を実行する
+        # （フィラー除去を体験させるため）。ステップを出たら必ず False へ戻す。
+        self._practice_format_override = False
+
         # ダブルタップ検出（hold モードのみ。listener スレッドからのみ更新）
         self._last_release_time: float = 0.0
         self._last_release_slot: Optional[int] = None
@@ -274,6 +279,7 @@ class VoicekeyApp(QObject):
         self.account_refreshed.connect(self._settings_window.refresh_account_status)
         self._tray = SystemTray(platform_adapter=self._platform)
         self._tray.open_settings.connect(self._open_settings)
+        self._tray.open_onboarding.connect(self._show_onboarding)
         self._tray.force_reset.connect(self._force_restart)
         self._tray.quit_app.connect(self._quit_app)
         self.status_changed.connect(self._tray.set_status)
@@ -581,6 +587,10 @@ class VoicekeyApp(QObject):
         この録音の処理結果には影響させない（キュー処理はこの snapshot だけを使う）。
         """
         preprocess_cfg = self._config.get("audio_preprocess", {}) or {}
+        # オンボーディング体験（整形ステップ）中はスロット設定に関わらず整形を強制 ON にする。
+        # slot は dataclass なので複製して format_enabled だけ差し替える（保存値は変えない）。
+        if self._practice_format_override and not slot.format_enabled:
+            slot = replace(slot, format_enabled=True)
         # サーバー統合整形（Groq プロキシで STT と整形を 1 リクエストに）が使えるか。
         # slot は _maybe_handsfree_slot 適用後なので、ハンズフリー EL 差し替え時は
         # slot.backend が elevenlabs になり、この条件が自動的に False になる（Mac と対）。
@@ -1299,10 +1309,18 @@ class VoicekeyApp(QObject):
             # 既存ユーザー: いきなり出すと戸惑うので、フラグを補完して以後出さない
             self._config.save({"did_complete_onboarding": True})
             return
+        self._show_onboarding()
 
+    def _show_onboarding(self) -> None:
+        """セットアップガイド（オンボーディング）を表示する。
+
+        初回自動表示（_maybe_show_onboarding）とトレイメニューからの再表示で共用する。
+        app を渡して体験ステップから整形オーバーライドを操作できるようにする
+        （ホットキー監視は __init__ で既に起動済みなので、体験中もそのまま録音できる）。
+        """
         from .ui.onboarding_window import OnboardingWindow
 
-        win = OnboardingWindow(self._config)
+        win = OnboardingWindow(self._config, app=self)
         win.onboarding_finished.connect(self._on_onboarding_finished)
         self._onboarding_window = win
         win.show()
@@ -1312,7 +1330,13 @@ class VoicekeyApp(QObject):
 
     def _on_onboarding_finished(self) -> None:
         """オンボーディング完了/スキップ時に完了フラグを保存する。"""
+        # 整形体験の一時オーバーライドが残っていたら必ず解除（体験ステップ上で閉じた場合の保険）
+        self._practice_format_override = False
         self._config.save({"did_complete_onboarding": True})
+
+    def set_practice_format_override(self, enabled: bool) -> None:
+        """オンボーディング整形体験ステップの間だけ整形を強制 ON にする（保存しない一時フラグ）。"""
+        self._practice_format_override = bool(enabled)
 
     def _open_settings(self) -> None:
         """設定ウィンドウを開いて確実に前面化する。"""
