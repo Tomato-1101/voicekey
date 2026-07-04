@@ -3,6 +3,29 @@
 セッションをまたぐ作業の現在地。再開時はまずこれを読む。
 承認済み計画の全文: `/Users/tomato/.claude/plans/api-api-api-mac-abstract-hare.md`
 
+## 最新の現在地（2026-07-05 更新）
+
+- **LP 全面刷新・本番公開済み**: voicekey-site をライト基調「Porcelain Glass」へ刷新し
+  https://voicekey.vercel.app に公開（コミット e0d92a6・push 済み）。参考3サイト
+  （typeless / aquavoice / voiceos）準拠＝白基調・黒ピル CTA・白磨りガラス・淡パステルは
+  オーブ等のみ。刷新仕様の考え方はこの節と lessons.md（2026-07-05 デザイン参照元の教訓）。
+- **用語刷新（release 139f748）**: ユーザー向け「リアルタイム」→「即時入力」へ全面改称・
+  「話しながら文字が現れる」系の表現全廃（ライブ字幕撤去済みで実挙動は全文一括入力のため）。
+  保存値（`deepgram` 等）は不変。main はプロバイダー実名表示のためラベル不変（説明文と
+  OVERVIEW/README のみ反映）。
+- **体験型セットアップガイド（release 99dedb4 / main af9ba67）**: 練習3ステップ（基本入力／
+  ハンズフリー／整形体験＝在メモリ override で一時 ON）＋成功演出＋機能ツアー＋再表示導線
+  （Mac メニュー・Windows トレイ「セットアップガイド…」）。テスト: release Mac67/Win397・
+  main Mac57/Win235 全緑。Mac 実機で welcome 描画確認済み（強制表示は環境変数
+  `VOICEKEY_OPEN_ONBOARDING=1`）。**ユーザー実機確認の残り**: 練習ステップで実際に話して
+  成功演出が出るか・整形体験が効くか（発話が必要なため未検証）。
+- **会話モード（voice-agent ブランチ・38ee90d）: ユーザー指示で凍結中**。Phase 5＋OpenAI
+  Realtime 実接続 E2E まで完了（151 テスト緑・GA スキーマ修正済み）だが、ユーザーから
+  「なんかおかしい」との体感報告があり、**次の新セッションで詳細デバッグする**。現在地・
+  E2E 結果・残課題は voice-agent ブランチの「会話モード」節と memory
+  `project_voicekey_voice_agent_mode` を参照。release/main には未マージ。
+- 既知の陳腐化（未修正・スコープ外）: `macos/README.md:13` が main の実名表示と食い違う旧記述。
+
 ## ゴール
 
 テスター向け無料ベータを配布できる状態にする: Mac は DMG・Windows は exe インストーラ、
