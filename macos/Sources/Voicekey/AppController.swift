@@ -570,7 +570,7 @@ final class AppController: ObservableObject {
             // --- REST 経路（従来の 正規化 → VAD → API → 貼り付け）---
             // [計測] 録音停止→貼付までを段階別に刻む。release と main の速度差の在り処を実測するため。
             // release は普通入力=Groq プロキシ・ハンズフリー=EL プロキシとも、この REST 経路を通る
-            // （高速リアルタイム=Deepgram を選択肢から外したのでストリーミング経路は不使用）。
+            // （即時入力=Deepgram を選択肢から外したのでストリーミング経路は不使用）。
             let restT0 = ProcessInfo.processInfo.systemUptime
             let duration = Double(samples.count) / AudioRecorder.sampleRate
             guard duration >= kMinAudioSec else {

@@ -354,7 +354,7 @@ class VoicekeyApp(QObject):
         # 放置後初回の「セッション期限切れ→更新往復」を録音時に踏まないよう、暖機のたびに
         # 先回りでセッションを有効化しておく（Groq/EL プロキシ呼び出し時の更新往復を消す）。
         backend_client.warm_session()
-        # Deepgram「高速リアルタイム」: ストリーミング ON ＋ Deepgram スロットのとき
+        # Deepgram「即時入力」: ストリーミング ON ＋ Deepgram スロットのとき
         if self._config.get("streaming_enabled", True) and any(
             s.backend == TranscriptionBackend.DEEPGRAM.value for s in self._slots.values()
         ):

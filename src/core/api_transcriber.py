@@ -458,7 +458,7 @@ class DeepgramTranscriber(ApiTranscriber):
     nova-3 はストリーミング既定でもあり、REST フォールバックにも使う。
     """
 
-    display_name = "高速リアルタイム"  # 製品版(release)の文字起こし 2 択名（提供元名は伏せる）
+    display_name = "即時入力"  # 製品版(release)の文字起こし 2 択名（提供元名は伏せる）
     base_url = "https://api.deepgram.com/v1"
     keychain_service = secrets.SERVICE_DEEPGRAM
     env_var = "DEEPGRAM_API_KEY"

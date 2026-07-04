@@ -480,7 +480,7 @@ private struct SlotSettingsTab: View {
             }
             .pickerStyle(.segmented)
 
-            // 製品版は文字起こし 2 択（リアルタイム / スタンダード）のみ。モデルは推奨固定で非選択。
+            // 製品版は文字起こし 2 択（即時入力 / スタンダード）のみ。モデルは推奨固定で非選択。
             Picker("文字起こしモード", selection: $slot.backend) {
                 ForEach(Backend.selectableCases) { backend in
                     Text(backend.label).tag(backend)
@@ -489,7 +489,7 @@ private struct SlotSettingsTab: View {
             .onChange(of: slot.backend) { _, newBackend in
                 // バックエンド変更時はそのバックエンドの推奨モデルに固定で切り替える
                 slot.model = newBackend.defaultModel
-                // 整形トグルはそのモードの既定へ追従させる（リアルタイム=既定 OFF・
+                // 整形トグルはそのモードの既定へ追従させる（即時入力=既定 OFF・
                 // スタンダード=既定 ON）。ユーザーはこの後トグルで自由に上書きできる。
                 slot.formatEnabled = newBackend.defaultFormatEnabled
             }
@@ -554,7 +554,7 @@ private struct SlotSettingsTab: View {
     private static func backendCaption(_ backend: Backend) -> String {
         switch backend {
         case .deepgram:
-            return "話しながら文字が表示されます（最速）"
+            return "しゃべり終わった瞬間、全文がまとめて入力されます（最速・実測 0.1 秒）"
         case .groq:
             return "録音後にきれいな文章にして入力します（おすすめ）\n"
                 + "ハンズフリー録音のときは、長い録音に強いエンジンへ自動で切り替わります。"
@@ -663,7 +663,7 @@ private struct AccountTab: View {
             } header: {
                 Text("アカウント")
             } footer: {
-                Text("ログインすると無料体験で文字起こし（高速リアルタイム／正確性）が使えます。無料体験を使い切ったら、アクティベーションキーを登録すると続けて使えます。ログインはブラウザで行います。")
+                Text("ログインすると無料体験で文字起こし（即時入力／正確性）が使えます。無料体験を使い切ったら、アクティベーションキーを登録すると続けて使えます。ログインはブラウザで行います。")
             }
 
             // ログイン済みのときだけライセンス（アクティベーションキー）欄を出す

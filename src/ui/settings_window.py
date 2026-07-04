@@ -87,12 +87,12 @@ _BACKEND_PROVIDER_NAMES = {
 }
 
 # 製品版（release）でユーザーが文字起こしに選べる 2 択（表示順）。モデルは推奨固定で非選択:
-# リアルタイム=Deepgram（nova-3・短命トークン直叩き＋ストリーミング。話しながらライブ表示）/
+# 即時入力=Deepgram（nova-3・短命トークン直叩き＋ストリーミング。しゃべり終わった瞬間に全文を一括入力）/
 # スタンダード=Groq（既定・whisper-large-v3-turbo・プロキシ経由。録音後にきれいに整形）。
 # ElevenLabs（scribe_v1）は選択肢から外し、スタンダードのハンズフリー録音時に内部でのみ使う。
 # Mac 版 Backend.selectableCases / Backend.label と一致させる。
 _TRANSCRIBE_BACKEND_LABELS = [
-    (TranscriptionBackend.DEEPGRAM.value, "リアルタイム"),
+    (TranscriptionBackend.DEEPGRAM.value, "即時入力"),
     (TranscriptionBackend.GROQ.value, "スタンダード"),
 ]
 
@@ -131,7 +131,7 @@ def _backend_caption_text(backend: str) -> str:
     スタンダード(groq)はハンズフリー録音時に内部で高精度エンジン(ElevenLabs)へ自動切替する旨も添える。
     """
     if backend == TranscriptionBackend.DEEPGRAM.value:
-        return "話しながら文字が表示されます（最速）"
+        return "しゃべり終わった瞬間、全文がまとめて入力されます（最速・実測 0.1 秒）"
     if backend == TranscriptionBackend.GROQ.value:
         return (
             "録音後にきれいな文章にして入力します（おすすめ）\n"
@@ -1068,7 +1068,7 @@ class SettingsWindow(QWidget):
         layout.addWidget(card)
 
         # --- カード: 動作（自動 Enter・ハンズフリー） ---
-        # VAD / VAD 最小無音時間 / 長文分割 / 音量正規化 / 録音 HUD / リアルタイム
+        # VAD / VAD 最小無音時間 / 長文分割 / 音量正規化 / 録音 HUD /
         # ストリーミングは常時 ON に固定したため設定 UI から撤去した
         # （常時 ON の強制は config_manager._load_config 側で行う）
         card, cl = _make_card()
@@ -1177,7 +1177,7 @@ class SettingsWindow(QWidget):
         setattr(self, f"_mode{slot_id}_combo", mode_combo)
         _add_row(cl, "録音のしかた", mode_combo)
 
-        # バックエンド選択（製品版は 2 択: リアルタイム / スタンダード）。
+        # バックエンド選択（製品版は 2 択: 即時入力 / スタンダード）。
         # モデルは推奨固定で非選択（Deepgram=nova-3 / Groq=whisper-large-v3-turbo）。
         backend_combo = QComboBox()
         for value, label in _TRANSCRIBE_BACKEND_LABELS:
@@ -1192,7 +1192,7 @@ class SettingsWindow(QWidget):
             lambda _i, sid=slot_id: self._update_backend_caption(sid)
         )
         # モード（backend）を切り替えたら整形トグルをそのモードの既定へ追従させる
-        # （リアルタイム=既定 OFF・スタンダード=既定 ON）。ユーザーはこの後トグルで自由に上書き可。
+        # （即時入力=既定 OFF・スタンダード=既定 ON）。ユーザーはこの後トグルで自由に上書き可。
         # _load_settings では setCurrentIndex の後に明示 setChecked で保存値へ戻すため、
         # 読み込み時にこのハンドラが走っても最終的な整形トグルは保存値になる。
         backend_combo.currentIndexChanged.connect(
@@ -1223,7 +1223,7 @@ class SettingsWindow(QWidget):
     def _apply_format_default_for_backend(self, slot_id: int) -> None:
         """バックエンド変更に合わせて整形トグルをそのモードの既定へ追従させる。
 
-        リアルタイム(deepgram)=既定 OFF・スタンダード(groq)=既定 ON。ユーザーはこの後トグルで
+        即時入力(deepgram)=既定 OFF・スタンダード(groq)=既定 ON。ユーザーはこの後トグルで
         自由に上書きできる（Mac 版 SlotSettingsTab の .onChange(of: slot.backend) と対）。
         """
         combo = getattr(self, f"_backend{slot_id}_combo")
@@ -1877,7 +1877,7 @@ class SettingsWindow(QWidget):
         layout.addWidget(lic_card)
 
         layout.addWidget(_make_caption(
-            "ログインすると無料体験でサーバー経由の文字起こし（高速リアルタイム／正確性）が"
+            "ログインすると無料体験でサーバー経由の文字起こし（即時入力／正確性）が"
             "使えます。無料体験を使い切ったら、アクティベーションキーを登録すると続けて使えます。"
             "キーはこのアカウントに紐付き、別の端末でログインしても同じライセンスで使えます。"
             "ログインはブラウザで行います。"

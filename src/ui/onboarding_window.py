@@ -6,7 +6,7 @@
 案内する。Windows には OS の権限ゲート（マイク/アクセシビリティ/入力監視）が無いので
 権限ステップは持たない（Mac 版は 6 ステップ）。
 
-文言は Phase 4 で刷新した新語彙（録音キー／文字起こしモード／リアルタイム／
+文言は新語彙（録音キー／文字起こしモード／即時入力／
 スタンダード／文章を自動で整える）に合わせる。ログインは settings_window と同じ
 login_coordinator を流用し、ブラウザで行う（「あとで」でスキップ可）。
 
@@ -33,10 +33,10 @@ from ..utils.logger import get_logger
 logger = get_logger(__name__)
 
 # 文字起こしモード（バックエンド）→ 新語彙の表示名。
-# リアルタイム=Deepgram / スタンダード=Groq（既定）。選択肢外（elevenlabs/openai）は
+# 即時入力=Deepgram / スタンダード=Groq（既定）。選択肢外（elevenlabs/openai）は
 # 内部利用のため「スタンダード」表示にフォールバックする。
 _BACKEND_LABELS = {
-    "deepgram": "リアルタイム",
+    "deepgram": "即時入力",
     "groq": "スタンダード",
     "elevenlabs": "スタンダード",
     "openai": "スタンダード",

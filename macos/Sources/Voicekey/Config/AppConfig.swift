@@ -38,13 +38,13 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
 
     /// 設定 UI に出すバックエンド名（製品版＝release ブランチ）。
     /// ユーザーが選べる文字起こしモードは 2 択:
-    /// - リアルタイム＝Deepgram（nova-3・短命 JWT 直叩き＋ストリーミング。話しながらライブ表示）
+    /// - 即時入力＝Deepgram（nova-3・短命 JWT 直叩き＋ストリーミング。しゃべり終わった瞬間に全文を一括入力）
     /// - スタンダード＝Groq（whisper-large-v3-turbo・プロキシ経由。録音後にきれいに整形。既定）
     /// ElevenLabs（scribe_v1）は選択肢から外し、スタンダードのハンズフリー録音時に内部でのみ
     /// 使う（長時間録音の精度対策）。openai は開発用のみ。
     var label: String {
         switch self {
-        case .deepgram: return "リアルタイム"
+        case .deepgram: return "即時入力"
         case .groq: return "スタンダード"
         // elevenlabs は選択肢外。スタンダード(groq)のハンズフリー録音時に内部でのみ使う名前で、
         // 計測ログ・エラーメッセージに出る（UI のピッカーには出さない）。
@@ -55,7 +55,7 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
     }
 
     /// 製品版で文字起こしバックエンドとして選べる 2 つ（表示順）。
-    /// リアルタイム=Deepgram（ストリーミング）/ スタンダード=Groq（既定・普通入力）。
+    /// 即時入力=Deepgram（ストリーミング）/ スタンダード=Groq（既定・普通入力）。
     /// enum の case（elevenlabs/openai）は保存値の decode 互換と EL の内部利用のため残す
     /// （「選べる集合」だけを縮める設計）。
     static var selectableCases: [Backend] { [.deepgram, .groq] }
@@ -90,7 +90,7 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
     var defaultModel: String { knownModels[0] }
 
     /// モード別のテキスト整形の既定 ON/OFF。
-    /// リアルタイム(deepgram)は速度全振りのため既定 OFF（トグルで ON は可能）、
+    /// 即時入力(deepgram)は速度全振りのため既定 OFF（トグルで ON は可能）、
     /// スタンダード(groq)ほかは録音後にきれいに整形するため既定 ON。
     /// 設定 UI でモードを切り替えたときに整形トグルをこの既定へ追従させる。
     var defaultFormatEnabled: Bool {
@@ -130,7 +130,7 @@ extension SlotConfig {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         hotkey = try c.decodeIfPresent([String].self, forKey: .hotkey) ?? []
         mode = try c.decodeIfPresent(HotkeyMode.self, forKey: .mode) ?? .hold
-        // 製品版で選べるのは deepgram（リアルタイム）/ groq（スタンダード）の 2 択。
+        // 製品版で選べるのは deepgram（即時入力）/ groq（スタンダード）の 2 択。
         // 選択肢に無い保存値（旧「高精度」= elevenlabs・openai）は groq（スタンダード・既定）へ移行する。
         // deepgram は選択肢に残るため、保存済み deepgram はそのまま維持される。
         // enum の case は decode 互換と EL の内部利用のため削らない（「選べる集合」だけを絞る）。
@@ -189,7 +189,7 @@ final class ConfigStore: ObservableObject {
     @Published var vadEnabled: Bool
     /// 録音 HUD を表示するか
     @Published var hudEnabled: Bool
-    /// Deepgram でリアルタイムストリーミング（ライブ字幕）を使うか
+    /// Deepgram でストリーミング文字起こしを使うか（録音と並行して確定テキストを受信）
     @Published var streamingEnabled: Bool
     /// ダブルタップ自動 Enter: テキスト挿入から Enter 送信までの待機（ミリ秒）
     @Published var autoEnterDelayMs: Int
@@ -251,10 +251,10 @@ final class ConfigStore: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
 
-        // 製品版の既定: スロット1=メイン(右⌘・押している間・Deepgram「リアルタイム」nova-3)
+        // 製品版の既定: スロット1=メイン(右⌘・押している間・Deepgram「即時入力」nova-3)
         //             スロット2=ハンズフリー(右⌥・トグル・Groq「スタンダード」)
         //             ハンズフリー(toggle)録音では groq を内部で ElevenLabs(scribe_v1) に自動切替する。
-        //             （2026-07-03 ユーザー指示: 新規ユーザーはメイン=リアルタイム長押しで始める。
+        //             （2026-07-03 ユーザー指示: 新規ユーザーはメイン=即時入力長押しで始める。
         //              既存ユーザーは保存値が優先されるため影響しない）
         slot1 = Self.loadSlot(defaults, key: Keys.slot1) ?? SlotConfig(
             hotkey: ["cmd_r"], mode: .hold, backend: .deepgram,
@@ -296,7 +296,7 @@ final class ConfigStore: ObservableObject {
         historyEnabled = defaults.object(forKey: Keys.historyEnabled) as? Bool ?? true
 
         // 一回限りのマイグレーション（モード別整形既定の導入・v1.8）。
-        // 既存ユーザーは formatEnabled=true が明示保存されているため、リアルタイム(deepgram)
+        // 既存ユーザーは formatEnabled=true が明示保存されているため、即時入力(deepgram)
         // スロットの整形を初回だけ既定 OFF（速度全振り）へ矯正する。以後は二度と触らないので、
         // ユーザーが deepgram で整形 ON にしたらそれを尊重する。decode 内ではやらない
         // （decode は保存値をそのまま復元する役目で、一回限りの副作用を持たせない）。

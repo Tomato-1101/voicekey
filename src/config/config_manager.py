@@ -20,7 +20,7 @@ logger = get_logger(__name__)
 # 対応バックエンド（REST + ストリーミング）。これ以外は openai にフォールバック
 API_BACKENDS = {"groq", "openai", "elevenlabs", "deepgram"}
 # 製品版（release ブランチ）でユーザーが文字起こしに選べるバックエンド（2 択）。
-# リアルタイム = deepgram（nova-3・短命トークン直叩き＋ストリーミング。話しながらライブ表示）/
+# 即時入力 = deepgram（nova-3・短命トークン直叩き＋ストリーミング。しゃべり終わった瞬間に全文を一括入力）/
 # スタンダード = groq（既定・whisper-large-v3-turbo・プロキシ経由。録音後にきれいに整形）。
 # elevenlabs（scribe_v1）は選択肢から外し、スタンダードのハンズフリー録音時に内部でのみ使う
 # （長時間録音の精度対策・app._maybe_handsfree_slot）。openai は開発用のみ。
@@ -261,7 +261,7 @@ class ConfigManager:
         保存済み settings.yaml に範囲外バックエンド（旧 elevenlabs / openai 等）が残っていても、
         groq（スタンダード＝既定）へ移行する。移行時は api_model を空にして
         default_api_models（groq→whisper-large-v3-turbo）にフォールバックさせる。
-        deepgram（リアルタイム）は選択肢に残したので、保存済み deepgram はそのまま維持される。
+        deepgram（即時入力）は選択肢に残したので、保存済み deepgram はそのまま維持される。
         elevenlabs は enum としては残す（スタンダードのハンズフリー録音時に内部でのみ使う）が、
         ユーザーが直接選ぶ保存値としては許可しない（「選べる集合」だけを絞る）。
 
@@ -282,7 +282,7 @@ class ConfigManager:
     def _migrate_format_defaults(config: Dict[str, Any]) -> None:
         """モード別整形既定を既存ユーザーへ一回限りで適用する（破壊的更新・Mac 版と対）。
 
-        既存ユーザーは format_enabled=true が明示保存されているため、リアルタイム(deepgram)
+        既存ユーザーは format_enabled=true が明示保存されているため、即時入力(deepgram)
         スロットの整形を初回だけ既定 OFF（速度全振り）へ矯正する。矯正済みマーカー
         （migrated_format_defaults）を立て、以後は二度と触らない＝その後ユーザーが deepgram で
         整形 ON にしたらそれを尊重する。マーカーは ConfigManager.save の deep merge で保持される
