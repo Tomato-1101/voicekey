@@ -269,20 +269,12 @@ struct HomeView: View {
 
     // MARK: - 最近の履歴
 
-    /// 最近の履歴（直近 8 件・行クリックでコピー）。ヘッダに「消去」。
+    /// 最近の履歴（直近 8 件・行クリックでコピー）。
+    /// 手動の全削除は置かない（履歴は上限件数を超えると古い順に自動で消える。
+    /// 統計は履歴と独立した累計のため、履歴が消えても減らない）。
     private var historySection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("最近の履歴").font(.headline)
-                Spacer()
-                if !history.items.isEmpty {
-                    Button("消去") { history.clear() }
-                        .buttonStyle(.plain)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .help("履歴をすべて消去する")
-                }
-            }
+            Text("最近の履歴").font(.headline)
             if history.items.isEmpty {
                 emptyState("音声入力すると、ここに最近の履歴が残ります（クリックでコピーできます）。")
             } else {

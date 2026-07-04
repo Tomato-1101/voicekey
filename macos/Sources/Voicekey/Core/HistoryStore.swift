@@ -100,12 +100,6 @@ final class HistoryStore: ObservableObject {
         save()
     }
 
-    /// 履歴をすべて消去する（発話内容をディスクに残したくないとき用）
-    func clear() {
-        items = []
-        save()
-    }
-
     private func save() {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
