@@ -69,7 +69,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         LoginCoordinator.shared.handleDeepLink(url)
     }
 
+    /// メインメニュー（アプリ＋編集）をコードで設置する。
+    /// 標準編集キー（⌘V 等）はメニュー項目のキー割当を経由してレスポンダチェーンの
+    /// cut:/copy:/paste:/selectAll: に届く仕組みのため、常駐アプリでもメニュー自体は必須。
+    private func installMainMenu() {
+        let main = NSMenu()
+
+        // アプリメニュー（先頭に必須の器。⌘Q はウィンドウ前面時のみ効く＝常駐の邪魔はしない）
+        let appItem = NSMenuItem()
+        main.addItem(appItem)
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "voicekey を終了", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+
+        // 編集メニュー（表示はされないがキー割当のフォールバック先になる）
+        let editItem = NSMenuItem()
+        main.addItem(editItem)
+        let edit = NSMenu(title: "編集")
+        edit.addItem(withTitle: "取り消す", action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = NSMenuItem(title: "やり直す", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        edit.addItem(redo)
+        edit.addItem(.separator())
+        edit.addItem(withTitle: "カット", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "コピー", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "ペースト", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "すべてを選択", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = edit
+
+        NSApp.mainMenu = main
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // メインメニューを設置する。メニューバー常駐（accessory）アプリはメインメニューが無く、
+        // 編集メニューのキー割当が存在しないため ⌘V/⌘C/⌘X/⌘A が全ウィンドウでビープになる
+        // （セットアップガイドの入力欄・内蔵ターミナルへの貼り付け不可の実機報告・2026-07-05）。
+        // メニューは画面に出ないが、キーイベントのフォールバック先として機能する。
+        installMainMenu()
+
         // App Nap を無効化する。ウィンドウを 1 つも持たないメニューバーアプリは
         // ナップ対象になり、イベントタップのコールバックが遅延 → OS にタイムアウト
         // 無効化されてホットキーが効かなくなるため（システムスリープは妨げない）
