@@ -55,19 +55,25 @@ def grab_settings_tabs(app) -> dict:
 
 
 def grab_hud_states() -> dict:
-    """HUD の 3 状態 + 通知を、デスクトップ風背景に合成して撮影する。"""
+    """HUD の各状態（待機ピル / 録音 / ハンズフリー録音 / 自動 Enter / 変換中 / 通知）を撮影する。"""
     from src.ui.hud import Hud
 
     shots = {}
+    # (名前, state, 通知文, ハンズフリーか)
     states = [
-        ("hud_recording", "recording", None),
-        ("hud_recording_auto_enter", "recording_auto_enter", None),
-        ("hud_transcribing", "transcribing", None),
-        ("hud_notice", None, "音声を検出できませんでした"),
+        ("hud_idle", "idle", None, False),
+        ("hud_recording", "recording", None, False),
+        ("hud_recording_hands_free", "recording", None, True),
+        ("hud_recording_auto_enter", "recording_auto_enter", None, False),
+        ("hud_transcribing", "transcribing", None, False),
+        ("hud_notice", None, "音声を検出できませんでした", False),
     ]
-    for name, state, notice in states:
+    for name, state, notice, hands_free in states:
         hud = Hud(enabled=True)
+        hud.always_visible = True  # 待機ピル（idle）を出せるようにする
         if state:
+            if hands_free:
+                hud.set_hands_free(True)  # status より先に着色情報を届ける実運用と同じ順
             hud.set_state(state)
             if state.startswith("recording"):
                 # 波形バーに動きを付ける（発話風のレベル列）
@@ -82,8 +88,10 @@ def grab_hud_states() -> dict:
         hud.render(painter, QPoint(0, 0))
         painter.end()
         shots[name] = canvas
+        # 撮影後にアニメ/タイマーを止める（裏で回り続けないように）
         hud._notice_timer.stop()
-        hud._spin_timer.stop()
+        hud._size_anim.stop()
+        hud._blink.stop()
         hud.deleteLater()
     return shots
 

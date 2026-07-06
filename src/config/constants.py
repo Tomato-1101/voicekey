@@ -130,6 +130,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # 録音中の HUD（画面下部中央の小型ピル）を表示するか
     "hud_enabled": True,
 
+    # 待機中も小型ピルを常時表示するか（Mac 版 hudAlwaysVisible と同義・既定 OFF）。
+    # hud_enabled と違い _force_always_on の対象にはしない（ユーザーが自由に ON/OFF する項目）。
+    "hud_always_visible": False,
+
     # 開発者モード - 出力を引用符で囲み、タイミングをファイルに記録
     "dev_mode": False,
 

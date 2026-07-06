@@ -178,12 +178,18 @@ class VoicekeyApp(QObject):
         audio_level: 録音中の音声レベル（0.0-1.0、約 30fps）。HUD のレベルメーター用
         notice: ユーザーに見せるべき一時メッセージ（エラー、無音検出など）
         interim_text: ストリーミング中のライブ字幕（受信スレッド → メインへホップ）
+        hands_free_changed: 現在の録音がハンズフリー（toggle 実効）か。HUD のドット/波形の着色用
     """
 
     status_changed = Signal(str)
     audio_level = Signal(float)
     notice = Signal(str)
     interim_text = Signal(str)
+    # 録音がハンズフリー（toggle 実効モード）かどうか。Mac 版 handsFree と同義で、HUD は
+    # ラベルではなくドット/波形の色（ティール）だけで通常録音と区別する。status_changed とは
+    # 別チャネルにするのは、status_changed が tray の AppState 変換に使われており文字列集合を
+    # 増やせないため（recording 文字列は変えずに色情報だけ HUD へ運ぶ）。
+    hands_free_changed = Signal(bool)
     # 録音完了後に利用権の残量を取り直したら発火（設定画面の「残り回数」を即更新するため。
     # ワーカースレッド → メインスレッドへ Qt のキュー接続でホップする）
     account_refreshed = Signal()
@@ -294,10 +300,14 @@ class VoicekeyApp(QObject):
         # 録音中 HUD（画面下部中央の小型ピル）。シグナルはワーカー/音声スレッドから
         # 発火するが、Qt のキュー接続でメインスレッド上の HUD へ安全にホップする
         self._hud = Hud(enabled=bool(self._config.get("hud_enabled", True)))
+        # 待機中も小型ピルを常時表示するか（Mac 版 hudAlwaysVisible と同義）。
+        self._hud.always_visible = bool(self._config.get("hud_always_visible", False))
         self.status_changed.connect(self._hud.set_state)
         self.audio_level.connect(self._hud.push_level)
         self.notice.connect(self._hud.show_notice)
         self.interim_text.connect(self._hud.set_caption)
+        # ハンズフリー着色は status より先に届くよう、_emit_state で status_changed の前に emit する
+        self.hands_free_changed.connect(self._hud.set_hands_free)
 
         # --- 背景スレッド ---
         self._monitoring = True
@@ -1174,10 +1184,16 @@ class VoicekeyApp(QObject):
         with self._state_lock:
             if self._recording_slot is not None:
                 state = "recording_auto_enter" if self._auto_enter else "recording"
+                # Mac 版 handsFree と同じ判定（toggle 実効モード＝切替キー併用 or toggle 設定スロット）
+                hands_free = self._recording_effective_mode == HotkeyMode.TOGGLE.value
             elif self._outstanding > 0:
                 state = "transcribing"
+                hands_free = False
             else:
                 state = "idle"
+                hands_free = False
+        # 着色情報を先に届けてから状態を切り替える（set_state の再描画時に色が確定しているように）
+        self.hands_free_changed.emit(hands_free)
         self.status_changed.emit(state)
 
     # ------------------------------------------------------------------
@@ -1224,8 +1240,11 @@ class VoicekeyApp(QObject):
         handsfree_timer.daemon = True
         handsfree_timer.start()
 
-        # HUD 表示の有効/無効を反映
+        # HUD 表示の有効/無効・待機ピル常時表示を反映
         self._hud.enabled = bool(self._config.get("hud_enabled", True))
+        self._hud.always_visible = bool(self._config.get("hud_always_visible", False))
+        # 待機ピルのオン/オフを即座に画面へ反映する（次の状態変化を待たない）
+        self._emit_state()
 
         logger.info("設定を再読み込みして適用しました")
 

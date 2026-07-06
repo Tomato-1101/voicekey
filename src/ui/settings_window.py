@@ -1125,6 +1125,18 @@ class SettingsWindow(QWidget):
         # 製品版はテキスト整形のモデル・指示文を固定（UI 非公開）。
         # オンオフは録音キー各タブの「文章を自動で整える」トグルで切り替える。
 
+        # --- カード: 表示（Mac 版 SettingsView の「表示」セクションと同項目・同文言） ---
+        card, cl = _make_card()
+
+        # 待機中も小型ピルを常時表示する（Mac 版 hudAlwaysVisible と同義・既定 OFF）
+        self._hud_always_visible_check = self._make_toggle()
+        _add_row(
+            cl, "ピルを常に表示", self._hud_always_visible_check,
+            caption="待機中も画面下部に小さなピルを表示します。録音を始めると大きくなります。",
+        )
+
+        layout.addWidget(card)
+
         # --- カード: 起動 ---
         card, cl = _make_card()
 
@@ -2343,6 +2355,9 @@ class SettingsWindow(QWidget):
         # 一般 - その他（VAD/分割/HUD/ストリーミング/音量正規化は常時ON固定のため UI 無し）
         # 自動起動はレジストリの実状態を反映（settings.yaml には持たない）
         self._autostart_check.setChecked(autostart.is_enabled())
+        self._hud_always_visible_check.setChecked(
+            bool(config.get("hud_always_visible", False))
+        )
         self._handsfree_input.setText(config.get("handsfree_key", ""))
         self._auto_enter_delay_slider.setValue(config.get("auto_enter_delay_ms", 50))
         self._populate_input_devices()
@@ -2394,6 +2409,8 @@ class SettingsWindow(QWidget):
             "language": self._lang_combo.currentData() or "",
             "audio_input_device": selected_input_device,
             "auto_enter_delay_ms": self._auto_enter_delay_slider.value(),
+            # 待機中も小型ピルを常時表示するか（Mac 版 hudAlwaysVisible と同義）
+            "hud_always_visible": self._hud_always_visible_check.isChecked(),
 
             # ハンズフリー切替キー
             "handsfree_key": self._handsfree_input.text(),

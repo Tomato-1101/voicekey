@@ -11,6 +11,7 @@
 //
 
 import AppKit
+import QuartzCore  // CAMediaTimingFunction（位置追従アニメの easeOut カーブ）
 import SwiftUI
 
 /// HUD の表示状態モデル
@@ -52,6 +53,8 @@ final class HudController {
     private var lastState: AppState = .idle
     /// Space / フルスクリーン切替を監視する NSWorkspace オブザーバ（deinit で解除）
     private var spaceObservers: [NSObjectProtocol] = []
+    /// 画面構成変化（Dock 出没・解像度変更・外部ディスプレイ着脱）を監視するオブザーバ（deinit で解除）
+    private var screenObserver: NSObjectProtocol?
 
     /// HUD を表示するか（設定で無効化可能）
     var enabled = true
@@ -74,11 +77,23 @@ final class HudController {
             }
             spaceObservers.append(token)
         }
+
+        // Dock（タスクバー相当）の自動非表示 ON/OFF・解像度変更・外部ディスプレイ着脱で
+        // visibleFrame が変わる＝ピルの正しい縦位置がずれる。表示中なら位置を再計算して
+        // 滑らかに追従させる（SideNotch と同じ didChangeScreenParameters 経路）。
+        // フルスクリーン Space への出入りでもこの通知が飛ぶため、待機ピルの表示可否もここで再評価する。
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.handleScreenChange() }
+        }
     }
 
     deinit {
         let nc = NSWorkspace.shared.notificationCenter
         for token in spaceObservers { nc.removeObserver(token) }
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
     }
 
     /// アプリ状態に応じて HUD を更新する
@@ -151,6 +166,12 @@ final class HudController {
         if panel == nil {
             panel = makePanel()
         }
+        // フルスクリーン Space では待機ピルだけ出さない（ユーザーが何かを観たい状態なので塞がない）。
+        // 録音/変換/通知はユーザー操作起点なので出す。フルスクリーン解除後は handleScreenChange で復帰する。
+        if model.mode == .idlePill, isMainScreenFullScreen() {
+            panel?.orderOut(nil)
+            return
+        }
         positionPanel()
         panel?.orderFrontRegardless()
     }
@@ -182,24 +203,65 @@ final class HudController {
         return panel
     }
 
-    private func positionPanel() {
+    private func positionPanel(animated: Bool = false) {
         guard let panel, let screen = NSScreen.main else { return }
         let frame = screen.visibleFrame
         let x = frame.midX - HudView.width / 2
         // パネル下端をほぼ画面下端に置く。カプセルはパネル内で下端＋6pt に寄せてあるので、
         // 実際のカプセル下端は画面下端（Dock 上端）+ 約 8pt に固定される。
         let y = frame.minY + 2
-        panel.setFrame(
-            NSRect(x: x, y: y, width: HudView.width, height: HudView.height),
-            display: true
-        )
+        let target = NSRect(x: x, y: y, width: HudView.width, height: HudView.height)
+        if animated, panel.isVisible {
+            // Dock 出没・解像度変化での縦位置追従はジャンプさせず、easeOut で 0.22 秒かけてスッと移動させる。
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.22
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                panel.animator().setFrame(target, display: true)
+            }
+        } else {
+            panel.setFrame(target, display: true)
+        }
+    }
+
+    /// メインスクリーンがフルスクリーン Space かをヒューリスティックに判定する。
+    /// フルスクリーン Space では visibleFrame がメニューバー分すら差し引かれず frame とほぼ一致する
+    /// （通常デスクトップは上端メニューバー〔+ 場合により Dock〕ぶん visibleFrame が縮む）。
+    /// 完全な公開 API は無いためこの近似で足りる（誤検出しても待機ピルの出/隠だけの軽い影響で、
+    /// 録音/変換/通知の表示には影響しない）。
+    private func isMainScreenFullScreen() -> Bool {
+        guard let screen = NSScreen.main else { return false }
+        let vf = screen.visibleFrame
+        let f = screen.frame
+        return abs(vf.height - f.height) <= 1 && abs(vf.minY - f.minY) <= 1
+    }
+
+    /// 画面構成変化（Dock 出没・解像度変更・フルスクリーン Space 出入り）の通知を受けて位置と表示可否を再評価する。
+    private func handleScreenChange() {
+        guard let panel, model.mode != .hidden else { return }
+        // 待機ピルはフルスクリーン Space では隠し、通常デスクトップに戻れば復帰させる。
+        if model.mode == .idlePill {
+            if isMainScreenFullScreen() {
+                panel.orderOut(nil)
+            } else {
+                show()  // 正規位置へ再配置して前面へ（フルスクリーン解除での復帰）
+            }
+            return
+        }
+        // 録音/変換/通知は表示継続。Dock 出没・解像度変化に縦位置を滑らかに追従させる。
+        if panel.isVisible { positionPanel(animated: true) }
     }
 
     /// Space / フルスクリーン切替の通知を受けて、表示中のバックドロップを再評価する。
     /// パネルが全 Space に居座る都合で、切替後に旧 Space の映り込みで固まることがあるため、
     /// mode 変化と同じ再評価パス（frame 再適用 + 再レイアウト/再描画）をイベント駆動で強制する。
     private func refreshBackdrop() {
-        guard let panel, panel.isVisible, model.mode != .hidden else { return }
+        guard let panel, model.mode != .hidden else { return }
+        // 待機ピルは Space 切替でフルスクリーン Space に入った場合に隠す/復帰する（isVisible ガードより前に評価）。
+        if model.mode == .idlePill {
+            if isMainScreenFullScreen() { panel.orderOut(nil); return }
+            if !panel.isVisible { show(); return }
+        }
+        guard panel.isVisible else { return }
         // 1) 正規位置の frame を再適用（setFrame display:true）
         positionPanel()
         // 2) contentView 配下（HudBackdrop の NSGlassEffectView / NSVisualEffectView を含む）を
@@ -244,9 +306,18 @@ struct HudView: View {
     private var isIdlePill: Bool { model.mode == .idlePill }
     /// 変換中か（明滅アニメを駆動してよいかの判定に使う）
     private var isTranscribing: Bool { model.mode == .transcribing }
-    // 待機ピルは極小の横長、録音/変換中は通常サイズ。この padding 差でモーフの「育ち」を出す
-    private var horizontalPadding: CGFloat { isIdlePill ? 12 : 16 }
-    private var verticalPadding: CGFloat { isIdlePill ? 3 : 8 }
+    // 三段階サイズ（待機=最小 < 変換中=小 < 録音=大）を padding 差で作る。全体を「もう少しだけ」
+    // 小型化するため通常（録音/通知）を 16/8→13/6 に、変換中はさらに詰めた 12/5 にして録音より縮ませる。
+    private var horizontalPadding: CGFloat {
+        if isIdlePill { return 12 }
+        if isTranscribing { return 12 }
+        return 13
+    }
+    private var verticalPadding: CGFloat {
+        if isIdlePill { return 3 }
+        if isTranscribing { return 5 }
+        return 6
+    }
     /// カプセルの目標サイズ（実測した中身＋左右/上下の padding）
     private var capsuleWidth: CGFloat { contentSize.width + horizontalPadding * 2 }
     private var capsuleHeight: CGFloat { contentSize.height + verticalPadding * 2 }
@@ -298,8 +369,8 @@ struct HudView: View {
                             // 「カプセルが伸び、伸びた先に中身が現れる」順序を作るための非対称フェード。
                             // 挿入は少し遅らせてフェードイン（カプセルが育ち始めてから新中身が出る）、
                             // 削除は先に速く消す（旧中身を残したまま育たせない）。
-                            // 録音→変換中はカプセルサイズを凍結する（下の onPreferenceChange 参照）ため、
-                            // 「変換中…」は動かないカプセルの中でその場クロスフェードになる。
+                            // 録音→変換中はカプセルが一回り縮む（三段階サイズ）ため、「変換中…」は
+                            // 縮んでいくカプセルの中へクロスフェードで現れる。
                             .transition(.asymmetric(
                                 insertion: .opacity.animation(.easeIn(duration: 0.12).delay(0.06)),
                                 removal: .opacity.animation(.easeOut(duration: 0.08))
@@ -325,11 +396,10 @@ struct HudView: View {
         .animation(.spring(response: 0.3, dampingFraction: 0.82), value: model.mode)
         // 実測サイズの変化を spring でカプセル frame に反映する（＝カプセルがサイズだけ連続変形する本体）。
         .animation(.spring(response: 0.3, dampingFraction: 0.82), value: contentSize)
-        // 変換中はカプセルサイズを凍結する: 録音（波形）→変換中（アイコン＋文字）でサイズが
-        // 縮むと、中央寄せの中身が横に流れて見える（ユーザー指摘「左右に動く」）。変換中は直前の
-        // 録音カプセルのまま動かさず、中身だけをその場でクロスフェード＋明滅させる。
-        // （変換中→次の録音/通知/待機ピルでは通常どおり実測サイズへ変形する）
-        .onPreferenceChange(HudContentSizeKey.self) { if !isTranscribing { contentSize = $0 } }
+        // 三段階サイズ（待機 < 変換中 < 録音）を出すため、どのモードでも実測サイズへ追従させる。
+        // 録音（波形・大）→変換中（「変換中…」・小）ではカプセルが spring で縮む＝録音より一回り
+        // 小さいことが一目で分かる（旧実装はここで変換中サイズを凍結していたが、三段階化のため廃止）。
+        .onPreferenceChange(HudContentSizeKey.self) { contentSize = $0 }
         // transcribing に入った瞬間に往復開始、離脱で停止（明滅を非表示中に裏で回し続けない）。
         .onChange(of: isTranscribing) { _, active in pulseOn = active }
     }
@@ -388,32 +458,24 @@ struct HudView: View {
         }
     }
 
-    /// 録音中の中身（アプリアイコン・状態ドット・波形／字幕・各バッジ）
+    /// 録音中の中身（アプリアイコン・状態ドット・波形・自動送信バッジ）。
+    /// ハンズフリーは「ハンズフリー」ラベルや停止ヒントを出さず、状態ドットと波形バーを
+    /// アクセント色（ティール）に着色することだけで通常録音と区別する（情報最小限・幅も詰まる）。
     @ViewBuilder
     private func recordingContent(autoEnter: Bool, handsFree: Bool) -> some View {
+        // 状態色: ハンズフリー=ティール / 自動送信=パープル / 通常=レッド
+        let accent: Color = handsFree ? Self.handsFreeAccent : (autoEnter ? Color.purple : Color.red)
         HStack(spacing: 10) {
             appIconView  // 貼り付け先アプリのアイコン（左端）
-            // 状態ドット: ハンズフリー=ティール / 自動送信=パープル / 通常=レッド
             Circle()
-                .fill(handsFree ? Self.handsFreeAccent : (autoEnter ? Color.purple : Color.red))
-                .frame(width: 8, height: 8)
-            // ハンズフリー中は「いまハンズフリー録音だ」と一目で分かるラベルを出す
-            if handsFree {
-                Text("ハンズフリー")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Self.handsFreeAccent)
-                    .fixedSize()
-            }
-            // 音声レベル連動の波形バー
-            levelBars
+                .fill(accent)
+                .frame(width: 7, height: 7)
+            // 音声レベル連動の波形バー。ハンズフリー中はバーもアクセント色で塗る（ラベル無しでも一目で判る）
+            levelBars(tint: handsFree ? Self.handsFreeAccent : Color.primary.opacity(0.75))
             if autoEnter {
                 Image(systemName: "return")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(.purple)
-            }
-            // ハンズフリー中は停止方法を控えめに添える
-            if handsFree {
-                stopHint
             }
         }
     }
@@ -427,7 +489,7 @@ struct HudView: View {
             // repeatForever は transcribing の間だけ（isTranscribing で切替）駆動し、離脱時は非反復
             // アニメに切り替えて確実に止める＝非表示中に裏で回り続けて CPU を食わないようにする。
             Text("変換中…")
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
                 .opacity(pulseOn ? 0.35 : 1.0)
                 .animation(
@@ -439,27 +501,12 @@ struct HudView: View {
         }
     }
 
-    /// ハンズフリー停止方法のヒントバッジ（同じホットキーをもう一度押すと停止）
-    private var stopHint: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "stop.fill")
-                .font(.system(size: 9, weight: .bold))
-            Text("もう一度押すと停止")
-                .font(.system(size: 10, weight: .medium))
-        }
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(.quaternary, in: Capsule())
-        .fixedSize()
-    }
-
-    /// 音声レベル連動の波形バー
-    private var levelBars: some View {
+    /// 音声レベル連動の波形バー。tint で色を差し替え、ハンズフリー中はアクセント色で塗る
+    private func levelBars(tint: Color) -> some View {
         HStack(spacing: 2.5) {
             ForEach(0..<Self.barCount, id: \.self) { i in
                 RoundedRectangle(cornerRadius: 1.5)
-                    .fill(Color.primary.opacity(0.75))
+                    .fill(tint)
                     .frame(width: 3, height: barHeight(model.levels[i]))
             }
         }
@@ -467,8 +514,9 @@ struct HudView: View {
     }
 
     private func barHeight(_ level: Float) -> CGFloat {
+        // 全体の小型化に合わせて最大高さを 22→18 に下げる
         let minH: CGFloat = 3
-        let maxH: CGFloat = 22
+        let maxH: CGFloat = 18
         return minH + (maxH - minH) * CGFloat(min(1, max(0, level)))
     }
 }
