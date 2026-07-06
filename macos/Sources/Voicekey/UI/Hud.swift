@@ -11,8 +11,14 @@
 //
 
 import AppKit
+import CoreGraphics  // CGWindowListCopyWindowInfo（フルスクリーン Space の判定）
 import QuartzCore  // CAMediaTimingFunction（位置追従アニメの easeOut カーブ）
 import SwiftUI
+import os.log
+
+/// HUD のログ（フルスクリーン Space 判定など状態遷移を .notice で永続記録する）。
+/// .info/.debug は log show で追えないため、待機ピルの出/隠の根拠は .notice で残す。
+private let hudLog = Logger(subsystem: "com.voicekey.app", category: "hud")
 
 /// HUD の表示状態モデル
 @MainActor
@@ -85,8 +91,12 @@ final class HudController {
             NSWorkspace.activeSpaceDidChangeNotification,
             NSWorkspace.didActivateApplicationNotification,
         ] {
+            // 重要: ここは同期の assumeIsolated で refreshBackdrop を即実行する。
+            // 以前は Task { @MainActor in … } だったが、当アプリの起動/常駐状態（背景・App Nap）では
+            // その Task が実行されず、フルスクリーン時に待機ピルを隠す処理がまるごと走っていなかった
+            // （＝この不具合の一次原因）。同期実行ならコールバック内で確実に評価される。
             let token = nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.refreshBackdrop() }
+                MainActor.assumeIsolated { self?.refreshBackdrop() }
             }
             spaceObservers.append(token)
         }
@@ -251,28 +261,72 @@ final class HudController {
         }
     }
 
-    /// メインスクリーンがフルスクリーン Space かをヒューリスティックに判定する。
-    /// フルスクリーン Space では visibleFrame がメニューバー分すら差し引かれず frame とほぼ一致する
-    /// （通常デスクトップは上端メニューバー〔+ 場合により Dock〕ぶん visibleFrame が縮む）。
-    /// 完全な公開 API は無いためこの近似で足りる（誤検出しても待機ピルの出/隠だけの軽い影響で、
-    /// 録音/変換/通知の表示には影響しない）。
+    /// メインスクリーンがフルスクリーン Space かを判定する。
+    /// 【当初のヒューリスティック（visibleFrame≒frame）はなぜ効かなかったか】
+    /// 背景アプリ（本アプリ）から見た NSScreen.main.visibleFrame は、自分が居る通常デスクトップ
+    /// Space の値のまま（Dock/メニューバーぶん縮んだ値）で、他アプリのフルスクリーンを反映しない。
+    /// 実測でもフルスクリーン中ずっと vf=1512x897@y52（＝frame と不一致）だったため常に false になっていた。
+    /// 【対策】CGWindowList で「画面全体を覆う通常レイヤー(0)のオンスクリーンウィンドウ」の有無で判定する。
+    /// bounds と layer だけを参照し、ウィンドウ名や画像は取らないので Screen Recording 権限は不要。
+    /// 同期呼び出しなので Space 切替通知のコールバック内でそのまま評価できる（遅延・Task 不要）。
     private func isMainScreenFullScreen() -> Bool {
         guard let screen = NSScreen.main else { return false }
-        let vf = screen.visibleFrame
         let f = screen.frame
-        return abs(vf.height - f.height) <= 1 && abs(vf.minY - f.minY) <= 1
+        let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        let infos = (CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]]) ?? []
+        for info in infos {
+            // 通常ウィンドウ層(0)のみ対象（メニューバー/HUD/Dock などの高レイヤーは除外）
+            guard let layer = info[kCGWindowLayer as String] as? Int, layer == 0 else { continue }
+            guard let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
+                  let rect = CGRect(dictionaryRepresentation: boundsDict) else { continue }
+            // 画面全体（frame）をほぼ覆う通常ウィンドウがあればフルスクリーン Space とみなす。
+            // 最大化ウィンドウは visibleFrame 高さ止まり（メニューバー分低い）なので誤検出しない。
+            if rect.width >= f.width - 1 && rect.height >= f.height - 1 { return true }
+        }
+        return false
+    }
+
+    /// 待機ピルのフルスクリーン可否を「今すぐ＋遅延でも」再評価して隠す/戻す。
+    /// フルスクリーン Space に入った直後は NSScreen.visibleFrame が旧値のまま（更新遅延）で
+    /// 即時評価だと取りこぼすため、確実に走る DispatchQueue.main.asyncAfter で 0.4s / 0.9s に
+    /// も再評価する（当アプリの起動経路では Timer.scheduledTimer / Task{@MainActor} が回らないため
+    /// これらは使わない＝根本原因のひとつ）。
+    private func reevaluateIdlePillForFullScreen() {
+        guard model.mode == .idlePill, panel != nil else { return }
+        applyIdlePillFullScreenVisibility()
+        // 保険の遅延再評価: フルスクリーンのアニメ完了と通知の前後関係が環境で揺れる場合に取りこぼさない。
+        // 通常起動（アクティブ時）は確実に走る。App Nap 中の背景状態では間引かれ得るが、同期の即時評価で
+        // 既に確定しているため実害はない（べき等・現在の CGWindowList 状態で再判定するだけ）。
+        for delay in [0.4, 0.9] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, self.model.mode == .idlePill else { return }
+                    self.applyIdlePillFullScreenVisibility()
+                }
+            }
+        }
+    }
+
+    /// 待機ピルを、フルスクリーンなら隠す・通常デスクトップなら（隠れていれば）戻す。
+    private func applyIdlePillFullScreenVisibility() {
+        guard let panel, model.mode == .idlePill else { return }
+        if isMainScreenFullScreen() {
+            if panel.isVisible {
+                hudLog.notice("待機ピルをフルスクリーン中は非表示にする")
+                panel.orderOut(nil)
+            }
+        } else if !panel.isVisible {
+            hudLog.notice("フルスクリーン解除で待機ピルを復帰する")
+            show()  // 正規位置へ再配置して前面へ
+        }
     }
 
     /// 画面構成変化（Dock 出没・解像度変更・フルスクリーン Space 出入り）の通知を受けて位置と表示可否を再評価する。
     private func handleScreenChange() {
         guard let panel, model.mode != .hidden else { return }
-        // 待機ピルはフルスクリーン Space では隠し、通常デスクトップに戻れば復帰させる。
+        // 待機ピルはフルスクリーン Space では隠し、通常デスクトップに戻れば復帰させる（遅延再評価付き）。
         if model.mode == .idlePill {
-            if isMainScreenFullScreen() {
-                panel.orderOut(nil)
-            } else {
-                show()  // 正規位置へ再配置して前面へ（フルスクリーン解除での復帰）
-            }
+            reevaluateIdlePillForFullScreen()
             return
         }
         // 録音/変換/通知は表示継続。Dock 出没・解像度変化に縦位置を滑らかに追従させる。
@@ -284,10 +338,10 @@ final class HudController {
     /// mode 変化と同じ再評価パス（frame 再適用 + 再レイアウト/再描画）をイベント駆動で強制する。
     private func refreshBackdrop() {
         guard let panel, model.mode != .hidden else { return }
-        // 待機ピルは Space 切替でフルスクリーン Space に入った場合に隠す/復帰する（isVisible ガードより前に評価）。
+        // 待機ピルは Space 切替でフルスクリーン Space に入った場合に隠す/復帰する（遅延再評価付き）。
         if model.mode == .idlePill {
-            if isMainScreenFullScreen() { panel.orderOut(nil); return }
-            if !panel.isVisible { show(); return }
+            reevaluateIdlePillForFullScreen()
+            return
         }
         guard panel.isVisible else { return }
         // 1) 正規位置の frame を再適用（setFrame display:true）
