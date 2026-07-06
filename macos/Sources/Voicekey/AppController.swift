@@ -107,6 +107,9 @@ final class AppController: ObservableObject {
         hud.alwaysVisible = config.hudAlwaysVisible
         // 起動時に常時表示 ON なら待機ピルを出す（state は初期値 idle のままで変化しないため明示的に呼ぶ）
         if hud.alwaysVisible { hud.update(for: .idle) }
+        // デバッグ用: VOICEKEY_HUD_DEBUG_STATE が指定されていれば HUD を固定状態で表示する（検証専用・
+        // 指定時は update(for:) が無視され、その状態を出しっぱなしにして見え方を計測できる）
+        hud.applyDebugStateIfNeeded()
 
         // 音声レベル → HUD（audio スレッドから来るためメインへホップ）
         recorder.levelHandler = { [weak self] level in

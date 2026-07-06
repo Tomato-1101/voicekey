@@ -56,6 +56,19 @@ final class HudController {
     /// 画面構成変化（Dock 出没・解像度変更・外部ディスプレイ着脱）を監視するオブザーバ（deinit で解除）
     private var screenObserver: NSObjectProtocol?
 
+    /// デバッグ用の固定表示状態（環境変数 VOICEKEY_HUD_DEBUG_STATE）。
+    /// 設定されている間は実状態（update(for:)）で上書きせず、この状態を出しっぱなしにして
+    /// HUD の見え方（変換中の横揺れ・フルスクリーン時の待機ピル可否等）を目視・スクショで
+    /// 検証するための最小ハーネス。値: transcribing / recording / idle（それ以外・未設定は nil＝通常動作）。
+    private var debugState: HudModel.Mode? {
+        switch ProcessInfo.processInfo.environment["VOICEKEY_HUD_DEBUG_STATE"] {
+        case "transcribing": return .transcribing
+        case "recording": return .recording(autoEnter: false, handsFree: false)
+        case "idle": return .idlePill
+        default: return nil
+        }
+    }
+
     /// HUD を表示するか（設定で無効化可能）
     var enabled = true
     /// 待機中も小型ピルを常時表示するか（config.hudAlwaysVisible）
@@ -96,8 +109,23 @@ final class HudController {
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
     }
 
+    /// 環境変数 VOICEKEY_HUD_DEBUG_STATE が指定されていれば HUD を固定状態で強制表示する。
+    /// AppController の初期化から一度だけ呼ぶ検証専用フック（未設定なら何もせず false）。
+    /// 変換/録音はアプリアイコン込みの見た目を確認したいのでダミーアイコンを立てる。
+    @discardableResult
+    func applyDebugStateIfNeeded() -> Bool {
+        guard let debugState else { return false }
+        enabled = true
+        if debugState != .idlePill { model.appIcon = NSApp.applicationIconImage }
+        model.mode = debugState
+        show()
+        return true
+    }
+
     /// アプリ状態に応じて HUD を更新する
     func update(for state: AppState) {
+        // デバッグ固定表示中（VOICEKEY_HUD_DEBUG_STATE）は実状態で上書きしない
+        if debugState != nil { return }
         lastState = state
         switch state {
         case .idle:
@@ -301,6 +329,10 @@ struct HudView: View {
     /// 変換中マークの明滅トグル。transcribing に入った瞬間だけ true にして往復を開始し、
     /// 離脱で false に戻す（repeatForever を確実に止め、非表示中に裏で回し続けないため）。
     @State private var pulseOn = false
+    /// 変換中に入った直後の一度だけカプセルサイズを確定し、以降は凍結するためのロック。
+    /// 明滅（opacity 往復）で中身が再測定され実測幅が微揺れしてもカプセル幅を動かさない
+    /// （中央寄せの「変換中…」が横に流れる回帰の防止）。transcribing を抜けたら解除する。
+    @State private var transcribingSizeLocked = false
 
     /// 待機ピルか（極小サイズ・薄めの mic のみ）
     private var isIdlePill: Bool { model.mode == .idlePill }
@@ -396,12 +428,35 @@ struct HudView: View {
         .animation(.spring(response: 0.3, dampingFraction: 0.82), value: model.mode)
         // 実測サイズの変化を spring でカプセル frame に反映する（＝カプセルがサイズだけ連続変形する本体）。
         .animation(.spring(response: 0.3, dampingFraction: 0.82), value: contentSize)
-        // 三段階サイズ（待機 < 変換中 < 録音）を出すため、どのモードでも実測サイズへ追従させる。
-        // 録音（波形・大）→変換中（「変換中…」・小）ではカプセルが spring で縮む＝録音より一回り
-        // 小さいことが一目で分かる（旧実装はここで変換中サイズを凍結していたが、三段階化のため廃止）。
-        .onPreferenceChange(HudContentSizeKey.self) { contentSize = $0 }
-        // transcribing に入った瞬間に往復開始、離脱で停止（明滅を非表示中に裏で回し続けない）。
-        .onChange(of: isTranscribing) { _, active in pulseOn = active }
+        // 三段階サイズ（待機 < 変換中 < 録音）は維持しつつ、変換中に入った後のサイズ更新だけ止める。
+        // 変換中は「変換中…」がゆっくり明滅（opacity 往復）するが、この明滅が走る間に中身が再測定され、
+        // 実測幅が 1px 未満で揺れる→カプセル幅が spring で追従し直す→中央寄せの「変換中…」が横へ流れて
+        // 見える回帰があった（546ec43 で旧・凍結ガードを撤廃したことによる）。そこで「変換中に入った
+        // 直後の一度だけ」実測サイズを採用し、以降 transcribing の間は凍結する（明滅由来の再測定を無視）。
+        // 録音→変換中の一回り縮む spring モーフは、この初回採用で一度だけ発火する。
+        .onPreferenceChange(HudContentSizeKey.self) { newSize in
+            if isTranscribing {
+                if transcribingSizeLocked { return }
+                transcribingSizeLocked = true
+            }
+            contentSize = newSize
+        }
+        // transcribing に入った瞬間に明滅の往復開始、離脱で停止（非表示中に裏で回し続けない）。
+        // 変換中を抜けたらサイズ凍結を解除し、次モードの実測サイズへ再び追従できるようにする。
+        .onChange(of: isTranscribing) { _, active in
+            pulseOn = active
+            if !active { transcribingSizeLocked = false }
+        }
+        // デバッグ固定（VOICEKEY_HUD_DEBUG_STATE）で最初から transcribing の場合は onChange が発火せず
+        // 明滅が始まらないため、出現時に現在モードから明滅の要否を確定する（通常時は idle/hidden で無影響）。
+        .onAppear { pulseOn = isTranscribing }
+        // デバッグ時のみ: カプセルの目標サイズ（contentSize）が変わるたびに記録する。変換中に入った後は
+        // 一度きり（初回モーフ）で止まり、明滅で再発火しないことを stderr で数えて検証するためのフック。
+        .onChange(of: contentSize) { _, size in
+            if ProcessInfo.processInfo.environment["VOICEKEY_HUD_DEBUG_STATE"] != nil {
+                NSLog("VK_HUD contentSize=%.1fx%.1f mode=%@", size.width, size.height, "\(model.mode)")
+            }
+        }
     }
 
     /// カプセルのサイズ決定に使う不可視サイザー。active mode の中身だけを素のサイズで描画して測る。
