@@ -144,34 +144,39 @@ class HudConfigDefaultTests(unittest.TestCase):
 
 
 class HudTranscribingStableTests(unittest.TestCase):
-    """変換中の「横揺れ」回帰の防止: 明滅（opacity 往復）でピルの目標/表示サイズが動かないこと。"""
+    """変換中の「横揺れ」回帰の防止: 変換中は完全静止（明滅を開始せず不透明度も一定）であること。"""
 
-    def test_transcribing_size_stable_under_blink(self):
-        """変換中に入った後、明滅を何度進めても目標サイズ・表示サイズ（幅/高さ）が不変。
+    def test_transcribing_is_static_no_blink(self):
+        """変換中に入っても明滅アニメを開始せず、不透明度が 1.0 のまま静止する。
 
-        Mac 版で変換中のカプセル幅が明滅のたびに再計算され横揺れした回帰の Windows 側対。
-        Windows は _disp_w/_disp_h を遷移時に一度だけ確定し、明滅（_on_blink_tick）は
-        _transcribe_opacity だけを変える設計であることを保証する（幅は凍結・不透明度は変化可）。
+        明滅（opacity 往復）は末尾「…」が谷で先に消え、可視インクの重心が横に振れて
+        「変換中の文字が横に揺れる」と知覚される（Mac 実測で確認・カプセル幅凍結でも消えない）。
+        そのため Mac/Windows とも変換中は明滅を撤去し静止表示にした。ここでは Windows 側で
+        変換中に入っても _blink が起動せず _transcribe_opacity が 1.0 で固定であることを保証する。
         """
+        from PySide6.QtCore import QAbstractAnimation
+
         hud = Hud(enabled=True)
         hud.always_visible = True
         hud.set_state("recording")
         hud.set_state("transcribing")
-        # モーフを止めて表示サイズを目標へ確定（イベントループ非依存でサイズを固定）
+
+        # 変換中は明滅を開始しない（＝アニメは走っていない）。不透明度は満点で静止。
+        self.assertNotEqual(hud._blink.state(), QAbstractAnimation.State.Running)
+        self.assertAlmostEqual(hud._transcribe_opacity, 1.0)
+
         hud._size_anim.stop()
-        w, h = hud._target_size()
-        hud._disp_w, hud._disp_h = w, h
-        disp0 = (hud._disp_w, hud._disp_h)
+        hud.deleteLater()
+
+    def test_transcribing_target_size_stable(self):
+        """変換中の目標サイズは固定文字列ベースで一定（時間経過・再評価で変わらない）。"""
+        hud = Hud(enabled=True)
+        hud.always_visible = True
+        hud.set_state("recording")
+        hud.set_state("transcribing")
         target0 = hud._target_size()
-
-        # 明滅を複数回進める。opacity は変わってよいが、目標サイズ・表示サイズは一切動かない。
-        for op in (1.0, 0.35, 0.7, 0.35, 1.0):
-            hud._on_blink_tick(op)
-            self.assertEqual(hud._target_size(), target0)      # 目標サイズ不変（幅の呼吸なし）
-            self.assertEqual((hud._disp_w, hud._disp_h), disp0)  # 表示サイズ不変（横揺れなし）
-            self.assertAlmostEqual(hud._transcribe_opacity, op)  # 明滅（不透明度）だけは変化する
-
-        hud._blink.stop()
+        for _ in range(5):
+            self.assertEqual(hud._target_size(), target0)  # 目標サイズ不変（幅の呼吸なし）
         hud._size_anim.stop()
         hud.deleteLater()
 

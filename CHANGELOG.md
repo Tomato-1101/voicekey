@@ -2,7 +2,16 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
-## [Unreleased] - 2026-07-05
+## [Unreleased] - 2026-07-07
+
+### Fixed
+- **変換中ピルの「変換中…」が横に揺れて見える回帰を根治（両 OS・release／main）**。前回修正（カプセル幅の凍結 `transcribingSizeLocked`）でも横揺れが残ると 2 度報告された件を、再現ハーネス（下記 `fullscreen_helper.swift` の単色フルスクリーン背景＋連続 screencapture のピクセル計測）で計測して根因を特定した。**文字のジオメトリ（カプセル幅・文字の左右端）は白/グレー背景とも 0px で完全に不動**で、動いていたのは opacity 明滅（1.0⇄0.35）だけだった。明滅の谷で末尾「…」の細いドットが先に視認閾値を割って消え、**可視インクの重心が横に振れる**（実測: 白背景 ±7pt／グレー背景 ±2.4pt・周期は明滅 1.6s と一致）ため「横に揺れる」と知覚されていた。対称要素を明滅させても「…」の閾値落ちは残るため、**変換中テキストを完全静止（明滅を撤去）**にして動きを断った。修正後は同ハーネスで可視インクの重心・可視ピクセル数とも全フレーム完全一定（0px）を確認。
+  - Mac (`UI/Hud.swift`): `transcribingContent` から opacity 明滅（`pulseOn` トグル＋`repeatForever`）を撤去し静止表示に。未使用化した `pulseOn` state・`onAppear`/`onChange` の明滅駆動・`hudLog`／`import os.log` も除去。
+  - Windows (`ui/hud.py`): `set_state("transcribing")` で `_blink.start()` を呼ばず静止表示に（`_transcribe_opacity` は 1.0 固定）。テスト `tests/test_hud.py` を「変換中は明滅を開始せず不透明度 1.0 で静止・目標サイズ不変」に更新。
+- **Mac: フルスクリーン中に待機ピルが消えないバグを根治（release／main）**。前回修正（CGWindowList の全画面被覆検出＋`asyncAfter` 0.4/0.9s の再評価）でも「全然消えない」と 2 度報告された件。旧方式は常駐 App Nap 下で `asyncAfter` 再評価が沈黙し（遷移アニメ中の同期評価も全画面未確定で取りこぼす）待機ピルが出っぱなしになる脆弱性があった。**検出とタイマーをやめ、`collectionBehavior` で OS の Space 管理に委ねる方式へ変更**: 待機ピルは `.canJoinAllSpaces` を外して現在の Space のみに出す（＝OS が他アプリのフルスクリーン Space に重ねない）、録音/変換/通知は `.canJoinAllSpaces + .fullScreenAuxiliary` でフルスクリーン上にも出す。Space 切替時は通常デスクトップへ order し直して追従（同期通知で App Nap でも確実に走る）。実フルスクリーン Space を作る開発用ヘルパーと screencapture のピクセル判定で「フルスクリーン＝待機ピル非表示（non-white 0）・録音ピルは表示（width 319px）・通常デスクトップと解除後は待機ピル復帰」を確認。CGWindowList 検出（`isMainScreenFullScreen`/`reevaluateIdlePillForFullScreen`/`applyIdlePillFullScreenVisibility`）と `import CoreGraphics` は撤去。実測で `.fullScreenAuxiliary` を外すだけでは `.canJoinAllSpaces` が全 Space へ強制表示するため消えなかった知見もコード内に記録。
+
+### Added
+- **開発用: HUD のフルスクリーン挙動・横揺れを実測する回帰ハーネス（`macos/scripts/dev/fullscreen_helper.swift`）**。自分のウィンドウを `toggleFullScreen(nil)` する数十行の単体 Swift（TCC 不要）。本物のフルスクリーン Space を作って待機ピルの非表示/録音ピルの表示を screencapture で検証でき、単色（既定=白）背景を敷けば変換中「変換中…」の文字位置を高コントラストで計測できる。あわせて `UI/Hud.swift` のデバッグ駆動に `VOICEKEY_HUD_DEBUG_STATE=cycle`（録音→変換中→待機を実タイマーで循環・App Nap 抑止付き）を追加し、遷移中の横揺れを実録音なしで再現できるようにした（いずれも env で明示指定時のみ・既定挙動は不変）。
 
 ### Changed
 - **アプリアイコンをガラス質感へ刷新（両 OS）**。現行ブランドデザイン（インディゴのグラデーション squircle 地＋「波形→テキストカーソル」の 4 シンボル）はそのままに、上縁のハイライトリング・内周のリムライト（上=白/下=黒でガラスの厚み）・上部の控えめなスペキュラー・各シンボルの縦グラデの艶・シンボル背後の柔らかいドロップシャドウを追加し、「同じアイコンがガラスになった」仕上がりにした。色は実測 sRGB 値で現行と一致（`NSColor(srgbRed:)` 指定。calibratedRGB だとガンマ差で地が淡くなるため）。

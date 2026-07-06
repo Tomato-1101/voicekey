@@ -11,14 +11,8 @@
 //
 
 import AppKit
-import CoreGraphics  // CGWindowListCopyWindowInfo（フルスクリーン Space の判定）
 import QuartzCore  // CAMediaTimingFunction（位置追従アニメの easeOut カーブ）
 import SwiftUI
-import os.log
-
-/// HUD のログ（フルスクリーン Space 判定など状態遷移を .notice で永続記録する）。
-/// .info/.debug は log show で追えないため、待機ピルの出/隠の根拠は .notice で残す。
-private let hudLog = Logger(subsystem: "com.voicekey.app", category: "hud")
 
 /// HUD の表示状態モデル
 @MainActor
@@ -62,6 +56,14 @@ final class HudController {
     /// 画面構成変化（Dock 出没・解像度変更・外部ディスプレイ着脱）を監視するオブザーバ（deinit で解除）
     private var screenObserver: NSObjectProtocol?
 
+    /// デバッグ用: 録音→変換中→待機を実タイマーで循環駆動する検証ハーネス（VOICEKEY_HUD_DEBUG_STATE=cycle）。
+    /// 定常状態では再現しない「遷移中・連続入力での横揺れ」を実録音なしに駆動して計測するために使う。
+    /// App Nap 下でも確実に発火させるため beginActivity で抑止する（検証中のみ・既定挙動は不変）。
+    private var debugCycleTimer: Timer?
+    private var debugActivity: NSObjectProtocol?
+    private var debugCyclePhase = 0            // 0=録音 / 1=変換中 / 2=待機
+    private var debugCyclePhaseStart = Date()
+
     /// デバッグ用の固定表示状態（環境変数 VOICEKEY_HUD_DEBUG_STATE）。
     /// 設定されている間は実状態（update(for:)）で上書きせず、この状態を出しっぱなしにして
     /// HUD の見え方（変換中の横揺れ・フルスクリーン時の待機ピル可否等）を目視・スクショで
@@ -91,10 +93,9 @@ final class HudController {
             NSWorkspace.activeSpaceDidChangeNotification,
             NSWorkspace.didActivateApplicationNotification,
         ] {
-            // 重要: ここは同期の assumeIsolated で refreshBackdrop を即実行する。
-            // 以前は Task { @MainActor in … } だったが、当アプリの起動/常駐状態（背景・App Nap）では
-            // その Task が実行されず、フルスクリーン時に待機ピルを隠す処理がまるごと走っていなかった
-            // （＝この不具合の一次原因）。同期実行ならコールバック内で確実に評価される。
+            // 重要: ここは同期の assumeIsolated で refreshBackdrop を即実行する（背景・App Nap 下でも
+            // Task/asyncAfter に頼らず確実に走らせるため）。フルスクリーン時の待機ピル非表示は OS の
+            // collectionBehavior に委ねたので、ここはガラス背景の再サンプルだけを担う。
             let token = nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.refreshBackdrop() }
             }
@@ -104,7 +105,6 @@ final class HudController {
         // Dock（タスクバー相当）の自動非表示 ON/OFF・解像度変更・外部ディスプレイ着脱で
         // visibleFrame が変わる＝ピルの正しい縦位置がずれる。表示中なら位置を再計算して
         // 滑らかに追従させる（SideNotch と同じ didChangeScreenParameters 経路）。
-        // フルスクリーン Space への出入りでもこの通知が飛ぶため、待機ピルの表示可否もここで再評価する。
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil, queue: .main
@@ -124,12 +124,70 @@ final class HudController {
     /// 変換/録音はアプリアイコン込みの見た目を確認したいのでダミーアイコンを立てる。
     @discardableResult
     func applyDebugStateIfNeeded() -> Bool {
+        // cycle: 録音→変換中→待機を循環駆動して遷移中の横揺れ等を計測する（検証専用ハーネス）
+        if ProcessInfo.processInfo.environment["VOICEKEY_HUD_DEBUG_STATE"] == "cycle" {
+            startDebugCycle()
+            return true
+        }
         guard let debugState else { return false }
         enabled = true
         if debugState != .idlePill { model.appIcon = NSApp.applicationIconImage }
         model.mode = debugState
         show()
         return true
+    }
+
+    /// 録音→変換中→待機を実タイマーで循環させる検証ハーネス（VOICEKEY_HUD_DEBUG_STATE=cycle 専用）。
+    /// 実際のディクテーション連打（録音のたびに変換中を挟む）に相当する遷移を再現し、遷移中・
+    /// 連続入力での「変換中…」の横揺れを screencapture で計測できるようにする。
+    private func startDebugCycle() {
+        enabled = true
+        // 背景常駐の App Nap でタイマーが沈黙しないよう抑止する（検証中のみ）
+        debugActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .idleSystemSleepDisabled], reason: "HUD debug cycle")
+        debugCyclePhase = 0
+        debugCyclePhaseStart = Date()
+        model.appIcon = NSApp.applicationIconImage
+        model.resetLevels()
+        model.mode = .recording(autoEnter: false, handsFree: false)
+        show()
+        let t = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tickDebugCycle() }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        debugCycleTimer = t
+    }
+
+    /// cycle ハーネスの毎チック処理。フェーズの経過時間で録音/変換中/待機を切り替える。
+    private func tickDebugCycle() {
+        let elapsed = Date().timeIntervalSince(debugCyclePhaseStart)
+        switch debugCyclePhase {
+        case 0:  // 録音（約1.0秒）: 波形を動かしてカプセルを大きく育てる
+            model.pushLevel(Float.random(in: 0.15...0.9))
+            if elapsed > 1.0 {
+                debugCyclePhase = 1
+                debugCyclePhaseStart = Date()
+                model.mode = .transcribing  // ここで録音(大)→変換中(小)のモーフが発火する
+                show()
+            }
+        case 1:  // 変換中（約1.6秒＝明滅2往復ぶん）: この間の横揺れを計測する
+            if elapsed > 1.6 {
+                debugCyclePhase = 2
+                debugCyclePhaseStart = Date()
+                model.appIcon = nil          // 待機は貼り付け先アイコンを出さない（実挙動と同じ）
+                model.mode = .idlePill
+                show()
+            }
+        default:  // 待機（約0.5秒）→ 次の録音へ
+            if elapsed > 0.5 {
+                debugCyclePhase = 0
+                debugCyclePhaseStart = Date()
+                model.appIcon = NSApp.applicationIconImage
+                model.resetLevels()
+                model.mode = .recording(autoEnter: false, handsFree: false)
+                show()
+            }
+        }
     }
 
     /// アプリ状態に応じて HUD を更新する
@@ -204,14 +262,31 @@ final class HudController {
         if panel == nil {
             panel = makePanel()
         }
-        // フルスクリーン Space では待機ピルだけ出さない（ユーザーが何かを観たい状態なので塞がない）。
-        // 録音/変換/通知はユーザー操作起点なので出す。フルスクリーン解除後は handleScreenChange で復帰する。
-        if model.mode == .idlePill, isMainScreenFullScreen() {
-            panel?.orderOut(nil)
-            return
-        }
+        // フルスクリーン Space での待機ピル非表示は OS の Space 管理に委ねる（applyFullScreenPolicy）。
+        // 録音/変換/通知はフルスクリーンでも出す（ユーザー操作起点なので塞いでよい）。
+        applyFullScreenPolicy()
         positionPanel()
         panel?.orderFrontRegardless()
+    }
+
+    /// パネルのフルスクリーン可否を collectionBehavior で切り替える（検出・タイマー不要で確実）。
+    /// - 待機ピル: `.canJoinAllSpaces` を付けない → 他アプリのフルスクリーン Space に OS が重ねない
+    ///   （＝フルスクリーン中は自動で消える）。現在の Space にだけ出る。Space 切替時は refreshBackdrop
+    ///   から order し直して通常デスクトップへ追従させる（フルスクリーンには OS が出さないので安全）。
+    /// - 録音/変換/通知: `.canJoinAllSpaces + .fullScreenAuxiliary` → フルスクリーン上にも出す
+    ///   （フルスクリーンアプリでもディクテーションするため。ここは従来どおり全 Space 常駐）。
+    /// 【なぜ collectionBehavior にしたか】旧実装は CGWindowList で全画面被覆を検出し asyncAfter で
+    /// 再評価していたが、常駐 App Nap 下では遅延再評価が沈黙し（遷移アニメ中の同期評価も全画面未確定で
+    /// false）待機ピルが出っぱなしになっていた。実測でも `.canJoinAllSpaces` を外すだけでフルスクリーン
+    /// 上の待機ピルが消える（`.fullScreenAuxiliary` を外すだけでは canJoinAllSpaces が全 Space へ
+    /// 強制表示するため消えなかった）。OS の Space 属性に委ねてタイミングレースを根絶する。
+    private func applyFullScreenPolicy() {
+        guard let panel else { return }
+        if model.mode == .idlePill {
+            panel.collectionBehavior = [.ignoresCycle]
+        } else {
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        }
     }
 
     private func hide() {
@@ -232,11 +307,9 @@ final class HudController {
         panel.hasShadow = false                     // 影は SwiftUI 側で描く
         panel.ignoresMouseEvents = true             // クリック透過
         panel.hidesOnDeactivate = false
-        panel.collectionBehavior = [
-            .canJoinAllSpaces,                      // 全スペースに表示
-            .fullScreenAuxiliary,                   // フルスクリーンアプリの上にも表示
-            .ignoresCycle,
-        ]
+        // 初期値。実際のフルスクリーン可否は show() 時に applyFullScreenPolicy() が mode に応じて
+        // 付け外しする（待機ピルは .fullScreenAuxiliary を外す＝フルスクリーンでは OS が自動で隠す）。
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         panel.contentView = NSHostingView(rootView: HudView(model: model))
         return panel
     }
@@ -261,75 +334,12 @@ final class HudController {
         }
     }
 
-    /// メインスクリーンがフルスクリーン Space かを判定する。
-    /// 【当初のヒューリスティック（visibleFrame≒frame）はなぜ効かなかったか】
-    /// 背景アプリ（本アプリ）から見た NSScreen.main.visibleFrame は、自分が居る通常デスクトップ
-    /// Space の値のまま（Dock/メニューバーぶん縮んだ値）で、他アプリのフルスクリーンを反映しない。
-    /// 実測でもフルスクリーン中ずっと vf=1512x897@y52（＝frame と不一致）だったため常に false になっていた。
-    /// 【対策】CGWindowList で「画面全体を覆う通常レイヤー(0)のオンスクリーンウィンドウ」の有無で判定する。
-    /// bounds と layer だけを参照し、ウィンドウ名や画像は取らないので Screen Recording 権限は不要。
-    /// 同期呼び出しなので Space 切替通知のコールバック内でそのまま評価できる（遅延・Task 不要）。
-    private func isMainScreenFullScreen() -> Bool {
-        guard let screen = NSScreen.main else { return false }
-        let f = screen.frame
-        let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
-        let infos = (CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]]) ?? []
-        for info in infos {
-            // 通常ウィンドウ層(0)のみ対象（メニューバー/HUD/Dock などの高レイヤーは除外）
-            guard let layer = info[kCGWindowLayer as String] as? Int, layer == 0 else { continue }
-            guard let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
-                  let rect = CGRect(dictionaryRepresentation: boundsDict) else { continue }
-            // 画面全体（frame）をほぼ覆う通常ウィンドウがあればフルスクリーン Space とみなす。
-            // 最大化ウィンドウは visibleFrame 高さ止まり（メニューバー分低い）なので誤検出しない。
-            if rect.width >= f.width - 1 && rect.height >= f.height - 1 { return true }
-        }
-        return false
-    }
-
-    /// 待機ピルのフルスクリーン可否を「今すぐ＋遅延でも」再評価して隠す/戻す。
-    /// フルスクリーン Space に入った直後は NSScreen.visibleFrame が旧値のまま（更新遅延）で
-    /// 即時評価だと取りこぼすため、確実に走る DispatchQueue.main.asyncAfter で 0.4s / 0.9s に
-    /// も再評価する（当アプリの起動経路では Timer.scheduledTimer / Task{@MainActor} が回らないため
-    /// これらは使わない＝根本原因のひとつ）。
-    private func reevaluateIdlePillForFullScreen() {
-        guard model.mode == .idlePill, panel != nil else { return }
-        applyIdlePillFullScreenVisibility()
-        // 保険の遅延再評価: フルスクリーンのアニメ完了と通知の前後関係が環境で揺れる場合に取りこぼさない。
-        // 通常起動（アクティブ時）は確実に走る。App Nap 中の背景状態では間引かれ得るが、同期の即時評価で
-        // 既に確定しているため実害はない（べき等・現在の CGWindowList 状態で再判定するだけ）。
-        for delay in [0.4, 0.9] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                MainActor.assumeIsolated {
-                    guard let self, self.model.mode == .idlePill else { return }
-                    self.applyIdlePillFullScreenVisibility()
-                }
-            }
-        }
-    }
-
-    /// 待機ピルを、フルスクリーンなら隠す・通常デスクトップなら（隠れていれば）戻す。
-    private func applyIdlePillFullScreenVisibility() {
-        guard let panel, model.mode == .idlePill else { return }
-        if isMainScreenFullScreen() {
-            if panel.isVisible {
-                hudLog.notice("待機ピルをフルスクリーン中は非表示にする")
-                panel.orderOut(nil)
-            }
-        } else if !panel.isVisible {
-            hudLog.notice("フルスクリーン解除で待機ピルを復帰する")
-            show()  // 正規位置へ再配置して前面へ
-        }
-    }
-
-    /// 画面構成変化（Dock 出没・解像度変更・フルスクリーン Space 出入り）の通知を受けて位置と表示可否を再評価する。
+    /// 画面構成変化（Dock 出没・解像度変更・フルスクリーン Space 出入り）の通知を受けて位置を再評価する。
+    /// フルスクリーン時の待機ピル非表示は OS（collectionBehavior）に委ねているため、ここでは
+    /// 表示中パネルの縦位置追従だけを行う（待機ピルも録音ピルも同じ扱いでよい）。
     private func handleScreenChange() {
         guard let panel, model.mode != .hidden else { return }
-        // 待機ピルはフルスクリーン Space では隠し、通常デスクトップに戻れば復帰させる（遅延再評価付き）。
-        if model.mode == .idlePill {
-            reevaluateIdlePillForFullScreen()
-            return
-        }
-        // 録音/変換/通知は表示継続。Dock 出没・解像度変化に縦位置を滑らかに追従させる。
+        // Dock 出没・解像度変化に縦位置を滑らかに追従させる。
         if panel.isVisible { positionPanel(animated: true) }
     }
 
@@ -338,11 +348,15 @@ final class HudController {
     /// mode 変化と同じ再評価パス（frame 再適用 + 再レイアウト/再描画）をイベント駆動で強制する。
     private func refreshBackdrop() {
         guard let panel, model.mode != .hidden else { return }
-        // 待機ピルは Space 切替でフルスクリーン Space に入った場合に隠す/復帰する（遅延再評価付き）。
+        // 待機ピルは canJoinAllSpaces を外している（現在の Space にのみ出る）ため、Space 切替時は
+        // 現在の Space へ order し直して追従させる。通常デスクトップなら出て、フルスクリーン Space
+        // では OS が出さない（検出・タイマー不要で確実・App Nap でも通知callbackは同期で走る）。
         if model.mode == .idlePill {
-            reevaluateIdlePillForFullScreen()
+            show()
             return
         }
+        // フルスクリーン時の待機ピル非表示は OS に委ねているため、録音/変換/通知はガラス背景の
+        // 再サンプルだけでよい。
         guard panel.isVisible else { return }
         // 1) 正規位置の frame を再適用（setFrame display:true）
         positionPanel()
@@ -380,9 +394,6 @@ struct HudView: View {
     /// カプセルの .frame に spring で反映することで、mode が変わってもカプセルは削除・挿入
     /// されず「サイズだけ」が連続変形する（＝形が飛ばない）。初期値は待機ピル相当にしておく。
     @State private var contentSize: CGSize = CGSize(width: 40, height: 8)
-    /// 変換中マークの明滅トグル。transcribing に入った瞬間だけ true にして往復を開始し、
-    /// 離脱で false に戻す（repeatForever を確実に止め、非表示中に裏で回し続けないため）。
-    @State private var pulseOn = false
     /// 変換中に入った直後の一度だけカプセルサイズを確定し、以降は凍結するためのロック。
     /// 明滅（opacity 往復）で中身が再測定され実測幅が微揺れしてもカプセル幅を動かさない
     /// （中央寄せの「変換中…」が横に流れる回帰の防止）。transcribing を抜けたら解除する。
@@ -483,10 +494,9 @@ struct HudView: View {
         // 実測サイズの変化を spring でカプセル frame に反映する（＝カプセルがサイズだけ連続変形する本体）。
         .animation(.spring(response: 0.3, dampingFraction: 0.82), value: contentSize)
         // 三段階サイズ（待機 < 変換中 < 録音）は維持しつつ、変換中に入った後のサイズ更新だけ止める。
-        // 変換中は「変換中…」がゆっくり明滅（opacity 往復）するが、この明滅が走る間に中身が再測定され、
-        // 実測幅が 1px 未満で揺れる→カプセル幅が spring で追従し直す→中央寄せの「変換中…」が横へ流れて
-        // 見える回帰があった（546ec43 で旧・凍結ガードを撤廃したことによる）。そこで「変換中に入った
-        // 直後の一度だけ」実測サイズを採用し、以降 transcribing の間は凍結する（明滅由来の再測定を無視）。
+        // 変換中は文字が静止（明滅撤去済み）なので通常は再測定されないが、貼り付け先アイコンの遅延
+        // 反映など何らかの再測定が起きてもカプセル幅を動かさないための防御として、変換中に入った
+        // 直後の一度だけ実測サイズを採用し、以降 transcribing の間は凍結する。
         // 録音→変換中の一回り縮む spring モーフは、この初回採用で一度だけ発火する。
         .onPreferenceChange(HudContentSizeKey.self) { newSize in
             if isTranscribing {
@@ -495,17 +505,12 @@ struct HudView: View {
             }
             contentSize = newSize
         }
-        // transcribing に入った瞬間に明滅の往復開始、離脱で停止（非表示中に裏で回し続けない）。
         // 変換中を抜けたらサイズ凍結を解除し、次モードの実測サイズへ再び追従できるようにする。
         .onChange(of: isTranscribing) { _, active in
-            pulseOn = active
             if !active { transcribingSizeLocked = false }
         }
-        // デバッグ固定（VOICEKEY_HUD_DEBUG_STATE）で最初から transcribing の場合は onChange が発火せず
-        // 明滅が始まらないため、出現時に現在モードから明滅の要否を確定する（通常時は idle/hidden で無影響）。
-        .onAppear { pulseOn = isTranscribing }
         // デバッグ時のみ: カプセルの目標サイズ（contentSize）が変わるたびに記録する。変換中に入った後は
-        // 一度きり（初回モーフ）で止まり、明滅で再発火しないことを stderr で数えて検証するためのフック。
+        // 一度きり（初回モーフ）で止まり、以降再発火しないことを stderr で数えて検証するためのフック。
         .onChange(of: contentSize) { _, size in
             if ProcessInfo.processInfo.environment["VOICEKEY_HUD_DEBUG_STATE"] != nil {
                 NSLog("VK_HUD contentSize=%.1fx%.1f mode=%@", size.width, size.height, "\(model.mode)")
@@ -589,24 +594,19 @@ struct HudView: View {
         }
     }
 
-    /// 変換中の中身。揺れる waveform マークは廃止し、「変換中…」の文字自体をゆっくり明滅させる
+    /// 変換中の中身。「変換中…」を完全静止で表示する（明滅・スケール等の動きを一切付けない）。
+    /// 【なぜ明滅を撤去したか】opacity 明滅（1.0⇄0.35）は幾何学的にはテキストを動かさない（実測でも
+    /// カプセル幅・文字の左右端は 0px で不動）が、明滅の谷で末尾「…」の細いドットが先に視認閾値を
+    /// 割って消え、可視インクの重心が横に振れる（実測: 白背景で重心 ±7pt / グレー背景で ±2.4pt・
+    /// 周期は明滅 1.6s と一致）。これがユーザーの言う「変換中の文字が横に揺れる」の正体で、カプセル
+    /// 幅の凍結（transcribingSizeLocked）では消えなかった。動きを完全に断つには静止表示が唯一確実
+    /// （対称要素を明滅させても「…」の閾値落ちは残るため）。
     private var transcribingContent: some View {
         HStack(spacing: 10) {
             appIconView  // 貼り付け先アプリのアイコン（左端・残す）
-            // 「変換中…」の文字を opacity 1.0⇄0.35 でゆっくり往復させる明滅のみ（scale は使わない＝
-            // サイズが揺れる「ふわんふわん揺れ」を撤去し、その場で明るさだけが呼吸する落ち着いた明滅）。
-            // repeatForever は transcribing の間だけ（isTranscribing で切替）駆動し、離脱時は非反復
-            // アニメに切り替えて確実に止める＝非表示中に裏で回り続けて CPU を食わないようにする。
             Text("変換中…")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
-                .opacity(pulseOn ? 0.35 : 1.0)
-                .animation(
-                    isTranscribing
-                        ? .easeInOut(duration: 0.8).repeatForever(autoreverses: true)
-                        : .easeInOut(duration: 0.2),
-                    value: pulseOn
-                )
         }
     }
 

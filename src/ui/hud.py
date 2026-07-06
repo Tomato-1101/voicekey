@@ -196,9 +196,12 @@ class Hud(QWidget):
         elif state == "transcribing":
             self._notice_timer.stop()
             self._mode = "transcribing"
+            # 「変換中…」は完全静止で表示する（明滅を開始しない）。opacity 明滅（1.0⇄0.35）は
+            # 末尾「…」の細いドットが谷で先に視認閾値を割り、可視インクの重心が横に振れて
+            # 「変換中の文字が横に揺れる」と知覚される（Mac 実測: 白背景±7pt/グレー±2.4pt・周期は
+            # 明滅と一致）。カプセル幅は不動でも起きる現象で、動きを断つには静止が唯一確実。
             self._transcribe_opacity = 1.0
             self._blink.stop()
-            self._blink.start()
             self._show_pill()
 
     def set_hands_free(self, hands_free: bool) -> None:
