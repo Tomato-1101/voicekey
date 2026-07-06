@@ -78,6 +78,21 @@ final class AppController: ObservableObject {
     /// （フィラー除去を体験させるため）。ステップを出たら必ず false へ戻す。
     var practiceFormatOverride = false
 
+    /// オンボーディングのホットキーテスト中フラグ。true の間はキー押下で録音を始めず、
+    /// 押された録音キーのスロットだけを onHotkeyHeldChanged で通知する（無料枠を消費させない）。
+    var hotkeyTestActive = false
+    /// ホットキーテストで押されている録音キーのスロット（1/2・押されていなければ nil）の変化通知。
+    /// オンボーディングの「巨大キー点灯」表示がこのコールバックを登録して購読する。
+    var onHotkeyHeldChanged: ((Int?) -> Void)?
+
+    /// マイクテスト（モニタ）中にレベルを受け取るハンドラ。非 nil の間はレベルを HUD ではなく
+    /// こちらへ流す（録音とモニタは排他なので、これで出し分けできる）。
+    private var micMonitorHandler: ((Float) -> Void)?
+
+    /// マイク／入力監視サブシステムの起動済みフラグ（冪等化＝プロンプトや二重起動を避ける）。
+    private var micSubsystemStarted = false
+    private var hotkeySubsystemStarted = false
+
     /// /ephemeral 関数を一定間隔で温め続けるタイマー（Deepgram ストリーミング利用時の cold start 回避）
     private var warmTimer: Timer?
     /// App Nap 抑止トークン。放置中も暖機ループ（セッション/トークンの温存）を間引かせないための
@@ -111,10 +126,16 @@ final class AppController: ObservableObject {
         // 指定時は update(for:) が無視され、その状態を出しっぱなしにして見え方を計測できる）
         hud.applyDebugStateIfNeeded()
 
-        // 音声レベル → HUD（audio スレッドから来るためメインへホップ）
+        // 音声レベル → HUD（audio スレッドから来るためメインへホップ）。
+        // マイクテスト（モニタ）中はオンボーディング／ホームのメーターへ流し、HUD には出さない。
         recorder.levelHandler = { [weak self] level in
             DispatchQueue.main.async {
-                self?.hud.pushLevel(level)
+                guard let self else { return }
+                if let monitor = self.micMonitorHandler {
+                    monitor(level)
+                } else {
+                    self.hud.pushLevel(level)
+                }
             }
         }
 
@@ -147,6 +168,14 @@ final class AppController: ObservableObject {
     private var started = false
 
     /// アプリ起動時に呼ぶ（権限確認 → 監視開始）。多重呼び出しは無視する。
+    /// オンボーディング完了後・既存ユーザー・スキップ時に呼ぶ「全部起動」の入口。
+    ///
+    /// 権限プロンプトの直列化（重要）: このメソッドはマイク／入力監視サブシステムを起動するが、
+    /// **オンボーディング中は呼ばない**。オンボーディングの各権限ステップで個別に許可を取り、
+    /// マイクテスト／ホットキーテスト／練習の各ステップで対応サブシステムだけを起動する
+    /// （下の startMicSubsystem / startHotkeySubsystem）。これにより「初回起動で権限ポップアップが
+    /// 一気に複数出る」事故を防ぐ。ここへ来る時点では各権限は確定済み（付与 or 拒否）のため、
+    /// サブシステム起動でプロンプトは出ない。
     /// - Parameter showPermissionAlert: 権限不足時の NSAlert を出すか。オンボーディング完了直後は
     ///   すでに権限を案内済みなので false を渡し、案内が二重に出ないようにする。
     func startup(showPermissionAlert: Bool = true) {
@@ -154,47 +183,132 @@ final class AppController: ObservableObject {
         started = true
         // 前回録音中に異常終了していた場合のダッキング巻き戻し（残存フラグがあれば元音量へ戻す）
         MediaDucker.restore()
+        log.notice("startup(): 権限誘発サブシステムをまとめて起動します")
         Task {
-            // マイク権限（初回はシステムダイアログ）
-            let micOK = await AudioRecorder.requestPermission()
-            if !micOK {
-                log.error("マイクの使用が許可されていません")
-            } else {
-                // 初回録音の開始遅延を減らすため、起動時に入力ユニットを温めておく
-                recorder.prewarm()
-            }
-
-            // 製品版（ログイン済み）なら、起動時にサーバー接続を 1 回だけ暖機して初回の
-            // サーバー往復（serverless cold start を含む最大数秒）を前払いする。段階3では
-            // 有料・無料とも再利用可トークンを先取りしてキャッシュへ載せる（消費ゼロ・往復ゼロで
-            // 話し始められる）。トークン先取りが認証経路・serverless 関数もまとめて温める。
-            // 失敗は無視（録音時に通常経路で再取得される）。継続的な温存は warmTimer が担う。
-            if BackendClient.isLoggedIn {
-                Task { await self.warmBackendsNow() }  // 有料・無料とも短命トークン先読み（消費ゼロ）
-                startEphemeralWarmLoop()  // 以後も数分間隔でプロキシ関数を温存（cold start 回避）
-                // 放置中も暖機ループ（セッション/トークン温存）が確実に回るよう App Nap を抑止する。
-                // .background＝システムスリープは妨げず、アイドル時のタイマー間引き（nap）だけ止める。
-                // これで長時間放置後の初回でもセッション/トークンが手元に温存され、更新往復を踏まない。
-                if antiNapActivity == nil {
-                    antiNapActivity = ProcessInfo.processInfo.beginActivity(
-                        options: .background,
-                        reason: "keep auth session and transcription token warm"
-                    )
-                }
-                // スリープ復帰直後は serverless 関数が冷え・短命トークンも失効済み＝「放置後の
-                // 初回録音が遅い」の主因。復帰イベントで即・暖機＋（有料は）トークン先読みして、
-                // 復帰後の話し始めの待ちを消す（暖機タイマーは最大4分後までしか効かないため）。
-                NSWorkspace.shared.notificationCenter.addObserver(
-                    forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
-                ) { [weak self] _ in
-                    Task { @MainActor in await self?.warmBackendsNow() }
-                }
-            }
-
+            let micOK = await startMicSubsystem()
+            startBackendWarmupIfLoggedIn()
             // 入力監視・アクセシビリティ権限の確認と監視開始
-            let tapOK = hotkeys.start()
+            let tapOK = startHotkeySubsystem()
             checkPermissions(micGranted: micOK, tapCreated: tapOK, showAlert: showPermissionAlert)
         }
+    }
+
+    /// マイクサブシステム（権限確認＋入力ユニットのプリウォーム）を起動する。冪等。
+    /// マイク許可が確定済みのステップ（マイクテスト・練習・完了）でのみ呼ぶこと。
+    /// requestPermission は未決定のときだけダイアログを出す（付与済みなら出ない）ため、
+    /// マイク権限ステップより後に呼ぶ限りプロンプトは発火しない。
+    /// - Returns: マイクが許可されているか。
+    @discardableResult
+    func startMicSubsystem() async -> Bool {
+        let micOK = await AudioRecorder.requestPermission()
+        if micOK {
+            if !micSubsystemStarted {
+                micSubsystemStarted = true
+                // 初回録音の開始遅延を減らすため入力ユニットを温めておく
+                recorder.prewarm()
+                log.notice("マイクサブシステムを起動しました（プリウォーム）")
+            }
+        } else {
+            log.error("マイクの使用が許可されていません")
+        }
+        return micOK
+    }
+
+    /// 入力監視サブシステム（ホットキーのイベントタップ）を起動する。冪等。
+    /// 入力監視許可が確定済みのステップ（ホットキーテスト・練習・完了）でのみ呼ぶこと。
+    /// tapCreate は未許可でも失敗してログを出すだけでプロンプトは出さない（明示の許可要求は
+    /// オンボーディングの入力監視ステップの CGRequestListenEventAccess が担う）。
+    /// - Returns: タップ作成に成功したか。
+    @discardableResult
+    func startHotkeySubsystem() -> Bool {
+        if hotkeySubsystemStarted { return true }
+        let ok = hotkeys.start()
+        if ok {
+            hotkeySubsystemStarted = true
+            log.notice("入力監視サブシステム（ホットキー監視）を起動しました")
+        }
+        return ok
+    }
+
+    /// 製品版（ログイン済み）なら、サーバー接続の暖機を開始する（トークン先読み・暖機ループ・
+    /// App Nap 抑止・スリープ復帰ハンドラ）。権限には触れないため任意のタイミングで呼べる。冪等
+    /// （warmTimer/antiNapActivity は再セットしても実害はないが、二重登録を避けるため guard する）。
+    private func startBackendWarmupIfLoggedIn() {
+        guard BackendClient.isLoggedIn else { return }
+        // 起動時にサーバー接続を 1 回だけ暖機して初回のサーバー往復（serverless cold start を
+        // 含む最大数秒）を前払いする。有料・無料とも再利用可トークンを先取りしてキャッシュへ載せる
+        // （消費ゼロ・往復ゼロで話し始められる）。失敗は無視（録音時に通常経路で再取得される）。
+        Task { await self.warmBackendsNow() }
+        if warmTimer == nil {
+            startEphemeralWarmLoop()  // 以後も数分間隔でプロキシ関数を温存（cold start 回避）
+        }
+        // 放置中も暖機ループが確実に回るよう App Nap を抑止する。
+        // .background＝システムスリープは妨げず、アイドル時のタイマー間引き（nap）だけ止める。
+        if antiNapActivity == nil {
+            antiNapActivity = ProcessInfo.processInfo.beginActivity(
+                options: .background,
+                reason: "keep auth session and transcription token warm"
+            )
+            // スリープ復帰直後は serverless 関数が冷え・短命トークンも失効済み＝「放置後の初回録音が
+            // 遅い」の主因。復帰イベントで即・暖機してから話し始めの待ちを消す。
+            NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in await self?.warmBackendsNow() }
+            }
+        }
+    }
+
+    // MARK: - オンボーディング用（マイクテスト・ホットキーテスト・練習エンジン）
+
+    /// 練習ステップ用: 録音に必要なサブシステム（マイク＋入力監視＋バックエンド暖機）を起動する。
+    /// 各サブシステムは個別・冪等に起動するため、マイクテスト／ホットキーテストで既に起動済みなら
+    /// 何もしない。権限は前段のステップで確定済みのためプロンプトは出ない。
+    func startEngineForPractice() {
+        Task {
+            await startMicSubsystem()
+            startBackendWarmupIfLoggedIn()
+            startHotkeySubsystem()
+        }
+    }
+
+    /// マイクテスト: 録音せずレベルだけを onLevel へ流すモニタリングを開始する。
+    /// マイク許可が確定済みのステップでのみ呼ぶこと（内部で startMicSubsystem を通す）。
+    func startMicMonitor(_ onLevel: @escaping (Float) -> Void) {
+        micMonitorHandler = onLevel
+        // 選択中の入力デバイスをモニタにも反映する（録音開始時と同じ扱い）
+        recorder.inputDeviceUID = config.inputDeviceUID
+        Task {
+            let micOK = await startMicSubsystem()
+            guard micOK else { return }
+            recorder.startMonitoring { _ in }
+        }
+    }
+
+    /// マイクテストのモニタリングを停止する。
+    func stopMicMonitor() {
+        recorder.stopMonitoring()
+        micMonitorHandler = nil
+    }
+
+    /// マイクテストの入力デバイスを切り替える（モニタ中なら止めて選択デバイスで再開する）。
+    /// config へ保存もするため、以後の録音でも選択が使われる。
+    func setMicTestDevice(_ uid: String, monitoring: Bool) {
+        config.inputDeviceUID = uid
+        recorder.inputDeviceUID = uid
+        guard monitoring else { return }
+        recorder.stopMonitoring { [weak self] in
+            self?.recorder.startMonitoring { _ in }
+        }
+    }
+
+    /// オンボーディング終了時に、テスト用の一時状態（マイクモニタ・ホットキーテスト・整形オーバーライド）を
+    /// すべて解除する。× クローズ・完了のどちらでも呼ぶ（冪等）。
+    func teardownOnboardingTestModes() {
+        stopMicMonitor()
+        hotkeyTestActive = false
+        onHotkeyHeldChanged = nil
+        practiceFormatOverride = false
     }
 
     func shutdown() {
@@ -259,6 +373,19 @@ final class AppController: ObservableObject {
     // MARK: - ホットキーイベント（メインスレッド）
 
     private func handlePress(token: String, pressed: Set<String>) {
+        // ホットキーテスト中は録音を始めず、押された録音キーのスロットだけを点灯通知する
+        // （録音→文字起こしで無料枠を消費させないため）。
+        if hotkeyTestActive {
+            for slotId in [1, 2] {
+                let slot = config.slot(slotId)
+                if !slot.hotkey.isEmpty, slotMatches(slot, pressed: pressed) {
+                    onHotkeyHeldChanged?(slotId)
+                    return
+                }
+            }
+            return
+        }
+
         if let slotId = recordingSlot {
             let slot = config.slot(slotId)
             // toggle 実効モード: 録音中の再押下で停止（ハンズフリー切替キー併用での起動も含む）
@@ -298,6 +425,16 @@ final class AppController: ObservableObject {
     }
 
     private func handleRelease(token: String, pressed: Set<String>) {
+        // ホットキーテスト中: どの録音キーも押されなくなったら消灯（録音はしない）。
+        if hotkeyTestActive {
+            let held = [1, 2].first { slotId in
+                let slot = config.slot(slotId)
+                return !slot.hotkey.isEmpty && slotMatches(slot, pressed: pressed)
+            }
+            onHotkeyHeldChanged?(held)
+            return
+        }
+
         guard let slotId = recordingSlot else { return }
         let slot = config.slot(slotId)
         // toggle 実効モード（ハンズフリー起動含む）は離鍵で止めない（再押下で停止）

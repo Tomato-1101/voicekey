@@ -28,80 +28,99 @@ final class OnboardingPracticeTests: XCTestCase {
 
     // MARK: - ステップ遷移の副作用
 
-    /// 副作用（エンジン起動・整形オーバーライド）を記録するテスト用モデルを作る。
-    /// ConfigStore は実 UserDefaults を汚さないよう隔離 suite を注入する。
-    private func makeModel(startStep: OnboardingStep = .login)
-        -> (OnboardingModel, () -> Int, () -> [Bool]) {
+    /// 各ステップ遷移で呼ばれた副作用（エンジン起動・整形オーバーライド・マイクモニタ・ホットキーテスト）を
+    /// 記録するスパイ。すべて @MainActor 上でのみ触る。
+    final class Spy {
+        var engineStarts = 0
+        var overrides: [Bool] = []
+        var micStarts = 0
+        var micStops = 0
+        var hotkeyTests: [Bool] = []
+    }
+
+    /// 副作用を記録するテスト用モデルを作る。ConfigStore は実 UserDefaults を汚さないよう隔離 suite を注入。
+    private func makeModel(startStep: OnboardingStep = .login) -> (OnboardingModel, Spy) {
         let suite = "voicekey.test.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
-        var engineStartCount = 0
-        var overrideHistory: [Bool] = []
+        let spy = Spy()
         let model = OnboardingModel(
             startStep: startStep,
             config: ConfigStore(defaults: defaults),
             onFinish: {},
             onRestart: {},
-            startEngine: { engineStartCount += 1 },
-            setFormatOverride: { overrideHistory.append($0) }
+            startEngineForPractice: { spy.engineStarts += 1 },
+            setFormatOverride: { spy.overrides.append($0) },
+            startMicMonitor: { _ in spy.micStarts += 1 },
+            stopMicMonitor: { spy.micStops += 1 },
+            setMicDevice: { _, _ in },
+            setHotkeyTest: { on, _ in spy.hotkeyTests.append(on) },
+            teardown: {}
         )
-        return (model, { engineStartCount }, { overrideHistory })
+        return (model, spy)
     }
 
-    // ログイン→体験1 でエンジンが起動する（初回のみ）。以降の体験ステップでは再起動しない。
+    // 動作確認→体験1 でエンジンが起動する（初回のみ）。以降の体験ステップでは再起動しない。
     func testEngineStartsOnceOnFirstPracticeStep() {
-        let (model, engineStartCount, _) = makeModel(startStep: .login)
-        XCTAssertEqual(engineStartCount(), 0)  // ログイン段階では未起動
+        let (model, spy) = makeModel(startStep: .hotkeyTest)
+        XCTAssertEqual(spy.engineStarts, 0)  // 練習前は未起動
 
         model.goNext()  // → practiceBasic
         XCTAssertEqual(model.step, .practiceBasic)
-        XCTAssertEqual(engineStartCount(), 1)
+        XCTAssertEqual(spy.engineStarts, 1)
 
         model.goNext()  // → practiceHandsfree
         model.goNext()  // → practiceFormat
-        XCTAssertEqual(engineStartCount(), 1)  // 2 回目以降は起動しない（冪等）
+        XCTAssertEqual(spy.engineStarts, 1)  // 2 回目以降は起動しない（冪等）
     }
 
     // 整形体験ステップに入っている間だけ整形オーバーライドが ON になる。
     func testFormatOverrideOnlyDuringFormatStep() {
-        let (model, _, overrideHistory) = makeModel(startStep: .login)
+        let (model, spy) = makeModel(startStep: .practiceBasic)
 
-        model.goNext()  // → practiceBasic（OFF）
         model.goNext()  // → practiceHandsfree（OFF）
         model.goNext()  // → practiceFormat（ON）
         XCTAssertEqual(model.step, .practiceFormat)
-        XCTAssertEqual(overrideHistory().last, true)
+        XCTAssertEqual(spy.overrides.last, true)
 
-        model.goNext()  // → featureTour（OFF へ戻す）
-        XCTAssertEqual(overrideHistory().last, false)
+        model.goNext()  // → summary（OFF へ戻す）
+        XCTAssertEqual(model.step, .summary)
+        XCTAssertEqual(spy.overrides.last, false)
     }
 
-    // スキップで完了へ飛ぶと、整形オーバーライドは必ず OFF に戻る。
+    // スキップでまとめへ飛ぶと、整形オーバーライドは必ず OFF に戻る。
     func testSkipFromFormatStepClearsOverride() {
-        let (model, _, overrideHistory) = makeModel(startStep: .practiceFormat)
-        // 開始時点（practiceFormat）で ON になっている
-        XCTAssertEqual(overrideHistory().last, true)
+        let (model, spy) = makeModel(startStep: .practiceFormat)
+        XCTAssertEqual(spy.overrides.last, true)  // 開始時点（practiceFormat）で ON
 
-        model.skipToDone()
-        XCTAssertEqual(model.step, .done)
-        XCTAssertEqual(overrideHistory().last, false)
+        model.skipToSummary()
+        XCTAssertEqual(model.step, .summary)
+        XCTAssertEqual(spy.overrides.last, false)
     }
 
-    // 練習欄への入力で該当ステップの成功フラグが立つ。
-    func testMarkPracticeSucceededSetsStepFlag() {
-        let (model, _, _) = makeModel(startStep: .login)
+    // マイクモニタはマイクテストステップに入ったときだけ開始し、離れると停止する。
+    func testMicMonitorStartsOnlyOnMicTest() {
+        let (model, spy) = makeModel(startStep: .checkIntro)
+        XCTAssertEqual(spy.micStarts, 0)
 
-        model.goNext()  // → practiceBasic
-        model.markPracticeSucceeded()
-        XCTAssertTrue(model.basicPracticeDone)
-        XCTAssertFalse(model.handsfreePracticeDone)
+        model.goNext()  // → micTest
+        XCTAssertEqual(model.step, .micTest)
+        XCTAssertEqual(spy.micStarts, 1)
 
-        model.goNext()  // → practiceHandsfree
-        model.markPracticeSucceeded()
-        XCTAssertTrue(model.handsfreePracticeDone)
+        model.goNext()  // → hotkeyTest（モニタ停止）
+        XCTAssertEqual(spy.micStarts, 1)          // 他ステップでは開始しない
+        XCTAssertGreaterThan(spy.micStops, 0)      // 離れたら停止される
+    }
 
-        model.goNext()  // → practiceFormat
-        model.markPracticeSucceeded()
-        XCTAssertTrue(model.formatPracticeDone)
+    // ホットキーテストモードはホットキーテストステップに入っている間だけ ON になる。
+    func testHotkeyTestActiveOnlyOnHotkeyStep() {
+        let (model, spy) = makeModel(startStep: .micTest)
+
+        model.goNext()  // → hotkeyTest（ON）
+        XCTAssertEqual(model.step, .hotkeyTest)
+        XCTAssertEqual(spy.hotkeyTests.last, true)
+
+        model.goNext()  // → practiceBasic（OFF へ戻す）
+        XCTAssertEqual(spy.hotkeyTests.last, false)
     }
 }

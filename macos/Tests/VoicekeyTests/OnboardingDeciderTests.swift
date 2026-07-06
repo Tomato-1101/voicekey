@@ -76,15 +76,18 @@ final class OnboardingDeciderTests: XCTestCase {
     }
 
     // ステップ enum の順序（戻る/進むの前提）を固定する。
-    // 権限・ログインの後ろに体験（練習）3 ステップ＋機能ツアーを足し、最後が完了。
+    // ようこそ → 権限 3 つ → ログイン → 動作確認（マイク/ホットキーのテスト）→ 体験 3 種 → まとめ。
     func testStepOrdering() {
         XCTAssertTrue(OnboardingStep.welcome < OnboardingStep.microphone)
-        XCTAssertTrue(OnboardingStep.login < OnboardingStep.practiceBasic)
+        XCTAssertTrue(OnboardingStep.inputMonitoring < OnboardingStep.login)
+        XCTAssertTrue(OnboardingStep.login < OnboardingStep.checkIntro)
+        XCTAssertTrue(OnboardingStep.checkIntro < OnboardingStep.micTest)
+        XCTAssertTrue(OnboardingStep.micTest < OnboardingStep.hotkeyTest)
+        XCTAssertTrue(OnboardingStep.hotkeyTest < OnboardingStep.practiceBasic)
         XCTAssertTrue(OnboardingStep.practiceBasic < OnboardingStep.practiceHandsfree)
         XCTAssertTrue(OnboardingStep.practiceHandsfree < OnboardingStep.practiceFormat)
-        XCTAssertTrue(OnboardingStep.practiceFormat < OnboardingStep.featureTour)
-        XCTAssertTrue(OnboardingStep.featureTour < OnboardingStep.done)
-        XCTAssertEqual(OnboardingStep.allCases.count, 10)
+        XCTAssertTrue(OnboardingStep.practiceFormat < OnboardingStep.summary)
+        XCTAssertEqual(OnboardingStep.allCases.count, 12)
     }
 
     // 体験（練習）ステップの判定（エンジン起動・スキップ導線の前提）
@@ -92,8 +95,23 @@ final class OnboardingDeciderTests: XCTestCase {
         XCTAssertTrue(OnboardingStep.practiceBasic.isPractice)
         XCTAssertTrue(OnboardingStep.practiceHandsfree.isPractice)
         XCTAssertTrue(OnboardingStep.practiceFormat.isPractice)
-        XCTAssertFalse(OnboardingStep.featureTour.isPractice)
+        XCTAssertFalse(OnboardingStep.micTest.isPractice)
         XCTAssertFalse(OnboardingStep.login.isPractice)
-        XCTAssertFalse(OnboardingStep.done.isPractice)
+        XCTAssertFalse(OnboardingStep.summary.isPractice)
+    }
+
+    // 権限ステップ・インタースティシャルの判定を固定する。
+    func testPermissionAndInterstitialFlags() {
+        XCTAssertTrue(OnboardingStep.microphone.isPermission)
+        XCTAssertTrue(OnboardingStep.accessibility.isPermission)
+        XCTAssertTrue(OnboardingStep.inputMonitoring.isPermission)
+        XCTAssertFalse(OnboardingStep.login.isPermission)
+        XCTAssertFalse(OnboardingStep.micTest.isPermission)
+
+        XCTAssertTrue(OnboardingStep.welcome.isInterstitial)
+        XCTAssertTrue(OnboardingStep.checkIntro.isInterstitial)
+        XCTAssertTrue(OnboardingStep.summary.isInterstitial)
+        XCTAssertFalse(OnboardingStep.micTest.isInterstitial)
+        XCTAssertFalse(OnboardingStep.practiceBasic.isInterstitial)
     }
 }

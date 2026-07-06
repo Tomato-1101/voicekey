@@ -18,6 +18,9 @@ final class MainWindowModel: ObservableObject {
     @Published var showingSettings: Bool
     /// 設定モードのときの選択タブ（旧 SettingsView のタグ値を踏襲）
     @Published var settingsTab: Int
+    /// 非 nil のとき、メインウィンドウを覆ってオンボーディング（フルウィンドウ・テイクオーバー）を表示する。
+    /// 完了で nil に戻し、ダッシュボードへ着地する（独立ウィンドウは廃止）。
+    @Published var onboarding: OnboardingModel?
 
     init(showingSettings: Bool = false, settingsTab: Int = 0) {
         self.showingSettings = showingSettings
@@ -34,6 +37,10 @@ struct MainWindowView: View {
     @ObservedObject var stats: StatsStore
     @ObservedObject var updater: UpdaterController
     @ObservedObject var model: MainWindowModel
+    /// ホームのマイクテスト用（観測しない plain 参照）。
+    var controller: AppController?
+    /// ホームの「セットアップガイド」カードからガイドを再表示する。
+    var onShowOnboarding: () -> Void = {}
     /// アカウント行の表示（メール・ログイン状態）に使う。deep link ログインで自動更新される。
     @ObservedObject private var login = LoginCoordinator.shared
 
@@ -65,6 +72,17 @@ struct MainWindowView: View {
     }
 
     var body: some View {
+        // 初回セットアップ中はメインウィンドウを覆ってオンボーディングを全面表示する
+        // （フルウィンドウ・テイクオーバー。自前のサイズ・背景を持つ）。
+        if let ob = model.onboarding {
+            OnboardingView(model: ob)
+        } else {
+            normalLayout
+        }
+    }
+
+    /// 通常のメインウィンドウ（サイドバー島＋コンテンツ面）。
+    private var normalLayout: some View {
         // レイアウト v2.1: 浮くガラス島は「サイドバーだけ」。右のコンテンツはウィンドウの
         // 背景面としてフラットに敷き、島にしない。frosted backdrop はウィンドウ全面に残す。
         HStack(spacing: 12) {
@@ -265,7 +283,8 @@ struct MainWindowView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             } else {
-                HomeView(config: config, history: history, stats: stats, updater: updater)
+                HomeView(config: config, history: history, stats: stats, updater: updater,
+                         controller: controller, onShowOnboarding: onShowOnboarding)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -104,6 +104,13 @@ final class AudioRecorder {
         get { stateLock.lock(); defer { stateLock.unlock() }; return _recording }
         set { stateLock.lock(); _recording = newValue; stateLock.unlock() }
     }
+    /// マイクテスト用モニタリング中か（録音はせずレベルだけを levelHandler へ流す）。
+    /// 録音（サンプル蓄積・文字起こし）とは排他で、無料枠を一切消費しない。
+    private var _monitoring = false
+    private var monitoring: Bool {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _monitoring }
+        set { stateLock.lock(); _monitoring = newValue; stateLock.unlock() }
+    }
     private var lastLevelTime: TimeInterval = 0
 
     /// engine に適用済みの入力デバイス UID（nil = 未適用または要再適用、空 = システム既定）。
@@ -345,6 +352,38 @@ final class AudioRecorder {
         }
     }
 
+    // MARK: - マイクテスト用モニタリング（録音しない）
+
+    /// 録音（サンプル蓄積・文字起こし）を行わず、入力レベルだけを levelHandler へ流すモニタリングを
+    /// 開始する。マイクテスト（オンボーディング／ホーム）用。録音中は開始しない。冪等。
+    /// - 権限プロンプトは出さない（呼び出し側がマイク許可済みのステップでのみ呼ぶ前提）。
+    func startMonitoring(completion: @escaping (Bool) -> Void) {
+        queue.async { [self] in
+            guard !recording, !monitoring else { completion(true); return }
+            applyInputDevice()
+            if installTapAndStart() {
+                monitoring = true
+                log.info("マイクモニタリングを開始しました（録音なし・レベルのみ）")
+                completion(true)
+            } else {
+                completion(false)
+            }
+        }
+    }
+
+    /// マイクモニタリングを停止する（録音には影響しない。モニタ中でなければ何もしない）。
+    func stopMonitoring(completion: (() -> Void)? = nil) {
+        queue.async { [self] in
+            guard monitoring else { completion?(); return }
+            monitoring = false
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+            engine.prepare()
+            log.info("マイクモニタリングを停止しました")
+            completion?()
+        }
+    }
+
     /// マイク使用許可を要求する（初回はシステムダイアログが出る）
     static func requestPermission() async -> Bool {
         await withCheckedContinuation { continuation in
@@ -368,7 +407,10 @@ final class AudioRecorder {
         converter: AVAudioConverter,
         outFormat: AVAudioFormat
     ) {
-        guard recording else { return }
+        // 録音中はサンプル蓄積＋チャンク送信＋レベル、モニタ中はレベルのみ。どちらでもないなら無視。
+        let isRecording = recording
+        let isMonitoring = monitoring
+        guard isRecording || isMonitoring else { return }
 
         // 16kHz モノラルへ変換
         let ratio = outFormat.sampleRate / buffer.format.sampleRate
@@ -396,26 +438,29 @@ final class AudioRecorder {
         }
         let chunk = Array(UnsafeBufferPointer(start: channel, count: Int(outBuffer.frameLength)))
 
-        samplesLock.lock()
-        if samples.count < Self.maxSamples {
-            samples.append(contentsOf: chunk)
-        }
-        samplesLock.unlock()
+        // 録音時のみ: サンプル蓄積とストリーミングチャンク送信を行う（モニタ時はレベルだけ）。
+        if isRecording {
+            samplesLock.lock()
+            if samples.count < Self.maxSamples {
+                samples.append(contentsOf: chunk)
+            }
+            samplesLock.unlock()
 
-        // ストリーミング送信用に逐次チャンクを渡す（全バッファ蓄積とは独立）。
-        // ストリーミングが失敗しても samples には残るため REST フォールバックが効く。
-        // 世代一致のチャンクのみ送る（旧録音 stop ドレイン中に差し替えられた新 streamer へ
-        // 混入させない）。handler/gen は原子的にまとめて読む
-        stateLock.lock()
-        let handler = _chunkHandler
-        let handlerGen = _chunkGen
-        let activeGen = _activeChunkGen
-        stateLock.unlock()
-        if let handler, handlerGen == activeGen {
-            handler(chunk)
+            // ストリーミング送信用に逐次チャンクを渡す（全バッファ蓄積とは独立）。
+            // ストリーミングが失敗しても samples には残るため REST フォールバックが効く。
+            // 世代一致のチャンクのみ送る（旧録音 stop ドレイン中に差し替えられた新 streamer へ
+            // 混入させない）。handler/gen は原子的にまとめて読む
+            stateLock.lock()
+            let handler = _chunkHandler
+            let handlerGen = _chunkGen
+            let activeGen = _activeChunkGen
+            stateLock.unlock()
+            if let handler, handlerGen == activeGen {
+                handler(chunk)
+            }
         }
 
-        // HUD 用レベル通知（約 30fps に間引き）
+        // レベル通知（録音・モニタ両方で流す。約 30fps に間引き）
         if let handler = levelHandler {
             let now = ProcessInfo.processInfo.systemUptime
             if now - lastLevelTime >= 0.033 {

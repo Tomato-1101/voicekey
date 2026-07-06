@@ -10,11 +10,54 @@
 import AppKit
 import SwiftUI
 
+/// ホームの「マイクテスト」カード用モデル（録音せずレベルだけを流すモニタ＋デバイス選択）。
+/// オンボーディングのマイクテストと同じ AppController のモニタ機構を借りる。
+@MainActor
+final class HomeMicTestModel: ObservableObject {
+    @Published var running = false
+    @Published var level: Float = 0
+    @Published var devices: [AudioInputDevice] = []
+    @Published var deviceUID: String = ""
+    /// 観測はせず（頻繁な録音更新で再描画しないため）参照だけ持つ。
+    weak var controller: AppController?
+
+    func configure(_ c: AppController?) {
+        controller = c
+        deviceUID = c?.config.inputDeviceUID ?? ""
+    }
+
+    func start() {
+        devices = AudioDevices.inputDevices()
+        deviceUID = controller?.config.inputDeviceUID ?? ""
+        running = true
+        controller?.startMicMonitor { [weak self] lv in self?.level = lv }
+    }
+
+    func stop() {
+        guard running else { return }
+        running = false
+        level = 0
+        controller?.stopMicMonitor()
+    }
+
+    func selectDevice(_ uid: String) {
+        deviceUID = uid
+        controller?.setMicTestDevice(uid, monitoring: running)
+    }
+}
+
 struct HomeView: View {
     @ObservedObject var config: ConfigStore
     @ObservedObject var history: HistoryStore
     @ObservedObject var stats: StatsStore
     @ObservedObject var updater: UpdaterController
+    /// マイクテスト・ガイド再表示に使う（観測しない＝録音のたびの再描画を避けるため plain 参照）。
+    var controller: AppController?
+    /// 「セットアップガイド」カードから初回ガイドを再表示する。
+    var onShowOnboarding: () -> Void = {}
+
+    /// ホームのマイクテスト（デバイス選択＋ミニレベルメーター）。
+    @StateObject private var micTest = HomeMicTestModel()
 
     /// 直近にコピーした履歴エントリ（行に「コピーしました」を一時表示する）
     @State private var copiedId: UUID?
@@ -29,12 +72,91 @@ struct HomeView: View {
             VStack(alignment: .leading, spacing: 16) {
                 header
                 statsCard
+                toolsSection
                 appUsageSection
                 historySection
             }
             .padding(20)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear { micTest.configure(controller) }
+        .onDisappear { micTest.stop() }
+    }
+
+    // MARK: - ツール（マイクテスト・セットアップガイド）
+
+    /// マイクテストとセットアップガイド再表示の 2 カードを横並びで置く。
+    private var toolsSection: some View {
+        HStack(alignment: .top, spacing: 12) {
+            micTestCard
+            guideCard
+        }
+    }
+
+    /// マイクテストカード（デバイス選択＋「テスト」でミニレベルメーターが動く。録音しない）。
+    private var micTestCard: some View {
+        dashCard {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Label("マイクテスト", systemImage: "mic.fill").font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Button(micTest.running ? "停止" : "テスト") {
+                        micTest.running ? micTest.stop() : micTest.start()
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.tint)
+                }
+                Text(micTest.running ? "話すと、下のバーが動きます。" : "「テスト」を押して、マイクが拾えているか確かめます。")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                homeMiniMeter
+                // デバイス選択（システム既定＋接続中のマイク）
+                Picker("", selection: Binding(get: { micTest.deviceUID }, set: { micTest.selectDevice($0) })) {
+                    Text("システム既定").tag("")
+                    ForEach(micTest.devices) { d in Text(d.name).tag(d.uid) }
+                    if !micTest.deviceUID.isEmpty,
+                       !micTest.devices.contains(where: { $0.uid == micTest.deviceUID }) {
+                        Text("（未接続のデバイス）").tag(micTest.deviceUID)
+                    }
+                }
+                .labelsHidden()
+                .onAppear { if micTest.devices.isEmpty { micTest.devices = AudioDevices.inputDevices() } }
+            }
+        }
+    }
+
+    /// ホームのミニレベルメーター（テスト中のみ反応。停止中はグレーのまま）。
+    private var homeMiniMeter: some View {
+        let bars = 20
+        return HStack(spacing: 3) {
+            ForEach(0..<bars, id: \.self) { i in
+                let threshold = Float(i) / Float(bars)
+                let on = micTest.running && micTest.level >= threshold + 0.02
+                Capsule()
+                    .fill(on ? Color.accentColor : Color.primary.opacity(0.12))
+                    .frame(height: 14)
+                    .animation(.easeOut(duration: 0.08), value: micTest.level)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    /// セットアップガイドカード（もう一度見る→ガイドを再表示）。
+    private var guideCard: some View {
+        dashCard {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("セットアップガイド", systemImage: "sparkles").font(.subheadline.weight(.semibold))
+                Text("使い方をはじめから、もう一度見られます。")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                Button("もう一度見る") { onShowOnboarding() }
+                    .buttonStyle(.borderless)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.tint)
+            }
+        }
     }
 
     // MARK: - ヘッダ

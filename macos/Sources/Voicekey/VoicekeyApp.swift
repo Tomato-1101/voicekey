@@ -256,8 +256,6 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private var feedbackWindow: NSWindow?
     /// 画面端のサイドノッチ（履歴スリット→クリックで履歴パネル・Phase C）
     private var sideNotch: SideNotchController?
-    /// 初回セットアップ（オンボーディング）ウィンドウ
-    private var onboardingWindow: NSWindow?
     /// オンボーディングを完了/再起動処理済みか（クローズでの二重処理を防ぐ）
     private var onboardingFinished = false
 
@@ -355,7 +353,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private func restoreAccessoryPolicyIfNoUserWindows(closing: NSWindow?) {
         // Dock 常時表示 ON のときは、ウィンドウを閉じても Dock アイコンを引っ込めない
         if controller?.config.dockIconAlwaysVisible == true { return }
-        let userWindows = [mainWindow, feedbackWindow, onboardingWindow]
+        let userWindows = [mainWindow, feedbackWindow]
         let anyRemainingVisible = userWindows.contains { win in
             guard let win, win !== closing else { return false }
             return win.isVisible
@@ -368,10 +366,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     /// Dock / Finder からの再オープン: オンボーディング表示中ならそれを前面へ、
     /// それ以外はホーム画面を開く（Phase B。設定はメニュー「設定…」から）。
     func handleReopen() {
-        if let onboardingWindow, onboardingWindow.isVisible {
-            NSApp.setActivationPolicy(.regular)
-            NSApp.activate(ignoringOtherApps: true)
-            onboardingWindow.makeKeyAndOrderFront(nil)
+        if mainWindowModel?.onboarding != nil {
+            presentMainWindow(size: onboardingWindowSize, center: false)
         } else {
             showHome()
         }
@@ -416,50 +412,54 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         centerOnScreen(window)
     }
 
-    /// 初回セットアップ（オンボーディング）ウィンドウを表示する。
-    /// FeedbackView と同じ NSWindow + NSHostingController パターン。
+    /// 初回セットアップ（オンボーディング）をメインウィンドウ内にフルウィンドウで表示する。
+    /// 独立ウィンドウは廃止し、完了でダッシュボード（ホーム）に着地する。
     func showOnboarding(fromStep: Int) {
         guard let controller else { return }
-        // 既存ウィンドウがあれば作り直す（前回の進行状態を残さない）
-        onboardingWindow?.close()
         onboardingFinished = false
 
-        let model = OnboardingModel(
+        let mwModel = mainWindowModel ?? MainWindowModel()
+        mainWindowModel = mwModel
+        mwModel.onboarding = OnboardingModel(
             startStep: OnboardingStep(rawValue: fromStep) ?? .welcome,
             config: controller.config,
             onFinish: { [weak self] in self?.finishOnboarding() },
             onRestart: { [weak self] in self?.restartForInputMonitoring() },
-            // 体験ステップに入ったら録音エンジン（ホットキー監視）を起動する（冪等・完了時の startup と重複しても無害）
-            startEngine: { [weak controller] in controller?.startup(showPermissionAlert: false) },
+            // 練習ステップで録音に必要なサブシステム（マイク＋入力監視＋暖機）を起動する（冪等）
+            startEngineForPractice: { [weak controller] in controller?.startEngineForPractice() },
             // 整形体験ステップの間だけ整形を強制 ON（保存しない一時オーバーライド）
-            setFormatOverride: { [weak controller] on in controller?.practiceFormatOverride = on }
+            setFormatOverride: { [weak controller] on in controller?.practiceFormatOverride = on },
+            // マイクテスト: 録音せずレベルだけを流すモニタ
+            startMicMonitor: { [weak controller] onLevel in controller?.startMicMonitor(onLevel) },
+            stopMicMonitor: { [weak controller] in controller?.stopMicMonitor() },
+            setMicDevice: { [weak controller] uid, mon in controller?.setMicTestDevice(uid, monitoring: mon) },
+            // ホットキーテスト: 押下で録音せず点灯だけ通知するモード
+            setHotkeyTest: { [weak controller] on, cb in
+                controller?.hotkeyTestActive = on
+                controller?.onHotkeyHeldChanged = on ? cb : nil
+            },
+            teardown: { [weak controller] in controller?.teardownOnboardingTestModes() }
         )
-        let hosting = NSHostingController(rootView: OnboardingView(model: model))
-        let window = NSWindow(contentViewController: hosting)
-        window.title = "VoiceKey へようこそ"
-        window.styleMask = [.titled, .closable]
-        window.isReleasedWhenClosed = false
-        GlassWindow.applyFrostedChrome(to: window)  // すりガラス化（Part B）
-        window.delegate = self  // クローズ（×）のスキップ扱い＋Dock アイコンを引っ込めるため
-        onboardingWindow = window
-        // Dock にアイコンを出し前面へ（アクセサリのままだと前面に出ない）
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
-        // 中央配置は表示後に行う（表示前は frame がサイズ 0 のことがあり右上へずれる）
-        centerOnScreen(window)
+        // メインウィンドウをオンボーディングサイズで前面表示する（フルウィンドウ・テイクオーバー）
+        presentMainWindow(size: onboardingWindowSize, center: true)
     }
 
-    /// 「使い始める」= 完了。フラグを立てて本体を開始し、ウィンドウを閉じる。
+    /// オンボーディングのウィンドウサイズ（2 ペインが収まる横長）。
+    private var onboardingWindowSize: NSSize { NSSize(width: 900, height: 600) }
+
+    /// 「はじめる」= 完了。フラグを立て、オンボーディングを閉じてダッシュボードへ着地し、本体を開始する。
     private func finishOnboarding() {
         guard !onboardingFinished else { return }
         onboardingFinished = true
         markOnboardingComplete()
-        // 整形体験の一時オーバーライドが残っていたら必ず解除（体験ステップ上で閉じた場合の保険）
-        controller?.practiceFormatOverride = false
+        // テスト用の一時状態（マイクモニタ・ホットキーテスト・整形オーバーライド）を解除
+        controller?.teardownOnboardingTestModes()
+        // オンボーディングを閉じてダッシュボード面へ切替、ホームサイズへ戻す
+        mainWindowModel?.onboarding = nil
+        mainWindowModel?.showingSettings = false
+        presentMainWindow(size: mainWindowSize, center: true)
         // 権限案内は済んでいるので NSAlert を二重に出さない
         controller?.startup(showPermissionAlert: false)
-        onboardingWindow?.close()  // windowWillClose は onboardingFinished=true で二重処理しない
     }
 
     /// 入力監視の反映にプロセス再起動が必要なとき: 現在ステップを保存して再起動する。
@@ -493,29 +493,72 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         let closing = notification.object as? NSWindow
 
-        // オンボーディング固有処理（× で閉じたらスキップ扱い）は従来どおり
-        if closing === onboardingWindow {
-            onboardingWindow = nil
-            if !onboardingFinished {  // 「使い始める」/ 再起動で処理済みなら何もしない
-                onboardingFinished = true
-                markOnboardingComplete()
-                // 整形体験の一時オーバーライドが残っていたら解除してから本体を開始する
-                controller?.practiceFormatOverride = false
-                controller?.startup(showPermissionAlert: false)
-            }
+        // メインウィンドウをオンボーディング中に × で閉じたらスキップ扱い（完了フラグ＋本体起動）
+        if closing === mainWindow, mainWindowModel?.onboarding != nil, !onboardingFinished {
+            onboardingFinished = true
+            markOnboardingComplete()
+            controller?.teardownOnboardingTestModes()
+            mainWindowModel?.onboarding = nil
+            controller?.startup(showPermissionAlert: false)
         }
 
         // ユーザー向けウィンドウがどれも可視でなくなったら Dock アイコンを引っ込める
         restoreAccessoryPolicyIfNoUserWindows(closing: closing)
     }
 
+    /// メインウィンドウ（ダッシュボード + 設定）の通常サイズ。
+    private var mainWindowSize: NSSize { NSSize(width: 760, height: 600) }
+
+    /// メインウィンドウを生成（無ければ）して返す。生成直後かどうかも返す。
+    private func ensureMainWindow() -> (window: NSWindow, isNew: Bool)? {
+        if let mainWindow { return (mainWindow, false) }
+        guard let controller else { return nil }
+        let model = mainWindowModel ?? MainWindowModel()
+        mainWindowModel = model
+        let hosting = NSHostingController(
+            rootView: MainWindowView(
+                config: controller.config,
+                history: controller.history,
+                stats: controller.stats,
+                updater: UpdaterController.shared,
+                model: model,
+                controller: controller,
+                onShowOnboarding: { [weak self] in self?.showOnboarding(fromStep: 0) }
+            )
+        )
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "voicekey"
+        window.styleMask = [.titled, .closable]
+        window.isReleasedWhenClosed = false
+        GlassWindow.applyFrostedChrome(to: window)  // すりガラス化
+        window.delegate = self  // クローズ時に Dock アイコンを引っ込めるため
+        mainWindow = window
+        return (window, true)
+    }
+
+    /// メインウィンドウを指定サイズで前面に出す（無ければ生成）。center=true で画面中央へ置き直す。
+    /// オンボーディング（900×600）⇄ 通常（760×600）の切替でサイズを付け替える。
+    private func presentMainWindow(size: NSSize, center: Bool) {
+        guard let (window, isNew) = ensureMainWindow() else { return }
+        window.setContentSize(size)
+        // Dock にアイコンを出し前面へ（アクセサリのままだと前面に出ない）
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        if isNew || center { centerOnScreen(window) }
+    }
+
     /// メインウィンドウ（ダッシュボード or 設定）を表示する。設定は別ウィンドウを作らず、
     /// 同じウィンドウ内でモード切替する（v3.1）。
     /// - Parameter settingsTab: nil ならダッシュボード、値があればその設定タブを開く。
     func showMainWindow(settingsTab: Int?) {
-        // 表示モデルを用意（無ければ作る）。既存ウィンドウでもモード/タブを差し込めるようにする。
         let model = mainWindowModel ?? MainWindowModel()
         mainWindowModel = model
+        // オンボーディング表示中は設定/ホームを重ねず、オンボーディングを前面化する
+        if model.onboarding != nil {
+            presentMainWindow(size: onboardingWindowSize, center: false)
+            return
+        }
         if let settingsTab {
             model.settingsTab = settingsTab
             model.showingSettings = true
@@ -523,33 +566,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             model.showingSettings = false
         }
         log.info("メインウィンドウを表示します (settings=\(model.showingSettings), tab=\(model.settingsTab), 既存=\(self.mainWindow != nil))")
-
-        var isNewWindow = false
-        if mainWindow == nil, let controller {
-            let hosting = NSHostingController(
-                rootView: MainWindowView(
-                    config: controller.config,
-                    history: controller.history,
-                    stats: controller.stats,
-                    updater: UpdaterController.shared,
-                    model: model
-                )
-            )
-            let window = NSWindow(contentViewController: hosting)
-            window.title = "voicekey"
-            window.styleMask = [.titled, .closable]
-            window.isReleasedWhenClosed = false
-            GlassWindow.applyFrostedChrome(to: window)  // すりガラス化
-            window.delegate = self  // クローズ時に Dock アイコンを引っ込めるため
-            mainWindow = window
-            isNewWindow = true
-        }
-        // Dock にアイコンを出し前面へ（アクセサリのままだと前面に出ない）
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
-        mainWindow?.makeKeyAndOrderFront(nil)
-        // 中央配置は表示後（frame 確定後）に行う。再表示時は前回位置を尊重する
-        if isNewWindow, let mainWindow { centerOnScreen(mainWindow) }
+        let isNew = (mainWindow == nil)
+        presentMainWindow(size: mainWindowSize, center: isNew)
     }
 
     /// 設定を開く（メインウィンドウを設定モードで開く）。従来の呼び出し名を維持する。
