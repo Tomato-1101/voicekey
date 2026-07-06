@@ -38,6 +38,7 @@ class TestDoubleTapImmediateFinish(unittest.TestCase):
             _platform=platform,
             _key_in_slot=mock.Mock(return_value=True),
             _finish_recording=mock.Mock(),
+            _hotkey_test_active=False,   # 通常経路（録音キーテスト OFF）を検証する
         )
 
     def test_auto_enter_release_finishes_immediately(self):

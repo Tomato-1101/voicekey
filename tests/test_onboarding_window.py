@@ -1,11 +1,12 @@
-"""初回起動オンボーディングウィンドウ（src/ui/onboarding_window.py）のスモークテスト（Phase 5）。
+"""初回起動オンボーディングウィンドウ（src/ui/onboarding_window.py）のスモークテスト。
 
 Qt はオフスクリーン、ログイン（login_coordinator.shared）はモックして keyring/ネットワークに
-触れない。検証内容:
-- 7 ステップの遷移と主ボタン文言（セットアップを始める → あとで/次へ → 次へ×4 → 使い始める）
+触れない。検証内容（体験型 2 ペイン再デザイン・8 ステップ）:
+- 8 ステップの遷移と主ボタン文言（はじめる → あとで/次へ → 次へ×5 → VoiceKey をはじめる）
 - 体験ステップの成功判定（練習欄にテキストが入ると成功メッセージが出る）
 - 整形体験ステップに入っている間だけ整形オーバーライドが ON になる
-- 完了ページが settings.yaml の既定ホットキーを新語彙で表示する
+- 録音キーテスト／マイクテストの間だけ録音抑止モード（set_hotkey_test）が ON になる
+- まとめページが settings.yaml の既定ホットキーを新語彙で表示する
 - 完了/クローズで onboarding_finished が 1 度だけ発火する
 - ログインボタンで begin_login とブラウザ起動が呼ばれる
 """
@@ -70,10 +71,10 @@ class TestOnboardingWindow(unittest.TestCase):
 
     def test_navigation_and_primary_labels(self):
         from src.ui.onboarding_window import (
-            _STEP_DONE,
-            _STEP_FEATURE_TOUR,
             _STEP_LOGIN,
-            _STEP_PRACTICE_BASIC,
+            _STEP_MIC_TEST,
+            _STEP_PRACTICE_FORMAT,
+            _STEP_SUMMARY,
             _STEP_WELCOME,
         )
 
@@ -83,7 +84,7 @@ class TestOnboardingWindow(unittest.TestCase):
             _app.processEvents()
             # ステップ 0: ようこそ
             self.assertEqual(win._step, _STEP_WELCOME)
-            self.assertEqual(win._primary_btn.text(), "セットアップを始める")
+            self.assertEqual(win._primary_btn.text(), "はじめる")
             self.assertFalse(win._back_btn.isVisible())
             self.assertFalse(win._skip_btn.isVisible())
 
@@ -94,29 +95,29 @@ class TestOnboardingWindow(unittest.TestCase):
             self.assertEqual(win._primary_btn.text(), "あとで")
             self.assertFalse(win._skip_btn.isVisible())
 
-            # → ステップ 2: 体験1（「次へ」・スキップ常設）
+            # → ステップ 2: マイクテスト（「次へ」・スキップ常設）
             win._primary_btn.click()
             _app.processEvents()
-            self.assertEqual(win._step, _STEP_PRACTICE_BASIC)
+            self.assertEqual(win._step, _STEP_MIC_TEST)
             self.assertEqual(win._primary_btn.text(), "次へ")
             self.assertTrue(win._skip_btn.isVisible())
 
-            # 体験〜機能ツアーを「次へ」で通過して完了へ
-            for _ in range(_STEP_DONE - _STEP_PRACTICE_BASIC):
+            # 動作確認〜体験を「次へ」で通過してまとめへ
+            for _ in range(_STEP_SUMMARY - _STEP_MIC_TEST):
                 win._primary_btn.click()
                 _app.processEvents()
-            self.assertEqual(win._step, _STEP_DONE)
-            self.assertEqual(win._primary_btn.text(), "使い始める")
+            self.assertEqual(win._step, _STEP_SUMMARY)
+            self.assertEqual(win._primary_btn.text(), "VoiceKey をはじめる")
             self.assertFalse(win._skip_btn.isVisible())
 
-            # 戻る → 機能ツアー
+            # 戻る → 体験3（整形）
             win._back_btn.click()
             _app.processEvents()
-            self.assertEqual(win._step, _STEP_FEATURE_TOUR)
+            self.assertEqual(win._step, _STEP_PRACTICE_FORMAT)
 
-    def test_skip_jumps_to_done(self):
-        # 体験ステップからスキップすると完了ステップへ飛ぶ（体験を強制しない）
-        from src.ui.onboarding_window import _STEP_DONE, _STEP_PRACTICE_BASIC
+    def test_skip_jumps_to_summary(self):
+        # 体験ステップからスキップするとまとめへ飛ぶ（体験を強制しない）
+        from src.ui.onboarding_window import _STEP_PRACTICE_BASIC, _STEP_SUMMARY
 
         with mock.patch("src.core.login_coordinator.shared", return_value=_FakeCoord()):
             win = self._make_window()
@@ -125,8 +126,8 @@ class TestOnboardingWindow(unittest.TestCase):
             _app.processEvents()
             win._skip_btn.click()
             _app.processEvents()
-            self.assertEqual(win._step, _STEP_DONE)
-            self.assertEqual(win._primary_btn.text(), "使い始める")
+            self.assertEqual(win._step, _STEP_SUMMARY)
+            self.assertEqual(win._primary_btn.text(), "VoiceKey をはじめる")
 
     def test_practice_input_shows_success(self):
         # 練習欄にテキストが入ると成功メッセージが表示される
@@ -147,9 +148,9 @@ class TestOnboardingWindow(unittest.TestCase):
     def test_format_override_only_during_format_step(self):
         # 整形体験ステップに入っている間だけ app へ整形オーバーライド ON が伝わる
         from src.ui.onboarding_window import (
-            _STEP_FEATURE_TOUR,
             _STEP_PRACTICE_BASIC,
             _STEP_PRACTICE_FORMAT,
+            _STEP_SUMMARY,
         )
 
         fake_app = mock.Mock()
@@ -164,9 +165,38 @@ class TestOnboardingWindow(unittest.TestCase):
             win._go_to(_STEP_PRACTICE_FORMAT)
             _app.processEvents()
             self.assertEqual(fake_app.set_practice_format_override.call_args[0][0], True)
-            win._go_to(_STEP_FEATURE_TOUR)
+            win._go_to(_STEP_SUMMARY)
             _app.processEvents()
             self.assertEqual(fake_app.set_practice_format_override.call_args[0][0], False)
+
+    def test_hotkey_test_active_only_on_test_steps(self):
+        # 録音キーテスト／マイクテストの間だけ録音抑止モード（set_hotkey_test）が ON になる
+        from src.ui.onboarding_window import (
+            _STEP_HOTKEY_TEST,
+            _STEP_MIC_TEST,
+            _STEP_PRACTICE_BASIC,
+        )
+
+        fake_app = mock.Mock()
+        with mock.patch("src.core.login_coordinator.shared", return_value=_FakeCoord()):
+            from src.ui.onboarding_window import OnboardingWindow
+
+            win = OnboardingWindow(self._config, app=fake_app)
+            self._windows.append(win)
+            # マイクテスト: ON（callback なし＝録音を止めるだけ）
+            win._go_to(_STEP_MIC_TEST)
+            _app.processEvents()
+            self.assertTrue(win._app.set_hotkey_test.call_args[0][0])
+            self.assertIsNone(win._app.set_hotkey_test.call_args[0][1])
+            # 録音キーテスト: ON（callback あり＝押下スロットを報告）
+            win._go_to(_STEP_HOTKEY_TEST)
+            _app.processEvents()
+            self.assertTrue(win._app.set_hotkey_test.call_args[0][0])
+            self.assertIsNotNone(win._app.set_hotkey_test.call_args[0][1])
+            # 体験ステップ: OFF
+            win._go_to(_STEP_PRACTICE_BASIC)
+            _app.processEvents()
+            self.assertFalse(win._app.set_hotkey_test.call_args[0][0])
 
     def test_logged_in_shows_next(self):
         # ログイン済みなら主ボタンは「次へ」になる
@@ -180,14 +210,14 @@ class TestOnboardingWindow(unittest.TestCase):
             self.assertEqual(win._step, 1)
             self.assertEqual(win._primary_btn.text(), "次へ")
 
-    def test_done_page_shows_default_hotkeys(self):
-        # 完了ページのカードが既定ホットキー（<f2>/<f3>）と新語彙（スタンダード）を出す
-        from src.ui.onboarding_window import _STEP_DONE
+    def test_summary_shows_default_hotkeys(self):
+        # まとめページのカードが既定ホットキー（<f2>/<f3>）と新語彙（スタンダード）を出す
+        from src.ui.onboarding_window import _STEP_SUMMARY
 
         with mock.patch("src.core.login_coordinator.shared", return_value=_FakeCoord()):
             win = self._make_window()
-            win._step = _STEP_DONE
-            win._go_to(_STEP_DONE)
+            win._step = _STEP_SUMMARY
+            win._go_to(_STEP_SUMMARY)
             _app.processEvents()
             from PySide6.QtWidgets import QLabel
 
@@ -199,15 +229,15 @@ class TestOnboardingWindow(unittest.TestCase):
             self.assertIn("録音キー 1（メイン）", joined)
 
     def test_finish_emits_once(self):
-        from src.ui.onboarding_window import _STEP_DONE
+        from src.ui.onboarding_window import _STEP_SUMMARY
 
         with mock.patch("src.core.login_coordinator.shared", return_value=_FakeCoord()):
             win = self._make_window()
             fired = []
             win.onboarding_finished.connect(lambda: fired.append(True))
-            win._step = _STEP_DONE
-            win._go_to(_STEP_DONE)
-            win._primary_btn.click()  # 使い始める
+            win._step = _STEP_SUMMARY
+            win._go_to(_STEP_SUMMARY)
+            win._primary_btn.click()  # VoiceKey をはじめる
             _app.processEvents()
             self.assertEqual(fired, [True])
             # 追加のクローズで二重発火しない

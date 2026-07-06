@@ -30,7 +30,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
-from typing import Dict, Optional, Set
+from typing import Callable, Dict, Optional, Set
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -230,6 +230,12 @@ class VoicekeyApp(QObject):
         # （フィラー除去を体験させるため）。ステップを出たら必ず False へ戻す。
         self._practice_format_override = False
 
+        # オンボーディングの録音キーテスト／マイクテスト中だけ True。True の間は録音を開始せず、
+        # 押された録音キーを _hotkey_test_callback へ報告するだけにする（無料枠を消費しない）。
+        # コールバックは listener スレッドから呼ばれるので、UI 側は Qt シグナルでメインスレッドへ渡すこと。
+        self._hotkey_test_active = False
+        self._hotkey_test_callback: Optional[Callable[[Optional[int]], None]] = None
+
         # ダブルタップ検出（hold モードのみ。listener スレッドからのみ更新）
         self._last_release_time: float = 0.0
         self._last_release_slot: Optional[int] = None
@@ -281,6 +287,8 @@ class VoicekeyApp(QObject):
             updater=self._updater,
         )
         self._settings_window.settings_saved.connect(self._apply_config_changes)
+        # 設定「一般」の「セットアップガイドを開く」からもう一度オンボーディングを表示する
+        self._settings_window.open_onboarding_requested.connect(self.show_onboarding)
         # 録音完了後の残量更新（別スレッド）→ 設定画面のアカウント表示をメインスレッドで描き直す
         self.account_refreshed.connect(self._settings_window.refresh_account_status)
         self._tray = SystemTray(platform_adapter=self._platform)
@@ -716,6 +724,12 @@ class VoicekeyApp(QObject):
                 return  # OS のキーリピートによる再送（エッジ検出）
             self._pressed_keys.add(key_str)
 
+            # オンボーディングの録音キーテスト／マイクテスト中は録音を開始せず、
+            # 押されている録音キーのスロット（無ければ None）を報告するだけにする
+            if self._hotkey_test_active:
+                self._report_hotkey_test()
+                return
+
             recording_slot = self._recording_slot
             if recording_slot is None:
                 for slot_id, slot in self._slots.items():
@@ -767,6 +781,11 @@ class VoicekeyApp(QObject):
             key_str = self._platform.normalize_listener_key(key)
             if key_str is not None:
                 self._pressed_keys.discard(key_str)
+
+            # 録音キーテスト中は録音制御に入らず、現在押されているスロット（無ければ None）を報告する
+            if self._hotkey_test_active:
+                self._report_hotkey_test()
+                return
 
             recording_slot = self._recording_slot
             if recording_slot is None:
@@ -1332,9 +1351,10 @@ class VoicekeyApp(QObject):
     def _show_onboarding(self) -> None:
         """セットアップガイド（オンボーディング）を表示する。
 
-        起動時の初回自動表示（_maybe_show_onboarding）からのみ呼ばれる（トレイからの
-        再表示口は撤去済み。ユーザー指示「起動時にだけ表示するようにして」）。
-        app を渡して体験ステップから整形オーバーライドを操作できるようにする
+        起動時の初回自動表示（_maybe_show_onboarding）と、設定「一般」の
+        「セットアップガイドを開く」（show_onboarding）から呼ばれる（トレイの再表示口は
+        撤去済み。ユーザー指示「起動時にだけ表示するようにして」＝トレイには置かない）。
+        app を渡して体験ステップから整形オーバーライド・録音キーテストを操作できるようにする
         （ホットキー監視は __init__ で既に起動済みなので、体験中もそのまま録音できる）。
         """
         from .ui.onboarding_window import OnboardingWindow
@@ -1356,6 +1376,37 @@ class VoicekeyApp(QObject):
     def set_practice_format_override(self, enabled: bool) -> None:
         """オンボーディング整形体験ステップの間だけ整形を強制 ON にする（保存しない一時フラグ）。"""
         self._practice_format_override = bool(enabled)
+
+    def set_hotkey_test(
+        self, enabled: bool,
+        callback: Optional[Callable[[Optional[int]], None]] = None,
+    ) -> None:
+        """オンボーディングの録音キーテスト／マイクテストモードを ON/OFF する。
+
+        ON の間は録音を開始せず、録音キーの押下/離鍵で押されているスロット ID（無ければ None）を
+        callback へ渡す。callback は listener スレッドから呼ばれるため、UI 側は Qt シグナル経由で
+        メインスレッドに受け渡すこと。マイクテスト中は callback=None（録音を止めるだけ）で使う。
+        """
+        self._hotkey_test_active = bool(enabled)
+        self._hotkey_test_callback = callback if enabled else None
+
+    def _report_hotkey_test(self) -> None:
+        """録音キーテスト中に、現在押されている録音キーのスロット（無ければ None）を報告する。"""
+        matched: Optional[int] = None
+        for slot_id, slot in self._slots.items():
+            if self._slot_matches(slot):
+                matched = slot_id
+                break
+        cb = self._hotkey_test_callback
+        if cb is not None:
+            try:
+                cb(matched)
+            except Exception as e:  # UI 側の例外で listener を殺さない
+                logger.warning(f"録音キーテストのコールバックで例外: {e}")
+
+    def show_onboarding(self) -> None:
+        """セットアップガイドをもう一度表示する（設定画面の『セットアップガイドを開く』から）。"""
+        self._show_onboarding()
 
     def _open_settings(self) -> None:
         """設定ウィンドウを開いて確実に前面化する。"""

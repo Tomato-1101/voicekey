@@ -62,6 +62,7 @@ from ..config import ConfigManager, HotkeyMode, TranscriptionBackend
 from ..config.constants import APP_VERSION, default_format_enabled
 from ..core.audio_recorder import AudioRecorder
 from ..core.history import MAX_ITEMS as HISTORY_MAX_ITEMS, HistoryStore
+from ..core.mic_monitor import MicLevelMonitor
 from ..core.stats import StatsStore
 from ..platform import PlatformAdapter, get_platform_adapter
 from ..utils import autostart, secrets
@@ -756,6 +757,8 @@ class SettingsWindow(QWidget):
     _entitlement_done = Signal()
     # アクティベーションキー登録の完了通知（成功か, メッセージ）
     _redeem_done = Signal(bool, str)
+    # 「セットアップガイドを開く」要求（アプリ本体が受けてオンボーディングを再表示する）
+    open_onboarding_requested = Signal()
 
     def __init__(
         self,
@@ -1065,6 +1068,50 @@ class SettingsWindow(QWidget):
         self._entitlement_done.connect(self._on_entitlement_done)
         self._redeem_done.connect(self._on_redeem_done)
 
+        layout.addWidget(card)
+
+        # --- カード: マイクテスト（録音キーを押さずに拾えているか確認・無料枠を消費しない） ---
+        card, cl = _make_card()
+        self._mic_monitor = MicLevelMonitor()
+        self._mic_test_timer = QTimer(self)
+        self._mic_test_timer.setInterval(33)
+        self._mic_test_timer.timeout.connect(self._poll_mic_test_level)
+
+        self._mic_test_button = QPushButton("テスト")
+        self._mic_test_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._mic_test_button.clicked.connect(self._toggle_mic_test)
+        self._mic_test_bar = QProgressBar()
+        self._mic_test_bar.setRange(0, 100)
+        self._mic_test_bar.setValue(0)
+        self._mic_test_bar.setTextVisible(False)
+        self._mic_test_bar.setFixedHeight(10)
+        mic_test_row = QWidget()
+        mic_test_layout = QHBoxLayout(mic_test_row)
+        mic_test_layout.setContentsMargins(0, 0, 0, 0)
+        mic_test_layout.setSpacing(8)
+        mic_test_layout.addWidget(self._mic_test_button)
+        mic_test_layout.addWidget(self._mic_test_bar, 1)
+        _add_row(
+            cl, "マイクテスト", mic_test_row,
+            caption="「テスト」を押して声を出すと、拾えていればバーが動きます"
+            "（録音キーは押さなくて大丈夫です）。",
+        )
+        layout.addWidget(card)
+
+        # --- カード: はじめかた（セットアップガイドの再表示） ---
+        card, cl = _make_card()
+        guide_button = QPushButton("セットアップガイドを開く")
+        guide_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        guide_button.clicked.connect(self.open_onboarding_requested.emit)
+        guide_row = QWidget()
+        guide_layout = QHBoxLayout(guide_row)
+        guide_layout.setContentsMargins(0, 0, 0, 0)
+        guide_layout.addWidget(guide_button)
+        guide_layout.addStretch()
+        _add_row(
+            cl, "はじめかた", guide_row,
+            caption="使い方をはじめから、もう一度見られます。",
+        )
         layout.addWidget(card)
 
         # --- カード: 動作（自動 Enter・ハンズフリー） ---
@@ -2287,6 +2334,39 @@ class SettingsWindow(QWidget):
             display_ms,
             lambda: self._mic_detect_button.isEnabled() and self._mic_detect_status.setVisible(False),
         )
+
+    # ------------------------------------------------------------------
+    # マイクテスト（録音せずレベルだけ確認・無料枠を消費しない）
+    # ------------------------------------------------------------------
+
+    def _toggle_mic_test(self) -> None:
+        """マイクテストの開始/停止をトグルする（選択中のマイクでレベルを表示）。"""
+        if self._mic_monitor.is_running:
+            self._stop_mic_test()
+            return
+        device = self._input_device_combo.currentData() or "default"
+        if self._mic_monitor.start(device):
+            self._mic_test_timer.start()
+            self._mic_test_button.setText("停止")
+        else:
+            # 開始できないときは無言にせずボタン文言で知らせる
+            self._mic_test_button.setText("開けません")
+            QTimer.singleShot(1500, lambda: self._mic_test_button.setText("テスト"))
+
+    def _stop_mic_test(self) -> None:
+        """マイクテストを停止する（ウィンドウを隠すときにも呼ぶ）。"""
+        self._mic_test_timer.stop()
+        self._mic_monitor.stop()
+        self._mic_test_bar.setValue(0)
+        self._mic_test_button.setText("テスト")
+
+    def _poll_mic_test_level(self) -> None:
+        self._mic_test_bar.setValue(int(self._mic_monitor.read_level() * 100))
+
+    def hideEvent(self, event) -> None:
+        """設定を閉じる/隠すときはマイクテストのストリームを必ず閉じる。"""
+        self._stop_mic_test()
+        super().hideEvent(event)
 
     # ------------------------------------------------------------------
     # 設定の読み込み・保存

@@ -41,6 +41,7 @@ def _fake_app(recording_started_ago: float):
         _last_release_slot=None,
         _state_lock=threading.Lock(),
         _pending_tap_timer=None,
+        _hotkey_test_active=False,   # 通常経路（録音キーテスト OFF）を検証する
         # 実体を注入（staticmethod/通常メソッドは unbound 呼び出し）
         _acceptable_names=VoicekeyApp._acceptable_names,
         _finish_recording=mock.Mock(),
