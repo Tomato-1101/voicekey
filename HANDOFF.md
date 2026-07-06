@@ -3,8 +3,20 @@
 セッションをまたぐ作業の現在地。再開時はまずこれを読む。
 承認済み計画の全文: `/Users/tomato/.claude/plans/api-api-api-mac-abstract-hare.md`
 
-## 最新の現在地（2026-07-06 更新）
+## 最新の現在地（2026-07-07 更新）
 
+- **HUD 再発 2 件を計測で根治（release `05b29f8` / main `6fe045b`・push 済み・常用アプリ反映済み）**:
+  ①「変換中…」の横揺れ＝ジオメトリは不動（0px 実測）で、**正体は明滅の谷で「…」が先に視認閾値を割り
+  可視インクの重心が ±7pt 振れる知覚現象**。変換中テキストを完全静止化（明滅撤去・両 OS）。after は
+  50 フレーム range 0.00px。**今後この場所に活動表現を入れるなら左右非対称要素（…）の明滅は再発するので禁止**。
+  ②フルスクリーン中に待機ピルが消えない＝f9a3339 の CGWindowList 検出＋asyncAfter 保険は App Nap で
+  保険が沈黙する構造欠陥。検出を全廃し **collectionBehavior で OS の Space 管理へ委譲**
+  （待機=現在 Space のみ・録音/変換/通知= .canJoinAllSpaces+.fullScreenAuxiliary でフルスクリーン上も表示。
+  ※実測: .fullScreenAuxiliary を外すだけでは .canJoinAllSpaces が全 Space へ強制表示するため不足）。
+  実フルスクリーン Space の画素判定で 待機=消滅（non-white 0）/録音=表示 を確認。
+  恒久回帰ハーネス `macos/scripts/dev/fullscreen_helper.swift`（TCC 不要）をコミット。
+  **教訓（lessons.md 記録済み）**: 常駐 UI の視覚挙動は「インストール済み最終ビルド＋実条件ハーネスの
+  数値/画素判定」まで行って完了と言う。Windows にはフルスクリーン非表示の実装が元々ない（未対応・後日）。
 - **UI/UX 大型バッチ実装済み（release `546ec43`〜`0e1abb4`・9 コミット・push 済み・未リリース）**。内容:
   ①ピル刷新第 6 弾（三段階サイズ 待機<変換中<録音中・全体小型化・Dock/画面構成変化への追従・
   ハンズフリーはラベル/「もう一度押すと停止」撤去→ティール #00C7B8 の色のみ・両 OS）
