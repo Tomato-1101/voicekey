@@ -300,14 +300,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         feedback.target = self
         menu.addItem(feedback)
 
-        // 初回セットアップをいつでも開き直せるようにする（Phase 5）
-        let guide = NSMenuItem(
-            title: "セットアップガイド…",
-            action: #selector(openOnboarding),
-            keyEquivalent: ""
-        )
-        guide.target = self
-        menu.addItem(guide)
+        // セットアップガイドはメニューからの再表示を撤去し、起動時の自動判定のみで表示する
+        // （ユーザー指示: 「起動時にだけ表示するようにして」）。
         menu.addItem(.separator())
 
         let quit = NSMenuItem(title: "voicekey を終了", action: #selector(quitApp), keyEquivalent: "q")
@@ -420,11 +414,6 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
         // 中央配置は表示後に行う（表示前は frame がサイズ 0 のことがあり右上へずれる）
         centerOnScreen(window)
-    }
-
-    /// メニューからいつでもオンボーディングを開き直す（Phase 5）。
-    @objc private func openOnboarding() {
-        showOnboarding(fromStep: 0)
     }
 
     /// 初回セットアップ（オンボーディング）ウィンドウを表示する。

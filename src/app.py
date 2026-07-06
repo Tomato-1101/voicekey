@@ -285,7 +285,6 @@ class VoicekeyApp(QObject):
         self.account_refreshed.connect(self._settings_window.refresh_account_status)
         self._tray = SystemTray(platform_adapter=self._platform)
         self._tray.open_settings.connect(self._open_settings)
-        self._tray.open_onboarding.connect(self._show_onboarding)
         self._tray.force_reset.connect(self._force_restart)
         self._tray.quit_app.connect(self._quit_app)
         self.status_changed.connect(self._tray.set_status)
@@ -1333,7 +1332,8 @@ class VoicekeyApp(QObject):
     def _show_onboarding(self) -> None:
         """セットアップガイド（オンボーディング）を表示する。
 
-        初回自動表示（_maybe_show_onboarding）とトレイメニューからの再表示で共用する。
+        起動時の初回自動表示（_maybe_show_onboarding）からのみ呼ばれる（トレイからの
+        再表示口は撤去済み。ユーザー指示「起動時にだけ表示するようにして」）。
         app を渡して体験ステップから整形オーバーライドを操作できるようにする
         （ホットキー監視は __init__ で既に起動済みなので、体験中もそのまま録音できる）。
         """

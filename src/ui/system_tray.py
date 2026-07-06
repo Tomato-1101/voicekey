@@ -32,7 +32,6 @@ class SystemTray(QSystemTrayIcon):
     
     Signals:
         open_settings: 設定を開く要求
-        open_onboarding: セットアップガイド（オンボーディング）の再表示要求
         force_reset: 録音状態の強制リセット要求（フリーズ復帰用）
         quit_app: アプリケーション終了要求
         install_update: 新バージョンのインストール要求（自動アップデート）
@@ -40,7 +39,6 @@ class SystemTray(QSystemTrayIcon):
 
     # メニューアクション用シグナル
     open_settings = Signal()
-    open_onboarding = Signal()
     force_reset = Signal()
     quit_app = Signal()
     install_update = Signal()
@@ -85,9 +83,8 @@ class SystemTray(QSystemTrayIcon):
         settings_action = self._menu.addAction("設定…")
         settings_action.triggered.connect(self.open_settings.emit)
 
-        # 初回セットアップをいつでも開き直せるようにする（Mac 版メニューバーと同じ導線）
-        onboarding_action = self._menu.addAction("セットアップガイド…")
-        onboarding_action.triggered.connect(self.open_onboarding.emit)
+        # セットアップガイドの再表示項目は撤去（Mac と同じく起動時の自動判定のみで表示する。
+        # ユーザー指示: 「起動時にだけ表示するようにして」）。
 
         # 新バージョン検知時のみ表示するインストール項目（モーダルは出さない方針）
         self._update_action = self._menu.addAction("")
