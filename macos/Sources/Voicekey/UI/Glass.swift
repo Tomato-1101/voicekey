@@ -97,7 +97,7 @@ extension View {
 
 /// ガラスボタンスタイル（全 OS 共通）。
 /// - 通常: 本物のガラス（26）/ 単色半透明（旧 OS）＋上縁リム＋影で「透け」を出す。
-/// - prominent: アクセントのグラデ塗り＋白リム＋アクセントのグロー影で主張させる。
+/// - prominent: アクセントのグラデ塗り＋白リム＋ソフトな無彩色影（発光はしない）で主張させる。
 /// なぜ Capsule 固定か: macOS 26 のガラスボタン既定形状（カプセル）に印象を揃えるため。
 struct LiquidButtonStyle: ButtonStyle {
     /// 主要アクション（accent グラデ・白文字）かどうか
@@ -153,8 +153,8 @@ private struct LiquidButtonBackground: ViewModifier {
                         lineWidth: 1
                     )
                 )
-                // アクセント色のグロー影で「光っている」主張を作る
-                .shadow(color: Color.accentColor.opacity(0.5), radius: 10, x: 0, y: 4)
+                // 発光をやめ、浮きだけ出すソフトな無彩色影にする（ネオンの主張を排除）
+                .shadow(color: .black.opacity(0.18), radius: 6, x: 0, y: 2)
         } else {
             content
                 .modifier(LiquidButtonGlassFill(colorScheme: colorScheme))
@@ -236,12 +236,13 @@ private struct FrostedBackdrop: View {
         }
     }
 
-    /// アクセント寄りのグラデーションウォッシュ。数値は実写で可読性が落ちない範囲に調整。
+    /// 無彩色ベースの落ち着いたウォッシュ。紫・ネオンは「信頼できる色に」との指摘で撤去し、
+    /// 黒〜ダークグレー（ダーク）／白（ライト）主体にして、アクセントは気配程度（0.04）に留める。
     private var wash: some View {
         LinearGradient(
             colors: colorScheme == .dark
-                ? [Color.accentColor.opacity(0.16), Color.purple.opacity(0.10), Color.black.opacity(0.25)]
-                : [Color.accentColor.opacity(0.10), Color.white.opacity(0.20), Color.white.opacity(0.05)],
+                ? [Color.accentColor.opacity(0.04), Color.black.opacity(0.18), Color.black.opacity(0.30)]
+                : [Color.accentColor.opacity(0.04), Color.white.opacity(0.22), Color.white.opacity(0.06)],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
         )

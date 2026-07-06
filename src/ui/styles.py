@@ -5,7 +5,7 @@ UIスタイル・テーマ定義モジュール
 ダークモード/ライトモードの切り替えに対応。
 
 デザイン方針（2026-07 再設計 v2・「浮遊するガラス島」近似）:
-- backdrop（BG_WINDOW）に対角の深いグラデ＋アクセントウォッシュを敷き、その上へ
+- backdrop（BG_WINDOW）に対角の無彩色グラデ（紫・ネオンは信頼感優先で撤去）を敷き、その上へ
   サイドバー島・コンテンツ島・カード・ボタンを rgba 半透明＋1px の明るいトップエッジ
   （GLASS_EDGE）＋下端の沈み（EDGE_BOTTOM）で「浮いた島」として重ねる。ルートレイアウトに
   余白を持たせて四周に backdrop を覗かせ、島が浮いて見えるようにする（サイドバーとコンテンツが
@@ -116,10 +116,10 @@ class MacTheme:
                 is_dark: ダークモードの場合True
             """
             if is_dark:
-                # ルート土台（backdrop）。対角の深いグラデ＋青紫のアクセントウォッシュ。
-                # この上に半透明の「島」（サイドバー / コンテンツ）とカード・ボタンを浮かべる
+                # ルート土台（backdrop）。紫・ネオンは「信頼できる色に」との指摘で撤去し、
+                # 無彩色（黒〜ダークグレー）の対角グラデにする。この上に半透明の「島」を浮かべる
                 self.BG_WINDOW = ("qlineargradient(x1:0, y1:0, x2:1, y2:1, "
-                                  "stop:0 #232A3D, stop:0.4 #1A1F2E, stop:1 #12141C)")
+                                  "stop:0 #2A2A2D, stop:0.4 #1F1F22, stop:1 #151517)")
                 self.BG_SIDEBAR = "rgba(255, 255, 255, 0.05)"   # サイドバー島の面（backdrop が透ける）
                 self.CONTENT_BG = "rgba(255, 255, 255, 0.04)"   # コンテンツ島の面（島側はやや薄く）
                 self.BG_CONTENT = "#1B2130"                     # QMessageBox 用の不透明フラット
@@ -154,10 +154,10 @@ class MacTheme:
                 self.TOGGLE_OFF = "#48484E"
                 self.SCROLL_HANDLE = "rgba(255, 255, 255, 0.25)"
             else:
-                # ルート土台（backdrop）。対角の寒色グラデ＋淡いアクセントウォッシュ。
+                # ルート土台（backdrop）。青みを抜いた無彩色（白〜ライトグレー）の対角グラデ。
                 # この上に白系半透明の「島」とカード・ボタンを浮かべる
                 self.BG_WINDOW = ("qlineargradient(x1:0, y1:0, x2:1, y2:1, "
-                                  "stop:0 #EEF3FF, stop:0.5 #F4F6FB, stop:1 #E8ECF5)")
+                                  "stop:0 #F1F1F3, stop:0.5 #F6F6F8, stop:1 #EAEAED)")
                 self.BG_SIDEBAR = "rgba(255, 255, 255, 0.55)"   # サイドバー島の面（白すりガラス）
                 self.CONTENT_BG = "rgba(255, 255, 255, 0.45)"   # コンテンツ島の面（島側はやや薄く）
                 self.BG_CONTENT = "#F2F3F8"                     # QMessageBox 用の不透明フラット

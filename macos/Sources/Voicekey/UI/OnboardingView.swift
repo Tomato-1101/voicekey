@@ -787,26 +787,15 @@ struct OnboardingView: View {
         }
     }
 
-    /// ステップのヒーローアイコン（アクセントのグラデ円＋白シンボル＋グロー影）。
+    /// ステップのヒーローアイコン。「円の上に円＋アクセントグロー影」はダサい・ネオンだと却下されたため、
+    /// 円形コンテナとグロー影を廃止。角丸スクエアの無色ガラスタイル（glassSurface）に
+    /// アクセント色の素の SF シンボルを載せ、ガラスの文法だけで顔を作る。
     private func heroIcon(_ icon: String) -> some View {
         Image(systemName: icon)
-            .font(.system(size: 26, weight: .semibold))
-            .foregroundStyle(.white)
-            .frame(width: 56, height: 56)
-            .background(
-                Circle().fill(LinearGradient(
-                    colors: [Color.accentColor, Color.accentColor.opacity(0.7)],
-                    startPoint: .topLeading, endPoint: .bottomTrailing
-                ))
-            )
-            // 上縁の白リムでガラスの厚み、アクセントのグロー影で「光る顔」を作る
-            .overlay(
-                Circle().strokeBorder(LinearGradient(
-                    colors: [.white.opacity(0.5), .white.opacity(0.0)],
-                    startPoint: .top, endPoint: .bottom
-                ), lineWidth: 1)
-            )
-            .shadow(color: Color.accentColor.opacity(0.45), radius: 10, x: 0, y: 4)
+            .font(.system(size: 24, weight: .semibold))
+            .foregroundStyle(Color.accentColor)
+            .frame(width: 52, height: 52)
+            .glassSurface(cornerRadius: 14)
     }
 }
 

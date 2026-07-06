@@ -164,7 +164,7 @@ struct MainWindowView: View {
         .help(title)
     }
 
-    /// ナビ項目の背景。選択中＝アクセントのグラデピル＋白リム＋グロー影、ホバー＝薄いフィル、他＝透明。
+    /// ナビ項目の背景。選択中＝アクセントのグラデピル＋白リム＋ソフトな無彩色影、ホバー＝薄いフィル、他＝透明。
     @ViewBuilder
     private func navBackground(selected: Bool, hovered: Bool) -> some View {
         if selected {
@@ -180,7 +180,7 @@ struct MainWindowView: View {
                             startPoint: .top, endPoint: .bottom
                         ), lineWidth: 1)
                 )
-                .shadow(color: Color.accentColor.opacity(0.45), radius: 8, x: 0, y: 3)
+                .shadow(color: .black.opacity(0.18), radius: 6, x: 0, y: 2)
         } else if hovered {
             RoundedRectangle(cornerRadius: 9)
                 .fill(Color.primary.opacity(0.07))
