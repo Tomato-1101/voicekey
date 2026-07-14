@@ -224,6 +224,7 @@ def _add_row(
 
 # ページタイトル → アイコン名のマッピング
 _NAV_ICON_NAME = {
+    "ホーム": "home",
     "一般": "general",
     "録音キー 1（メイン）": "hotkey1",
     "録音キー 2（サブ）": "hotkey2",
@@ -243,6 +244,10 @@ def _nav_svg(name: str, color: str) -> str:
         f'stroke="{color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'
     )
     bodies = {
+        "home": (
+            '<path d="M4 11.5 12 4l8 7.5"/><path d="M6 10.5V20h12v-9.5"/>'
+            '<rect x="10" y="14" width="4" height="6"/>'
+        ),
         "general": (
             '<line x1="3" y1="9" x2="21" y2="9"/><circle cx="8" cy="9" r="2.3"/>'
             '<line x1="3" y1="15" x2="21" y2="15"/><circle cx="15" cy="15" r="2.3"/>'
@@ -905,17 +910,19 @@ class SettingsWindow(QWidget):
         hh.addWidget(self._theme_toggle)
         rv.addWidget(header)
 
-        # 6 ページ（Mac 版 SettingsView と同じ構成・順序）
+        # ページ（Mac 版のメインウィンドウ＝ホームダッシュボードを起点に、設定タブが続く構成）
         self._pages = QStackedWidget()
         page_defs = [
+            ("ホーム", self._create_home_page()),
             ("一般", self._create_general_page()),
             ("録音キー 1（メイン）", self._create_slot_page(1)),
             ("録音キー 2（サブ）", self._create_slot_page(2)),
             ("実績", self._create_stats_page()),
             ("履歴", self._create_history_page()),
         ]
-        self._stats_page_index = 3
-        self._history_page_index = 4
+        self._home_page_index = 0
+        self._stats_page_index = 4
+        self._history_page_index = 5
         # ユーザー辞書（確定置換）。貼り付け直前に from→to を機械置換する。常時表示。
         page_defs.append(("ユーザー辞書", self._create_dictionary_page()))
         # アカウント（ブラウザ経由ログイン）。製品版の中核機能なので常時表示する。
@@ -1348,6 +1355,236 @@ class SettingsWindow(QWidget):
         )
 
     # ------------------------------------------------------------------
+    # ホームページ（Mac 版 HomeView のダッシュボードと同構成の 3 カード + 最近の履歴）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _home_card() -> tuple:
+        """ダッシュボードのカード（角丸の面）と縦レイアウトを作る。"""
+        frame = QFrame()
+        frame.setObjectName("card")
+        lay = QVBoxLayout(frame)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(8)
+        return frame, lay
+
+    def _create_home_page(self) -> QWidget:
+        """ホーム（ダッシュボード）を作成する。
+
+        Mac 版 HomeView の主役 3 カード（累計入力 / 節約できた時間 / この期間）を再現し、
+        下に最近の履歴（直近 8 件・クリックでコピー）を置く。データ源は StatsStore / HistoryStore
+        （Mac と計算式・しきい値を一致させる）。アプリ別使用状況は Windows の履歴がアプリ名
+        メタデータを持たないため省略する。
+        """
+        # 期間カードの選択（1=今日 / 7=今週）。既定は今日
+        self._home_period_days = 1
+
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 12, 24, 24)
+        layout.setSpacing(16)
+
+        # --- ヘッダ（見出し + 今日の一言） ---
+        header = QVBoxLayout()
+        header.setSpacing(2)
+        title = QLabel("ダッシュボード")
+        title.setStyleSheet("font-size: 18px; font-weight: 700;")
+        header.addWidget(title)
+        self._home_greeting = _make_caption("今日はまだ入力していません")
+        header.addWidget(self._home_greeting)
+        layout.addLayout(header)
+
+        # --- 上段: 累計入力 + 節約できた時間（横並び） ---
+        top_row = QHBoxLayout()
+        top_row.setSpacing(12)
+        top_row.addWidget(self._build_cumulative_card(), 1)
+        top_row.addWidget(self._build_saved_card(), 1)
+        layout.addLayout(top_row)
+
+        # --- 下段: この期間（全幅・今日/今週トグル） ---
+        layout.addWidget(self._build_period_card())
+
+        # --- 最近の履歴（直近 8 件・クリックでコピー） ---
+        recent_label = QLabel("最近の履歴")
+        recent_label.setStyleSheet("font-size: 14px; font-weight: 600;")
+        layout.addWidget(recent_label)
+        self._home_history_list = QListWidget()
+        self._home_history_list.setObjectName("historyList")
+        self._home_history_list.setWordWrap(True)
+        self._home_history_list.setMinimumHeight(140)
+        self._home_history_list.itemClicked.connect(self._copy_history_item)
+        layout.addWidget(self._home_history_list)
+
+        layout.addStretch()
+        return self._wrap_scroll(page)
+
+    def _build_cumulative_card(self) -> QFrame:
+        """カード「累計入力」（累計文字数 + 回数/録音時間 + レベル進捗）。"""
+        card, cl = self._home_card()
+        cl.addWidget(_make_caption("累計入力"))
+        # 主役: 累計文字数
+        big_row = QHBoxLayout()
+        big_row.setSpacing(4)
+        self._home_total_chars = QLabel("0")
+        self._home_total_chars.setStyleSheet("font-size: 26px; font-weight: 700;")
+        big_row.addWidget(self._home_total_chars)
+        unit = QLabel("文字")
+        unit.setStyleSheet("font-size: 13px;")
+        big_row.addWidget(unit, 0, Qt.AlignmentFlag.AlignBottom)
+        big_row.addStretch()
+        cl.addLayout(big_row)
+        # 補足: 回数・録音時間
+        self._home_total_sub = _make_caption("0 回 · 録音 0秒")
+        cl.addWidget(self._home_total_sub)
+        # レベル進捗（累計文字数を経験値としたレベル制）
+        level_row = QHBoxLayout()
+        self._home_level_label = QLabel("レベル 1")
+        self._home_level_label.setStyleSheet("font-size: 13px; font-weight: 600;")
+        level_row.addWidget(self._home_level_label)
+        level_row.addStretch()
+        self._home_next_label = _make_caption("あと 0 文字で Lv.2")
+        level_row.addWidget(self._home_next_label)
+        cl.addLayout(level_row)
+        self._home_level_progress = QProgressBar()
+        self._home_level_progress.setRange(0, 100)
+        self._home_level_progress.setValue(0)
+        self._home_level_progress.setTextVisible(False)
+        self._home_level_progress.setFixedHeight(6)
+        cl.addWidget(self._home_level_progress)
+        return card
+
+    def _build_saved_card(self) -> QFrame:
+        """カード「節約できた時間」（推定節約時間 + 身近なものへの換算）。"""
+        card, cl = self._home_card()
+        cl.addWidget(_make_caption("節約できた時間"))
+        self._home_saved_value = QLabel("0 秒")
+        self._home_saved_value.setStyleSheet("font-size: 24px; font-weight: 700;")
+        cl.addWidget(self._home_saved_value)
+        self._home_saved_comparison = _make_caption("これから時間が積み上がっていきます")
+        self._home_saved_comparison.setWordWrap(True)
+        cl.addWidget(self._home_saved_comparison)
+        cl.addStretch()
+        return card
+
+    def _build_period_card(self) -> QFrame:
+        """カード「この期間」（今日/今週トグル + 期間内の文字数/録音/回数）。"""
+        card, cl = self._home_card()
+        head = QHBoxLayout()
+        head.addWidget(_make_caption("この期間"))
+        head.addStretch()
+        # 今日=直近1日 / 今週=直近7日（既存 daily_series の日数と対応）
+        self._home_today_btn = QPushButton("今日")
+        self._home_week_btn = QPushButton("今週")
+        for btn, days in ((self._home_today_btn, 1), (self._home_week_btn, 7)):
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            btn.clicked.connect(lambda _=False, d=days: self._set_home_period(d))
+            head.addWidget(btn)
+        self._home_today_btn.setChecked(True)
+        cl.addLayout(head)
+        # 主役: 期間内の文字数
+        big_row = QHBoxLayout()
+        big_row.setSpacing(4)
+        self._home_period_chars = QLabel("0")
+        self._home_period_chars.setStyleSheet("font-size: 26px; font-weight: 700;")
+        big_row.addWidget(self._home_period_chars)
+        unit = QLabel("文字")
+        unit.setStyleSheet("font-size: 13px;")
+        big_row.addWidget(unit, 0, Qt.AlignmentFlag.AlignBottom)
+        big_row.addStretch()
+        cl.addLayout(big_row)
+        self._home_period_sub = _make_caption("録音 0秒 · 0 回")
+        cl.addWidget(self._home_period_sub)
+        return card
+
+    def _set_home_period(self, days: int) -> None:
+        """期間カードの今日/今週を切り替える。"""
+        self._home_period_days = days
+        self._home_today_btn.setChecked(days == 1)
+        self._home_week_btn.setChecked(days == 7)
+        self._refresh_home_period()
+
+    @staticmethod
+    def _saved_comparison(seconds: float) -> str:
+        """節約時間を身近なものへ換算した一言（Mac 版 savedComparison と同じしきい値）。"""
+        s = float(seconds)
+        if s >= 86400:      # まる 1 日（24 時間）
+            return f"まるっと {int(s // 86400)} 日ぶんの時間"
+        if s >= 28800:      # ぐっすり睡眠（8 時間）
+            return f"ぐっすり睡眠 {int(s // 28800)} 回ぶん"
+        if s >= 7200:       # 映画（2 時間）
+            return f"映画 {int(s // 7200)} 本ぶんの尺"
+        if s >= 1800:       # 通勤（片道 30 分）
+            return f"通勤 {int(s // 1800)} 回ぶんの移動時間"
+        if s >= 180:        # カップ麺（3 分）
+            return f"カップ麺 {int(s // 180)} 個ぶんの待ち時間"
+        return "これから時間が積み上がっていきます"
+
+    @staticmethod
+    def _grouped(n: int) -> str:
+        """3 桁区切り（カンマ）の数値文字列。"""
+        return f"{int(n):,}"
+
+    def _refresh_home(self) -> None:
+        """ホームの 3 カードと最近の履歴をストアの現在値で更新する。"""
+        if self._stats is not None:
+            d = self._stats.snapshot()
+            today_chars = self._stats.daily_series(1)[-1]["characters"]
+            self._home_greeting.setText(
+                f"今日はここまで {self._grouped(today_chars)} 文字を入力しました"
+                if today_chars > 0
+                else "今日はまだ入力していません"
+            )
+            self._home_total_chars.setText(self._grouped(d["total_characters"]))
+            self._home_total_sub.setText(
+                f"{self._grouped(d['total_sessions'])} 回 · "
+                f"録音 {self._format_minutes(d['total_recording_seconds'])}"
+            )
+            self._home_level_label.setText(f"レベル {d['level']}")
+            self._home_next_label.setText(
+                f"あと {self._grouped(d['xp_to_next_level'])} 文字で Lv.{d['level'] + 1}"
+            )
+            self._home_level_progress.setValue(int(round(d["level_progress"] * 100)))
+            self._home_saved_value.setText(self._format_saved(d["saved_seconds"]))
+            self._home_saved_comparison.setText(self._saved_comparison(d["saved_seconds"]))
+            self._refresh_home_period()
+        self._refresh_home_history()
+
+    def _refresh_home_period(self) -> None:
+        """「この期間」カードを現在の今日/今週選択で更新する。"""
+        if self._stats is None:
+            return
+        series = self._stats.daily_series(self._home_period_days)
+        chars = sum(b["characters"] for b in series)
+        rec = sum(b["recording_seconds"] for b in series)
+        sessions = sum(b["sessions"] for b in series)
+        self._home_period_chars.setText(self._grouped(chars))
+        self._home_period_sub.setText(
+            f"録音 {self._format_minutes(rec)} · {self._grouped(sessions)} 回"
+        )
+
+    def _refresh_home_history(self) -> None:
+        """最近の履歴（直近 8 件）を更新する。行クリックでコピー。"""
+        self._home_history_list.clear()
+        items = self._history.items() if self._history is not None else []
+        if not items:
+            placeholder = QListWidgetItem(
+                "音声入力すると、ここに最近の履歴が残ります（クリックでコピーできます）。"
+            )
+            placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
+            self._home_history_list.addItem(placeholder)
+            return
+        for entry in items[:8]:
+            text = entry["text"]
+            preview = text if len(text) <= 80 else text[:80] + "…"
+            date = entry["date"].replace("T", " ")[:16]
+            item = QListWidgetItem(f"{preview}\n{date}")
+            item.setData(Qt.ItemDataRole.UserRole, text)
+            item.setToolTip(text)
+            self._home_history_list.addItem(item)
+
+    # ------------------------------------------------------------------
     # 履歴ページ（Mac 版 HistoryTab と同構成。クリックでクリップボードにコピー）
     # ------------------------------------------------------------------
 
@@ -1632,10 +1869,16 @@ class SettingsWindow(QWidget):
         self._pages.setCurrentIndex(row)
         self._page_title.setText(self._nav.item(row).text())
         # ウィンドウを開いたまま音声入力しても、各ページを開いた時点で最新になるように
-        if row == self._history_page_index:
+        if row == self._home_page_index:
+            self._refresh_home()
+        elif row == self._history_page_index:
             self._refresh_history()
         elif row == self._stats_page_index:
             self._refresh_stats()
+
+    def select_home(self) -> None:
+        """ホーム（ダッシュボード）ページを選択する（サイドノッチの「ホームを開く」から呼ぶ）。"""
+        self._nav.setCurrentRow(self._home_page_index)
 
     def _refresh_history(self) -> None:
         """履歴一覧をストアの現在の内容で作り直す。"""
@@ -1685,6 +1928,7 @@ class SettingsWindow(QWidget):
         """
         super().showEvent(event)
         self._load_current_settings()
+        self._refresh_home()
         self._refresh_history()
         self._refresh_stats()
 
