@@ -38,6 +38,8 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QWidget
 
+from ..core import fullscreen
+
 
 class Hud(QWidget):
     """
@@ -71,6 +73,7 @@ class Hud(QWidget):
     NOTICE_MSEC = 2000        # 通知の表示時間（ミリ秒）
     FONT_POINT_SIZE = 11      # HUD テキストのポイントサイズ（12→11 に縮小）
     MORPH_MSEC = 200          # サイズモーフの所要時間（Mac の spring 近似・180〜220ms）
+    FULLSCREEN_POLL_MSEC = 700  # 待機ピル表示中にフルスクリーン状態を監視するポーリング間隔
     # ハンズフリー録音のアクセント色（Mac Hud.swift の handsFreeAccent = rgb(0,0.78,0.72) の hex）
     HANDS_FREE_COLOR = "#00C7B8"
 
@@ -127,6 +130,15 @@ class Hud(QWidget):
         self._primary_screen = None
         self._connect_screen_signals()
 
+        # フルスクリーン判定（前面ウィンドウがモニタ全面を覆っているか）。テストで差し替え
+        # られるよう関数参照で保持する（既定は core.fullscreen の実プラットフォーム判定）。
+        self._fullscreen_probe = fullscreen.foreground_is_fullscreen
+        # 待機ピル表示中だけ、前面アプリのフルスクリーン化/解除に追従して隠す/出すための監視。
+        # Mac は collectionBehavior で OS に委譲するが Windows には相当機構が無いため自前で監視する。
+        self._fs_timer = QTimer(self)
+        self._fs_timer.setInterval(self.FULLSCREEN_POLL_MSEC)
+        self._fs_timer.timeout.connect(self._tick_fullscreen)
+
     def _setup_window(self) -> None:
         """フォーカスを奪わない・入力を透過するフレームレスウィンドウを構成する。"""
         self.setWindowFlags(
@@ -150,8 +162,8 @@ class Hud(QWidget):
         変わると下部中央の位置がずれる。表示中なら再配置して縦位置を追従させる（Mac 版の
         didChangeScreenParameters 追従と対）。プライマリ画面が入れ替わったら接続を張り替える。
 
-        なお Windows ではフルスクリーン Space を確実・軽量に判定する公開 API が乏しいため、
-        「フルスクリーン時は待機ピルを隠す」挙動（Mac のみ実装）は今回見送る。
+        フルスクリーン時の待機ピル退避は core.fullscreen による前面ウィンドウ判定 ＋
+        _fs_timer のポーリングで別途行う（Mac は collectionBehavior へ委譲・Windows は自前判定）。
         """
         app = QGuiApplication.instance()
         screen = QGuiApplication.primaryScreen()
@@ -177,11 +189,16 @@ class Hud(QWidget):
             if self._mode == "notice":
                 return
             if self.always_visible:
-                # 待機中も極小の待機ピルを残す（録音停止後は録音サイズから待機サイズへ縮む）
+                # 待機中も極小の待機ピルを残す（録音停止後は録音サイズから待機サイズへ縮む）。
+                # ただし前面アプリがフルスクリーンなら待機ピルは退避する（録音/変換/通知は退避しない）。
                 self._blink.stop()
                 self._caption = ""
                 self._mode = "idle"
-                self._show_pill()
+                if self._foreground_is_fullscreen():
+                    self._hide_keep_idle()
+                else:
+                    self._show_pill()
+                self._ensure_fs_timer(True)
             else:
                 self._hide()
             return
@@ -189,12 +206,14 @@ class Hud(QWidget):
         if state in ("recording", "recording_auto_enter"):
             self._notice_timer.stop()
             self._blink.stop()
+            self._ensure_fs_timer(False)  # 録音中はフルスクリーンでも常に表示する
             self._caption = ""  # 新しい録音のたびに字幕をリセット
             self._levels = deque([0.0] * self.BAR_COUNT, maxlen=self.BAR_COUNT)
             self._mode = state
             self._show_pill()
         elif state == "transcribing":
             self._notice_timer.stop()
+            self._ensure_fs_timer(False)  # 変換中はフルスクリーンでも常に表示する
             self._mode = "transcribing"
             # 「変換中…」は完全静止で表示する（明滅を開始しない）。opacity 明滅（1.0⇄0.35）は
             # 末尾「…」の細いドットが谷で先に視認閾値を割り、可視インクの重心が横に振れて
@@ -233,10 +252,58 @@ class Hud(QWidget):
         if not self.enabled:
             return
         self._blink.stop()
+        self._ensure_fs_timer(False)  # 通知はフルスクリーンでも常に表示する
         self._notice_text = text or ""
         self._mode = "notice"
         self._show_pill()
         self._notice_timer.start(self.NOTICE_MSEC)
+
+    # ------------------------------------------------------------------
+    # フルスクリーン時の待機ピル退避
+    # ------------------------------------------------------------------
+
+    def _foreground_is_fullscreen(self) -> bool:
+        """前面ウィンドウがフルスクリーンか（判定不能・例外時は False）。"""
+        try:
+            return bool(self._fullscreen_probe())
+        except Exception:
+            return False
+
+    def _ensure_fs_timer(self, active: bool) -> None:
+        """待機ピルのフルスクリーン監視ポーリングを開始/停止する。
+
+        待機ピル常時表示（always_visible）かつ待機中のときだけ監視する。録音/変換/通知中は
+        フルスクリーンでも表示し続けるため監視は不要。
+        """
+        want = bool(active) and self.always_visible and self.enabled
+        if want and not self._fs_timer.isActive():
+            self._fs_timer.start()
+        elif not want and self._fs_timer.isActive():
+            self._fs_timer.stop()
+
+    def _hide_keep_idle(self) -> None:
+        """モードは idle のまま、ウィンドウだけ隠す（フルスクリーン退避）。
+
+        _hide() と違い _mode を "hidden" にしない。フルスクリーン解除時に _tick_fullscreen が
+        待機ピルを出し直せるよう、待機中であることを保持する。
+        """
+        self._size_anim.stop()
+        self._blink.stop()
+        # 次に出すとき待機ピルサイズから育つよう、表示サイズを最小へ戻しておく
+        self._disp_w = float(self.IDLE_PILL_WIDTH)
+        self._disp_h = float(self.IDLE_PILL_HEIGHT)
+        self.hide()
+
+    def _tick_fullscreen(self) -> None:
+        """待機ピル表示中に前面アプリのフルスクリーン化/解除へ追従する（ポーリング）。"""
+        if self._mode != "idle" or not self.always_visible or not self.enabled:
+            self._ensure_fs_timer(False)
+            return
+        fullscreen_now = self._foreground_is_fullscreen()
+        if fullscreen_now and self.isVisible():
+            self._hide_keep_idle()
+        elif not fullscreen_now and not self.isVisible():
+            self._show_pill()
 
     # ------------------------------------------------------------------
     # 内部
@@ -332,6 +399,7 @@ class Hud(QWidget):
     def _hide(self) -> None:
         """HUD を隠す。"""
         self._mode = "hidden"
+        self._ensure_fs_timer(False)
         self._size_anim.stop()
         self._blink.stop()
         # 次の初回表示が待機ピルサイズから育つよう、表示サイズを最小へ戻しておく
