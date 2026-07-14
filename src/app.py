@@ -55,6 +55,7 @@ from .core import text_formatter
 from .core import backend_client
 from .core import media_ducker
 from .core import numeral_normalizer
+from .core import sound_fx
 from .core.audio_preprocess import preprocess as preprocess_audio
 from .core.text_utils import join_segments
 from .core.history import HistoryStore
@@ -868,7 +869,9 @@ class VoicekeyApp(QObject):
             f"録音開始要求 (スロット{slot_id}, backend={slot.backend}"
             + (", auto_enter" if auto_enter else "") + ")"
         )
-        # 録音中は他アプリ（メディア）の音量を下げる（撃ちっぱなし・音声パイプラインは待たせない）
+        # 操作音（開始）・メディアダッキングを撃ちっぱなしで開始（音声パイプラインは待たせない）
+        if self._config.get("sound_effects_enabled", True):
+            sound_fx.play("start")
         if self._config.get("duck_media_enabled", True):
             media_ducker.duck()
         self._emit_state()
@@ -945,7 +948,10 @@ class VoicekeyApp(QObject):
         # ストリーミング送出を停止（確定は finish() がワーカー上で行う）
         self._recorder.set_chunk_callback(None)
 
-        # 下げたメディア音量を戻す（設定を録音中に OFF にしても確実に戻すため無条件で呼ぶ・撃ちっぱなし）
+        # 操作音（停止）。下げたメディア音量を戻す（設定を録音中に OFF にしても確実に戻すため
+        # restore は無条件で呼ぶ）。いずれも撃ちっぱなし。
+        if self._config.get("sound_effects_enabled", True):
+            sound_fx.play("stop")
         media_ducker.restore()
 
         logger.info(f"録音停止要求 (スロット{slot_id})")

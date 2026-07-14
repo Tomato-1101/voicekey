@@ -134,6 +134,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # hud_enabled と違い _force_always_on の対象にはしない（ユーザーが自由に ON/OFF する項目）。
     "hud_always_visible": False,
 
+    # 操作音（録音開始/停止の効果音）を鳴らすか（Mac 版 soundEffectsEnabled と同義・既定 ON）
+    "sound_effects_enabled": True,
+
     # 録音中は他アプリ（メディア）の音量を下げるか（Mac 版 duckMediaEnabled と同義・既定 ON）
     "duck_media_enabled": True,
 

@@ -1202,6 +1202,13 @@ class SettingsWindow(QWidget):
         # --- カード: サウンド（Mac 版 SettingsView の「サウンド」セクションと同項目・同文言） ---
         card, cl = _make_card()
 
+        # 操作音（録音開始/停止の効果音）を鳴らす（Mac 版 soundEffectsEnabled と同義・既定 ON）
+        self._sound_effects_check = self._make_toggle()
+        _add_row(
+            cl, "操作音", self._sound_effects_check,
+            caption="録音の開始と停止のときに、短い効果音を鳴らします。",
+        )
+
         # 録音中は他アプリ（メディア）の音量を下げる（Mac 版 duckMediaEnabled と同義・既定 ON）
         self._duck_media_check = self._make_toggle()
         _add_row(
@@ -2481,6 +2488,9 @@ class SettingsWindow(QWidget):
         self._hud_always_visible_check.setChecked(
             bool(config.get("hud_always_visible", False))
         )
+        self._sound_effects_check.setChecked(
+            bool(config.get("sound_effects_enabled", True))
+        )
         self._duck_media_check.setChecked(
             bool(config.get("duck_media_enabled", True))
         )
@@ -2537,6 +2547,8 @@ class SettingsWindow(QWidget):
             "auto_enter_delay_ms": self._auto_enter_delay_slider.value(),
             # 待機中も小型ピルを常時表示するか（Mac 版 hudAlwaysVisible と同義）
             "hud_always_visible": self._hud_always_visible_check.isChecked(),
+            # 操作音（録音開始/停止の効果音）を鳴らすか（Mac 版 soundEffectsEnabled と同義）
+            "sound_effects_enabled": self._sound_effects_check.isChecked(),
             # 録音中は他アプリ（メディア）の音量を下げるか（Mac 版 duckMediaEnabled と同義）
             "duck_media_enabled": self._duck_media_check.isChecked(),
 
