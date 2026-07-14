@@ -134,6 +134,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # hud_enabled と違い _force_always_on の対象にはしない（ユーザーが自由に ON/OFF する項目）。
     "hud_always_visible": False,
 
+    # 録音中は他アプリ（メディア）の音量を下げるか（Mac 版 duckMediaEnabled と同義・既定 ON）
+    "duck_media_enabled": True,
+
     # 開発者モード - 出力を引用符で囲み、タイミングをファイルに記録
     "dev_mode": False,
 

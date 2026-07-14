@@ -19,6 +19,12 @@ elif sys.platform.startswith("win"):
         'pynput.keyboard._win32',
         'pynput.mouse._win32',
     ]
+    # pycaw / comtypes（録音中のメディア音量ダッキングで Core Audio を叩く）。
+    # media_ducker が遅延 import するため静的解析で取りこぼす。同梱しないと配布版で
+    # ダッキングが常に無効化される（機能そのものは失敗時に無害スキップするが、
+    # ここで確実に取り込む）。
+    hiddenimports += collect_submodules('pycaw')
+    hiddenimports += collect_submodules('comtypes')
 
 # websockets は streaming_transcriber 内で遅延 import するため静的解析されない。
 # Deepgram ストリーミングに必須なので明示的に全サブモジュールを収集する

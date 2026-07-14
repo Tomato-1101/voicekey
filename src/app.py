@@ -53,6 +53,7 @@ from .core import (
 )
 from .core import text_formatter
 from .core import backend_client
+from .core import media_ducker
 from .core import numeral_normalizer
 from .core.audio_preprocess import preprocess as preprocess_audio
 from .core.text_utils import join_segments
@@ -263,6 +264,10 @@ class VoicekeyApp(QObject):
             target=self._worker_loop, daemon=True, name="Transcription"
         )
         self._worker.start()
+
+        # 前回録音中に異常終了していた場合のダッキング巻き戻し（残存フラグがあれば元音量へ戻す）。
+        # Mac 版 startup() の MediaDucker.restore() と対（撃ちっぱなし・録音前に一度だけ）。
+        media_ducker.restore()
 
         # --- 音声入力履歴（貼り付けたテキストを最大 10 件保持。設定の「履歴」タブで再コピー可） ---
         self._history = HistoryStore()
@@ -863,6 +868,9 @@ class VoicekeyApp(QObject):
             f"録音開始要求 (スロット{slot_id}, backend={slot.backend}"
             + (", auto_enter" if auto_enter else "") + ")"
         )
+        # 録音中は他アプリ（メディア）の音量を下げる（撃ちっぱなし・音声パイプラインは待たせない）
+        if self._config.get("duck_media_enabled", True):
+            media_ducker.duck()
         self._emit_state()
         # 録音中に API への TLS 接続を事前確立し、停止後の初回往復を短縮する
         threading.Thread(target=slot.transcriber.prewarm, daemon=True).start()
@@ -936,6 +944,9 @@ class VoicekeyApp(QObject):
 
         # ストリーミング送出を停止（確定は finish() がワーカー上で行う）
         self._recorder.set_chunk_callback(None)
+
+        # 下げたメディア音量を戻す（設定を録音中に OFF にしても確実に戻すため無条件で呼ぶ・撃ちっぱなし）
+        media_ducker.restore()
 
         logger.info(f"録音停止要求 (スロット{slot_id})")
         self._emit_state()

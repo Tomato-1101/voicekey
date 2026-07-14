@@ -1199,6 +1199,18 @@ class SettingsWindow(QWidget):
 
         layout.addWidget(card)
 
+        # --- カード: サウンド（Mac 版 SettingsView の「サウンド」セクションと同項目・同文言） ---
+        card, cl = _make_card()
+
+        # 録音中は他アプリ（メディア）の音量を下げる（Mac 版 duckMediaEnabled と同義・既定 ON）
+        self._duck_media_check = self._make_toggle()
+        _add_row(
+            cl, "音声入力中はメディアの音量を下げる", self._duck_media_check,
+            caption="録音している間だけ、再生中の音楽や動画の音量を下げて、停止すると元に戻します。",
+        )
+
+        layout.addWidget(card)
+
         # --- カード: 起動 ---
         card, cl = _make_card()
 
@@ -2469,6 +2481,9 @@ class SettingsWindow(QWidget):
         self._hud_always_visible_check.setChecked(
             bool(config.get("hud_always_visible", False))
         )
+        self._duck_media_check.setChecked(
+            bool(config.get("duck_media_enabled", True))
+        )
         self._handsfree_input.setText(config.get("handsfree_key", ""))
         self._auto_enter_delay_slider.setValue(config.get("auto_enter_delay_ms", 50))
         self._populate_input_devices()
@@ -2522,6 +2537,8 @@ class SettingsWindow(QWidget):
             "auto_enter_delay_ms": self._auto_enter_delay_slider.value(),
             # 待機中も小型ピルを常時表示するか（Mac 版 hudAlwaysVisible と同義）
             "hud_always_visible": self._hud_always_visible_check.isChecked(),
+            # 録音中は他アプリ（メディア）の音量を下げるか（Mac 版 duckMediaEnabled と同義）
+            "duck_media_enabled": self._duck_media_check.isChecked(),
 
             # ハンズフリー切替キー
             "handsfree_key": self._handsfree_input.text(),

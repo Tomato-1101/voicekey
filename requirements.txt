@@ -49,3 +49,8 @@ cryptography>=42.0
 
 # macOS native APIs (Dock 非表示制御で AppKit を使用)
 pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"
+
+# Windows Core Audio（録音中のメディア音量ダッキング＝IAudioEndpointVolume 操作）。
+# comtypes を依存として引き込む。無い/失敗時はダッキングを無害にスキップする実装のため
+# Windows 以外では不要（sys_platform マーカーで Windows 限定）。
+pycaw>=20230407; sys_platform == "win32"
