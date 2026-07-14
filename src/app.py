@@ -61,7 +61,7 @@ from .core.text_utils import join_segments
 from .core.history import HistoryStore
 from .core.stats import StatsStore
 from .platform import get_platform_adapter
-from .ui import Hud, SettingsWindow, SystemTray
+from .ui import Hud, SettingsWindow, SideNotch, SystemTray
 from .utils.logger import get_logger
 from .utils.updater import Updater
 
@@ -322,6 +322,16 @@ class VoicekeyApp(QObject):
         self.interim_text.connect(self._hud.set_caption)
         # ハンズフリー着色は status より先に届くよう、_emit_state で status_changed の前に emit する
         self.hands_free_changed.connect(self._hud.set_hands_free)
+
+        # サイドノッチ（画面左端の履歴スリット）。Mac 版 SideNotch と対。録音状態で点灯し、
+        # クリックで履歴パネルを開く。「ホームを開く」は設定ウィンドウのホームページを開く。
+        self._side_notch = SideNotch(
+            history=self._history,
+            is_dark=bool(self._config.get("dark_mode", False)),
+            enabled=bool(self._config.get("side_notch_enabled", True)),
+        )
+        self.status_changed.connect(self._side_notch.set_status)
+        self._side_notch.open_home_requested.connect(self._open_home)
 
         # --- 背景スレッド ---
         self._monitoring = True
@@ -1287,6 +1297,8 @@ class VoicekeyApp(QObject):
         # HUD 表示の有効/無効・待機ピル常時表示を反映
         self._hud.enabled = bool(self._config.get("hud_enabled", True))
         self._hud.always_visible = bool(self._config.get("hud_always_visible", False))
+        # サイドノッチ表示トグルを反映
+        self._side_notch.set_enabled(bool(self._config.get("side_notch_enabled", True)))
         # 待機ピルのオン/オフを即座に画面へ反映する（次の状態変化を待たない）
         self._emit_state()
 
@@ -1444,6 +1456,15 @@ class VoicekeyApp(QObject):
         win.raise_()
         win.activateWindow()
         self._platform.bring_to_front(win)
+
+    def _open_home(self) -> None:
+        """ホーム（ダッシュボード）を開く。設定ウィンドウのホームページを前面化する
+        （Mac 版はメインウィンドウのホームサイドバー項目。Windows は設定ウィンドウ内のホームページ）。"""
+        # ホームページが未実装のビルドでも安全に設定ウィンドウを開く（select_home があれば選ぶ）
+        select_home = getattr(self._settings_window, "select_home", None)
+        if callable(select_home):
+            select_home()
+        self._open_settings()
 
     def _force_restart(self) -> None:
         """強制リセット: 新プロセスを起動して自分は即終了する（トレイメニュー用）。

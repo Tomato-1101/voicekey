@@ -140,6 +140,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # 録音中は他アプリ（メディア）の音量を下げるか（Mac 版 duckMediaEnabled と同義・既定 ON）
     "duck_media_enabled": True,
 
+    # 画面端のサイドノッチ（履歴スリット）を表示するか（Mac 版 sideNotchEnabled と同義・既定 ON）
+    "side_notch_enabled": True,
+
     # 開発者モード - 出力を引用符で囲み、タイミングをファイルに記録
     "dev_mode": False,
 

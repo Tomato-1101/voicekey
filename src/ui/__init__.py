@@ -8,10 +8,12 @@ UIモジュール
 
 from .hud import Hud
 from .settings_window import SettingsWindow
+from .side_notch import SideNotch
 from .system_tray import SystemTray
 
 __all__ = [
     "SettingsWindow",        # 設定ウィンドウ
     "SystemTray",            # システムトレイアイコン
     "Hud",                   # 録音中 HUD（下部中央の小型ピル）
+    "SideNotch",             # 画面左端のサイドノッチ（履歴スリット）
 ]

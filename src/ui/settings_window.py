@@ -1197,6 +1197,13 @@ class SettingsWindow(QWidget):
             caption="待機中も画面下部に小さなピルを表示します。録音を始めると大きくなります。",
         )
 
+        # 画面左端のサイドノッチ（履歴スリット）を表示する（Mac 版 sideNotchEnabled と同義・既定 ON）
+        self._side_notch_check = self._make_toggle()
+        _add_row(
+            cl, "サイドノッチを表示", self._side_notch_check,
+            caption="画面の左端に細いバーを表示します。クリックすると、これまでの音声入力の履歴を開けます。",
+        )
+
         layout.addWidget(card)
 
         # --- カード: サウンド（Mac 版 SettingsView の「サウンド」セクションと同項目・同文言） ---
@@ -2488,6 +2495,9 @@ class SettingsWindow(QWidget):
         self._hud_always_visible_check.setChecked(
             bool(config.get("hud_always_visible", False))
         )
+        self._side_notch_check.setChecked(
+            bool(config.get("side_notch_enabled", True))
+        )
         self._sound_effects_check.setChecked(
             bool(config.get("sound_effects_enabled", True))
         )
@@ -2547,6 +2557,8 @@ class SettingsWindow(QWidget):
             "auto_enter_delay_ms": self._auto_enter_delay_slider.value(),
             # 待機中も小型ピルを常時表示するか（Mac 版 hudAlwaysVisible と同義）
             "hud_always_visible": self._hud_always_visible_check.isChecked(),
+            # 画面左端のサイドノッチ（履歴スリット）を表示するか（Mac 版 sideNotchEnabled と同義）
+            "side_notch_enabled": self._side_notch_check.isChecked(),
             # 操作音（録音開始/停止の効果音）を鳴らすか（Mac 版 soundEffectsEnabled と同義）
             "sound_effects_enabled": self._sound_effects_check.isChecked(),
             # 録音中は他アプリ（メディア）の音量を下げるか（Mac 版 duckMediaEnabled と同義）
