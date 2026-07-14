@@ -488,9 +488,22 @@ private struct SlotSettingsTab: View {
     var body: some View {
         Form {
             LabeledContent("ホットキー") {
-                HotkeyRecorderView(hotkey: $slot.hotkey)
-                    .frame(width: 220)
+                HStack(spacing: 8) {
+                    // 未割り当てのスロットは録音しない。空表示は「未割り当て」と明示する
+                    HotkeyRecorderView(hotkey: $slot.hotkey, emptyLabel: "未割り当て")
+                        .frame(width: 180)
+                    // 捕捉を始めずに未割り当てへ戻す明示ボタン（ESC と併せて発見性を上げる）
+                    if !slot.hotkey.isEmpty {
+                        Button("割り当てを外す") { slot.hotkey = [] }
+                            .font(.caption)
+                    }
+                }
             }
+            Text("クリックしてキーを押すと割り当てます。ESC で割り当てなし（このホットキーを無効化）。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             Picker("録音のしかた", selection: $slot.mode) {
                 ForEach(HotkeyMode.allCases) { mode in

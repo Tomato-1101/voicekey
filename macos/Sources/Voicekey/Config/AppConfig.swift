@@ -115,9 +115,14 @@ struct SlotConfig: Codable, Equatable {
     /// 整形の「削り方」を切り替える。既定は standard（フィラーだけ除去・言い直しは残す）。
     var formatPresetId: String = "standard"
 
-    /// 人間が読める表記（例: "右⌘"、"⌃+Space"）
+    /// このスロットにホットキーが割り当てられているか（純関数・判定用）。
+    /// 未割り当ての内部表現は空トークン配列 `[]`。旧設定（hotkey キー欠落）も
+    /// decode で `[]` になるため、そのまま「未割り当て」として後方互換に扱える。
+    var isAssigned: Bool { !hotkey.isEmpty }
+
+    /// 人間が読める表記（例: "右⌘"、"⌃+Space"）。未割り当て（空）は「未割り当て」。
     var hotkeyLabel: String {
-        hotkey.isEmpty ? "未設定" : hotkey.map { KeyToken.displayName($0) }.joined(separator: "+")
+        hotkey.isEmpty ? "未割り当て" : hotkey.map { KeyToken.displayName($0) }.joined(separator: "+")
     }
 }
 

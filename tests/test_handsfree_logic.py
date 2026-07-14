@@ -51,6 +51,32 @@ class TestSlotMatches(unittest.TestCase):
         self.assertTrue(VoicekeyApp._slot_matches(fs, self._slot({"cmd", "f2"})))
 
 
+class TestParseHotkeyUnassigned(unittest.TestCase):
+    """設定 UI の「未割り当て」（空文字ホットキー）が空トークン集合になり録音を発火させないこと。
+
+    ホットキーを外すと保存値は空文字 "" になる。_parse_hotkey("") が空集合を返し、
+    そこから作ったスロットが _slot_matches で何にも一致しない（誤発火しない）ことを保証する。
+    Mac 版 SlotConfigTests.testDecodeWithoutHotkeyIsUnassigned と対応する回帰テスト。
+    """
+
+    def test_empty_string_parses_to_empty_set(self):
+        # 空文字ホットキー（未割り当て）は空集合になる（誤って {""} を作らない）
+        self.assertEqual(VoicekeyApp._parse_hotkey(""), set())
+
+    def test_angle_brackets_only_parses_to_empty_set(self):
+        # "<>" のような実質空の指定も空集合
+        self.assertEqual(VoicekeyApp._parse_hotkey("<>"), set())
+
+    def test_unassigned_slot_built_from_empty_string_never_matches(self):
+        # 空文字ホットキーから構築したスロットは、どのキー押下にも一致しない
+        slot = SimpleNamespace(required_keys=VoicekeyApp._parse_hotkey(""))
+        fs = SimpleNamespace(
+            _pressed_keys={"f2"},
+            _acceptable_names=VoicekeyApp._acceptable_names,
+        )
+        self.assertFalse(VoicekeyApp._slot_matches(fs, slot))
+
+
 class TestHandsfreePressed(unittest.TestCase):
     def _fake(self, handsfree, pressed):
         return SimpleNamespace(

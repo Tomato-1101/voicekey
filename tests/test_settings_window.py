@@ -148,5 +148,35 @@ class TestAutostartTransaction(_SettingsWindowTestBase):
         set_enabled.assert_called_once_with(True)  # 保存成功時のみ反映
 
 
+class TestUnassignedHotkeyPersists(_SettingsWindowTestBase):
+    """ホットキーを「未割り当て」（空）にして保存すると空のまま永続し、既定へ戻らない。
+
+    Mac 版 SlotConfigTests.testUnassignedSlotPersistsAndDoesNotRevertToDefault と対応。
+    片方を未割り当てにしても、もう片方の割り当ては保持される。
+    """
+
+    def test_clearing_slot_hotkey_persists_as_empty(self):
+        cm = self._config({
+            "language": "ja",
+            "hotkey1": {"hotkey": "<f2>", "hotkey_mode": "hold", "backend": "groq"},
+            "hotkey2": {"hotkey": "<f3>", "hotkey_mode": "toggle", "backend": "groq"},
+        })
+        win = self._make_window(cm)
+
+        # スロット 1 を未割り当てにする（「割り当てを外す」ボタン＝input.clear と同じ）
+        win._hotkey1_input.clear()
+
+        with mock.patch("src.ui.settings_window.autostart.is_supported", return_value=False), \
+             mock.patch.object(win, "close"), \
+             mock.patch("src.ui.settings_window.QMessageBox"):
+            win._save_settings()
+
+        # 保存ファイルを新しいマネージャで読み直しても、スロット 1 は空のまま（既定 <f2> に戻らない）
+        reloaded = ConfigManager(config_path=cm.config_path)
+        self.assertEqual(reloaded.get("hotkey1")["hotkey"], "")
+        # もう片方（スロット 2）の割り当ては保持される
+        self.assertEqual(reloaded.get("hotkey2")["hotkey"], "<f3>")
+
+
 if __name__ == "__main__":
     unittest.main()

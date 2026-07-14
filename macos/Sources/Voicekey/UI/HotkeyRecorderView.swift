@@ -5,7 +5,8 @@
 //  修飾キーのみのホットキー（右⌘ 単独など）にも対応する:
 //  - 通常キーが押されたら「修飾キー + そのキー」で確定
 //  - 修飾キーだけが押されて全部離されたら「押されていた修飾キー」で確定
-//  - Esc でキャンセル
+//  - Esc で「割り当てなし」（空トークン）として確定する（ユーザー要望。捕捉のキャンセルは
+//    ボタン再クリックで行う）
 //
 
 import AppKit
@@ -13,6 +14,10 @@ import SwiftUI
 
 struct HotkeyRecorderView: View {
     @Binding var hotkey: [String]
+
+    /// 未割り当て（空）のときに表示する文言。スロットでは「未割り当て」を渡す
+    /// （ハンズフリー切替キー等では「クリックして設定」の CTA を既定とする）。
+    var emptyLabel: String = "クリックして設定"
 
     @State private var isRecording = false
     @State private var heldModifiers: [String] = []
@@ -25,7 +30,7 @@ struct HotkeyRecorderView: View {
                     .foregroundStyle(isRecording ? Color.accentColor : Color.primary)
                 Spacer()
                 if isRecording {
-                    Text("キーを押してください…")
+                    Text("ESC で割り当てなし")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -53,7 +58,7 @@ struct HotkeyRecorderView: View {
                 : heldModifiers.map { KeyToken.displayName($0) }.joined(separator: "+")
         }
         return hotkey.isEmpty
-            ? "クリックして設定"
+            ? emptyLabel
             : hotkey.map { KeyToken.displayName($0) }.joined(separator: "+")
     }
 
@@ -94,8 +99,8 @@ struct HotkeyRecorderView: View {
             }
 
         case .keyDown:
-            if event.keyCode == 53 {  // Esc はキャンセル
-                stopRecording()
+            if event.keyCode == 53 {  // Esc は「割り当てなし」（空）として確定する
+                commit([])
                 return
             }
             guard let token = KeyToken.token(forKeyCode: Int64(event.keyCode)) else { return }

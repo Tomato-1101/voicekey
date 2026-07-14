@@ -627,13 +627,19 @@ class HotkeyInput(QLineEdit):
     def __init__(
         self,
         parent=None,
-        platform_adapter: Optional[PlatformAdapter] = None
+        platform_adapter: Optional[PlatformAdapter] = None,
+        empty_label: Optional[str] = None,
     ):
-        """ホットキー入力ウィジェットを初期化する。"""
+        """ホットキー入力ウィジェットを初期化する。
+
+        Args:
+            empty_label: 未割り当て（空）のときに出すプレースホルダ文言。
+                スロットでは「未割り当て」を渡す（Mac 版 HotkeyRecorderView の emptyLabel と対応）。
+        """
         super().__init__(parent)
         self._platform = platform_adapter or get_platform_adapter()
         self.setReadOnly(True)
-        self.setPlaceholderText("クリックしてキーを押す…")
+        self.setPlaceholderText(empty_label or "クリックしてキーを押す…")
         self._pressed_keys = []  # 押下中のキーを順番に追跡
         self._is_recording = False
 
@@ -681,6 +687,15 @@ class HotkeyInput(QLineEdit):
         key = event.key()
         virtual_key = event.nativeVirtualKey()
         scan_code = event.nativeScanCode()
+
+        # ESC は「割り当てなし」（空）として確定する（Mac 版と同じ挙動。ユーザー要望）。
+        # 空ホットキーのスロットは app._slot_matches が False を返し録音が発火しない。
+        if key == Qt.Key.Key_Escape:
+            self._pressed_keys = []
+            self._is_recording = False
+            self.clear()  # 空文字にしてプレースホルダ（未割り当て）を表示
+            event.accept()
+            return
 
         # 新しい入力開始時は古いキーをクリア
         if not self._is_recording:
@@ -1222,11 +1237,27 @@ class SettingsWindow(QWidget):
 
         card, cl = _make_card()
 
-        # ホットキー入力
-        hotkey_input = HotkeyInput(platform_adapter=self._platform)
-        hotkey_input.setFixedWidth(220)
+        # ホットキー入力（空＝未割り当て。未割り当てのスロットは録音しない）。
+        # 空表示は「未割り当て」と明示し、捕捉を始めずに外せる明示ボタンを添える（Mac 版と対応）。
+        hotkey_input = HotkeyInput(
+            platform_adapter=self._platform, empty_label="未割り当て"
+        )
+        hotkey_input.setFixedWidth(180)
         setattr(self, f"_hotkey{slot_id}_input", hotkey_input)
-        _add_row(cl, "ホットキー", hotkey_input)
+        hotkey_clear = QPushButton("割り当てを外す")
+        hotkey_clear.setCursor(Qt.CursorShape.PointingHandCursor)
+        hotkey_clear.clicked.connect(hotkey_input.clear)
+        hotkey_row = QWidget()
+        hotkey_row_layout = QHBoxLayout(hotkey_row)
+        hotkey_row_layout.setContentsMargins(0, 0, 0, 0)
+        hotkey_row_layout.setSpacing(8)
+        hotkey_row_layout.addWidget(hotkey_input)
+        hotkey_row_layout.addWidget(hotkey_clear)
+        hotkey_row_layout.addStretch()
+        _add_row(
+            cl, "ホットキー", hotkey_row,
+            caption="クリックしてキーを押すと割り当てます。ESC で割り当てなし（このホットキーを無効化）。",
+        )
 
         # 動作モード（表示は日本語ラベル、保存値は userData の識別子）
         mode_combo = QComboBox()
