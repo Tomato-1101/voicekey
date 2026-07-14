@@ -46,7 +46,7 @@
   v5（声=gpt-realtime-2 司令塔＋本物 claude TUI・複数セッション・秘書モード・swift test 557 緑）まで実装完了済み。
   凍結解除トリガー= **OpenAI GPT-Live**（2026-07-08 発表・全二重）の **API 公開**。現在地・繰越・再開手順は
   **voice-agent ブランチの `docs/VOICE_AGENT_FREEZE.md`（fa8cebe）が正本**。release/main には未マージ。
-  ※凍結対象外の製品側移植残: ホットキー「未割り当て」UI（voice-agent に Mac 先行実装済み→release/main へ両 OS 同時移植）。
+  ※凍結対象外だった製品側移植（ホットキー「未割り当て」UI）は 2026-07-15 に完了（release `2e2b382` / main `4004ef1`・両 OS）。
 - **Stripe テストモード E2E 全通過（2026-07-14）**: ¥980/月確定・Test の商品/Price/Webhook 作成済み
   （price_1Tt01EQiaA5hs7siVnKRT7Ih / we_1Tt09n…）・特商法/プライバシーページ公開・LP 実額化済み。
   4242 購入 E2E で checkout→webhook→entitlements 付与（+1ヶ月）→ポータル期末解約→解約 webhook 反映まで
@@ -68,10 +68,19 @@
   （録音開始は従来 15s・Windows にも同欠陥ありで閾値を移植）＋finish-before-connect の即解決＋.notice 診断ログ
   （warm tick / warm・cold ヒット / finish 解決要因）。実機ログで warm ヒット接続 22ms・録音停止→確定 234〜338ms を確認。
   main は認証層が無いため対象外（構造からして同欠陥なし）。
-- **Windows パリティの次フェーズ（未着手・後日）**: ホームダッシュボード・SideNotch・操作音・
-  メディアダッキング・実ブラー背景・フルスクリーン判定。今回のバッチで HUD 三段階/待機ピル/
-  無彩色化/ガイド再デザインまでは Windows も同等化済み。
-- 既知の陳腐化（未修正・スコープ外）: `macos/README.md:13` が main の実名表示と食い違う旧記述。
+- **Windows パリティ次フェーズ 完了（2026-07-15）**: ホームダッシュボード・サイドノッチ・操作音・
+  メディアダッキング・実ブラー背景（アクリル＋フォールバック）・フルスクリーン判定（待機ピル退避）の
+  6 要素を Windows へ同等化（release `ca6adca`〜`74a5622`・main `38a3932`・テスト 493/330 全緑）。
+  win32/COM/DWM の実挙動は Mac 上で検証不可＝実機確認項目を `docs/BUILD_WINDOWS.md` チェックリストに追記済み。
+- **数字の半角出力（2026-07-15・ユーザー指示）**: 数字の読み上げを漢数字でなく半角で入力する 3 層実装
+  （Whisper prompt バイアス／貼付前の安全な後処理＝連続漢数字のみ変換・「一人」等は保護／整形プロンプト）。
+  release `ff59b55` / main `c9b7e6d` / site `d23e983`（プロキシの prompt 転送も修正・本番デプロイ済み）。
+  Deepgram の numerals は ja 非対応と確認し不採用。
+- サイトの追加修正（2026-07-15）: /admin/mfa の TOTP コード入力が IME 全角数字・漢数字で入力不能になる
+  問題を修正（site `53b06e6`・本番反映済み。送信時に全角/漢数字→半角へ正規化）。
+- next 16.3 更新は上流ブロック中: 16.3.0 安定版が未公開（16.2.10 も脆弱 postcss のまま・修正は canary のみ）。
+  公開され次第 更新→フル回帰→デプロイ。前倒し手段は package.json overrides（非公式・ユーザー判断待ち）。
+- macos/README.md:13 の陳腐化は main 側で修正済み（`4004ef1` に同梱）。
 - 既往（2026-07-05）: LP を「Porcelain Glass」へ全面刷新（e0d92a6）・用語「リアルタイム」→「即時入力」
   （release 139f748）・体験型ガイド初版（release 99dedb4 / main af9ba67・本日 2026-07-06 の再デザインで置換済み）。
 
