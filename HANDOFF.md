@@ -38,7 +38,8 @@
   ハンズフリーの中身は EL のまま不変（ユーザー指示「遅くてよい」）。先日の EL 失敗の正体は
   ユーザーの EL クレジット切れ（本人談）＝フォールバックで「何も入力されない」は根絶。
   Groq 純処理は p50 268ms で高速（「遅い」体感の主因はサーバー税→解消）。
-  **push で本番自動デプロイが走る**（実測確認・以後の site 作業はこの前提で）。
+  **【訂正 2026-07-14】push では本番デプロイは走らない**（GitHub 連携の自動デプロイは未接続と実測確認。
+  本番反映は手動 `vercel deploy --prod` のみ。Claude 側に許可ルール追加済みで自走可能）。
 - **main への移植も本日完了**（下の「現在地 / 次の一手」の対応表を参照）。main⇄release 監査で
   main→release の移植必要分はゼロと確定済み。
 - **音声エージェント系（会話モード v4/v5・秘書モード・Realtime）: 2026-07-14 凍結**（商品化フォーカスのため）。
@@ -46,11 +47,21 @@
   凍結解除トリガー= **OpenAI GPT-Live**（2026-07-08 発表・全二重）の **API 公開**。現在地・繰越・再開手順は
   **voice-agent ブランチの `docs/VOICE_AGENT_FREEZE.md`（fa8cebe）が正本**。release/main には未マージ。
   ※凍結対象外の製品側移植残: ホットキー「未割り当て」UI（voice-agent に Mac 先行実装済み→release/main へ両 OS 同時移植）。
-- **Stripe 本番化はユーザー入力待ち 3 点**: ①月額価格の確定（推奨 ¥980/月）②`! brew install
-  stripe/stripe-cli/stripe && stripe login` の本人実行 ③特商法ページ用の氏名。揃い次第:
-  商品/Price 作成（Test/Live）→Webhook 登録+whsec を Vercel env 投入→LP 料金実額化→
-  特商法/プライバシーページ新設→テストカード 4242 E2E→ユーザー GO で本番切替。
-  コード（checkout/webhook 4 イベント/portal/entitlements 連携）は実装済み。
+- **Stripe テストモード E2E 全通過（2026-07-14）**: ¥980/月確定・Test の商品/Price/Webhook 作成済み
+  （price_1Tt01EQiaA5hs7siVnKRT7Ih / we_1Tt09n…）・特商法/プライバシーページ公開・LP 実額化済み。
+  4242 購入 E2E で checkout→webhook→entitlements 付与（+1ヶ月）→ポータル期末解約→解約 webhook 反映まで
+  本番環境で実測合格（テストユーザー・test customer は削除済み）。
+  途中の躓きと教訓: 本番 `STRIPE_SECRET_KEY` が別サンドボックスの旧鍵で「No such price」
+  （逆引きで確定→本体テストモードの sk_test に差し替えで解消）。`vercel env ls` の created 列は
+  更新を反映しないので env 反映の最終判定は E2E で行う。env 変更はデプロイし直すまで効かない。
+  **残り＝live 切替のみ**: ユーザーの Stripe 本人確認（onboarding）完了後に Live の商品/Price/Webhook 作成
+  →env 差し替え（SECRET_KEY/PRICE_ID/WEBHOOK_SECRET）→デプロイ→ユーザー GO。
+- **サイトのセキュリティ強化を本番反映（2026-07-14・19c1016）**: /admin と管理 API に Basic 認証
+  （fail-closed・資格情報は Vercel env ADMIN_BASIC_USER/PASS 投入済み）、管理者のみ TOTP 二段階認証
+  （/admin/mfa・AAL2）、全ルートにセキュリティヘッダー 5 種。本番で 401/正資格通過/無回帰を実測確認済み。
+  残り（ユーザー作業）: /admin 初回アクセスで TOTP 登録、カード会社のセキュリティアンケート提出
+  （回答シート提供済み・Q1 は「その他（Stripe Checkout）」）。npm audit 残 2 件（moderate・postcss）は
+  next 16.3 安定版更新で解消見込み（別作業）。
 - **Windows パリティの次フェーズ（未着手・後日）**: ホームダッシュボード・SideNotch・操作音・
   メディアダッキング・実ブラー背景・フルスクリーン判定。今回のバッチで HUD 三段階/待機ピル/
   無彩色化/ガイド再デザインまでは Windows も同等化済み。
