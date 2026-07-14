@@ -409,7 +409,9 @@ def warm_elevenlabs() -> None:
         pass
 
 
-def transcribe_groq(wav_bytes: bytes, language: str = "", server_format: bool = False) -> str:
+def transcribe_groq(
+    wav_bytes: bytes, language: str = "", server_format: bool = False, prompt: str = ""
+) -> str:
     """Groq「高速」プロキシで文字起こしする（普通入力・WAV を multipart 送信）。
 
     Groq は Deepgram のような client 直叩き用の短命トークンが無いので、ElevenLabs と同じく
@@ -425,6 +427,8 @@ def transcribe_groq(wav_bytes: bytes, language: str = "", server_format: bool = 
             行い、整形済みテキストを text で返す（STT と整形を 1 リクエストに統合＝録音後の
             クライアント整形の往復を省く）。整形失敗時でも text に STT 原文が入って返るので、
             呼び出し側は text をそのまま最終テキストとして使う（再整形はしない）。
+        prompt: Whisper へ渡す文字起こしプロンプト（数字を半角で出させる style ヒント）。
+            空でなければ multipart の prompt フィールドとして送り、サーバーが Groq へ転送する。
 
     Returns:
         文字起こし結果テキスト（server_format 時は整形済み）
@@ -436,6 +440,9 @@ def transcribe_groq(wav_bytes: bytes, language: str = "", server_format: bool = 
     data = {}
     if language:
         data["language"] = language
+    # 数字を半角で出させる Whisper style プロンプト。サーバーが Groq の multipart へ転送する。
+    if prompt:
+        data["prompt"] = prompt
     # サーバー統合整形の依頼フラグ。サーバーはこれを見たら STT→Groq 整形まで行い整形済みを返す。
     if server_format:
         data["format"] = "1"

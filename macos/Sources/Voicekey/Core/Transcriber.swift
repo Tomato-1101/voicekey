@@ -63,6 +63,18 @@ enum WavEncoder {
 /// 実態としてスレッドセーフ。それを明示するため @unchecked Sendable とする。
 final class Transcriber: @unchecked Sendable {
 
+    /// Whisper 系（Groq / OpenAI）へ送る数字表記の style プロンプト。Whisper は prompt の表記
+    /// スタイルに追従する性質があるため、半角数字を含む短い例文を与えて漢数字化を抑制する
+    /// （Windows 版 api_transcriber._NUMERAL_STYLE_PROMPT と文言を一致させること）。
+    static let numeralStyleHint = "数字は半角で表記します。例: 2026年7月15日、3人で1200円、成功率98.5%。"
+
+    /// Whisper へ送る文字起こしプロンプトを組み立てる（数字 style ヒント + ユーザー設定プロンプト）。
+    /// release はプロンプト非選択＝userPrompt は空なので style ヒントのみになる。純関数（テスト用）。
+    static func whisperPrompt(userPrompt: String) -> String {
+        let user = userPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        return user.isEmpty ? numeralStyleHint : numeralStyleHint + " " + user
+    }
+
     let backend: Backend
 
     // モデル等は設定変更時にメインスレッドが書き換え（接続を維持したまま更新する設計）、
@@ -241,7 +253,8 @@ final class Transcriber: @unchecked Sendable {
             let text = TextNormalize.stripCJKSpaces(
                 try await BackendClient.transcribeGroq(
                     audio: audio.data, filename: audio.filename,
-                    contentType: audio.contentType, language: language, format: serverFormat, presetId: presetId
+                    contentType: audio.contentType, language: language, format: serverFormat,
+                    presetId: presetId, prompt: Self.whisperPrompt(userPrompt: prompt)
                 ).trimmingCharacters(in: .whitespacesAndNewlines)
             )
             let elapsed = Int(Date().timeIntervalSince(start) * 1000)
@@ -362,7 +375,9 @@ final class Transcriber: @unchecked Sendable {
         form.field("response_format", "text")
         form.field("temperature", "0")
         if !language.isEmpty { form.field("language", language) }
-        if !prompt.isEmpty { form.field("prompt", prompt) }
+        // 数字を半角で出させる style プロンプト（＋ユーザー設定プロンプト）を常に付与する。
+        // このリクエストは Whisper 系（OpenAI / Groq 直叩き）専用なので Whisper 前提でよい。
+        form.field("prompt", Self.whisperPrompt(userPrompt: prompt))
         form.file("file", filename: audio.filename, contentType: audio.contentType, data: audio.data)
         form.apply(to: &request)
         return request

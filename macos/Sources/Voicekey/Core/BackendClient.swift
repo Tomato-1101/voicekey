@@ -462,9 +462,11 @@ enum BackendClient {
     ///   録音後のクライアント整形の往復を省く）。整形失敗時でも `text` に STT 原文が入って返るので、
     ///   呼び出し側は `text` をそのまま最終テキストとして使う（再整形はしない）。
     /// - Parameter presetId: 統合整形時の整形プリセット（`preset_id` として送る。format=true のとき有効）。
+    /// - Parameter prompt: Whisper へ渡す文字起こしプロンプト（数字を半角で出させる style ヒント）。
+    ///   空でなければ multipart の `prompt` フィールドとして送り、サーバーが Groq へ転送する。
     static func transcribeGroq(
         audio: Data, filename: String, contentType: String, language: String,
-        format: Bool = false, presetId: String = "standard"
+        format: Bool = false, presetId: String = "standard", prompt: String = ""
     ) async throws -> String {
         try? await AuthClient.ensureValidSession()  // 失効間際なら先にリフレッシュ
         var req = try authorizedRequest(path: ServerConfig.groqTranscribeProxyPath)
@@ -476,7 +478,7 @@ enum BackendClient {
         req.timeoutInterval = format ? 90 : 60
         req.httpBody = groqMultipartBody(
             boundary: boundary, audio: audio, filename: filename,
-            contentType: contentType, language: language, format: format, presetId: presetId
+            contentType: contentType, language: language, format: format, presetId: presetId, prompt: prompt
         )
         let data = try await send(req)
         struct Resp: Decodable { let text: String? }
@@ -649,7 +651,7 @@ enum BackendClient {
     /// 統合整形時は `preset_id` も添えて整形プリセットを伝える（format=false のときは無視される）。
     private static func groqMultipartBody(
         boundary: String, audio: Data, filename: String, contentType: String, language: String,
-        format: Bool = false, presetId: String = "standard"
+        format: Bool = false, presetId: String = "standard", prompt: String = ""
     ) -> Data {
         var body = Data()
         func append(_ s: String) { body.append(Data(s.utf8)) }
@@ -657,6 +659,12 @@ enum BackendClient {
             append("--\(boundary)\r\n")
             append("Content-Disposition: form-data; name=\"language\"\r\n\r\n")
             append("\(language)\r\n")
+        }
+        // 数字を半角で出させる Whisper style プロンプト。サーバーが Groq の multipart へ転送する。
+        if !prompt.isEmpty {
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"prompt\"\r\n\r\n")
+            append("\(prompt)\r\n")
         }
         // サーバー統合整形の依頼フラグ。サーバーはこれを見たら STT→Groq 整形まで行い整形済みを返す。
         // 併せて整形プリセット（preset_id）も送る（サーバーは format 時のみ参照する）。

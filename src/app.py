@@ -53,6 +53,7 @@ from .core import (
 )
 from .core import text_formatter
 from .core import backend_client
+from .core import numeral_normalizer
 from .core.audio_preprocess import preprocess as preprocess_audio
 from .core.text_utils import join_segments
 from .core.history import HistoryStore
@@ -1186,6 +1187,10 @@ class VoicekeyApp(QObject):
 
     def _insert_and_enter(self, text: str, auto_enter: bool) -> None:
         """テキストを貼り付け、ダブルタップ時は遅延後に Enter を送る（ワーカースレッド上）。"""
+        # 数字表記を半角アラビア数字へ正規化（全角→半角・連続漢数字→算用数字）。
+        # ストリーミング/REST 両経路の確定テキストが必ずここを通る単一の適用点。
+        # ユーザー辞書置換より前に行い、置換ルールは正規化後のテキストに対して効かせる。
+        text = numeral_normalizer.normalize(text)
         # ユーザー辞書の確定置換を貼り付け直前に適用（履歴にも置換後を残す）
         text = self._apply_replacements(text)
         # 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する

@@ -695,8 +695,9 @@ final class AppController: ObservableObject {
                     let formatted = formatEnabled
                         ? await formatter.format(streamed, prompt: formatPrompt, model: formatModel, presetId: formatPresetId)
                         : streamed
-                    // ユーザー辞書の確定置換を適用（API を通さないので遅延ゼロ）
-                    let output = config.applyReplacements(formatted)
+                    // 数字表記を半角アラビア数字へ正規化してからユーザー辞書置換を適用
+                    // （全角→半角・連続漢数字→算用数字。置換はその後＝正規化後テキストに効かせる）
+                    let output = config.applyReplacements(NumeralNormalizer.normalize(formatted))
                     // 貼り付け先アプリを貼り付け直前に再取得する（録音中に切り替えた場合は今の前面が正）
                     let target = frontApp.snapshot()
                     // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する（履歴保存 OFF はスキップ）
@@ -783,8 +784,9 @@ final class AppController: ObservableObject {
                 formatted = text
             }
             let fmtMs = Int((ProcessInfo.processInfo.systemUptime - fmtStart) * 1000)
-            // ユーザー辞書の確定置換を適用（API を通さないので遅延ゼロ）
-            let output = config.applyReplacements(formatted)
+            // 数字表記を半角アラビア数字へ正規化してからユーザー辞書置換を適用
+            // （全角→半角・連続漢数字→算用数字。置換はその後＝正規化後テキストに効かせる）
+            let output = config.applyReplacements(NumeralNormalizer.normalize(formatted))
             // 貼り付け先アプリを貼り付け直前に再取得する（録音中に切り替えた場合は今の前面が正）
             let target = frontApp.snapshot()
             // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する（履歴保存 OFF はスキップ）

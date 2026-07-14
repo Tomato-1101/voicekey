@@ -219,5 +219,51 @@ class TestDistGate(unittest.TestCase):
             self.assertEqual(captured["path"], "/listen")
 
 
+class TestWhisperPrompt(unittest.TestCase):
+    """Whisper（Groq/OpenAI）へ数字を半角で出させる style プロンプトを付与する。"""
+
+    @staticmethod
+    def _audio():
+        return np.full(1600, 0.1, dtype=np.float32)
+
+    def _capture_direct_data(self, transcriber):
+        """開発直叩き（Whisper 系）の multipart data を捕捉して返す。"""
+        captured = {}
+
+        def fake_post(client, path, **kwargs):
+            captured["data"] = kwargs.get("data")
+            return httpx.Response(200, text="結果")
+
+        with patch.object(api_transcriber.secrets, "is_dist_build", return_value=False), \
+                patch.object(api_transcriber.backend_client, "is_logged_in", return_value=False), \
+                patch.object(transcriber, "_get_client", return_value=object()), \
+                patch.object(transcriber, "_post", side_effect=fake_post):
+            transcriber.transcribe(self._audio())
+        return captured["data"]
+
+    def test_groq_direct_includes_numeral_prompt(self):
+        data = self._capture_direct_data(GroqTranscriber("whisper-large-v3-turbo", "ja"))
+        self.assertEqual(data["prompt"], api_transcriber._NUMERAL_STYLE_PROMPT)
+
+    def test_openai_direct_includes_numeral_prompt(self):
+        data = self._capture_direct_data(OpenAITranscriber("gpt-4o-transcribe", "ja"))
+        self.assertEqual(data["prompt"], api_transcriber._NUMERAL_STYLE_PROMPT)
+
+    def test_user_prompt_is_appended_after_hint(self):
+        t = GroqTranscriber("whisper-large-v3-turbo", "ja", prompt="固有名詞: VoiceKey")
+        data = self._capture_direct_data(t)
+        self.assertTrue(data["prompt"].startswith(api_transcriber._NUMERAL_STYLE_PROMPT))
+        self.assertIn("固有名詞: VoiceKey", data["prompt"])
+
+    def test_groq_proxy_forwards_prompt(self):
+        """release の Groq プロキシ経路は prompt を transcribe_groq へ渡す（サーバーが Groq へ転送）。"""
+        t = GroqTranscriber("whisper-large-v3-turbo", "ja")
+        with patch.object(api_transcriber.backend_client, "is_logged_in", return_value=True), \
+                patch.object(api_transcriber.backend_client, "transcribe_groq",
+                             return_value="結果") as proxy:
+            t.transcribe(self._audio())
+            self.assertEqual(proxy.call_args.kwargs["prompt"], api_transcriber._NUMERAL_STYLE_PROMPT)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -34,6 +34,11 @@ logger = get_logger(__name__)
 # API リクエストのタイムアウト（読み取り 20 秒 / 接続 5 秒）
 _TIMEOUT = httpx.Timeout(20.0, connect=5.0)
 
+# Whisper 系（Groq / OpenAI）へ送る数字表記の style プロンプト。Whisper は prompt の表記
+# スタイルに追従する性質があるため、半角数字を含む短い例文を与えて漢数字化を抑制する
+# （Mac 版 Transcriber.numeralStyleHint と文言を一致させること）。
+_NUMERAL_STYLE_PROMPT = "数字は半角で表記します。例: 2026年7月15日、3人で1200円、成功率98.5%。"
+
 
 class TranscriptionError(RuntimeError):
     """文字起こしの失敗を表す例外。メッセージはそのままユーザー通知に使える日本語。"""
@@ -105,6 +110,15 @@ class ApiTranscriber:
         """API キーを Keychain（キャッシュ付き）→ 環境変数の優先順で解決する。"""
         import os
         return secrets.get_api_key(self.keychain_service) or os.environ.get(self.env_var)
+
+    def _whisper_prompt(self) -> str:
+        """Whisper（Groq/OpenAI）へ送る文字起こしプロンプトを組み立てる。
+
+        数字を半角で出させる固定 style ヒントを先頭に置き、ユーザー設定のプロンプト（あれば）を
+        続ける（release はプロンプト非選択＝self.prompt は空なので style ヒントのみになる）。
+        """
+        user = self.prompt.strip()
+        return f"{_NUMERAL_STYLE_PROMPT} {user}" if user else _NUMERAL_STYLE_PROMPT
 
     def _auth_headers(self, api_key: str) -> dict:
         """
@@ -271,8 +285,9 @@ class ApiTranscriber:
         }
         if self.language:
             data["language"] = self.language
-        if self.prompt:
-            data["prompt"] = self.prompt
+        # 数字を半角で出させる style プロンプト（＋ユーザー設定プロンプト）を常に付与する。
+        # 基底 transcribe を通るのは Whisper 系（OpenAI/Groq 直叩き）だけなので Whisper 前提でよい。
+        data["prompt"] = self._whisper_prompt()
 
         resp = self._post(
             client,
@@ -355,10 +370,12 @@ class GroqTranscriber(ApiTranscriber):
         if backend_client.is_logged_in():
             wav_bytes = numpy_to_wav_bytes(audio_data, self.sample_rate)
             try:
-                # プロキシ経由でも直叩きと同じ正規化を通す（#21・CJK 隣接スペース除去）
+                # プロキシ経由でも直叩きと同じ正規化を通す（#21・CJK 隣接スペース除去）。
+                # 数字を半角で出させる Whisper style プロンプトを渡す（サーバーが Groq へ転送する）。
                 return strip_cjk_spaces(
                     backend_client.transcribe_groq(
-                        wav_bytes, self.language or "", server_format=server_format
+                        wav_bytes, self.language or "", server_format=server_format,
+                        prompt=self._whisper_prompt(),
                     )
                 )
             except backend_client.BackendError as e:
