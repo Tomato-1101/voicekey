@@ -41,11 +41,11 @@
   **push で本番自動デプロイが走る**（実測確認・以後の site 作業はこの前提で）。
 - **main への移植も本日完了**（下の「現在地 / 次の一手」の対応表を参照）。main⇄release 監査で
   main→release の移植必要分はゼロと確定済み。
-- **会話モード（voice-agent ブランチ・38ee90d）: ユーザー指示で凍結中**。Phase 5＋OpenAI
-  Realtime 実接続 E2E まで完了（151 テスト緑・GA スキーマ修正済み）だが、ユーザーから
-  「なんかおかしい」との体感報告があり、**次の新セッションで詳細デバッグする**。現在地・
-  E2E 結果・残課題は voice-agent ブランチの「会話モード」節と memory
-  `project_voicekey_voice_agent_mode` を参照。release/main には未マージ。
+- **音声エージェント系（会話モード v4/v5・秘書モード・Realtime）: 2026-07-14 凍結**（商品化フォーカスのため）。
+  v5（声=gpt-realtime-2 司令塔＋本物 claude TUI・複数セッション・秘書モード・swift test 557 緑）まで実装完了済み。
+  凍結解除トリガー= **OpenAI GPT-Live**（2026-07-08 発表・全二重）の **API 公開**。現在地・繰越・再開手順は
+  **voice-agent ブランチの `docs/VOICE_AGENT_FREEZE.md`（fa8cebe）が正本**。release/main には未マージ。
+  ※凍結対象外の製品側移植残: ホットキー「未割り当て」UI（voice-agent に Mac 先行実装済み→release/main へ両 OS 同時移植）。
 - **Stripe 本番化はユーザー入力待ち 3 点**: ①月額価格の確定（推奨 ¥980/月）②`! brew install
   stripe/stripe-cli/stripe && stripe login` の本人実行 ③特商法ページ用の氏名。揃い次第:
   商品/Price 作成（Test/Live）→Webhook 登録+whsec を Vercel env 投入→LP 料金実額化→
