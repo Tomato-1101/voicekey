@@ -227,12 +227,23 @@ def redeem_activation_key(code: str) -> Optional[str]:
 _token_lock = threading.Lock()
 _cached_token: Optional[dict] = None  # 値に _expires_monotonic（time.monotonic 基準の失効時刻）を持たせる
 
+# warm 先読みがキャッシュを更新する残 TTL 閾値（秒）。暖機間隔 240s ＋ 満了前マージン 120s。
+# warm ループ／録音後先読みはトークン残がこれ未満なら強制再取得するので、キャッシュは常に満了
+# 120 秒以上前に差し替わる＝「満了〜次 tick」の周期コールド窓（録音がトークン往復＋WS 接続を待つ）が
+# 消える。録音開始のクリティカルパスは従来どおり残 15 秒で再利用する（Mac の warmMinRemaining と対）。
+WARM_MIN_REMAINING = 360.0
 
-def fetch_ephemeral_token() -> dict:
+
+def fetch_ephemeral_token(min_remaining: float = 15.0) -> dict:
     """Deepgram「高速リアルタイム」用の短命 JWT を取得する。
 
     段階3: 有料・無料ともキャッシュ有効なら往復ゼロで即返す（2回目以降の録音を高速化）。
     無料体験の消費は録音成立後の非同期 confirm（jti なし）で数えるので、TTL 内で使い回してよい。
+
+    Args:
+        min_remaining: キャッシュを再利用する最小残 TTL（秒）。これ未満なら強制再取得する。
+            録音開始のクリティカルパスは既定 15 秒（従来どおり）。warm 先読みは WARM_MIN_REMAINING
+            (360s) を渡し、満了のはるか手前で更新して「満了〜次 warm tick」の周期コールド窓を無くす。
 
     Returns:
         {"token", "expires_in", "expires_at", "provider", "cacheable", "meter"} の dict
@@ -246,8 +257,8 @@ def fetch_ephemeral_token() -> dict:
     gen = auth_client.auth_generation()  # 取得開始時の認証世代を控える
     with _token_lock:
         c = _cached_token
-        # 残 15 秒超のキャッシュがあれば即返す（往復ゼロ）
-        if c and (c.get("_expires_monotonic", 0.0) - time.monotonic()) > 15:
+        # 残 min_remaining 超のキャッシュがあれば即返す（warm 先読みは 360・録音開始は 15・往復ゼロ）
+        if c and (c.get("_expires_monotonic", 0.0) - time.monotonic()) > min_remaining:
             # free の保留トークン(jti 付き)は「1保留=1録音=1confirm」を守るため 1 回使い切り
             # （取り出したらキャッシュから除去）。paid(jti なし)は TTL 内で使い回す。
             if c.get("jti"):

@@ -38,6 +38,8 @@ final class StreamingTranscriber: @unchecked Sendable {
     private var pending: [Data] = []
     /// finish/cancel が接続確立前に呼ばれた（接続完了後に即破棄させる）
     private var cancelled = false
+    /// finish() が接続確立前に呼ばれた＝接続確立後に pending フラッシュ後 CloseStream を送るべき
+    private var closeRequested = false
     /// finish() を解決する継続。二重 resume を防ぐため lock 下で nil 化する
     private var finishContinuation: CheckedContinuation<Void, Never>?
     /// 接続が閉じた / 確定し終えたか
@@ -90,7 +92,7 @@ final class StreamingTranscriber: @unchecked Sendable {
             // warm キャッシュヒット時は Task を挟まず即 connect する。cold のときだけ従来の非同期取得へ。
             if let tok = BackendClient.cachedEphemeralTokenIfValid() {
                 self.lock.lock(); self.ephemeralJti = tok.jti; self.ephemeralMeter = tok.meter; self.lock.unlock()
-                log.info("Deepgram 短命トークン warm ヒット→同期接続（往復ゼロ）")
+                log.notice("Deepgram 短命トークン warm ヒット→同期接続（往復ゼロ）")
                 connect(auth: "Bearer \(tok.token)")  // main と同じ同期経路
             } else {
                 // cold（起床直後・warm 漏れ・TTL 超過）: サーバーから短命 JWT を取得してから接続する
@@ -103,11 +105,11 @@ final class StreamingTranscriber: @unchecked Sendable {
                         // 段階3=再利用トークンの回数計測フラグ(meter)。どちらも録音成立時のみ送る。
                         self.lock.lock(); self.ephemeralJti = tok.jti; self.ephemeralMeter = tok.meter; self.lock.unlock()
                         // 「始まりが遅い」の主因切り分け用ログ（cold のトークン往復 ms）
-                        log.info("Deepgram 短命トークン取得(cold) \(Int(Date().timeIntervalSince(t0) * 1000), privacy: .public)ms")
+                        log.notice("Deepgram 短命トークン取得(cold) \(Int(Date().timeIntervalSince(t0) * 1000), privacy: .public)ms")
                         self.connect(auth: "Bearer \(tok.token)")
                     } catch {
                         log.error("Deepgram 短命トークンの取得に失敗: \(error.localizedDescription)")
-                        self.resolveFinish()  // finish() を解決し REST フォールバックに委ねる
+                        self.resolveFinish(reason: "token-fetch-failed")  // finish() を解決し REST フォールバックに委ねる
                     }
                 }
             }
@@ -142,12 +144,14 @@ final class StreamingTranscriber: @unchecked Sendable {
         if cancelled || done {
             lock.unlock()
             task.cancel(with: .normalClosure, reason: nil)
-            resolveFinish()
+            resolveFinish(reason: "cancelled")
             return
         }
         self.task = task
         let buffered = pending
         pending = []
+        // 接続確立前に finish() が呼ばれていたら、退避フラッシュ後に CloseStream を送って確定させる
+        let closeAfterFlush = closeRequested
         lock.unlock()
 
         task.resume()
@@ -155,6 +159,11 @@ final class StreamingTranscriber: @unchecked Sendable {
             task.send(.data(chunk)) { error in
                 if let error { log.debug("退避 PCM 送信エラー: \(error.localizedDescription)") }
             }
+        }
+        // finish-before-connect: 退避 PCM を送り切ってから CloseStream＝Deepgram が残りを確定して
+        // Metadata を返す（finish() の 3 秒タイムアウトをフルに待たずに解決させる）
+        if closeAfterFlush {
+            task.send(.string("{\"type\":\"CloseStream\"}")) { _ in }
         }
         receiveLoop()
         log.info("Deepgram ストリーミング開始 (model=\(self.model, privacy: .public), lang=\(self.streamLanguage, privacy: .public))")
@@ -189,24 +198,31 @@ final class StreamingTranscriber: @unchecked Sendable {
     }
 
     /// 送信を打ち切り、確定テキストを返す（ホットキーを離したときに呼ぶ）。
-    /// CloseStream を送ると Deepgram は残りを確定して Metadata を返し接続を閉じる。
-    /// 取りこぼし対策で最大 3 秒だけ待つ。
+    /// 接続済みなら CloseStream を送って残りを確定させ Metadata（＝終端）を最大 3 秒待つ。
+    /// 未接続なら close 要求を立て、接続確立後に connect() が pending フラッシュ後 CloseStream を送る。
+    /// 未接続かつ音声ゼロ（1 バイトも送っていない）なら Metadata は永遠に来ないので即空解決する。
     func finish() async -> String {
-        // CloseStream で残りバッファの確定を促す（接続前なら task は nil で no-op）
-        currentTask()?.send(.string("{\"type\":\"CloseStream\"}")) { _ in }
+        let (connectedTask, immediateEmpty) = requestClose()
+        // 接続済みなら即 CloseStream で残バッファの確定を促す（未接続なら connect() 側が送る）
+        connectedTask?.send(.string("{\"type\":\"CloseStream\"}")) { _ in }
 
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            lock.lock()
-            if done {
+        if immediateEmpty {
+            // 未接続＋音声ゼロ: 確定待ちに意味がない → 3 秒待たず即空解決して REST フォールバックへ
+            resolveFinish(reason: "empty-noconnect")
+        } else {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                lock.lock()
+                if done {
+                    lock.unlock()
+                    cont.resume()
+                    return
+                }
+                finishContinuation = cont
                 lock.unlock()
-                cont.resume()
-                return
-            }
-            finishContinuation = cont
-            lock.unlock()
-            // 確定が来ない場合の保険（接続ハング対策）
-            DispatchQueue.global().asyncAfter(deadline: .now() + 3) { [weak self] in
-                self?.resolveFinish()
+                // 確定が来ない場合の最終防衛（接続ハング・CloseStream 未達対策）
+                DispatchQueue.global().asyncAfter(deadline: .now() + 3) { [weak self] in
+                    self?.resolveFinish(reason: "timeout")
+                }
             }
         }
         // 接続が JWT 取得中などで未確立でも、後から connect が走らないよう cancelled を立てる
@@ -225,6 +241,18 @@ final class StreamingTranscriber: @unchecked Sendable {
             }
         }
         return text
+    }
+
+    /// finish() の入口: close 要求を立て、(接続済み task, 即空解決すべきか) を lock 下で判定して返す。
+    /// - 接続済み: task 非 nil を返す（呼び出し側が即 CloseStream を送る）。
+    /// - 未接続: closeRequested を立てる（connect() が pending フラッシュ後に CloseStream を送る）。
+    ///   さらに pending が空＝音声を 1 バイトも送っていなければ immediateEmpty=true（待たず空解決）。
+    ///   （task==nil の間 send() は必ず pending へ積むので、task==nil かつ pending 空＝真に音声ゼロ）
+    private func requestClose() -> (task: URLSessionWebSocketTask?, immediateEmpty: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        closeRequested = true
+        if let task { return (task, false) }
+        return (nil, pending.isEmpty)
     }
 
     /// lock 下で現在の task を読む（async コンテキストから直接 lock しないため）
@@ -249,7 +277,7 @@ final class StreamingTranscriber: @unchecked Sendable {
         lock.unlock()
         t?.cancel(with: .normalClosure, reason: nil)
         session.finishTasksAndInvalidate()
-        resolveFinish()
+        resolveFinish(reason: "cancelled")
     }
 
     /// 確定 + 暫定を結合した現在の全文（生・スペース除去前）
@@ -266,7 +294,7 @@ final class StreamingTranscriber: @unchecked Sendable {
             switch result {
             case .failure:
                 // 切断・エラーは finish() を解決して REST 側の判断に委ねる
-                self.resolveFinish()
+                self.resolveFinish(reason: "disconnect")
             case .success(let message):
                 switch message {
                 case .string(let text): self.handle(text)
@@ -294,7 +322,7 @@ final class StreamingTranscriber: @unchecked Sendable {
 
         // Metadata は CloseStream 後の終端通知 → 確定完了とみなす
         if msg.type == "Metadata" {
-            resolveFinish()
+            resolveFinish(reason: "metadata")
             return
         }
 
@@ -326,13 +354,18 @@ final class StreamingTranscriber: @unchecked Sendable {
         onInterim?(TextNormalize.stripCJKSpaces(snapshot))
     }
 
-    /// finish() の継続を一度だけ解決する（接続終了 / Metadata / タイムアウトのいずれか）
-    private func resolveFinish() {
+    /// finish() の継続を一度だけ解決する（Metadata / 切断 / タイムアウト / 未接続即解決のいずれか）。
+    /// 実際に解決した最初の 1 回だけ理由を .notice で残す（log.info は log show で追えないため）。
+    private func resolveFinish(reason: String = "unknown") {
         lock.lock()
         let cont = finishContinuation
         finishContinuation = nil
+        let wasDone = done
         done = true
         lock.unlock()
+        if !wasDone {
+            log.notice("Deepgram finish 解決: \(reason, privacy: .public)")
+        }
         cont?.resume()
     }
 

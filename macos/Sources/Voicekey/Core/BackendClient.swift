@@ -98,6 +98,13 @@ enum BackendClient {
     /// 「1録音=1消費」を保証する（同じ JWT を使い回すと無料枠が 1 回しか減らない）。
     /// Deepgram は接続確立時にのみトークンを検証するため、TTL(60秒)内の再利用は接続に十分。
     /// 同時取得は 1 本の Task に集約し、二重発行（＝サーバーのレート/台数枠の浪費）を防ぐ。
+
+    /// warm 先読みがキャッシュを更新する残 TTL 閾値（秒）。暖機間隔 240s ＋ 満了前マージン 120s。
+    /// warm ループはトークン残がこれ未満なら強制再取得するので、キャッシュは常に満了 120 秒以上前に
+    /// 差し替わる＝「満了〜次 tick」の周期コールド窓（録音がトークン往復＋WS 接続を待つ）が消える。
+    /// 録音開始のクリティカルパス（cachedEphemeralTokenIfValid）は従来どおり残 15 秒で再利用する。
+    static let warmMinRemaining: TimeInterval = 360
+
     private static let tokenLock = NSLock()
     private static var cachedToken: EphemeralToken?
     private static var inFlightToken: Task<EphemeralToken, Error>?
@@ -106,11 +113,36 @@ enum BackendClient {
     /// 録音直前に呼び、返ってきた JWT で Deepgram WebSocket を `Bearer` 認証で開く（段階3）。
     /// 利用権あり（paid）でキャッシュ有効なら往復ゼロで即返す（2回目以降の録音を高速化）。
     /// 無料体験は録音ごとに新トークンを発行する（1録音=1消費の保証・キャッシュしない）。
-    static func fetchEphemeralToken() async throws -> EphemeralToken {
+    ///
+    /// - Parameter minRemaining: キャッシュを再利用する最小残 TTL（秒）。これ未満なら強制再取得する。
+    ///   録音開始のクリティカルパスは既定 15 秒（従来どおり）。warm 先読みは `warmMinRemaining`(360s)
+    ///   を渡し、満了のはるか手前で更新して「満了〜次 warm tick」の周期コールド窓を無くす。
+    static func fetchEphemeralToken(minRemaining: TimeInterval = 15) async throws -> EphemeralToken {
         // ロック操作は同期ヘルパに閉じ込める（async コンテキストで NSLock を直接触らない）。
-        let (cached, task) = cachedOrInFlightToken()
+        let (cached, task) = cachedOrInFlightToken(minRemaining: minRemaining)
         if let cached { return cached }  // 往復ゼロ
         return try await task!.value     // cached が nil なら task は必ず非 nil
+    }
+
+    /// warm ループ用の先読み（消費ゼロ）。キャッシュ残が minRemaining 未満なら強制再取得する。
+    /// 録音開始のクリティカルパス（cachedEphemeralTokenIfValid の残 15 秒）とは別に、満了のはるか
+    /// 手前で更新して周期コールド窓を消すのが目的。戻り値はログ用（実際に取得したか・更新後の残 TTL 秒）。
+    static func warmEphemeralToken(minRemaining: TimeInterval) async -> (fetched: Bool, remaining: TimeInterval?) {
+        // 呼ぶ前に「再利用可の有効キャッシュがあったか」を控える＝false なら実際に取得が走る。
+        let hadValid = cachedTokenRemaining().map { canReuseCachedToken(remaining: $0, minRemaining: minRemaining) } ?? false
+        _ = try? await fetchEphemeralToken(minRemaining: minRemaining)
+        return (fetched: !hadValid, remaining: cachedTokenRemaining())
+    }
+
+    /// キャッシュを再利用してよいか（残 remaining が閾値 minRemaining 超なら再利用・純関数＝テスト可能）。
+    static func canReuseCachedToken(remaining: TimeInterval, minRemaining: TimeInterval) -> Bool {
+        remaining > minRemaining
+    }
+
+    /// 現在のキャッシュトークンの残 TTL 秒（無ければ nil・warm 判定/ログ用・非消費のピーク）。
+    private static func cachedTokenRemaining() -> TimeInterval? {
+        tokenLock.lock(); defer { tokenLock.unlock() }
+        return cachedToken?.expiresAt.timeIntervalSinceNow
     }
 
     /// warm ループが温めた有効な短命トークンを「同期・往復ゼロ・非同期化なし」で取り出す。
@@ -120,7 +152,9 @@ enum BackendClient {
     /// 判定・単発使い切りの規約は `cachedOrInFlightToken` のキャッシュ節（残 15 秒超・jti 付きは取り出しで除去）と一致させる。
     static func cachedEphemeralTokenIfValid() -> EphemeralToken? {
         tokenLock.lock(); defer { tokenLock.unlock() }
-        guard let c = cachedToken, c.expiresAt.timeIntervalSinceNow > 15 else { return nil }
+        // 録音開始のクリティカルパスは残 15 秒で再利用する（warm 先読みの 360 秒とは別閾値）。
+        guard let c = cachedToken,
+              canReuseCachedToken(remaining: c.expiresAt.timeIntervalSinceNow, minRemaining: 15) else { return nil }
         // free の保留トークン(jti 付き)は「1保留=1録音=1confirm」を守るため 1 回使い切り。
         // paid / 再利用 free(jti なし)は TTL 内で使い回す（fetchEphemeralToken と同規約）。
         if c.jti != nil { cachedToken = nil }
@@ -129,11 +163,11 @@ enum BackendClient {
 
     /// キャッシュ確認と取得の集約を同期・ロック下で行う。
     /// 戻り値はちょうど一方が非 nil（有効キャッシュ or 取得 Task）。
-    private static func cachedOrInFlightToken() -> (EphemeralToken?, Task<EphemeralToken, Error>?) {
+    private static func cachedOrInFlightToken(minRemaining: TimeInterval) -> (EphemeralToken?, Task<EphemeralToken, Error>?) {
         let gen = AuthClient.generation  // 取得開始時の認証世代（ロック取得前に控える＝ネスト回避）
         tokenLock.lock(); defer { tokenLock.unlock() }
-        // 1) 残 15 秒超のキャッシュがあれば即返す
-        if let c = cachedToken, c.expiresAt.timeIntervalSinceNow > 15 {
+        // 1) 残 minRemaining 超のキャッシュがあれば即返す（warm 先読みは 360・録音開始は 15）
+        if let c = cachedToken, canReuseCachedToken(remaining: c.expiresAt.timeIntervalSinceNow, minRemaining: minRemaining) {
             // free の保留トークン(jti 付き)は「1保留=1録音=1confirm」を守るため 1 回使い切り
             // （取り出したらキャッシュから除去）。paid(jti なし)は TTL 内で使い回す。
             if c.jti != nil { cachedToken = nil }

@@ -368,7 +368,9 @@ class VoicekeyApp(QObject):
 
         起動時・録音後・暖機ループ・スリープ復帰直後に共通で呼ぶ（Mac の warmBackendsNow と対）。
         段階3: 有料・無料とも再利用可トークンを先読みしてキャッシュ＝アイドル中も常に手元に有効
-        トークンがあり録音開始ゼロ待ち（TTL(300s) > 暖機間隔(240s) なのでキャッシュは切れない）。
+        トークンがあり録音開始ゼロ待ち。トークンは残 TTL が WARM_MIN_REMAINING(360s) 未満なら
+        強制再取得する＝暖機間隔 240s では満了の 120 秒以上前に必ず差し替わる。以前は「残 15 秒超なら
+        取得しない」短絡で満了直前まで更新されず、満了〜次 tick に周期コールド窓が生じていた＝それを根治した。
         先読みは無料枠を消費しない（消費は録音成立後の非同期 confirm で数える）。
         設定はホットリロードされるため毎回読み直す。失敗は無視。
         """
@@ -382,7 +384,8 @@ class VoicekeyApp(QObject):
             s.backend == TranscriptionBackend.DEEPGRAM.value for s in self._slots.values()
         ):
             try:
-                backend_client.fetch_ephemeral_token()  # 有料・無料とも消費ゼロでトークンをキャッシュ
+                # 残 360s 未満なら強制再取得＝満了 120 秒以上前に更新し周期コールド窓を消す（消費ゼロ）
+                backend_client.fetch_ephemeral_token(min_remaining=backend_client.WARM_MIN_REMAINING)
             except Exception:
                 pass
         # Groq「高速」（普通入力）: Groq スロットがあれば、そのプロキシ関数も消費なしで温める
@@ -425,7 +428,8 @@ class VoicekeyApp(QObject):
         if not uses_deepgram_streaming:
             return
         try:
-            backend_client.fetch_ephemeral_token()  # 有料・無料とも消費ゼロで先読み
+            # warm ループと同じ 360s 閾値で「満了のはるか手前でだけ差し替える」先読み扱いにする（消費ゼロ）
+            backend_client.fetch_ephemeral_token(min_remaining=backend_client.WARM_MIN_REMAINING)
         except Exception:
             pass
 

@@ -333,11 +333,12 @@ final class AppController: ObservableObject {
         }
     }
 
-    /// 使用中プロバイダのサーバー関数を温め、有料なら短命トークンを先読みする（消費ゼロ）。
+    /// 使用中プロバイダのサーバー関数を温め、短命トークンを先読みする（消費ゼロ）。
     /// 起動時・録音後・暖機ループ・スリープ復帰直後に共通で呼ぶ。
-    /// 有料: トークンを先読みしてキャッシュ＝アイドル中も常に手元に有効トークンがあり録音開始ゼロ待ち
-    ///       （TTL(300s) > 暖機間隔(240s) なのでキャッシュは切れない）。
-    /// 無料: 枠を守るためトークンは取らず、消費なしの GET で関数だけ温める（実トークンは録音時取得）。
+    /// トークンは残 TTL が warmMinRemaining(360s) 未満なら強制再取得する＝暖機間隔 240s では満了の
+    /// 120 秒以上前に必ず差し替わり、アイドル中も常に手元に有効トークンがある（録音開始ゼロ待ち）。
+    /// 以前は「残 15 秒超なら取得しない」短絡で満了直前まで更新されず、満了〜次 tick に周期コールド窓が
+    /// 生じていた（token_grants が毎時 1 回しか並ばない実測で確認）＝それを根治した。
     private func warmBackendsNow() async {
         guard BackendClient.isLoggedIn else { return }
         // 放置後初回の「セッション期限切れ→更新往復」を録音時に踏まないよう、暖機のたびに
@@ -359,7 +360,11 @@ final class AppController: ObservableObject {
             // 段階3: 有料も無料も再利用可トークンを先読みしてキャッシュを温める＝録音開始のサーバー往復ゼロ。
             // 先読み自体は無料枠を消費しない（消費は録音成立後の非同期 confirm で数える）。これで
             // 「無料の話し始めが遅い」の主因だった録音ごとのトークン取り直し（cold start 込み）を根絶する。
-            _ = try? await BackendClient.fetchEphemeralToken()
+            // 残 TTL が warmMinRemaining(360s) 未満なら強制再取得＝満了 120 秒以上前に必ず更新して
+            // 「満了〜次 tick」の周期コールド窓（録音がトークン往復＋WS 接続を待つ）を消す。
+            let warm = await BackendClient.warmEphemeralToken(minRemaining: BackendClient.warmMinRemaining)
+            let remain = warm.remaining.map { Int($0) } ?? -1
+            log.notice("warm tick: token \(warm.fetched ? "fetched" : "skip", privacy: .public) remain=\(remain, privacy: .public)s")
         }
         if usesGroq {
             // 普通入力=Groq プロキシの関数・接続を温める（Edge なので cold start はほぼ無いが導線統一）。
@@ -717,8 +722,8 @@ final class AppController: ObservableObject {
 
             // --- REST 経路（従来の 正規化 → VAD → API → 貼り付け）---
             // [計測] 録音停止→貼付までを段階別に刻む。release と main の速度差の在り処を実測するため。
-            // release は普通入力=Groq プロキシ・ハンズフリー=EL プロキシとも、この REST 経路を通る
-            // （即時入力=Deepgram を選択肢から外したのでストリーミング経路は不使用）。
+            // 即時入力=Deepgram はストリーミング経路（上）を通り、ここは普通入力=Groq プロキシ・
+            // ハンズフリー=EL プロキシ、およびストリーミング確定が空だった時のフォールバックが通る。
             let restT0 = ProcessInfo.processInfo.systemUptime
             let duration = Double(samples.count) / AudioRecorder.sampleRate
             guard duration >= kMinAudioSec else {
@@ -885,9 +890,10 @@ final class AppController: ObservableObject {
         // （連続ディクテーション時の 2 回目以降のサーバー往復をクリティカルパスから外す）。
         // 段階3: 有料も無料も再利用可トークンを先取りしてキャッシュ（TTL 内の次録音は往復ゼロ）。
         // 先読みは無料枠を消費しない（消費は録音成立後の非同期 confirm で数える）。
+        // warm ループと同じ 360s 閾値で「満了のはるか手前でだけ差し替える」先読み扱いにする。
         if BackendClient.isLoggedIn, config.streamingEnabled,
            config.slot(1).backend == .deepgram || config.slot(2).backend == .deepgram {
-            Task { _ = try? await BackendClient.fetchEphemeralToken() }
+            Task { _ = try? await BackendClient.fetchEphemeralToken(minRemaining: BackendClient.warmMinRemaining) }
         }
     }
 

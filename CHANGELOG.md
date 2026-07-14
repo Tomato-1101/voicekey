@@ -2,9 +2,15 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
-## [Unreleased] - 2026-07-07
+## [Unreleased] - 2026-07-15
 
 ### Fixed
+- **即時入力（Deepgram ストリーミング）の遅延再発を根治（Mac＋Windows・release）**。監査で特定した実欠陥を直した。
+  - **先読みトークンの周期コールド窓（両 OS）**: `fetchEphemeralToken()`（Mac）/ `fetch_ephemeral_token()`（Win）が「キャッシュ残 15 秒超なら取得せず即返す」短絡だったため、暖機（warm）ループ（240 秒間隔）が回っていても**満了直前まで一切更新されず**、満了〜次 tick に 0〜240 秒のコールド窓（録音がトークン往復＋WS 接続を待つ）が生じていた（本番 `token_grants` が毎時 1 回しか並ばない実測で確認）。fetch に `minRemaining`/`min_remaining` を足し、**先読み経路（warm ループ／録音後先読み）は残 TTL 360 秒未満で強制再取得**、録音開始のクリティカルパスは従来どおり残 15 秒で再利用するよう分離した。暖機間隔 240s では常に満了 120 秒以上前にトークンが差し替わり、周期コールド窓が消える。閾値は `warmMinRemaining` / `WARM_MIN_REMAINING`（＝240s + マージン120s）。Windows も Mac と同一構造・同一欠陥だったため同じ閾値を移植（両 OS 同期）。
+  - **finish-before-connect の 3 秒スタール（Mac）**: `StreamingTranscriber.finish()` が WS 未接続のまま呼ばれると `CloseStream` 送信が no-op になり、来ない Metadata を上限 3 秒フルに待っていた（コールド窓中の短い発話が「たまに 3 秒固まる」体感の正体候補）。未接続時は close 要求フラグを立て、**接続確立→pending PCM フラッシュ後に `CloseStream` を送る**よう修正。さらに**音声を 1 バイトも送っておらず接続も無い場合は 3 秒待たず即座に空で解決**して REST フォールバックへ回す。既存の 3 秒上限は最終防衛として残す。
+  - **診断ログ（Mac・.notice＝永続レベル）を追加**: ①warm tick の結果（取得/スキップ・キャッシュ残秒）②録音開始時の warm ヒット / cold（cold は取得所要 ms）を .notice へ昇格 ③finish の解決要因（metadata/disconnect/timeout/empty-noconnect/token-fetch-failed）。`log.info` は `log show` で追えないため .notice 以上にした。1 イベント 1 行・秘密情報なし。
+  - 陳腐化コメントを実態へ修正（両 OS の「TTL(300s) > 暖機間隔(240s) なのでキャッシュは切れない」は短絡で誤り／Mac の「即時入力=Deepgram を選択肢から外したのでストリーミング経路は不使用」は Deepgram 復活で陳腐化）。
+  - **Technical Details**: Mac `Core/BackendClient.swift`（`warmMinRemaining` / `fetchEphemeralToken(minRemaining:)` / `warmEphemeralToken` / `canReuseCachedToken` / `cachedTokenRemaining`）、`Core/StreamingTranscriber.swift`（`closeRequested` / `requestClose()` / `finish()` / `connect()` / `resolveFinish(reason:)`）、`AppController.swift`（warm tick ログ・録音後先読みの閾値・陳腐化コメント）。回帰テスト `EphemeralTokenReuseTests`・`StreamingFinishTests` を追加。Windows `core/backend_client.py`（`WARM_MIN_REMAINING` / `fetch_ephemeral_token(min_remaining=...)`）、`app.py`（`_warm_backends_now` / `_postwarm_ephemeral` の閾値・陳腐化コメント）。
 - **変換中ピルの「変換中…」が横に揺れて見える回帰を根治（両 OS・release／main）**。前回修正（カプセル幅の凍結 `transcribingSizeLocked`）でも横揺れが残ると 2 度報告された件を、再現ハーネス（下記 `fullscreen_helper.swift` の単色フルスクリーン背景＋連続 screencapture のピクセル計測）で計測して根因を特定した。**文字のジオメトリ（カプセル幅・文字の左右端）は白/グレー背景とも 0px で完全に不動**で、動いていたのは opacity 明滅（1.0⇄0.35）だけだった。明滅の谷で末尾「…」の細いドットが先に視認閾値を割って消え、**可視インクの重心が横に振れる**（実測: 白背景 ±7pt／グレー背景 ±2.4pt・周期は明滅 1.6s と一致）ため「横に揺れる」と知覚されていた。対称要素を明滅させても「…」の閾値落ちは残るため、**変換中テキストを完全静止（明滅を撤去）**にして動きを断った。修正後は同ハーネスで可視インクの重心・可視ピクセル数とも全フレーム完全一定（0px）を確認。
   - Mac (`UI/Hud.swift`): `transcribingContent` から opacity 明滅（`pulseOn` トグル＋`repeatForever`）を撤去し静止表示に。未使用化した `pulseOn` state・`onAppear`/`onChange` の明滅駆動・`hudLog`／`import os.log` も除去。
   - Windows (`ui/hud.py`): `set_state("transcribing")` で `_blink.start()` を呼ばず静止表示に（`_transcribe_opacity` は 1.0 固定）。テスト `tests/test_hud.py` を「変換中は明滅を開始せず不透明度 1.0 で静止・目標サイズ不変」に更新。
