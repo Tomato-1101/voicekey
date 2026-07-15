@@ -54,8 +54,13 @@
   途中の躓きと教訓: 本番 `STRIPE_SECRET_KEY` が別サンドボックスの旧鍵で「No such price」
   （逆引きで確定→本体テストモードの sk_test に差し替えで解消）。`vercel env ls` の created 列は
   更新を反映しないので env 反映の最終判定は E2E で行う。env 変更はデプロイし直すまで効かない。
-  **残り＝live 切替のみ**: ユーザーの Stripe 本人確認（onboarding）完了後に Live の商品/Price/Webhook 作成
-  →env 差し替え（SECRET_KEY/PRICE_ID/WEBHOOK_SECRET）→デプロイ→ユーザー GO。
+- **Stripe 本番(live)切替 完了＝販売開始状態（2026-07-15）**: 本人確認承認済み（charges_enabled=true）。
+  Live の商品/価格 `price_1TtJYWQiaA5hs7siOWaZfOy7`（¥980/月）/Webhook `we_1TtJYWQiaA5hs7sidFTqjX13`
+  （enabled・4イベント・本番 URL）を作成し env 3 種を live へ差し替え済み・デプロイ済み。
+  checkout が `cs_live_` を返し決済ページが ¥980・テスト表示なしで開くことを実測確認（実課金は未実行＝配線確認のみ）。
+  live 商品作成は CLI の rk_live では権限不足で、ユーザーが sk_live で作成スクリプトを実行。
+  **教訓**: sk_live はチャットに貼らせない（一度露出→ユーザーに Roll key させて新キーで作業＝今回そうした）。
+  残: ユーザーが実カードで初回課金の最終確認（任意）。CLI ログイン鍵 rk_live は read のみ・書込は sk_live 必須。
 - **サイトのセキュリティ強化を本番反映（2026-07-14・19c1016）**: /admin と管理 API に Basic 認証
   （fail-closed・資格情報は Vercel env ADMIN_BASIC_USER/PASS 投入済み）、管理者のみ TOTP 二段階認証
   （/admin/mfa・AAL2）、全ルートにセキュリティヘッダー 5 種。本番で 401/正資格通過/無回帰を実測確認済み。
