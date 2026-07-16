@@ -42,6 +42,7 @@
 | `macos/Sources/Voicekey/VoicekeyApp.swift` | personal は起動時に `NSApp.appearance = .aqua`（ライト固定） |
 | `macos/Sources/Voicekey/UI/SettingsView.swift` | personal はアカウントナビ項目・アカウント行・API キータブを非表示 |
 | `macos/Sources/Voicekey/UI/OnboardingView.swift` | personal は `goNext/goBack` でログインステップを飛ばす |
+| `macos/Sources/Voicekey/Core/Keychain.swift` | personal は `authSession()` が常に nil を返す（旧 release DIST の残存トークンがあっても未ログイン扱い）。`BackendClient.isLoggedIn` が本メソッド依存なので、起動時の利用権確認・warm ループ・短命トークン取得などのサーバー往復が単一点で全て no-op になる |
 
 `Transcriber.selectRoute(isPersonal:isDist:isLoggedIn:)` は純関数で、`Tests/VoicekeyTests/TranscribeRouteTests.swift`
 が「personal は isDist / ログイン状態に関わらず必ず `.directKeychain`（サーバー経路・ログイン要求を通らない）」ことを保証する。

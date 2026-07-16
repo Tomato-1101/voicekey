@@ -140,6 +140,11 @@ enum Keychain {
 
     /// 保存済みの認証セッションを取得する（未保存・破損時は nil）
     static func authSession() -> AuthSession? {
+        // personal エディションはアカウント/バックエンドを一切使わない。旧 release DIST 利用時に
+        // 残った認証トークンが Keychain にあってもログイン扱いにせず nil を返す＝起動時の
+        // 利用権確認・warm ループ・短命トークン取得などのサーバー往復を根本から発生させない
+        // （BackendClient.isLoggedIn も本メソッド依存なので連動して false になる）。
+        if EmbeddedKeys.isPersonal { return nil }
         guard let json = read(service: authService),
               let data = json.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(AuthSession.self, from: data)
