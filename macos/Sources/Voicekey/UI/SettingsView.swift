@@ -334,6 +334,8 @@ private struct GeneralSettingsTab: View {
     @State private var isDetectingMic = false
     /// マイク自動検出の進捗・結果表示（nil なら非表示）
     @State private var micDetectStatus: String?
+    /// 「変換しない語」の追加入力欄（保護リスト編集用）
+    @State private var newProtectWord = ""
 
     var body: some View {
         Form {
@@ -453,6 +455,41 @@ private struct GeneralSettingsTab: View {
             Section("履歴") {
                 Toggle("履歴を保存", isOn: $config.historyEnabled)
             }
+
+            Section("数字入力") {
+                // マスター。OFF なら数字の正規化を一切しない（完全パススルー）
+                Toggle("数字を半角に変換", isOn: $config.numeralNormalizeEnabled)
+                // 単独漢数字＋助数詞（三時→3時）。マスター OFF のときは無効表示
+                Toggle("助数詞つきの漢数字も変換（三時→3時）", isOn: $config.numeralConvertCounter)
+                    .disabled(!config.numeralNormalizeEnabled)
+
+                // 変換しない語（保護リスト）: 入力欄＋追加、各行に削除ボタン
+                LabeledContent("変換しない語") {
+                    HStack(spacing: 8) {
+                        TextField("語を追加", text: $newProtectWord)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit { addProtectWord() }
+                        Button("追加") { addProtectWord() }
+                            .disabled(newProtectWord.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+                ForEach(config.numeralProtectWords, id: \.self) { word in
+                    HStack {
+                        Text(word)
+                        Spacer()
+                        Button {
+                            config.numeralProtectWords.removeAll { $0 == word }
+                        } label: {
+                            Image(systemName: "trash").foregroundStyle(.red)
+                        }
+                        .buttonStyle(.borderless)
+                        .help("この語を削除")
+                    }
+                }
+                Text("ここに登録した語は数字に変換しません（「一人」「十分」など、数字に読める普通の言葉を守ります）。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
         .glassFormRows()                   // 行フィルを半透明化して島の中で「ガラスの棚」に見せる
@@ -483,6 +520,16 @@ private struct GeneralSettingsTab: View {
                 }
             }
         }
+    }
+
+    /// 入力欄の語を保護リストへ追加する（前後空白除去・重複はスキップ）。
+    private func addProtectWord() {
+        let word = newProtectWord.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !word.isEmpty else { return }
+        if !config.numeralProtectWords.contains(word) {
+            config.numeralProtectWords.append(word)
+        }
+        newProtectWord = ""
     }
 }
 

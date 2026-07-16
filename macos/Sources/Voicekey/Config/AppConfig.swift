@@ -224,6 +224,18 @@ final class ConfigStore: ObservableObject {
     @Published var sideNotchEnabled: Bool
     /// 音声入力の履歴を保存するか（既定オン。オフなら履歴に残さない）
     @Published var historyEnabled: Bool
+    /// 数字入力の正規化を行うか（マスター。false なら完全パススルー）
+    @Published var numeralNormalizeEnabled: Bool
+    /// 単独漢数字＋助数詞（三時→3時）も変換するか（位取り≥2 はマスターのみで常時変換）
+    @Published var numeralConvertCounter: Bool
+    /// 数字に変換しない語（数字漢字で始まる語をラン先頭にアンカー照合して守る）
+    @Published var numeralProtectWords: [String]
+
+    /// 保護リストの既定シード（一人／二人＝ひとり・ふたり、十分＝じゅうぶん 等の誤変換を守る）
+    static let defaultNumeralProtectWords = [
+        "一時的", "一時停止", "一人", "二人", "十分", "一日中", "一部始終", "一石二鳥",
+        "一番", "一度",  // いちばん（＝最も）・いちど（もう一度）を守る（番・度は助数詞なので既定では 1番/1度 になってしまう）
+    ]
 
     private var cancellables: Set<AnyCancellable> = []
     private let defaults: UserDefaults
@@ -249,6 +261,9 @@ final class ConfigStore: ObservableObject {
         static let dockIconAlwaysVisible = "dockIconAlwaysVisible"
         static let sideNotchEnabled = "sideNotchEnabled"
         static let historyEnabled = "historyEnabled"
+        static let numeralNormalizeEnabled = "numeralNormalizeEnabled"
+        static let numeralConvertCounter = "numeralConvertCounter"
+        static let numeralProtectWords = "numeralProtectWords"
         /// モード別整形既定の一回限りマイグレーション済みフラグ（v1.8）
         static let didMigrateModeDefaultsV18 = "didMigrateModeDefaultsV18"
     }
@@ -299,6 +314,13 @@ final class ConfigStore: ObservableObject {
         dockIconAlwaysVisible = defaults.object(forKey: Keys.dockIconAlwaysVisible) as? Bool ?? false
         sideNotchEnabled = defaults.object(forKey: Keys.sideNotchEnabled) as? Bool ?? true
         historyEnabled = defaults.object(forKey: Keys.historyEnabled) as? Bool ?? true
+        // 数字入力: マスター・助数詞は既定 ON。保護リストは未保存ならシード、
+        // 保存済みなら空配列も含めそのまま尊重する（repasteKey と同じ「未保存判定」方式）
+        numeralNormalizeEnabled = defaults.object(forKey: Keys.numeralNormalizeEnabled) as? Bool ?? true
+        numeralConvertCounter = defaults.object(forKey: Keys.numeralConvertCounter) as? Bool ?? true
+        numeralProtectWords = defaults.object(forKey: Keys.numeralProtectWords) == nil
+            ? Self.defaultNumeralProtectWords
+            : ((defaults.array(forKey: Keys.numeralProtectWords) as? [String]) ?? [])
 
         // 一回限りのマイグレーション（モード別整形既定の導入・v1.8）。
         // 既存ユーザーは formatEnabled=true が明示保存されているため、即時入力(deepgram)
@@ -340,6 +362,9 @@ final class ConfigStore: ObservableObject {
         $dockIconAlwaysVisible.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.dockIconAlwaysVisible) }.store(in: &cancellables)
         $sideNotchEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.sideNotchEnabled) }.store(in: &cancellables)
         $historyEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.historyEnabled) }.store(in: &cancellables)
+        $numeralNormalizeEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.numeralNormalizeEnabled) }.store(in: &cancellables)
+        $numeralConvertCounter.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.numeralConvertCounter) }.store(in: &cancellables)
+        $numeralProtectWords.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.numeralProtectWords) }.store(in: &cancellables)
     }
 
     /// ユーザー辞書の確定置換を最終テキストに適用する。
