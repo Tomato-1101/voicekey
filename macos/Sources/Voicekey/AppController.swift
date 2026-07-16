@@ -592,11 +592,17 @@ final class AppController: ObservableObject {
             // ライブ字幕として逐次表示する（喋りながら見せる）。onInterim は URLSession の
             // 受信キューから来るためメインへホップする。確定入力（貼付）は従来どおり。
             if EmbeddedKeys.isPersonal {
+                // 数字正規化の設定を録音開始時にスナップショット（確定入力と同じ規則・保護リストを
+                // 字幕にも効かせる）。captured な不変値なので受信キューから直接読んでも thread-safe。
+                let numEnabled = config.numeralNormalizeEnabled
+                let numCounter = config.numeralConvertCounter
+                let numProtect = Set(config.numeralProtectWords)
                 stream.onInterim = { [weak self] text in
                     // ライブ字幕にも確定入力と同じ数字正規化（漢数字/全角→半角アラビア）をかけて、
                     // 「喋っている最中は漢数字→確定で半角に変わる」チラつき（不一致）を無くす。
                     // NumeralNormalizer は純関数なので受信キューから直接呼んで描画直前に一枚噛ませる。
-                    let normalized = NumeralNormalizer.normalize(text)
+                    let normalized = NumeralNormalizer.normalize(
+                        text, enabled: numEnabled, convertCounter: numCounter, protectWords: numProtect)
                     DispatchQueue.main.async { self?.hud.setLiveText(normalized) }
                 }
             }
