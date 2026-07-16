@@ -76,6 +76,19 @@ final class StreamingTranscriber: @unchecked Sendable {
     /// 未ログインは従来どおり埋め込み/設定キーを `Token` で使う（並存ガード）。
     /// - Returns: キー未設定かつ未ログインなど開始できない場合 false（呼び出し側は REST にフォールバック）
     func start() -> Bool {
+        // personal（個人用最速版）: Keychain の Deepgram キーで直結する。
+        // サーバー短命 JWT 取得・BackendClient・warm ループ・confirmUsage を一切通らない
+        // ＝サーバー往復ゼロ＝先読みコールド窓の問題も原理的に発生しない（最速）。
+        // Keychain 読みはプロセス内キャッシュ済みで即時（同期）。開発者の既存キーをそのまま使う。
+        if EmbeddedKeys.isPersonal {
+            guard let key = Keychain.apiKey(for: .deepgram) else {
+                log.error("Deepgram: personal ビルドだが Keychain に Deepgram キーが未設定です（設定画面から保存してください）")
+                return false
+            }
+            connect(auth: "Token \(key)")  // main（未ログイン直叩き）と同じ同期経路
+            return true
+        }
+
         let loggedIn = BackendClient.isLoggedIn
         // 配布版（製品版ビルド）はログイン必須＝未ログインでは埋め込みキーを使わない。
         // その場合 false を返し、ゲート済みの REST 経路に委ねてログイン要求エラーを表示させる。

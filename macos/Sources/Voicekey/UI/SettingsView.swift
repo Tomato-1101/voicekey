@@ -61,11 +61,15 @@ struct MainWindowView: View {
             .init(id: 1, title: "録音キー 1（メイン）", icon: "1.circle"),
             .init(id: 2, title: "録音キー 2（サブ）", icon: "2.circle"),
             .init(id: 8, title: "ユーザー辞書", icon: "character.book.closed"),
-            .init(id: 6, title: "アカウント", icon: "person.crop.circle"),
-            .init(id: 7, title: "バージョン情報", icon: "info.circle"),
         ]
-        // 配布ビルドは埋め込みキーで動くため、API キーは出さない（テスターの混乱防止）
-        if !EmbeddedKeys.isDist {
+        // personal（個人用最速版）は埋め込みキーで常に利用可＝ログイン/アカウントの概念が無いので
+        // アカウントタブを出さない。配布/開発ビルドでは従来どおり出す。
+        if !EmbeddedKeys.isPersonal {
+            items.append(.init(id: 6, title: "アカウント", icon: "person.crop.circle"))
+        }
+        items.append(.init(id: 7, title: "バージョン情報", icon: "info.circle"))
+        // 配布ビルド・personal は埋め込みキーで動くため、API キーは出さない（混乱防止）
+        if !EmbeddedKeys.isDist, !EmbeddedKeys.isPersonal {
             items.append(.init(id: 5, title: "API キー", icon: "key"))
         }
         return items
@@ -132,10 +136,13 @@ struct MainWindowView: View {
                 model.showingSettings = true
             }
             .padding(.horizontal, 8)
-            Divider().padding(.horizontal, 14).padding(.vertical, 4)
-            accountRow
-                .padding(.horizontal, 8)
-                .padding(.bottom, 6)
+            // personal（個人用最速版）はログイン/アカウントが無いのでアカウント行を出さない。
+            if !EmbeddedKeys.isPersonal {
+                Divider().padding(.horizontal, 14).padding(.vertical, 4)
+                accountRow
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 6)
+            }
         }
         .frame(width: 200)
     }

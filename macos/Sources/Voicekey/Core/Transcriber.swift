@@ -77,6 +77,26 @@ final class Transcriber: @unchecked Sendable {
 
     let backend: Backend
 
+    /// 文字起こしの経路。selectRoute が副作用なしで決める（テスト対象）。
+    enum Route: Equatable {
+        /// ログイン済み: 自社サーバー経由（短命 JWT 直叩き / プロキシ）
+        case server
+        /// Keychain のキーで直叩き（personal 常時 / 未ログイン開発ビルド）。
+        /// personal は Keychain 直読でサーバー往復ゼロ＝最速。開発者の既存キーをそのまま使う。
+        case directKeychain
+        /// 配布ビルド未ログイン: 停止してログインを促す
+        case needLogin
+    }
+
+    /// 経路選択（純関数・テスト対象）。personal は他条件（isDist/ログイン）に関わらず必ず
+    /// Keychain 直叩きを選ぶ＝サーバー経路・ログイン要求を一切通らないことをテストで保証する。
+    static func selectRoute(isPersonal: Bool, isDist: Bool, isLoggedIn: Bool) -> Route {
+        if isPersonal { return .directKeychain }
+        if isDist { return isLoggedIn ? .server : .needLogin }
+        if isLoggedIn { return .server }
+        return .directKeychain
+    }
+
     // モデル等は設定変更時にメインスレッドが書き換え（接続を維持したまま更新する設計）、
     // 文字起こしタスクが別スレッドで読むため lock で保護する
     var model: String {
@@ -166,38 +186,42 @@ final class Transcriber: @unchecked Sendable {
     func transcribe(samples: [Float], serverFormat: Bool = false, presetId: String = "standard") async throws -> String {
         guard !samples.isEmpty else { return "" }
 
-        // 配布版（製品版ビルド）は「アクティベーション必須」。埋め込みキーへはフォールバックしない。
-        // 未ログイン＝停止して「設定 → アカウント」でログインを促す（ログイン後は無料体験で使える）。
-        // 無料体験を使い切った/利用権が無い場合はサーバーが 402/403 を返し、
-        // BackendError.freeQuotaExhausted / .noSubscription（＝キー登録を促すメッセージ）として表面化する。
-        if EmbeddedKeys.isDist {
-            guard BackendClient.isLoggedIn else {
-                throw TranscriptionError(
-                    message: "ログインすると無料体験で使えます（設定 → アカウント）"
-                )
-            }
+        // どの経路で文字起こしするかを純関数で決める（personal=Keychain 直叩き / ログイン=サーバー /
+        // 未ログイン開発=Keychain 直叩き / 配布未ログイン=ログイン要求）。selectRoute はテスト対象。
+        // personal は他条件に関わらず必ず directKeychain＝BackendClient・サーバーを一切参照しない。
+        switch Self.selectRoute(
+            isPersonal: EmbeddedKeys.isPersonal,
+            isDist: EmbeddedKeys.isDist,
+            isLoggedIn: BackendClient.isLoggedIn
+        ) {
+        case .needLogin:
+            // 配布版（製品版ビルド）は「アクティベーション必須」。埋め込みキーへはフォールバックしない。
+            // 未ログイン＝停止して「設定 → アカウント」でログインを促す（ログイン後は無料体験で使える）。
+            // 無料体験を使い切った/利用権が無い場合はサーバーが 402/403 を返し、
+            // BackendError.freeQuotaExhausted / .noSubscription として後段で表面化する。
+            throw TranscriptionError(message: "ログインすると無料体験で使えます（設定 → アカウント）")
+
+        case .server:
+            // ログイン済み: 自社サーバー経由（並存ガード）。
+            // 高速リアルタイム=Deepgram は短命 JWT で直叩き（低レイテンシ核心を維持）、
+            // 正確性=ElevenLabs / 高速=Groq はサーバープロキシ経由（バッチは短命キー非対応）。
             switch backend {
             case .groq: return try await transcribeGroqViaProxy(samples: samples, serverFormat: serverFormat, presetId: presetId)
             case .elevenlabs: return try await transcribeElevenLabsViaProxy(samples: samples)
             case .deepgram: return try await transcribeDeepgramViaJWT(samples: samples)
             case .openai:
-                throw TranscriptionError(message: "この文字起こし方式は配布版では利用できません")
+                // 配布版は openai を提供しない。開発ビルド（ログイン）では従来どおり直叩きへ委ねる。
+                if EmbeddedKeys.isDist {
+                    throw TranscriptionError(message: "この文字起こし方式は配布版では利用できません")
+                }
+                // 下の共通の直叩き経路（Keychain キー）へフォールスルー
             }
+
+        case .directKeychain:
+            break  // 下の共通の直叩き経路へ（personal / 未ログイン開発とも Keychain キーを使う）
         }
 
-        // 開発ビルド: 従来の並存ガード（ログイン時はサーバー経路、未ログインは設定キー直叩き）。
-        // 高速リアルタイム=Deepgram は短命 JWT で直叩き（低レイテンシ核心を維持）、
-        // 正確性=ElevenLabs はサーバープロキシ経由（バッチは短命キー非対応）。
-        // 高速=Groq もサーバープロキシ経由（普通入力・バッチ）。OpenAI は選択肢に無いため直叩きに委ねる。
-        if BackendClient.isLoggedIn {
-            switch backend {
-            case .groq: return try await transcribeGroqViaProxy(samples: samples, serverFormat: serverFormat, presetId: presetId)
-            case .elevenlabs: return try await transcribeElevenLabsViaProxy(samples: samples)
-            case .deepgram: return try await transcribeDeepgramViaJWT(samples: samples)
-            case .openai: break
-            }
-        }
-
+        // 直叩き（personal / 未ログイン開発とも Keychain のキーで直接プロバイダーを叩く）。
         guard let apiKey = Keychain.apiKey(for: backend) else {
             throw TranscriptionError(
                 message: "\(backend.label) の API キーが未設定です（設定画面から保存してください）"

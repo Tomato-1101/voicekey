@@ -588,6 +588,18 @@ final class AppController: ObservableObject {
         // chunkHandler は録音開始前に張る必要がある（最初のチャンクを取りこぼさない）
         if config.streamingEnabled, slot.backend == .deepgram {
             let stream = StreamingTranscriber(model: slot.model, language: config.language)
+            // personal（個人用最速版）: ストリーミングの暫定（interim）テキストを HUD に
+            // ライブ字幕として逐次表示する（喋りながら見せる）。onInterim は URLSession の
+            // 受信キューから来るためメインへホップする。確定入力（貼付）は従来どおり。
+            if EmbeddedKeys.isPersonal {
+                stream.onInterim = { [weak self] text in
+                    // ライブ字幕にも確定入力と同じ数字正規化（漢数字/全角→半角アラビア）をかけて、
+                    // 「喋っている最中は漢数字→確定で半角に変わる」チラつき（不一致）を無くす。
+                    // NumeralNormalizer は純関数なので受信キューから直接呼んで描画直前に一枚噛ませる。
+                    let normalized = NumeralNormalizer.normalize(text)
+                    DispatchQueue.main.async { self?.hud.setLiveText(normalized) }
+                }
+            }
             if stream.start() {
                 streamer = stream
                 recorder.chunkHandler = { [weak stream] chunk in stream?.send(chunk) }

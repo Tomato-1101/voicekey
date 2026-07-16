@@ -298,7 +298,10 @@ final class OnboardingModel: ObservableObject {
     // MARK: - ステップ遷移
 
     func goNext() {
-        if let next = OnboardingStep(rawValue: step.rawValue + 1) {
+        var raw = step.rawValue + 1
+        // personal（個人用最速版）はログイン/課金が無いため、ログインステップを飛ばす。
+        if EmbeddedKeys.isPersonal, raw == OnboardingStep.login.rawValue { raw += 1 }
+        if let next = OnboardingStep(rawValue: raw) {
             step = next
             refreshCurrentPermission()
             handleStepEntered()
@@ -306,7 +309,10 @@ final class OnboardingModel: ObservableObject {
     }
 
     func goBack() {
-        if let prev = OnboardingStep(rawValue: step.rawValue - 1) {
+        var raw = step.rawValue - 1
+        // personal はログインステップを飛ばす（前進時と対称）。
+        if EmbeddedKeys.isPersonal, raw == OnboardingStep.login.rawValue { raw -= 1 }
+        if let prev = OnboardingStep(rawValue: raw) {
             step = prev
             refreshCurrentPermission()
             handleStepEntered()

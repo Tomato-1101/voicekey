@@ -31,6 +31,9 @@ final class HudModel: ObservableObject {
     @Published var levels: [Float] = Array(repeating: 0, count: HudView.barCount)
     /// 貼り付け先アプリのアイコン（録音中/変換中にピル左端へ表示。nil なら非表示）
     @Published var appIcon: NSImage?
+    /// 録音中のライブ字幕（personal のストリーミング暫定テキスト。空なら非表示）。
+    /// 録音中の波形バーの右に固定幅で表示し、tail（最新語）を出す（幅固定で横揺れを防ぐ）。
+    @Published var liveText: String = ""
 
     func pushLevel(_ value: Float) {
         levels.removeFirst()
@@ -213,6 +216,7 @@ final class HudController {
             // （リセットすると表示が一瞬消えて見える）
             if case .recording = model.mode {} else {
                 model.resetLevels()
+                model.liveText = ""  // 新しい録音のたびに前回のライブ字幕を消す
             }
             model.mode = .recording(autoEnter: autoEnter, handsFree: handsFree)
             show()
@@ -253,6 +257,14 @@ final class HudController {
     /// 貼り付け先アプリのアイコンを設定する（録音開始時にスナップショットを渡す）
     func setAppIcon(_ icon: NSImage?) {
         model.appIcon = icon
+    }
+
+    /// 録音中のライブ字幕（ストリーミング暫定テキスト）を設定する。録音中のみ反映する
+    /// （変換中/待機に移ったあとの取りこぼし更新で字幕がちらつかないよう mode でガードする）。
+    func setLiveText(_ text: String) {
+        if case .recording = model.mode {
+            model.liveText = text
+        }
     }
 
     // MARK: - パネル管理
@@ -385,6 +397,9 @@ struct HudView: View {
     static let width: CGFloat = 460
     static let height: CGFloat = 56
     static let barCount = 24
+    /// ライブ字幕（personal）の固定幅。幅を固定することで文字更新のたびにカプセルが揺れない。
+    /// 波形バー等と足しても外側パネル幅(460)に収まる値にする（横あふれ防止）。
+    static let liveTextWidth: CGFloat = 190
     /// ハンズフリー録音のアクセント色（赤＝通常録音 / 紫＝自動送信 と区別するティール）
     static let handsFreeAccent = Color(red: 0.0, green: 0.78, blue: 0.72)
 
@@ -590,6 +605,16 @@ struct HudView: View {
                 Image(systemName: "return")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(.purple)
+            }
+            // personal のライブ字幕（ストリーミング暫定テキスト）。幅を固定して横揺れを防ぎ、
+            // tail 側（最新語）を head トランケーションで見せる。空なら要素ごと出さない。
+            if !model.liveText.isEmpty {
+                Text(model.liveText)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.head)
+                    .frame(width: Self.liveTextWidth, alignment: .trailing)
             }
         }
     }

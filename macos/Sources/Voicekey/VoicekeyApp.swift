@@ -101,6 +101,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // personal（個人用最速版）はライト外観に固定する（ユーザー指示「黒い基調は入れないで」）。
+        // アプリ全体の appearance を .aqua に固定することで、常駐 HUD・設定・オンボーディングの
+        // colorScheme が常に .light に解決され、OS のダークに追従しない（single-point で light 固定）。
+        if EmbeddedKeys.isPersonal {
+            NSApp.appearance = NSAppearance(named: .aqua)
+        }
+
         // メインメニューを設置する。メニューバー常駐（accessory）アプリはメインメニューが無く、
         // 編集メニューのキー割当が存在しないため ⌘V/⌘C/⌘X/⌘A が全ウィンドウでビープになる
         // （セットアップガイドの入力欄・内蔵ターミナルへの貼り付け不可の実機報告・2026-07-05）。
