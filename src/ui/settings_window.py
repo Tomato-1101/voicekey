@@ -1232,6 +1232,56 @@ class SettingsWindow(QWidget):
 
         layout.addWidget(card)
 
+        # --- カード: 数字入力（Mac 版 SettingsView の「数字入力」セクションと同項目・同文言） ---
+        card, cl = _make_card()
+
+        # 数字を半角に変換（マスター・Mac 版 numeralNormalizeEnabled と同義・既定 ON）
+        self._numeral_enabled_check = self._make_toggle()
+        _add_row(
+            cl, "数字を半角に変換", self._numeral_enabled_check,
+            caption="話した数字を半角のアラビア数字に直します（十二人→12人・二〇二六→2026）。",
+        )
+
+        # 助数詞つきの漢数字も変換（Mac 版 numeralConvertCounter と同義・既定 ON）
+        self._numeral_counter_check = self._make_toggle()
+        _add_row(
+            cl, "助数詞つきの漢数字も変換（三時→3時）", self._numeral_counter_check,
+            caption="「三時」「十時」「百人」のような、単位の付いた漢数字も半角数字にします。",
+        )
+        # マスターが OFF のときは助数詞トグルを無効化する（機能全体が止まるため）
+        self._numeral_enabled_check.toggled.connect(self._numeral_counter_check.setEnabled)
+
+        # 変換しない語（保護リスト）。数字漢字で始まる語をラン先頭にアンカー照合して守る
+        protect_block = QWidget()
+        pbl = QVBoxLayout(protect_block)
+        pbl.setContentsMargins(0, 0, 0, 0)
+        pbl.setSpacing(6)
+        pbl.addWidget(QLabel("変換しない語"))
+        self._numeral_protect_list = QListWidget()
+        self._numeral_protect_list.setMaximumHeight(140)
+        pbl.addWidget(self._numeral_protect_list)
+        protect_add_row = QHBoxLayout()
+        self._numeral_protect_input = QLineEdit()
+        self._numeral_protect_input.setPlaceholderText("例: 一人")
+        self._numeral_protect_input.returnPressed.connect(self._add_protect_word)
+        protect_add_btn = QPushButton("追加")
+        protect_add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        protect_add_btn.clicked.connect(self._add_protect_word)
+        protect_del_btn = QPushButton("削除")
+        protect_del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        protect_del_btn.clicked.connect(self._remove_selected_protect_word)
+        protect_add_row.addWidget(self._numeral_protect_input, 1)
+        protect_add_row.addWidget(protect_add_btn)
+        protect_add_row.addWidget(protect_del_btn)
+        pbl.addLayout(protect_add_row)
+        pbl.addWidget(_make_caption(
+            "ここに登録した語は数字に変換しません（「一人」「十分」など、"
+            "数字に読める普通の言葉を守ります）。"
+        ))
+        _add_block(cl, protect_block)
+
+        layout.addWidget(card)
+
         # --- カード: 起動 ---
         card, cl = _make_card()
 
@@ -2160,6 +2210,35 @@ class SettingsWindow(QWidget):
         return rules
 
     # ------------------------------------------------------------------
+    # 数字入力の保護リスト（変換しない語）
+    # ------------------------------------------------------------------
+
+    def _add_protect_word(self) -> None:
+        """入力欄の語を保護リストへ追加する（前後空白除去・重複はスキップ）。"""
+        word = self._numeral_protect_input.text().strip()
+        if not word:
+            return
+        existing = {
+            self._numeral_protect_list.item(i).text()
+            for i in range(self._numeral_protect_list.count())
+        }
+        if word not in existing:
+            self._numeral_protect_list.addItem(word)
+        self._numeral_protect_input.clear()
+
+    def _remove_selected_protect_word(self) -> None:
+        """保護リストで選択中の語を削除する。"""
+        for item in self._numeral_protect_list.selectedItems():
+            self._numeral_protect_list.takeItem(self._numeral_protect_list.row(item))
+
+    def _collect_protect_words(self) -> list:
+        """保護リストの語を settings.yaml 用のリストにまとめる（登録順を保持）。"""
+        return [
+            self._numeral_protect_list.item(i).text()
+            for i in range(self._numeral_protect_list.count())
+        ]
+
+    # ------------------------------------------------------------------
     # アカウント（ブラウザ経由ログイン・製品版 段階4）
     # ------------------------------------------------------------------
 
@@ -2748,6 +2827,19 @@ class SettingsWindow(QWidget):
         self._duck_media_check.setChecked(
             bool(config.get("duck_media_enabled", True))
         )
+        # 数字入力（マスター / 助数詞 / 保護リスト）
+        self._numeral_enabled_check.setChecked(
+            bool(config.get("numeral_normalize_enabled", True))
+        )
+        self._numeral_counter_check.setChecked(
+            bool(config.get("numeral_convert_counter", True))
+        )
+        # マスター OFF のときは助数詞トグルを無効表示にする
+        self._numeral_counter_check.setEnabled(self._numeral_enabled_check.isChecked())
+        self._numeral_protect_list.clear()
+        for word in config.get("numeral_protect_words", []) or []:
+            if isinstance(word, str) and word:
+                self._numeral_protect_list.addItem(word)
         self._handsfree_input.setText(config.get("handsfree_key", ""))
         self._auto_enter_delay_slider.setValue(config.get("auto_enter_delay_ms", 50))
         self._populate_input_devices()
@@ -2812,6 +2904,10 @@ class SettingsWindow(QWidget):
             "handsfree_key": self._handsfree_input.text(),
             # ユーザー辞書（確定置換）。貼り付け直前に from→to を機械置換する
             "replacements": self._collect_replacements(),
+            # 数字入力の正規化（Mac 版 ConfigStore と同義）
+            "numeral_normalize_enabled": self._numeral_enabled_check.isChecked(),
+            "numeral_convert_counter": self._numeral_counter_check.isChecked(),
+            "numeral_protect_words": self._collect_protect_words(),
             # vad_filter / vad_min_silence_duration_ms / split_parallel_enabled /
             # streaming_enabled / hud_enabled / audio_preprocess.volume_normalize は
             # 常時 ON 固定（UI 撤去）。ここでは保存せず config_manager 側で True を強制する。

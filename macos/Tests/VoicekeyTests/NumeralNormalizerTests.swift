@@ -1,9 +1,9 @@
 //
 //  NumeralNormalizerTests.swift
-//  数字表記正規化（NumeralNormalizer）と Whisper prompt 組み立ての単体テスト
+//  数字表記正規化（NumeralNormalizer v2）と Whisper prompt 組み立ての単体テスト
 //
-//  変換系（全角→半角・連続漢数字→算用数字）と、普通の日本語語彙を壊さない保護系を検証する。
-//  Windows 版 tests/test_numeral_normalizer.py と同じ観点。
+//  半角化・漢数字→算用数字（裸数字列／位取り）・助数詞つき単独漢数字・保護リスト・
+//  2 トグルを検証する。Windows 版 tests/test_numeral_normalizer.py と同じ観点。
 //
 
 import XCTest
@@ -11,24 +11,37 @@ import XCTest
 
 final class NumeralNormalizerTests: XCTestCase {
 
-    // MARK: - 変換系（半角化されるべき）
+    /// 既定シード保護語（ConfigStore.defaultNumeralProtectWords と一致させる）
+    private let seed: Set<String> = [
+        "一時的", "一時停止", "一人", "二人", "十分", "一日中", "一部始終", "一石二鳥",
+    ]
+
+    // MARK: - 半角化
 
     func testFullwidthDigitsToHalfwidth() {
         XCTAssertEqual(NumeralNormalizer.normalize("１２３４５"), "12345")
+    }
+
+    func testFullwidthSingleDigit() {
+        XCTAssertEqual(NumeralNormalizer.normalize("１０"), "10")
     }
 
     func testFullwidthLettersToHalfwidth() {
         XCTAssertEqual(NumeralNormalizer.normalize("ＡＢＣａｂｃ"), "ABCabc")
     }
 
-    // 位取りを含まない連続漢数字（2 文字以上）は算用数字化する
+    // MARK: - 裸数字ラン（各桁を算用数字化）
+
     func testConsecutiveKanjiDigitsToArabic() {
         XCTAssertEqual(NumeralNormalizer.normalize("三五八〇九一"), "358091")
     }
 
-    // 二〇二六 のような読み上げ年号は連続漢数字なので変換される
     func testKanjiYearSequence() {
         XCTAssertEqual(NumeralNormalizer.normalize("二〇二六年"), "2026年")
+    }
+
+    func testPhoneNumberWithLeadingZero() {
+        XCTAssertEqual(NumeralNormalizer.normalize("〇九〇一二三四五六七八"), "09012345678")
     }
 
     func testMixedSentence() {
@@ -38,24 +51,67 @@ final class NumeralNormalizerTests: XCTestCase {
         )
     }
 
-    // MARK: - 保護系（普通の語彙を壊してはならない）
+    // MARK: - 位取り（日本語数詞パース）
 
-    // 単独の漢数字は普通の語の一部なので変換しない
-    func testSingleKanjiWordsUnchanged() {
-        for word in ["一人", "二階建て", "一番", "五月雨", "四月", "六本木"] {
-            XCTAssertEqual(NumeralNormalizer.normalize(word), word)
-        }
+    func testPositionalJuuni() {
+        XCTAssertEqual(NumeralNormalizer.normalize("十二人"), "12人")
     }
 
-    // 位取り（十百千万）を含む数はそのまま
-    func testPositionalKanjiUnchanged() {
-        XCTAssertEqual(NumeralNormalizer.normalize("十時三十分"), "十時三十分")
-        XCTAssertEqual(NumeralNormalizer.normalize("千二百円"), "千二百円")
-        XCTAssertEqual(NumeralNormalizer.normalize("百二十三"), "百二十三")
+    func testPositionalNijuusan() {
+        XCTAssertEqual(NumeralNormalizer.normalize("二十三"), "23")
     }
 
-    func testNormalTextUnchanged() {
-        XCTAssertEqual(NumeralNormalizer.normalize("今日は晴れです"), "今日は晴れです")
+    func testPositionalSenNihyaku() {
+        XCTAssertEqual(NumeralNormalizer.normalize("千二百三十四円"), "1234円")
+    }
+
+    func testPositionalSanmanGosen() {
+        XCTAssertEqual(NumeralNormalizer.normalize("三万五千"), "35000")
+    }
+
+    // MARK: - 単独漢数字＋助数詞
+
+    func testSingleWithCounter() {
+        XCTAssertEqual(NumeralNormalizer.normalize("三時"), "3時")
+        XCTAssertEqual(NumeralNormalizer.normalize("十時"), "10時")
+        XCTAssertEqual(NumeralNormalizer.normalize("百人"), "100人")
+        XCTAssertEqual(NumeralNormalizer.normalize("千円"), "1000円")
+    }
+
+    // MARK: - 地名（助数詞集合外は変換しない）
+
+    func testPlaceNamesUnchanged() {
+        XCTAssertEqual(NumeralNormalizer.normalize("千葉"), "千葉")
+        XCTAssertEqual(NumeralNormalizer.normalize("六本木"), "六本木")
+        XCTAssertEqual(NumeralNormalizer.normalize("五反田"), "五反田")
+    }
+
+    // MARK: - 保護リスト（先頭アンカー照合）
+
+    func testProtectedSeedWords() {
+        XCTAssertEqual(NumeralNormalizer.normalize("一時的", protectWords: seed), "一時的")
+        XCTAssertEqual(NumeralNormalizer.normalize("一人", protectWords: seed), "一人")
+        XCTAssertEqual(NumeralNormalizer.normalize("十分", protectWords: seed), "十分")
+    }
+
+    // 「一人」保護は先頭アンカーなので「十一人」の中の「一人」に誤爆せず 11人 に変換される
+    func testJuuichininNotFalselyProtected() {
+        XCTAssertEqual(NumeralNormalizer.normalize("十一人", protectWords: seed), "11人")
+    }
+
+    // MARK: - トグル
+
+    func testConvertCounterOffKeepsSingle() {
+        XCTAssertEqual(NumeralNormalizer.normalize("三時", convertCounter: false), "三時")
+    }
+
+    func testConvertCounterOffStillConvertsPositional() {
+        // 位取り≥2 はマスターのみで常時変換（convertCounter の影響を受けない）
+        XCTAssertEqual(NumeralNormalizer.normalize("十二", convertCounter: false), "12")
+    }
+
+    func testDisabledIsFullPassthrough() {
+        XCTAssertEqual(NumeralNormalizer.normalize("三時の１２３", enabled: false), "三時の１２３")
     }
 
     // MARK: - 端条件
@@ -68,14 +124,20 @@ final class NumeralNormalizerTests: XCTestCase {
         XCTAssertEqual(NumeralNormalizer.normalize("abc123"), "abc123")
     }
 
+    func testNormalTextUnchanged() {
+        XCTAssertEqual(NumeralNormalizer.normalize("今日は晴れです"), "今日は晴れです")
+    }
+
     // 全角の記号・句読点は変換対象外（日本語表記を壊さない）
     func testFullwidthPunctuationKept() {
         XCTAssertEqual(NumeralNormalizer.normalize("はい、（そうです）！"), "はい、（そうです）！")
     }
 
     func testIdempotent() {
-        let once = NumeralNormalizer.normalize("三五八〇九一と１２３と一人")
-        XCTAssertEqual(NumeralNormalizer.normalize(once), once)
+        for text in ["十二人", "千二百三十四円", "三時", "二〇二六年", "六本木", "１０と三万五千"] {
+            let once = NumeralNormalizer.normalize(text, protectWords: seed)
+            XCTAssertEqual(NumeralNormalizer.normalize(once, protectWords: seed), once, text)
+        }
     }
 }
 

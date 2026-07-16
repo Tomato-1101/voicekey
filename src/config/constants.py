@@ -92,6 +92,19 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # 各要素: {"from": 置換元, "to": 置換先, "enabled": 有効か}
     "replacements": [],
 
+    # 数字入力の正規化（numeral_normalizer・Mac 版 ConfigStore と同義）。
+    # numeral_normalize_enabled: マスター（False で完全パススルー）
+    # numeral_convert_counter: 単独漢数字＋助数詞（三時→3時）を変換するか（位取り>=2 はマスターのみで常時変換）
+    # numeral_protect_words: 変換しない語（数字漢字で始まる語をラン先頭にアンカー照合）。
+    #   既定シードは「一人／二人＝ひとり・ふたり」「十分＝じゅうぶん」等の誤変換を守る。
+    "numeral_normalize_enabled": True,
+    "numeral_convert_counter": True,
+    "numeral_protect_words": [
+        "一時的", "一時停止", "一人", "二人", "十分", "一日中", "一部始終", "一石二鳥",
+        # いちばん（＝最も）・いちど（もう一度）を守る（番・度は助数詞なので既定では 1番/1度 になる）
+        "一番", "一度",
+    ],
+
     # ホットキー1 設定＝普通入力（製品版の既定: スタンダード = Groq whisper-large-v3-turbo・押している間）
     "hotkey1": {
         "hotkey": "<f2>",

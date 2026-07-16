@@ -697,7 +697,12 @@ final class AppController: ObservableObject {
                         : streamed
                     // 数字表記を半角アラビア数字へ正規化してからユーザー辞書置換を適用
                     // （全角→半角・連続漢数字→算用数字。置換はその後＝正規化後テキストに効かせる）
-                    let output = config.applyReplacements(NumeralNormalizer.normalize(formatted))
+                    let output = config.applyReplacements(NumeralNormalizer.normalize(
+                        formatted,
+                        enabled: config.numeralNormalizeEnabled,
+                        convertCounter: config.numeralConvertCounter,
+                        protectWords: Set(config.numeralProtectWords)
+                    ))
                     // 貼り付け先アプリを貼り付け直前に再取得する（録音中に切り替えた場合は今の前面が正）
                     let target = frontApp.snapshot()
                     // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する（履歴保存 OFF はスキップ）
@@ -786,7 +791,12 @@ final class AppController: ObservableObject {
             let fmtMs = Int((ProcessInfo.processInfo.systemUptime - fmtStart) * 1000)
             // 数字表記を半角アラビア数字へ正規化してからユーザー辞書置換を適用
             // （全角→半角・連続漢数字→算用数字。置換はその後＝正規化後テキストに効かせる）
-            let output = config.applyReplacements(NumeralNormalizer.normalize(formatted))
+            let output = config.applyReplacements(NumeralNormalizer.normalize(
+                formatted,
+                enabled: config.numeralNormalizeEnabled,
+                convertCounter: config.numeralConvertCounter,
+                protectWords: Set(config.numeralProtectWords)
+            ))
             // 貼り付け先アプリを貼り付け直前に再取得する（録音中に切り替えた場合は今の前面が正）
             let target = frontApp.snapshot()
             // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する（履歴保存 OFF はスキップ）
