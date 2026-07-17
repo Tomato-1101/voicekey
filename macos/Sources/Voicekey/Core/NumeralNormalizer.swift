@@ -18,6 +18,8 @@
 //        パース不能ならそのまま出力（安全側）。
 //      - 長さ1（単独漢数字）→ convertCounter=true かつ直後 1 文字が助数詞なら変換
 //        （三時→3時・十時→10時）。該当しなければそのまま（千葉・六本木 を守る）。
+//   4. カタカナ「ゼロ」は数字（ASCII/全角/漢数字）に隣接するときだけ 0/〇 に寄せる
+//      （1234567ゼロ→12345670・ゼロ九〇→090）。単独の「ゼロから」等は語として温存。
 //
 
 import Foundation
@@ -78,7 +80,9 @@ enum NumeralNormalizer {
             return chars
         }
 
-        let chars = Array(s)
+        // カタカナ「ゼロ」を数字文脈でのみ 0/〇 へ寄せる（電話番号末尾の「…ゼロ」など。
+        // 単独の語「ゼロから」等は数字に隣接しないので温存される）。
+        let chars = foldKatakanaZero(Array(s))
         let n = chars.count
         var out = String()
         out.reserveCapacity(n)
@@ -137,6 +141,45 @@ enum NumeralNormalizer {
             if Array(chars[i..<end]) == w { return true }
         }
         return false
+    }
+
+    /// ASCII/全角数字か、または漢数字 N か（「ゼロ」が数字文脈にあるかの判定に使う）。
+    private static func isDigitContext(_ c: Character) -> Bool {
+        if numeralChars.contains(c) { return true }
+        guard c.unicodeScalars.count == 1, let sc = c.unicodeScalars.first else { return false }
+        let v = sc.value
+        return (0x30...0x39).contains(v) || (0xFF10...0xFF19).contains(v)  // 0-9 / ０-９
+    }
+
+    /// カタカナ「ゼロ」を数字文脈でのみアラビア数字へ寄せる前処理。
+    /// STT は数字の読み上げを算用数字にしても末尾等の「ゼロ」だけカタカナで残すことがある。
+    /// 数字（ASCII/全角/漢数字）に隣接する「ゼロ」だけを対象にし、隣が漢数字なら「〇」
+    /// （後段の漢数字ラン処理に載せて 090 等へ）、それ以外は「0」に置換する。連鎖
+    /// （ゼロゼロ九 → 〇〇九 → 009）は反復で解消する。単独の「ゼロ」（ゼロから 等）は温存。
+    private static func foldKatakanaZero(_ input: [Character]) -> [Character] {
+        var arr = input
+        var changed = true
+        while changed {
+            changed = false
+            var i = 0
+            while i + 1 < arr.count {
+                if arr[i] == "ゼ", arr[i + 1] == "ロ" {
+                    let prevKanji = i > 0 && numeralChars.contains(arr[i - 1])
+                    let nextKanji = i + 2 < arr.count && numeralChars.contains(arr[i + 2])
+                    let prevDigit = i > 0 && isDigitContext(arr[i - 1])
+                    let nextDigit = i + 2 < arr.count && isDigitContext(arr[i + 2])
+                    if prevDigit || nextDigit {
+                        // 隣が漢数字なら「〇」（漢数字ランに載せる）、ASCII/全角数字なら「0」
+                        let repl: Character = (prevKanji || nextKanji) ? "〇" : "0"
+                        arr.replaceSubrange(i...(i + 1), with: [repl])
+                        changed = true
+                        continue  // 置換後の同位置から再評価して連鎖を解消
+                    }
+                }
+                i += 1
+            }
+        }
+        return arr
     }
 
     /// 位取りを含む日本語数詞を整数へパースする（万/億/兆でグループ分けし副乗数を加算）。
