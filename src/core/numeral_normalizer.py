@@ -18,6 +18,8 @@ Mac 版 NumeralNormalizer.swift と規則・範囲を完全一致させること
       パース不能ならそのまま出力（安全側）。
     - 長さ1（単独漢数字）→ convert_counter=True かつ直後 1 文字が助数詞なら変換
       （三時→3時・十時→10時）。該当しなければそのまま（千葉・六本木 を守る）。
+ 4. カタカナ「ゼロ」は数字（ASCII/全角/漢数字）に隣接するときだけ 0/〇 に寄せる
+    （1234567ゼロ→12345670・ゼロ九〇→090）。単独の「ゼロから」等は語として温存。
 """
 
 from typing import Iterable, List, Optional
@@ -119,7 +121,9 @@ def normalize(
         if chars and chars[0] in _NUMERAL_CHARS:
             patterns.append(chars)
 
-    chars = list(text)
+    # カタカナ「ゼロ」を数字文脈でのみ 0/〇 へ寄せる（電話番号末尾の「…ゼロ」など。
+    # 単独の語「ゼロから」等は数字に隣接しないので温存される）。
+    chars = _fold_katakana_zero(list(text))
     n = len(chars)
     out: List[str] = []
     i = 0
@@ -174,3 +178,39 @@ def _is_protected(chars: List[str], i: int, patterns: List[List[str]]) -> bool:
         if end <= n and chars[i:end] == w:
             return True
     return False
+
+
+def _is_digit_context(ch: str) -> bool:
+    """ASCII/全角数字か、または漢数字 N か（「ゼロ」が数字文脈にあるかの判定に使う）。"""
+    if ch in _NUMERAL_CHARS:
+        return True
+    code = ord(ch)
+    return 0x30 <= code <= 0x39 or 0xFF10 <= code <= 0xFF19  # 0-9 / ０-９
+
+
+def _fold_katakana_zero(chars: List[str]) -> List[str]:
+    """カタカナ「ゼロ」を数字文脈でのみアラビア数字へ寄せる前処理。
+
+    STT は数字の読み上げを算用数字にしても末尾等の「ゼロ」だけカタカナで残すことがある。
+    数字（ASCII/全角/漢数字）に隣接する「ゼロ」だけを対象にし、隣が漢数字なら「〇」
+    （後段の漢数字ラン処理に載せて 090 等へ）、それ以外は「0」に置換する。連鎖
+    （ゼロゼロ九 → 〇〇九 → 009）は反復で解消する。単独の「ゼロから」等は温存。
+    """
+    arr = list(chars)
+    changed = True
+    while changed:
+        changed = False
+        i = 0
+        while i + 1 < len(arr):
+            if arr[i] == "ゼ" and arr[i + 1] == "ロ":
+                prev_kanji = i > 0 and arr[i - 1] in _NUMERAL_CHARS
+                next_kanji = i + 2 < len(arr) and arr[i + 2] in _NUMERAL_CHARS
+                prev_digit = i > 0 and _is_digit_context(arr[i - 1])
+                next_digit = i + 2 < len(arr) and _is_digit_context(arr[i + 2])
+                if prev_digit or next_digit:
+                    repl = "〇" if (prev_kanji or next_kanji) else "0"
+                    arr[i:i + 2] = [repl]
+                    changed = True
+                    continue  # 置換後の同位置から再評価して連鎖を解消
+            i += 1
+    return arr

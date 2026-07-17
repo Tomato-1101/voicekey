@@ -146,6 +146,15 @@ class TestEdgeCases(unittest.TestCase):
             once = normalize(text, protect_words=SEED)
             self.assertEqual(normalize(once, protect_words=SEED), once, text)
 
+    def test_katakana_zero_in_number_context(self):
+        # カタカナ「ゼロ」は数字（ASCII/全角/漢数字）に隣接するときだけ 0/〇 に寄せる
+        self.assertEqual(normalize("1234567ゼロ"), "12345670")  # 末尾の読み上げゼロ
+        self.assertEqual(normalize("ゼロ九〇"), "090")
+        self.assertEqual(normalize("ゼロゼロ九"), "009")  # 連鎖
+        self.assertEqual(normalize("ゼロ一"), "01")
+        # 数字に隣接しない「ゼロ」は語として温存する
+        self.assertEqual(normalize("ゼロから始める"), "ゼロから始める")
+
 
 if __name__ == "__main__":
     unittest.main()

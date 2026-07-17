@@ -139,6 +139,16 @@ final class NumeralNormalizerTests: XCTestCase {
             XCTAssertEqual(NumeralNormalizer.normalize(once, protectWords: seed), once, text)
         }
     }
+
+    // カタカナ「ゼロ」は数字（ASCII/全角/漢数字）に隣接するときだけ 0/〇 に寄せる
+    func testKatakanaZeroInNumberContext() {
+        XCTAssertEqual(NumeralNormalizer.normalize("1234567ゼロ"), "12345670")  // 末尾の読み上げゼロ
+        XCTAssertEqual(NumeralNormalizer.normalize("ゼロ九〇"), "090")
+        XCTAssertEqual(NumeralNormalizer.normalize("ゼロゼロ九"), "009")        // 連鎖
+        XCTAssertEqual(NumeralNormalizer.normalize("ゼロ一"), "01")
+        // 数字に隣接しない「ゼロ」は語として温存する
+        XCTAssertEqual(NumeralNormalizer.normalize("ゼロから始める"), "ゼロから始める")
+    }
 }
 
 /// Whisper（Groq/OpenAI）へ渡す数字 style プロンプトの組み立てを検証する。
