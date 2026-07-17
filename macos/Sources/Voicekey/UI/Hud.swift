@@ -599,8 +599,12 @@ struct HudView: View {
             Circle()
                 .fill(accent)
                 .frame(width: 7, height: 7)
-            // 音声レベル連動の波形バー。ハンズフリー中はバーもアクセント色で塗る（ラベル無しでも一目で判る）
-            levelBars(tint: handsFree ? Self.handsFreeAccent : Color.primary.opacity(0.75))
+            // 音声レベル連動の波形バー。ハンズフリー中はバーもアクセント色で塗る（ラベル無しでも一目で判る）。
+            // personal のライブ字幕（liveText）が出ている間はバーを出さない（字幕とバーの二重表示を避ける・
+            // ユーザー指示 2026-07-17）。非 personal は liveText が常に空なのでこれまで通りバーを表示する。
+            if model.liveText.isEmpty {
+                levelBars(tint: handsFree ? Self.handsFreeAccent : Color.primary.opacity(0.75))
+            }
             if autoEnter {
                 Image(systemName: "return")
                     .font(.system(size: 11, weight: .bold))

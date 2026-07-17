@@ -20,8 +20,8 @@
   鍵ローテ時も再ビルド不要（Keychain の値を更新するだけ）。
 - **音声入力オンリー**。会話 / 秘書 / Realtime / agent 系は `voice-agent` ブランチにのみ存在し、
   personal（release 由来）には無い＝新たな会話系機能は入れない。
-- **ライト固定**。`NSApp.appearance = .aqua` をアプリ全体に固定（`VoicekeyApp` で `isPersonal` のとき）。
-  常駐 HUD・設定・オンボーディングの `colorScheme` が常に `.light` に解決され、OS のダークに追従しない。
+- **外観は OS 追従**（ライト/ダーク双方に馴染む）。以前 `NSApp.appearance = .aqua` でライト固定していたが、
+  ダーク環境で HUD の浮遊ガラス（Liquid Glass）まで白くなり「前のデザインが白い」と指摘されたため撤去した（2026-07-17）。
 - **認証/課金 UI 非表示**。ログイン/アカウント/サブスク/API キータブ/利用権プロンプトを隠す。
   オンボーディングからログインステップを除外する。
 - **署名・バンドル ID は release と同一**（Apple Development 証明書・`com.voicekey.app`・TeamID `9KT598FS4A`）。
@@ -30,7 +30,7 @@
 
 ## 2. personal 固有の差分（`isPersonal` で分岐している箇所だけ）
 
-マージ衝突を最小化するため、personal 固有の差分は次の 6 箇所に閉じ込めている。
+マージ衝突を最小化するため、personal 固有の差分は下記の箇所に閉じ込めている。
 
 | ファイル | 分岐内容 |
 | --- | --- |
@@ -38,8 +38,7 @@
 | `macos/Sources/Voicekey/Core/Transcriber.swift` | `selectRoute()` が personal を常に `.directKeychain`（サーバー/ログイン要求を通らない） |
 | `macos/Sources/Voicekey/Core/StreamingTranscriber.swift` | `start()` 冒頭で personal は Keychain の Deepgram キーで直結 |
 | `macos/Sources/Voicekey/AppController.swift` | personal のとき streaming の interim を HUD へライブ字幕配線 |
-| `macos/Sources/Voicekey/UI/Hud.swift` | 録音ピルに `liveText`（固定幅・tail 表示）を追加（`setLiveText` は録音中のみ反映） |
-| `macos/Sources/Voicekey/VoicekeyApp.swift` | personal は起動時に `NSApp.appearance = .aqua`（ライト固定） |
+| `macos/Sources/Voicekey/UI/Hud.swift` | 録音ピルに `liveText`（固定幅・tail 表示）を追加（`setLiveText` は録音中のみ反映）。ライブ字幕が出ている間は音量バーを非表示にする |
 | `macos/Sources/Voicekey/UI/SettingsView.swift` | personal はアカウントナビ項目・アカウント行・API キータブを非表示 |
 | `macos/Sources/Voicekey/UI/OnboardingView.swift` | personal は `goNext/goBack` でログインステップを飛ばす |
 | `macos/Sources/Voicekey/Core/Keychain.swift` | personal は `authSession()` が常に nil を返す（旧 release DIST の残存トークンがあっても未ログイン扱い）。`BackendClient.isLoggedIn` が本メソッド依存なので、起動時の利用権確認・warm ループ・短命トークン取得などのサーバー往復が単一点で全て no-op になる |
