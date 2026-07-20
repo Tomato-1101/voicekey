@@ -92,16 +92,21 @@ async def run_deepgram(key, model, pcm):
     return t, "".join(finals)
 
 
-async def run_openai(key, model, pcm):
+async def run_openai(key, model, pcm, delay=None):
     # GA 仕様: OpenAI-Beta ヘッダは廃止。session.type=transcription、
     # audio.input.format に PCM レートを指定、turn_detection=null で手動 commit。
     # OpenAI は 24kHz 以上必須なので 16kHz テスト音声をアップサンプルして送る。
+    # delay: gpt-realtime-whisper の遅延/精度チューニング（minimal/low/medium/high/xhigh）。
+    #        None なら未指定（サーバー既定）＝従来の測定条件と同一。
     pcm, _ = audioop.ratecv(pcm, 2, 1, SR, OPENAI_SR, None)
     chunk_bytes = OPENAI_SR * 2 * CHUNK_MS // 1000  # 24k 基準で1倍速を維持
     url = "wss://api.openai.com/v1/realtime?intent=transcription"
     headers = {"Authorization": f"Bearer {key}"}
     t = {"start": None, "first": None, "audio_end": None, "final": None}
     parts = []
+    transcription = {"model": model, "language": "ja"}
+    if delay:
+        transcription["delay"] = delay
     ws = await _connect(url, headers)
     async with ws:
         await ws.send(json.dumps({
@@ -111,7 +116,7 @@ async def run_openai(key, model, pcm):
                 "audio": {
                     "input": {
                         "format": {"type": "audio/pcm", "rate": OPENAI_SR},
-                        "transcription": {"model": model, "language": "ja"},
+                        "transcription": transcription,
                         "turn_detection": None,
                     }
                 },
