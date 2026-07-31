@@ -37,7 +37,9 @@ enum Keychain {
     /// バックエンドごとのサービス識別子（Python 版と同一）
     static func service(for backend: Backend) -> String {
         switch backend {
-        case .openai: return "voicekey.OpenAI"
+        // openaiLive（gpt-live-transcribe）は同じ OpenAI のキーを使うので項目を共用する
+        // （設定画面で OpenAI キーを 1 回入れれば REST もライブも動く）
+        case .openai, .openaiLive: return "voicekey.OpenAI"
         case .groq: return "voicekey.Groq"
         case .elevenlabs: return "voicekey.ElevenLabs"
         case .deepgram: return "voicekey.Deepgram"
@@ -78,7 +80,7 @@ enum Keychain {
         // 環境変数フォールバック（開発時用）
         let envVar: String
         switch backend {
-        case .openai: envVar = "OPENAI_API_KEY"
+        case .openai, .openaiLive: envVar = "OPENAI_API_KEY"
         case .groq: envVar = "GROQ_API_KEY"
         case .elevenlabs: envVar = "ELEVENLABS_API_KEY"
         case .deepgram: envVar = "DEEPGRAM_API_KEY"

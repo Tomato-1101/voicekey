@@ -33,6 +33,10 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
     case groq
     case elevenlabs
     case deepgram
+    /// OpenAI Realtime のライブ文字起こし（gpt-live-transcribe。2026-07-28 追加の新モデル）。
+    /// personal（自分用）ブランチ限定の選択肢＝release（製品版）には出さない。
+    /// REST では 404（Realtime WS 専用モデル）なので、経路は必ず WebSocket。
+    case openaiLive = "openai_live"
 
     var id: String { rawValue }
 
@@ -51,20 +55,24 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
         case .elevenlabs: return "スタンダード（ハンズフリー）"
         // openai は選択肢外（開発用のみ）。elevenlabs との表示重複バグを解消する。
         case .openai: return "OpenAI（開発用）"
+        // personal 限定の 3 つ目。Deepgram と同じ「離した瞬間に入力」型だが OpenAI 製。
+        case .openaiLive: return "OpenAI ライブ"
         }
     }
 
-    /// 製品版で文字起こしバックエンドとして選べる 2 つ（表示順）。
-    /// 即時入力=Deepgram（ストリーミング）/ スタンダード=Groq（既定・普通入力）。
+    /// 文字起こしバックエンドとして選べるもの（表示順）。
+    /// 即時入力=Deepgram（ストリーミング）/ OpenAI ライブ=gpt-live-transcribe（personal 限定）/
+    /// スタンダード=Groq（既定・普通入力）。
     /// enum の case（elevenlabs/openai）は保存値の decode 互換と EL の内部利用のため残す
     /// （「選べる集合」だけを縮める設計）。
-    static var selectableCases: [Backend] { [.deepgram, .groq] }
+    /// 注意: openaiLive は personal（自分用）専用の選択肢。release へこの行を持ち込まないこと。
+    static var selectableCases: [Backend] { [.deepgram, .openaiLive, .groq] }
 
     /// 提供元名（API キー欄でどのキーかを示すためだけに使う。配布版では
     /// API キータブ自体を隠すので、開発時にしか表示されない）
     var providerName: String {
         switch self {
-        case .openai: return "OpenAI"
+        case .openai, .openaiLive: return "OpenAI"
         case .groq: return "Groq"
         case .elevenlabs: return "ElevenLabs"
         case .deepgram: return "Deepgram"
@@ -83,6 +91,9 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
         case .elevenlabs: return ["scribe_v1", "scribe_v2", "scribe_v1_experimental"]
         // nova-3 がベンチで速度・精度とも最良（ストリーミング既定）。ja は多言語モードで対応
         case .deepgram: return ["nova-3", "nova-2"]
+        // gpt-live-transcribe が新世代（2026-07-28）。TTFB は前世代 gpt-realtime-whisper より
+        // 速い（delay=minimal で 449-524ms vs 637-774ms・2026-07-31 実測）
+        case .openaiLive: return ["gpt-live-transcribe", "gpt-realtime-whisper"]
         }
     }
 
@@ -95,7 +106,8 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
     /// 設定 UI でモードを切り替えたときに整形トグルをこの既定へ追従させる。
     var defaultFormatEnabled: Bool {
         switch self {
-        case .deepgram: return false
+        // ライブ系（Deepgram / OpenAI ライブ）は速度全振りのため既定 OFF
+        case .deepgram, .openaiLive: return false
         case .groq, .elevenlabs, .openai: return true
         }
     }

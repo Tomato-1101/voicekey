@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
 """
-gpt-realtime-whisper の delay パラメータ（遅延/精度チューニング）スイープ測定。
+OpenAI Realtime 文字起こしモデルの delay パラメータ（遅延/精度チューニング）スイープ測定。
 
 Realtime transcription の `delay`（minimal/low/medium/high/xhigh）ごとに
 TTFB・確定レイテンシ・CER を実測し、未指定（サーバー既定）と比較する。
 「delay=minimal にすれば Deepgram nova-3 の確定 ~70-100ms に届くか」の裏取り用。
 
-実行: .venv/bin/python delay_sweep.py
+実行: .venv/bin/python delay_sweep.py [モデル名]
+      （既定 gpt-realtime-whisper。新モデル比較は `delay_sweep.py gpt-live-transcribe`）
 """
 
 import asyncio
+import sys
 import time
 
 from run_benchmark import get_key, load_dotenv, cer
 from stream_benchmark import read_pcm, run_openai
 
-MODEL = "gpt-realtime-whisper"
+# 測定対象モデル（引数で差し替え可能。gpt-live-transcribe 等の新モデルを同条件で比較するため）
+MODEL = sys.argv[1] if len(sys.argv) > 1 else "gpt-realtime-whisper"
 DELAYS = [None, "minimal", "low", "medium", "high"]  # None=未指定（既定）
 
 

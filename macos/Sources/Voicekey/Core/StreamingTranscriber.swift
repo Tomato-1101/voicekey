@@ -17,8 +17,10 @@ import os.log
 
 private let log = Logger(subsystem: "com.voicekey.app", category: "stream")
 
-/// Deepgram WebSocket による逐次文字起こしセッション（1 録音 = 1 インスタンス）
-final class StreamingTranscriber: @unchecked Sendable {
+/// Deepgram WebSocket による逐次文字起こしセッション（1 録音 = 1 インスタンス）。
+/// LiveTranscribing 適合（契約は OpenAILiveTranscriber.swift 参照）＝AppController から
+/// OpenAI ライブ（gpt-live-transcribe）と同じ扱いで差し替えられる。
+final class StreamingTranscriber: LiveTranscribing, @unchecked Sendable {
 
     /// 現在の全文（確定 + 暫定）の更新通知。HUD 用にメインへホップして使う想定
     var onInterim: ((String) -> Void)?

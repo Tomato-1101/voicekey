@@ -52,8 +52,8 @@ final class AppController: ObservableObject {
     /// 録音中の実効モード（ハンズフリー切替キー併用時は hold スロットでも toggle になる）
     private var recordingEffectiveMode: HotkeyMode = .hold
     private var autoEnter = false
-    /// ストリーミング録音中の Deepgram セッション（非ストリーミング時は nil）
-    private var streamer: StreamingTranscriber?
+    /// ストリーミング録音中のライブセッション（Deepgram / OpenAI ライブ。非ストリーミング時は nil）
+    private var streamer: (any LiveTranscribing)?
     /// 録音開始時に確定した不変の処理コンテキスト（finishRecording で処理タスクへ引き継ぐ）
     private var recordContext: RecordContext?
     /// 未完了の文字起こしタスク数
@@ -583,11 +583,12 @@ final class AppController: ObservableObject {
         // 設定された入力デバイスを反映（変更がなければ recorder 側では何もしない）
         recorder.inputDeviceUID = config.inputDeviceUID
 
-        // Deepgram かつストリーミング有効なら WebSocket を開いて低遅延で確定テキストを得る。
+        // ライブ系バックエンド（Deepgram / OpenAI ライブ）かつストリーミング有効なら
+        // WebSocket を開いて低遅延で確定テキストを得る。
         // 開始できなければ（キー無し等）chunkHandler を張らないため REST 経路に自動フォールバック。
         // chunkHandler は録音開始前に張る必要がある（最初のチャンクを取りこぼさない）
-        if config.streamingEnabled, slot.backend == .deepgram {
-            let stream = StreamingTranscriber(model: slot.model, language: config.language)
+        if config.streamingEnabled, let stream = Self.makeLiveTranscriber(
+            backend: slot.backend, model: slot.model, language: config.language) {
             // personal（個人用最速版）: ストリーミングの暫定（interim）テキストを HUD に
             // ライブ字幕として逐次表示する（喋りながら見せる）。onInterim は URLSession の
             // 受信キューから来るためメインへホップする。確定入力（貼付）は従来どおり。
@@ -648,6 +649,22 @@ final class AppController: ObservableObject {
         }
     }
 
+    /// ライブ（WebSocket）文字起こしのセッションをバックエンドに応じて生成する。
+    /// ライブ非対応のバックエンド（groq / elevenlabs / openai）は nil＝REST 経路で処理する。
+    /// 生成しただけでは接続しない（呼び出し側が start() の成否でフォールバックを判断する）。
+    private static func makeLiveTranscriber(
+        backend: Backend, model: String, language: String
+    ) -> (any LiveTranscribing)? {
+        switch backend {
+        case .deepgram:
+            return StreamingTranscriber(model: model, language: language)
+        case .openaiLive:
+            return OpenAILiveTranscriber(model: model, language: language)
+        case .groq, .elevenlabs, .openai:
+            return nil
+        }
+    }
+
     private func finishRecording(quietIfNoSpeech: Bool = false) {
         guard recordingSlot != nil else { return }
         // 停止の操作音・メディア音量の復元（撃ちっぱなし）。
@@ -681,7 +698,7 @@ final class AppController: ObservableObject {
 
     private func processAudio(
         _ samples: [Float], context: RecordContext?, autoEnter: Bool,
-        streamer: StreamingTranscriber?, quietIfNoSpeech: Bool = false
+        streamer: (any LiveTranscribing)?, quietIfNoSpeech: Bool = false
     ) {
         // ライブ設定でなく録音開始時の snapshot だけを使う
         // （滞留中に設定が変わっても別プロバイダーへ送らないため）
@@ -705,7 +722,7 @@ final class AppController: ObservableObject {
             await previous?.value
             defer { taskFinished() }
 
-            // --- ストリーミング経路: Deepgram の確定テキストを受け取って貼り付け ---
+            // --- ストリーミング経路: ライブ（Deepgram / OpenAI ライブ）の確定テキストを受け取って貼り付け ---
             if let streamer {
                 let streamed = await streamer.finish()
                 if !streamed.isEmpty {

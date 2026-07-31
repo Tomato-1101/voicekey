@@ -641,6 +641,9 @@ private struct SlotSettingsTab: View {
         switch backend {
         case .deepgram:
             return "しゃべり終わった瞬間、全文がまとめて入力されます（最速・実測 0.1 秒）"
+        case .openaiLive:
+            return "OpenAI の新しいライブ文字起こし（gpt-live-transcribe）で入力します。\n"
+                + "即時入力より確定は遅めですが（実測 0.7 秒）、固有名詞や数字に強いエンジンです。"
         case .groq:
             return "録音後にきれいな文章にして入力します（おすすめ）\n"
                 + "ハンズフリー録音のときは、長い録音に強いエンジンへ自動で切り替わります。"

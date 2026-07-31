@@ -18,6 +18,9 @@
   Keychain 読みはプロセス内キャッシュ済みで即時（同期）＝サーバー往復ゼロ＝先読みコールド窓が原理的に発生しない。
 - **鍵は埋め込まない**。バイナリにプロバイダーキーを焼き込まない（2026-06-28 のセキュリティ方針を維持）。
   鍵ローテ時も再ビルド不要（Keychain の値を更新するだけ）。
+- **文字起こしは 3 択**（personal だけ release より 1 つ多い）。即時入力=Deepgram nova-3（既定・確定 69-75ms）/
+  **OpenAI ライブ=gpt-live-transcribe**（2026-07-28 の新モデル・Realtime WS 専用・確定 649-708ms）/ スタンダード=Groq。
+  OpenAI ライブも Keychain（`voicekey.OpenAI`）直読で、REST 用の OpenAI キーをそのまま共用する。
 - **音声入力オンリー**。会話 / 秘書 / Realtime / agent 系は `voice-agent` ブランチにのみ存在し、
   personal（release 由来）には無い＝新たな会話系機能は入れない。
 - **外観は OS 追従**（ライト/ダーク双方に馴染む）。以前 `NSApp.appearance = .aqua` でライト固定していたが、
@@ -37,6 +40,7 @@
 | `macos/scripts/generate_embedded_keys.sh` | `--personal` で `isPersonal=true` / `isDist=false` を生成（キーは焼かない） |
 | `macos/Sources/Voicekey/Core/Transcriber.swift` | `selectRoute()` が personal を常に `.directKeychain`（サーバー/ログイン要求を通らない） |
 | `macos/Sources/Voicekey/Core/StreamingTranscriber.swift` | `start()` 冒頭で personal は Keychain の Deepgram キーで直結 |
+| `macos/Sources/Voicekey/Core/OpenAILiveTranscriber.swift` | personal 限定の選択肢「OpenAI ライブ」（gpt-live-transcribe）の WS 実装。`Backend.openaiLive` を `selectableCases` に足して 3 択にしている（release へ持ち込まない） |
 | `macos/Sources/Voicekey/AppController.swift` | personal のとき streaming の interim を HUD へライブ字幕配線 |
 | `macos/Sources/Voicekey/UI/Hud.swift` | 録音ピルに `liveText`（固定幅・tail 表示）を追加（`setLiveText` は録音中のみ反映）。ライブ字幕が出ている間は音量バーを非表示にする |
 | `macos/Sources/Voicekey/UI/SettingsView.swift` | personal はアカウントナビ項目・アカウント行・API キータブを非表示 |

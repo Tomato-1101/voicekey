@@ -2,9 +2,14 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
-## [Unreleased] - 2026-07-20
+## [Unreleased] - 2026-07-31
 
 ### Added
+- **personal: 文字起こしに「OpenAI ライブ」（gpt-live-transcribe）を追加し、設定画面から選べるようにした（personal ブランチのみ・Mac）**。2026-07-28 に OpenAI が公開した新しいライブ文字起こしモデルで、Realtime WebSocket 専用。文字起こしモードのピッカーが **即時入力（Deepgram）/ OpenAI ライブ / スタンダード（Groq）** の 3 択になる。キーは Keychain の OpenAI 項目（`voicekey.OpenAI`）を REST と共用するので、設定は不要（既に入っていればそのまま動く）。
+  - **実測（2026-07-31・`benchmark/delay_sweep.py gpt-live-transcribe`）**: `delay=minimal` が最速で **TTFB 449-524ms・確定 649-708ms・CER 2.7/3.1%**。前世代 gpt-realtime-whisper（TTFB 637-774ms）より喋り出しの表示が速い。確定は依然 Deepgram nova-3（69-75ms）の約 10 倍なので、**既定は Deepgram のまま**で選択肢として追加した。delay は実測が支持する `minimal` に固定（設定 UI には出さない）。
+  - **REST フォールバック**: gpt-live-transcribe は Realtime 専用で REST は 404（実測）。ライブ接続が張れなかったときは同世代の一括用 `gpt-transcribe`（REST 実測 OK・CER 2.7%）へ自動で差し替える。
+  - **Technical Details**: `Core/OpenAILiveTranscriber.swift` を新設（`LiveTranscribing` プロトコル＝Deepgram 版 `StreamingTranscriber` と共通の契約・session.update / input_audio_buffer.append(base64) / commit・16kHz→24kHz 線形補間リサンプル〔OpenAI は 24kHz 以上必須〕）。`Config/AppConfig.swift` に `Backend.openaiLive` を追加（`selectableCases` を 3 択に・整形は既定 OFF）、`Core/Keychain.swift` は OpenAI 項目を共用、`Core/Transcriber.swift` は REST 用モデル差し替え（`restModel`）、`AppController.swift` は `streamer` を `any LiveTranscribing` 化して生成を `makeLiveTranscriber` に集約。
+  - **テスト**: `OpenAILiveResampleTests`（リサンプルの分割/一括一致＝チャンク境界に段差が出ないことを 1e-5 精度で保証・3 ケース）と `OpenAILiveE2ETests`（実音声 + 実 API の疎通ハーネス。既定 XCTSkip、`OPENAI_API_KEY=... VOICEKEY_LIVE_E2E=1 swift test --filter OpenAILiveE2ETests` で実行。実測 CER 0.0%）を追加。`benchmark/delay_sweep.py` は測定対象モデルを引数で指定できるようにした。
 - **benchmark: gpt-realtime-whisper（OpenAI・2026-05 GA・Realtime WS 専用）の delay スイープ測定 `delay_sweep.py` を追加**。`stream_benchmark.py` の `run_openai` に delay 引数（minimal/low/medium/high/xhigh・`transcription` オブジェクト内で指定）を追加した。再実測（2026-07-20）の結論: delay をどう振っても確定レイテンシ 530〜1050ms で Deepgram nova-3（69〜75ms）に届かず、**ストリーミング既定は nova-3 のまま・アプリへのモデル追加は見送り**（ユーザー判断）。OpenAI 系では gpt-realtime-whisper が圧倒的最良（gpt-4o-transcribe 系は WS でも delta をほぼ返さず長文 TTFB 44s＝ライブ字幕不能）で、使うなら delay=minimal（TTFB 637-774ms・確定 631-776ms・CER 0/2.2%）。
 
 - **数字変換 v2: 位取り・助数詞つき単独漢数字に対応し、保護リストと 2 トグルを追加した（両 OS・release）**。喋った数字を半角で出す精度を上げるため、貼付直前の後処理 `NumeralNormalizer`（Mac）/ `numeral_normalizer`（Windows）を決定的・純関数・マイクロ秒（LLM 不使用）・冪等のまま拡張した。Mac/Windows で変換規則を完全一致させ、両 OS を 1 コミットで実装。

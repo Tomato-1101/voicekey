@@ -117,12 +117,22 @@ final class Transcriber: @unchecked Sendable {
     private var _language: String
     private var _prompt: String
 
+    /// REST（音声ファイル一括）に投げるモデル名。
+    /// openaiLive の gpt-live-transcribe は Realtime WS 専用で、REST に投げると
+    /// 404 "Invalid URL (POST /v1/audio/transcriptions)" になる（2026-07-31 実測）。
+    /// そのため同世代の一括用モデル gpt-transcribe へ差し替える。
+    /// この経路はライブ接続が張れなかったとき（キー無し・WS 失敗）のフォールバックでのみ通る。
+    private var restModel: String {
+        guard backend == .openaiLive else { return model }
+        return "gpt-transcribe"
+    }
+
     /// 接続を再利用するためバックエンドごとに URLSession を保持
     private let session: URLSession
 
     private var baseURL: URL {
         switch backend {
-        case .openai: return URL(string: "https://api.openai.com/v1")!
+        case .openai, .openaiLive: return URL(string: "https://api.openai.com/v1")!
         case .groq: return URL(string: "https://api.groq.com/openai/v1")!
         case .elevenlabs: return URL(string: "https://api.elevenlabs.io/v1")!
         case .deepgram: return URL(string: "https://api.deepgram.com/v1")!
@@ -155,7 +165,7 @@ final class Transcriber: @unchecked Sendable {
         // 軽量な GET エンドポイントにアクセスして接続だけ確立する
         let path: String
         switch backend {
-        case .openai, .groq, .elevenlabs: path = "models"
+        case .openai, .openaiLive, .groq, .elevenlabs: path = "models"
         case .deepgram: path = "projects"
         }
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
@@ -167,7 +177,7 @@ final class Transcriber: @unchecked Sendable {
     /// バックエンドごとの認証ヘッダを設定する
     private func setAuth(_ apiKey: String, on request: inout URLRequest) {
         switch backend {
-        case .openai, .groq:
+        case .openai, .openaiLive, .groq:
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         case .elevenlabs:
             request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
@@ -209,8 +219,9 @@ final class Transcriber: @unchecked Sendable {
             case .groq: return try await transcribeGroqViaProxy(samples: samples, serverFormat: serverFormat, presetId: presetId)
             case .elevenlabs: return try await transcribeElevenLabsViaProxy(samples: samples)
             case .deepgram: return try await transcribeDeepgramViaJWT(samples: samples)
-            case .openai:
-                // 配布版は openai を提供しない。開発ビルド（ログイン）では従来どおり直叩きへ委ねる。
+            case .openai, .openaiLive:
+                // 配布版は openai / openaiLive を提供しない（openaiLive は personal 限定）。
+                // 開発ビルド（ログイン）では従来どおり直叩きへ委ねる。
                 if EmbeddedKeys.isDist {
                     throw TranscriptionError(message: "この文字起こし方式は配布版では利用できません")
                 }
@@ -379,7 +390,7 @@ final class Transcriber: @unchecked Sendable {
 
     private func buildRequest(audio: EncodedAudio, apiKey: String) -> URLRequest {
         switch backend {
-        case .openai, .groq:
+        case .openai, .openaiLive, .groq:
             return openAIRequest(audio: audio, apiKey: apiKey)
         case .elevenlabs:
             return elevenLabsRequest(audio: audio, apiKey: apiKey)
@@ -395,7 +406,7 @@ final class Transcriber: @unchecked Sendable {
         setAuth(apiKey, on: &request)
 
         var form = MultipartForm()
-        form.field("model", model)
+        form.field("model", restModel)
         form.field("response_format", "text")
         form.field("temperature", "0")
         if !language.isEmpty { form.field("language", language) }
@@ -465,7 +476,7 @@ final class Transcriber: @unchecked Sendable {
 
     private func parseResponse(_ data: Data) throws -> String {
         switch backend {
-        case .openai, .groq:
+        case .openai, .openaiLive, .groq:
             // response_format=text のためプレーンテキストがそのまま返る
             return String(data: data, encoding: .utf8) ?? ""
         case .elevenlabs:
