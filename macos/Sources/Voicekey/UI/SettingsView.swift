@@ -567,9 +567,10 @@ private struct SlotSettingsTab: View {
             .pickerStyle(.segmented)
 
             // 製品版は文字起こし 2 択（即時入力 / スタンダード）のみ。モデルは推奨固定で非選択。
-            Picker("文字起こしモード", selection: $slot.backend) {
+            // personal（自分用）は特徴名で包まず、実プロバイダー名 + モデル名をそのまま出す。
+            Picker(EmbeddedKeys.isPersonal ? "文字起こしエンジン" : "文字起こしモード", selection: $slot.backend) {
                 ForEach(Backend.selectableCases) { backend in
-                    Text(backend.label).tag(backend)
+                    Text(EmbeddedKeys.isPersonal ? backend.developerLabel : backend.label).tag(backend)
                 }
             }
             .onChange(of: slot.backend) { _, newBackend in
@@ -641,9 +642,11 @@ private struct SlotSettingsTab: View {
         switch backend {
         case .deepgram:
             return "しゃべり終わった瞬間、全文がまとめて入力されます（最速・実測 0.1 秒）"
+        // openaiLive は personal 限定の選択肢なので、この説明は personal でしか表示されない
+        // （＝ピッカーにモデル名が出ている前提で書く）
         case .openaiLive:
-            return "OpenAI の新しいライブ文字起こし（gpt-live-transcribe）で入力します。\n"
-                + "即時入力より確定は遅めですが（実測 0.7 秒）、固有名詞や数字に強いエンジンです。"
+            return "OpenAI の新しいライブ文字起こしで入力します。\n"
+                + "Deepgram より確定は遅めですが（実測 0.7 秒）、固有名詞や数字に強いエンジンです。"
         case .groq:
             return "録音後にきれいな文章にして入力します（おすすめ）\n"
                 + "ハンズフリー録音のときは、長い録音に強いエンジンへ自動で切り替わります。"

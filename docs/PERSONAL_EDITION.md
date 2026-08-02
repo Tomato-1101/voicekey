@@ -43,7 +43,7 @@
 | `macos/Sources/Voicekey/Core/OpenAILiveTranscriber.swift` | personal 限定の選択肢「OpenAI ライブ」（gpt-live-transcribe）の WS 実装。`Backend.openaiLive` を `selectableCases` に足して 3 択にしている（release へ持ち込まない） |
 | `macos/Sources/Voicekey/AppController.swift` | personal のとき streaming の interim を HUD へライブ字幕配線 |
 | `macos/Sources/Voicekey/UI/Hud.swift` | 録音ピルに `liveText`（固定幅・tail 表示）を追加（`setLiveText` は録音中のみ反映）。ライブ字幕が出ている間は音量バーを非表示にする |
-| `macos/Sources/Voicekey/UI/SettingsView.swift` | personal はアカウントナビ項目・アカウント行・API キータブを非表示 |
+| `macos/Sources/Voicekey/UI/SettingsView.swift` | personal はアカウントナビ項目・アカウント行・API キータブを非表示。文字起こしの選択肢は特徴名でなく実プロバイダー名 + モデル名（`Backend.developerLabel`）で表示する |
 | `macos/Sources/Voicekey/UI/OnboardingView.swift` | personal は `goNext/goBack` でログインステップを飛ばす |
 | `macos/Sources/Voicekey/Core/Keychain.swift` | personal は `authSession()` が常に nil を返す（旧 release DIST の残存トークンがあっても未ログイン扱い）。`BackendClient.isLoggedIn` が本メソッド依存なので、起動時の利用権確認・warm ループ・短命トークン取得などのサーバー往復が単一点で全て no-op になる |
 

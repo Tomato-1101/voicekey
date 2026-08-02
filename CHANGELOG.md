@@ -2,7 +2,11 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
-## [Unreleased] - 2026-07-31
+## [Unreleased] - 2026-08-02
+
+### Changed
+- **personal: 文字起こしの選択肢を特徴名でなく実プロバイダー名 + モデル名で表示するようにした（personal ブランチのみ・Mac）**。自分用ビルドは「何が動いているか」を隠す必要がないため（2026-08-02 ユーザー指示）、ピッカーの表示が **Deepgram nova-3 / OpenAI gpt-live-transcribe / Groq whisper-large-v3-turbo** になる（ラベルも「文字起こしモード」→「文字起こしエンジン」）。release（製品版）は従来の特徴名 2 択のまま。
+  - **Technical Details**: `Backend.developerLabel`（`providerName` + `defaultModel`）を追加し、`UI/SettingsView.swift` が `EmbeddedKeys.isPersonal` のときだけこちらを使う。バックエンド切替時に `slot.model` は `defaultModel` へ揃うので、表示名と実際に使われるモデルは常に一致する（`BackendLabelTests` で固定・3 ケース）。
 
 ### Added
 - **personal: 文字起こしに「OpenAI ライブ」（gpt-live-transcribe）を追加し、設定画面から選べるようにした（personal ブランチのみ・Mac）**。2026-07-28 に OpenAI が公開した新しいライブ文字起こしモデルで、Realtime WebSocket 専用。文字起こしモードのピッカーが **即時入力（Deepgram）/ OpenAI ライブ / スタンダード（Groq）** の 3 択になる。キーは Keychain の OpenAI 項目（`voicekey.OpenAI`）を REST と共用するので、設定は不要（既に入っていればそのまま動く）。

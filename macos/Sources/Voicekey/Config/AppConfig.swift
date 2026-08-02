@@ -60,6 +60,13 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
         }
     }
 
+    /// personal（自分用）の設定 UI に出す表示名。製品版のような特徴名（即時入力・スタンダード）で
+    /// 包まず、実プロバイダー名 + 実際に動くモデル名をそのまま出す（main と同じ思想＝自分用は
+    /// 何が動いているか隠さない。2026-08-02 ユーザー指示）。
+    /// バックエンドを切り替えると model は defaultModel へ揃うので、ここも既定モデル名を出せば
+    /// 実際に使われるモデルと一致する。
+    var developerLabel: String { "\(providerName) \(defaultModel)" }
+
     /// 文字起こしバックエンドとして選べるもの（表示順）。
     /// 即時入力=Deepgram（ストリーミング）/ OpenAI ライブ=gpt-live-transcribe（personal 限定）/
     /// スタンダード=Groq（既定・普通入力）。
