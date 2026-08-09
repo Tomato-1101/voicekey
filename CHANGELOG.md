@@ -13,12 +13,14 @@ voicekeyの変更履歴を記録するファイルです。
   ライブ字幕を一度動かすと同一プロセスの HAL クライアントが壊れ、以後ディクテーションが
   マイクの既定入力デバイスを解決できなくなる不具合（`HALC_ProxySystem::DestroyIOContext` エラー →
   `Could not find default device` → `入力デバイスが見つかりません`）の**再現と根治確認**に使う。
-  「字幕パイプライン開始 → 3 秒 → 停止」を 3 サイクル回し、各サイクル後に
+  「字幕パイプライン開始 → 3 秒 → 停止」を 3 サイクル回し、**字幕が動いている最中と停止後の両方**で
   (a) 既定入力デバイスが解決できる (b) AVAudioEngine の入力にフレームが届く (c) 入力フォーマットが生きている
   を機械判定する（`[MIC] phase=... status=ok|ng` と `[VERDICT]`）。
-  - **注意（2026-08-10 時点）**: このハーネスの初回実行時、環境側の CoreAudio（coreaudiod）が
-    既に応答不能になっており、**baseline の HAL 呼び出しで待ちに入って計測できていない**。
-    まず `sudo killall coreaudiod` で音声サブシステムを復旧させてから実行すること。
+  さらに**タップの作り直し回数**を数え、無音なのに 1 回でも作り直したら FAIL にする
+  （これが事故の直接原因だったため。`[CAPTION] ... タップ再構成回数=N` と `[VERDICT] ... rebuilds=N`）。
+  - **注意**: CoreAudio（coreaudiod）が既に応答不能になっていると baseline の HAL 呼び出しで
+    待ちに入って計測できない（`[VERDICT] status=inconclusive`）。その場合はまず
+    `killall coreaudiod` で音声サブシステムを復旧させてから実行すること。
 
 - **personal: ライブ字幕（システム音声 → 英語認識 → 日本語字幕）を統合した（personal ブランチのみ・Mac・macOS 26 以降）**。
   別アプリだった subglass を voicekey に取り込む統合フェーズ 1。再生中の動画・配信の音声をそのまま拾って
@@ -67,6 +69,30 @@ voicekeyの変更履歴を記録するファイルです。
   - **Technical Details**: Mac `Core/NumeralNormalizer.swift`（v2 アルゴリズム・`normalize(_:enabled:convertCounter:protectWords:)`）・`Config/AppConfig.swift`（`numeralNormalizeEnabled`／`numeralConvertCounter`／`numeralProtectWords`＋シード・UserDefaults 永続）・`AppController.swift`（貼付直前 2 経路で config 値を渡す）・`UI/SettingsView.swift`（数字入力セクション）。Windows `core/numeral_normalizer.py`（同アルゴリズム・`normalize(text, enabled=, convert_counter=, protect_words=)`）・`config/constants.py`（3 キーを DEFAULT_CONFIG へ・`_force_always_on` 対象外）・`app.py`（`_insert_and_enter` で config 値を渡す）・`ui/settings_window.py`（数字入力カード・load/save・保護リスト操作）。回帰テスト `NumeralNormalizerTests`（Swift・23 ケース）／`tests/test_numeral_normalizer.py`（Python・全面刷新）を両 OS で恒久化。
 
 ### Fixed
+- **personal: ライブ字幕が無音のあいだタップを作り直し続け、Mac 全体のマイクを壊していたのを根治（Mac・2026-08-10）**。
+  ユーザー報告「音声入力が全部使えなくなった」の根本原因。フレーム watchdog は
+  「グローバルタップなら無音でも IO サイクルごとにフレームが届く」という前提でフレーム途絶を
+  黙死と判定していたが、**実測ではその前提が誤りで、誰も鳴らしていない間はフレームが 0**
+  （内蔵スピーカーでも Bluetooth でも同じ）。そのため字幕を動かしているだけで 4 秒おきに
+  Process Tap と Aggregate Device を作り直し続けていた（実測: 無音 20 秒で Aggregate 生成 6 回・再構成 5 回）。
+  この churn が既定デバイスの再評価を繰り返し起こして **coreaudiod を詰まらせ**、
+  同一 Mac の全プロセスでオーディオが応答不能になり（無関係な `afplay` すら HAL 初期化でハング）、
+  voicekey 本体のディクテーションが `Could not find default device` →「入力デバイスが見つかりません」で全滅した。
+  復旧には `killall coreaudiod` が必要だった。
+  - **作り直す前に「対象プロセスが実際に出力中か」を必ず確認する**。従来は対象限定モードだけで
+    見ていた判定を全モードへ広げた（`isAnyTargetEmitting()`）。
+  - **黙死判定での作り直しに上限（3 回）**を置き、直らなくても監視を止めて HAL を叩き続けない。
+  - **タップ構築失敗の再試行を指数バックオフ（2→30 秒上限）＋連続 5 回で打ち切り**に変更。
+    従来は 2 秒固定で無制限に再試行し、不調な coreaudiod をさらに叩き続けていた
+    （事故時の実ログでは 1 回の CoreAudio 呼び出しが 30 秒ブロックし、33 秒周期で無限に継続していた）。
+  - **既定出力デバイスの変更通知は、実際にデバイス ID が変わったときだけ**張り替える
+    （HAL は中身が同じでも通知を投げてくる）。
+  - **回帰**: `--caption-mic-coexist-test` を機械判定に拡張し、字幕が動いている「最中」のマイクも測り、
+    タップ再構成回数が 1 回でもあれば FAIL にした。**修正前 `rebuilds=3` で fail → 修正後 `rebuilds=0` で ok** を実測。
+  - **Technical Details**: `Caption/Audio/SystemAudioTap.swift`（`maxStallRebuilds` / `maxRetryInterval` /
+    `maxRebuildAttempts` / `isAnyTargetEmitting()` / `builtOutputDeviceID` / `rebuildCount`）、
+    `Caption/Pipeline/CapturePipeline.swift`（`tapRebuildCount`）、
+    `Caption/CLI/CaptionMicCoexistTestRunner.swift`。同じ欠陥が subglass にもあったため同内容を移植済み。
 - **即時入力（Deepgram ストリーミング）の遅延再発を根治（Mac＋Windows・release）**。監査で特定した実欠陥を直した。
   - **先読みトークンの周期コールド窓（両 OS）**: `fetchEphemeralToken()`（Mac）/ `fetch_ephemeral_token()`（Win）が「キャッシュ残 15 秒超なら取得せず即返す」短絡だったため、暖機（warm）ループ（240 秒間隔）が回っていても**満了直前まで一切更新されず**、満了〜次 tick に 0〜240 秒のコールド窓（録音がトークン往復＋WS 接続を待つ）が生じていた（本番 `token_grants` が毎時 1 回しか並ばない実測で確認）。fetch に `minRemaining`/`min_remaining` を足し、**先読み経路（warm ループ／録音後先読み）は残 TTL 360 秒未満で強制再取得**、録音開始のクリティカルパスは従来どおり残 15 秒で再利用するよう分離した。暖機間隔 240s では常に満了 120 秒以上前にトークンが差し替わり、周期コールド窓が消える。閾値は `warmMinRemaining` / `WARM_MIN_REMAINING`（＝240s + マージン120s）。Windows も Mac と同一構造・同一欠陥だったため同じ閾値を移植（両 OS 同期）。
   - **finish-before-connect の 3 秒スタール（Mac）**: `StreamingTranscriber.finish()` が WS 未接続のまま呼ばれると `CloseStream` 送信が no-op になり、来ない Metadata を上限 3 秒フルに待っていた（コールド窓中の短い発話が「たまに 3 秒固まる」体感の正体候補）。未接続時は close 要求フラグを立て、**接続確立→pending PCM フラッシュ後に `CloseStream` を送る**よう修正。さらに**音声を 1 バイトも送っておらず接続も無い場合は 3 秒待たず即座に空で解決**して REST フォールバックへ回す。既存の 3 秒上限は最終防衛として残す。

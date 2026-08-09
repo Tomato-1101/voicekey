@@ -84,10 +84,21 @@ Mac（`macos/` Swift）と Windows（`src/` Python）の両方を同じ作業で
   初回起動時は自動開始しない（`captionEverStarted`）＝ voicekey の初回権限プロンプト直列化を壊さない。
 - **App Nap**: 字幕動作中は `ProcessInfo.beginActivity(.background)` を張る（行の自主退場・
   無音フェードのタイマーが nap で沈黙する実事故があるため）。
+- **HAL を絶対にループで叩かない（2026-08-10 の実事故・最重要）**: Process Tap と Aggregate Device の
+  作成・破棄は Mac 全体の既定デバイス再評価を誘発する。ここをループさせると **coreaudiod が詰まり、
+  voicekey 本体のマイクを含め Mac の全プロセスでオーディオが死ぬ**（復旧に `killall coreaudiod` が必要）。
+  - **「無音＝壊れている」と判定しない**。タップは対象が黙っている間フレームを 1 つも配らない
+    （グローバルタップでも同じ。当初の想定と逆で、実測で確認済み）。作り直す前に必ず
+    `isAnyTargetEmitting()` で「本当に誰かが鳴らしているか」を見る。
+  - **あらゆる再試行・作り直しに上限を置く**（黙死 3 回／構築失敗 5 回・指数バックオフ）。
+  - 既定出力デバイスの変更通知は、実際にデバイス ID が変わったときだけ張り替える。
+  - 回帰は `--caption-mic-coexist-test`（`[VERDICT] ... rebuilds=` が 0 でなければ FAIL）。
 - **画素判定ハーネス**: `VOICEKEY_CAPTION_DISABLE=1` で字幕を丸ごと無効化できる。
   `scripts/dev/fullscreen_helper.swift` を使う計測では必ずこの env を付けて voicekey を起動する。
 - **検証**: `macos/scripts/dev/caption_e2e.sh`（`VOICEKEY_CAPTION_TRANSLATOR=mock` で外部通信なし版も）/
-  `caption_tts_loop.sh` / `caption_scope.sh` / `caption_bench.sh`（**課金あり・手動のみ**）。
+  `caption_tts_loop.sh` / `caption_scope.sh` / `caption_bench.sh`（**課金あり・手動のみ**）/
+  `dist/voicekey.app/Contents/MacOS/voicekey --caption-mic-coexist-test`（マイクとの共存。
+  `open -n ... --args --caption-mic-coexist-test --log-file <path>` で起動する）。
 
 ## Project Overview
 

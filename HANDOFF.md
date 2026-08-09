@@ -12,13 +12,26 @@
   恒久要件・キー探索・App Nap 対策・ハーネスは `CLAUDE.md` の「ライブ字幕」節が正本。
   - 検証: `swift build` / `swift test` **116 件 全 PASS**（Dock 常時表示の既定を personal で ON に
     変更したため `ConfigStoreDefaultsTests` の期待値を更新）。ビルド → 再起動 → ⌥⌘S 登録をログで確認。
-  - **未完（ユーザー操作待ち）**: 「システムオーディオを収録するためのアクセス権」の許可ダイアログが
-    voicekey に対して表示され、**未応答のため字幕ハーネス（caption_e2e.sh）はタイムアウト**している
-    （tccd ログで `AUTHREQ_PROMPTING service=kTCCServiceAudioCapture subject=com.voicekey.app` を確認。
-    CoreAudio の `AudioDeviceStart` が応答待ちでブロックする）。**ユーザーが 1 回「許可」を押せば解決**し、
-    以後 e2e / tts-loop / scope の 3 ハーネスを回せる。
+  - システムオーディオ収録の TCC 許可は付与済み。`caption_e2e.sh` / `caption_scope.sh` とも PASS。
   - 並行稼働の注意: 旧 subglass も ⌥⌘S を登録しているため、両方起動中はどちらがホットキーを
     受け取るか不定。字幕の操作はメニューからも行える。subglass の廃止は統合フェーズ 3。
+
+- **【最重要・2026-08-10】ライブ字幕が Mac 全体のオーディオを壊した事故と、その根治**
+  （personal `9921212` / `7116808`、subglass `4f138ea`）。
+  ユーザー報告「音声入力が全部使えなくなった」の原因は、**フレーム watchdog の前提が誤っていて
+  無音のあいだタップを作り直し続けていた**こと。「グローバルタップなら無音でもフレームが届く」は
+  実測で**誤り**（内蔵スピーカーでも BT でも無音時フレームは 0）。その結果 4 秒おきに
+  Process Tap と Aggregate Device を作り直し、その churn が coreaudiod を詰まらせて
+  Mac の全プロセスでオーディオが応答不能になった（復旧に `killall coreaudiod` が必要）。
+  - 直した内容: ①作り直す前に「対象が実際に出力中か」を必ず確認（全モード）②黙死での作り直しは 3 回まで
+    ③構築失敗の再試行は指数バックオフ（2→30 秒）＋連続 5 回で打ち切り ④既定出力デバイスの
+    変更通知は実際に ID が変わったときだけ張り替え。
+  - **今後この周辺を触るときの鉄則**: HAL（Process Tap / Aggregate Device）の作成・破棄を
+    ループに入れない。どんな再試行にも必ず上限を置く。「無音＝壊れている」と判定しない。
+  - 回帰: `--caption-mic-coexist-test`（修正前 `rebuilds=3` fail → 修正後 `rebuilds=0` ok）。
+  - **`captionAutoStart` の既定は当面 false のまま**にしてある
+    （`defaults write com.voicekey.app captionAutoStart -bool false` 済み）。
+    しばらく実運用で問題が出ないことを確認してから既定 ON に戻すか判断する。
 
 - **HUD 再発 2 件を計測で根治（release `05b29f8` / main `6fe045b`・push 済み・常用アプリ反映済み）**:
   ①「変換中…」の横揺れ＝ジオメトリは不動（0px 実測）で、**正体は明滅の谷で「…」が先に視認閾値を割り
