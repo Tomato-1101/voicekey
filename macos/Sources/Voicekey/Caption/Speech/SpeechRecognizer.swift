@@ -1,0 +1,204 @@
+/// オンデバイス音声認識（SpeechAnalyzer / SpeechTranscriber, macOS 26）
+///
+/// システム音声（英語）をストリーミング認識し、途中経過（ボラタイル）と確定結果を
+/// AsyncStream で後段へ渡す。後段は Phase 3 で Claude API 翻訳になる。
+import AVFoundation
+import CoreMedia
+import Foundation
+import OSLog
+import Speech
+
+/// 音声認識器のエラー
+@available(macOS 26.0, *)
+enum SpeechRecognizerError: Error, CustomStringConvertible {
+    /// この Mac / OS で SpeechTranscriber が使えない
+    case unavailable
+    /// 指定ロケールのモデルが提供されていない
+    case unsupportedLocale(String)
+    /// 解析に適したフォーマットが得られない
+    case noCompatibleFormat
+
+    var description: String {
+        switch self {
+        case .unavailable:
+            return "SpeechTranscriber がこの環境で利用できません"
+        case let .unsupportedLocale(identifier):
+            return "ロケール \(identifier) の音声認識モデルが提供されていません"
+        case .noCompatibleFormat:
+            return "音声認識が受け付けるフォーマットを取得できませんでした"
+        }
+    }
+}
+
+/// ストリーミング音声認識のラッパ
+///
+/// 使い方: `start()` で返るフォーマットに音声を変換して `feed(_:)` へ流し、
+/// 結果は `segments` を for-await で読む。
+@available(macOS 26.0, *)
+final class SpeechRecognizer: @unchecked Sendable {
+
+    /// 認識結果 1 件
+    struct Segment: Sendable {
+        /// 認識テキスト
+        let text: String
+        /// 確定済みなら true（false は途中経過＝ボラタイル）
+        let isFinal: Bool
+        /// 音声上の時間範囲
+        let range: CMTimeRange
+    }
+
+    private let logger = makeCaptionLogger("SpeechRecognizer")
+    private let locale: Locale
+
+    /// 後段へ結果を流すストリーム
+    let segments: AsyncStream<Segment>
+    private let segmentContinuation: AsyncStream<Segment>.Continuation
+
+    private var transcriber: SpeechTranscriber?
+    private var analyzer: SpeechAnalyzer?
+    private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
+    private var resultsTask: Task<Void, Never>?
+
+    /// - Parameter locale: 認識対象の言語（既定 en-US）
+    init(locale: Locale = Locale(identifier: "en-US")) {
+        self.locale = locale
+        var continuation: AsyncStream<Segment>.Continuation!
+        self.segments = AsyncStream<Segment> { continuation = $0 }
+        self.segmentContinuation = continuation
+    }
+
+    /// 必要なら言語モデルアセットを取得し、解析を開始する
+    ///
+    /// - Returns: `feed(_:)` に渡すべき PCM フォーマット
+    /// - Throws: アセット取得や解析開始に失敗した場合
+    func start() async throws -> AVAudioFormat {
+        guard SpeechTranscriber.isAvailable else { throw SpeechRecognizerError.unavailable }
+
+        // 指定ロケールに一番近い提供済みロケールへ寄せる（en-US → en_US 等の差異を吸収）
+        guard let resolvedLocale = await SpeechTranscriber.supportedLocale(equivalentTo: locale) else {
+            throw SpeechRecognizerError.unsupportedLocale(locale.identifier)
+        }
+        logger.notice("音声認識ロケール: \(resolvedLocale.identifier(.bcp47), privacy: .public)")
+
+        // ボラタイル結果（途中経過）を有効にして、字幕が発話中から出るようにする。
+        //
+        // `.fastResults` は精度より速さを優先して結果を早めに出す指定。
+        // これが無いと途中経過そのものが実測で **音声から約 3.0 秒遅れて**届き、
+        // 後段をいくら速くしても字幕は追いつかない（遅延の主因は認識側だった）。
+        let transcriber = SpeechTranscriber(
+            locale: resolvedLocale,
+            transcriptionOptions: [],
+            reportingOptions: [.volatileResults, .fastResults],
+            attributeOptions: [.audioTimeRange]
+        )
+        self.transcriber = transcriber
+
+        try await ensureAssetsInstalled(for: transcriber, locale: resolvedLocale)
+
+        guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
+            throw SpeechRecognizerError.noCompatibleFormat
+        }
+        // commonFormat も記録する。Int16 が返る環境があり、Float32 前提で書いた処理が
+        // 無言でゼロを返す事故（レベル計測が常に 0）を起こしたことがあるため。
+        logger.notice(
+            "解析入力フォーマット: \(format.sampleRate, privacy: .public)Hz \(format.channelCount, privacy: .public)ch commonFormat=\(format.commonFormat.rawValue, privacy: .public)"
+        )
+
+        let (inputStream, inputContinuation) = AsyncStream<AnalyzerInput>.makeStream()
+        self.inputContinuation = inputContinuation
+
+        let analyzer = SpeechAnalyzer(modules: [transcriber])
+        self.analyzer = analyzer
+        // モデルの初期化コストを先払いして、最初の発話を取りこぼさないようにする
+        try await analyzer.prepareToAnalyze(in: format)
+        try await analyzer.start(inputSequence: inputStream)
+
+        resultsTask = Task { [weak self] in
+            await self?.consumeResults(from: transcriber)
+        }
+
+        logger.notice("音声認識を開始しました")
+        return format
+    }
+
+    /// PCM を解析器へ投入する
+    ///
+    /// - Parameter buffer: `start()` が返したフォーマットの PCM。
+    ///   タップ由来の noCopy バッファを直接渡してはいけない（解析は非同期で、
+    ///   IO ブロックを抜けた時点で元メモリが無効になるため）。変換後の所有バッファを渡すこと。
+    func feed(_ buffer: AVAudioPCMBuffer) {
+        inputContinuation?.yield(AnalyzerInput(buffer: buffer))
+    }
+
+    /// 入力を打ち切り、残りを確定させてから終了する
+    func finish() async {
+        inputContinuation?.finish()
+        inputContinuation = nil
+        if let analyzer {
+            try? await analyzer.finalizeAndFinishThroughEndOfInput()
+        }
+        // 結果ストリームが閉じるのを待ってから後段のストリームを閉じる
+        await resultsTask?.value
+        resultsTask = nil
+        analyzer = nil
+        transcriber = nil
+        segmentContinuation.finish()
+        logger.notice("音声認識を終了しました")
+    }
+
+    // MARK: - 内部処理
+
+    /// 言語モデルアセットが未導入ならダウンロードする
+    ///
+    /// - Parameters:
+    ///   - transcriber: 対象モジュール
+    ///   - locale: 予約するロケール
+    private func ensureAssetsInstalled(for transcriber: SpeechTranscriber, locale: Locale) async throws {
+        let status = await AssetInventory.status(forModules: [transcriber])
+        logger.notice("言語モデルアセットの状態: \(String(describing: status), privacy: .public)")
+
+        if status != .installed {
+            if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+                let progress = request.progress
+                // ダウンロードは数百 MB になりうるので、無言で止まって見えないよう進捗を出す
+                let progressTask = Task {
+                    while !Task.isCancelled {
+                        let percent = Int(progress.fractionCompleted * 100)
+                        self.logger.notice("言語モデルをダウンロード中 \(percent, privacy: .public)%")
+                        try? await Task.sleep(for: .seconds(2))
+                    }
+                }
+                defer { progressTask.cancel() }
+                try await request.downloadAndInstall()
+                logger.notice("言語モデルのダウンロードが完了しました")
+            } else {
+                logger.notice("ダウンロード要求は不要でした（既に利用可能）")
+            }
+        }
+
+        // ロケール枠を予約しておかないと、他アプリの利用でモデルが外されることがある
+        do {
+            let reserved = try await AssetInventory.reserve(locale: locale)
+            logger.notice("ロケール予約: \(reserved, privacy: .public)")
+        } catch {
+            logger.notice("ロケール予約に失敗（動作は継続）: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// 認識結果を読み出して後段ストリームへ流す
+    private func consumeResults(from transcriber: SpeechTranscriber) async {
+        do {
+            for try await result in transcriber.results {
+                let text = String(result.text.characters)
+                guard !text.isEmpty else { continue }
+                let segment = Segment(text: text, isFinal: result.isFinal, range: result.range)
+                if result.isFinal {
+                    logger.notice("確定: \(text, privacy: .public)")
+                }
+                segmentContinuation.yield(segment)
+            }
+        } catch {
+            logger.error("認識結果の受信が中断: \(String(describing: error), privacy: .public)")
+        }
+    }
+}
