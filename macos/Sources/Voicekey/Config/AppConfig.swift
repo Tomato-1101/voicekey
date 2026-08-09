@@ -250,6 +250,19 @@ final class ConfigStore: ObservableObject {
     /// 数字に変換しない語（数字漢字で始まる語をラン先頭にアンカー照合して守る）
     @Published var numeralProtectWords: [String]
 
+    // MARK: - ライブ字幕（personal・macOS 26 以降）
+
+    /// 起動時にライブ字幕を自動開始するか（既定 ON・初回起動時だけは開始しない）
+    ///
+    /// 実際の読み書きは `CaptionSettings`（UserDefaults の同じキー）に委譲する。
+    /// 字幕の音声・翻訳経路は MainActor 外から同期的に設定を読むため、正本を UserDefaults に置き、
+    /// ここは UI 用の @Published ミラーとして持つ。
+    @Published var captionAutoStart: Bool
+    /// ライブ字幕の翻訳エンジン（Apple / Gemini / Groq）
+    @Published var captionEngine: TranslationEngine
+    /// ライブ字幕で最前面のアプリだけを対象にするか（既定 ON）
+    @Published var captionFrontmostOnly: Bool
+
     /// 保護リストの既定シード（一人／二人＝ひとり・ふたり、十分＝じゅうぶん 等の誤変換を守る）
     static let defaultNumeralProtectWords = [
         "一時的", "一時停止", "一人", "二人", "十分", "一日中", "一部始終", "一石二鳥",
@@ -330,7 +343,12 @@ final class ConfigStore: ObservableObject {
             ? ["ctrl", "cmd", "v"]
             : ((defaults.array(forKey: Keys.repasteKey) as? [String]) ?? [])
         hudAlwaysVisible = defaults.object(forKey: Keys.hudAlwaysVisible) as? Bool ?? false
-        dockIconAlwaysVisible = defaults.object(forKey: Keys.dockIconAlwaysVisible) as? Bool ?? false
+        // Dock 常時表示は personal では既定 ON（ユーザー要望「翻訳のやつを Dock に」。設定で OFF 可）
+        dockIconAlwaysVisible = defaults.object(forKey: Keys.dockIconAlwaysVisible) as? Bool ?? true
+        // ライブ字幕は CaptionSettings（UserDefaults の caption* キー）が正本。ここはその写し。
+        captionAutoStart = CaptionSettings.startsOnLaunch
+        captionEngine = CaptionSettings.translationEngine
+        captionFrontmostOnly = CaptionSettings.captureScopeMode == .frontmost
         sideNotchEnabled = defaults.object(forKey: Keys.sideNotchEnabled) as? Bool ?? true
         historyEnabled = defaults.object(forKey: Keys.historyEnabled) as? Bool ?? true
         // 数字入力: マスター・助数詞は既定 ON。保護リストは未保存ならシード、
@@ -384,6 +402,11 @@ final class ConfigStore: ObservableObject {
         $numeralNormalizeEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.numeralNormalizeEnabled) }.store(in: &cancellables)
         $numeralConvertCounter.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.numeralConvertCounter) }.store(in: &cancellables)
         $numeralProtectWords.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.numeralProtectWords) }.store(in: &cancellables)
+        // ライブ字幕は CaptionSettings 経由で書く（キーの正本を 1 か所に保つため）
+        $captionAutoStart.dropFirst().sink { CaptionSettings.startsOnLaunch = $0 }.store(in: &cancellables)
+        $captionEngine.dropFirst().sink { CaptionSettings.translationEngine = $0 }.store(in: &cancellables)
+        $captionFrontmostOnly.dropFirst().sink { CaptionSettings.captureScopeMode = $0 ? .frontmost : .all }
+            .store(in: &cancellables)
     }
 
     /// ユーザー辞書の確定置換を最終テキストに適用する。

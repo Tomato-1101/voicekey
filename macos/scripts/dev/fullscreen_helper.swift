@@ -20,6 +20,11 @@
 //  標準出力に "FS_READY"（ウィンドウ表示）／"FS_ENTERED"（フルスクリーン遷移完了）を
 //  出すので、キャプチャ側スクリプトはこれを待ってから撮影できる。
 //
+//  【重要】このハーネスで画素判定する場合、voicekey は必ず字幕を無効にして起動する:
+//    VOICEKEY_CAPTION_DISABLE=1 open -n macos/dist/voicekey.app
+//  ライブ字幕（personal・macOS 26+）のガラスパネルが画面に出ていると、
+//  「待機ピルが消えたか」の non-white 画素判定に混ざって誤判定するため。
+//
 
 import AppKit
 

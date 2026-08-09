@@ -9,6 +9,38 @@ voicekeyの変更履歴を記録するファイルです。
   - **Technical Details**: `Backend.developerLabel`（`providerName` + `defaultModel`）を追加し、`UI/SettingsView.swift` が `EmbeddedKeys.isPersonal` のときだけこちらを使う。バックエンド切替時に `slot.model` は `defaultModel` へ揃うので、表示名と実際に使われるモデルは常に一致する（`BackendLabelTests` で固定・3 ケース）。
 
 ### Added
+- **personal: ライブ字幕（システム音声 → 英語認識 → 日本語字幕）を統合した（personal ブランチのみ・Mac・macOS 26 以降）**。
+  別アプリだった subglass を voicekey に取り込む統合フェーズ 1。再生中の動画・配信の音声をそのまま拾って
+  日本語字幕をガラス HUD に出す。**ディクテーション（本来の voicekey）とは完全に独立**していて、
+  字幕を開始するまで一切初期化されない（録音〜貼り付けのクリティカルパスに乗らない）。
+  - **操作**: メニューバー →「ライブ字幕」（開始/停止・最前面のアプリだけを翻訳・起動時に自動開始・
+    訳文を読み上げる・英語の原文も表示・翻訳エンジン・表示テスト・位置リセット）＋ グローバル **⌥⌘S**。
+    ホットキーは Carbon `RegisterEventHotKey`（アクセシビリティ許可が要らない＝承認プロンプトを増やさない）で、
+    既存の CGEventTap には相乗りしない。
+  - **翻訳エンジン**: Apple 純正（オンデバイス・キー不要・既定）/ Gemini（`gemini-3.5-flash-lite`）/
+    Groq（`llama-3.3-70b-versatile`・OpenAI 互換の SSE ストリーミング）。クラウドは**確定文のみ**送り、
+    429・失敗時は Apple 翻訳へ自動フォールバックする。API キーは環境変数 → 中央 Keychain
+    （service = 変数名 / account = `shared`・`/usr/bin/security` を子プロセスで読む）の順で探索し、
+    **書き込みは一切しない**（voicekey 本体の Keychain 項目には触らない）。
+  - **恒久要件（subglass から引き継ぎ）**: 自プロセス除外で読み上げ音声を拾い直さない／確定文は全部訳して
+    ロール表示（確定 2 行＋ライブ行）で読める時間を保証／鮮度優先の破棄はライブ行だけ／
+    部分訳は Apple のときだけ／既定は「最前面のアプリだけを翻訳」。
+  - **自動開始**: 設定「起動時に字幕を自動開始」は既定 ON だが、**初回起動時だけは自動開始しない**
+    （システムオーディオ収録の許可ダイアログを、voicekey が作り込んだ初回権限プロンプトの直列化に
+    割り込ませないため。初回はメニューから明示的に開始する）。
+  - **Dock 常時表示を personal では既定 ON に変更**（統合後の「翻訳のやつを Dock に」に対応・設定で OFF 可）。
+  - **App Nap 対策**: 字幕を出している間は `ProcessInfo.beginActivity(.background)` を張る
+    （常駐 nap 下で Timer / asyncAfter が沈黙すると、行の自主退場・無音フェードが動かなくなるため）。
+  - **Technical Details**: `Sources/Voicekey/Caption/`（Audio / Speech / Translation / Pipeline / UI / CLI・27 ファイル）に隔離。
+    全型を `@available(macOS 26.0, *)` でゲートし、Package の最低 OS（macOS 14）は上げていない。
+    `AppController.caption` は遅延生成（`AnyObject` 保持）。設定は `CaptionSettings`（UserDefaults の
+    `caption*` キー）が正本で、`ConfigStore` は UI 用の @Published ミラーを持つ。
+    `Info.plist` に `NSAudioCaptureUsageDescription` / `NSSpeechRecognitionUsageDescription` を追加。
+    検証ハーネス `scripts/dev/caption_e2e.sh` / `caption_tts_loop.sh` / `caption_scope.sh` / `caption_bench.sh`
+    と、それを駆動する CLI モード（`--caption-pipeline-test` / `--caption-tts-loop-test` /
+    `--caption-scope-test` / `--caption-bench` / `--caption-groq-models`）を追加。
+    画素判定ハーネス向けに `VOICEKEY_CAPTION_DISABLE=1` で字幕を丸ごと無効化できる。
+
 - **personal: 文字起こしに「OpenAI ライブ」（gpt-live-transcribe）を追加し、設定画面から選べるようにした（personal ブランチのみ・Mac）**。2026-07-28 に OpenAI が公開した新しいライブ文字起こしモデルで、Realtime WebSocket 専用。文字起こしモードのピッカーが **即時入力（Deepgram）/ OpenAI ライブ / スタンダード（Groq）** の 3 択になる。キーは Keychain の OpenAI 項目（`voicekey.OpenAI`）を REST と共用するので、設定は不要（既に入っていればそのまま動く）。
   - **実測（2026-07-31・`benchmark/delay_sweep.py gpt-live-transcribe`）**: `delay=minimal` が最速で **TTFB 449-524ms・確定 649-708ms・CER 2.7/3.1%**。前世代 gpt-realtime-whisper（TTFB 637-774ms）より喋り出しの表示が速い。確定は依然 Deepgram nova-3（69-75ms）の約 10 倍なので、**既定は Deepgram のまま**で選択肢として追加した。delay は実測が支持する `minimal` に固定（設定 UI には出さない）。
   - **REST フォールバック**: gpt-live-transcribe は Realtime 専用で REST は 404（実測）。ライブ接続が張れなかったときは同世代の一括用 `gpt-transcribe`（REST 実測 OK・CER 2.7%）へ自動で差し替える。

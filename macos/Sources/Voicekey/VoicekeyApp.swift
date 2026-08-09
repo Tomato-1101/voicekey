@@ -32,6 +32,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static var sharedDelegate: AppDelegate?
 
     static func main() {
+        // ライブ字幕の検証ハーネス（GUI を出さずに計測して終了する）。
+        // 通常起動には一切影響しない（引数が無ければ素通り）。
+        if CaptionTestMode.runIfRequested() { return }
+
         let app = NSApplication.shared
         let delegate = AppDelegate()
         sharedDelegate = delegate
@@ -43,6 +47,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusBar: StatusItemController?
     /// App Nap 無効化トークン（プロセス生存中ずっと保持する）
     private var activityToken: NSObjectProtocol?
+    /// ライブ字幕の ⌥⌘S ホットキー（macOS 26 以降のみ。型を直接持てないので AnyObject で保持）
+    private var captionHotKey: AnyObject?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         // メニューバー常駐アプリとして Dock / Cmd+Tab から隠す
@@ -175,6 +181,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if startNow {
             controller.startup()
+            // ライブ字幕はオンボーディング中には触らない（権限ダイアログの直列化を壊さないため）
+            setUpCaption(controller: controller)
         }
         registerLaunchAtLoginIfFirstRun()
         if let onboardingStep {
@@ -209,6 +217,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             UserDefaults.standard.removeObject(forKey: "VOICEKEY_OPEN_NOTCH")
             log.info("デバッグ: サイドノッチの履歴パネルを自動表示します")
             statusBar.openSideNotchHistoryForDebug()
+        }
+    }
+
+    /// ライブ字幕（personal・macOS 26 以降）のホットキー登録と自動開始。
+    ///
+    /// - ホットキーは Carbon の RegisterEventHotKey（アクセシビリティ許可が要らない＝
+    ///   承認プロンプトを増やさない）。既存の CGEventTap には相乗りしない（責務を混ぜない）。
+    /// - 自動開始は「設定 ON かつ 2 回目以降の起動」のときだけ。初回はシステム音声録音の
+    ///   TCC ダイアログが出るため、voicekey が作り込んだ初回プロンプトの直列化に割り込ませない
+    ///   （初回はメニューの「字幕を開始」から明示的に始めてもらう）。
+    private func setUpCaption(controller: AppController) {
+        guard #available(macOS 26.0, *) else {
+            log.info("ライブ字幕は macOS 26 以降でのみ利用できます")
+            return
+        }
+        guard !CaptionSettings.isDisabledByEnvironment else {
+            log.notice("VOICEKEY_CAPTION_DISABLE=1 のためライブ字幕を無効化しました")
+            return
+        }
+
+        let hotKey = CaptionHotKey { [weak controller] in
+            guard let controller else { return }
+            let caption = controller.caption
+            if caption.state.isActive { caption.stop() } else { caption.start() }
+        }
+        if hotKey.register() {
+            captionHotKey = hotKey
+        } else {
+            // 他アプリが ⌥⌘S を先に取っている場合（例: subglass の並行稼働中）は登録できない。
+            // 字幕自体はメニューから操作できるので、致命ではない。
+            log.error("ライブ字幕のホットキー ⌥⌘S を登録できませんでした（他アプリが使用中の可能性）")
+        }
+
+        guard CaptionSettings.shouldAutoStartNow else { return }
+        // 起動直後の重い処理を避けるため、メインループが落ち着いてから開始する
+        DispatchQueue.main.async {
+            log.notice("設定に従ってライブ字幕を自動開始します")
+            controller.caption.start()
         }
     }
 
@@ -262,6 +308,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private var sideNotch: SideNotchController?
     /// オンボーディングを完了/再起動処理済みか（クローズでの二重処理を防ぐ）
     private var onboardingFinished = false
+    /// 「ライブ字幕」サブメニュー（macOS 26 以降のみ。型を直接持てないので AnyObject で保持）
+    private var captionMenu: AnyObject?
 
     init(controller: AppController) {
         self.controller = controller
@@ -293,6 +341,13 @@ final class StatusItemController: NSObject, NSWindowDelegate {
 
         // アップデートの手動確認は設定「バージョン情報」タブのボタンに集約した（Phase B）。
         // 新バージョン検知はサイレントに行い、ホーム左上の更新ピルだけで通知する。
+
+        // ライブ字幕（personal・macOS 26 以降）。中身はサブメニューを開くたびに作り直す
+        if #available(macOS 26.0, *), !CaptionSettings.isDisabledByEnvironment {
+            let caption = CaptionMenuController(controller: controller)
+            menu.addItem(caption.menuItem)
+            captionMenu = caption
+        }
 
         let feedback = NSMenuItem(
             title: "フィードバックを送る…",

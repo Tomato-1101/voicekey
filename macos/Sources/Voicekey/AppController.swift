@@ -36,6 +36,11 @@ final class AppController: ObservableObject {
     /// 前面アプリ（貼り付け先）の追跡。HUD アイコン表示とアプリ別実績の記録に使う
     let frontApp = FrontAppTracker()
 
+    /// ライブ字幕サービスの実体（macOS 26 以降のみ）。
+    /// 型を直接持つと Package の最低 OS（macOS 14）でコンパイルできないため AnyObject で保持する。
+    /// **最初に `caption` を参照するまで生成しない**（ディクテーションの起動経路に一切足さない）。
+    private var captionStorage: AnyObject?
+
     private let recorder = AudioRecorder()
     private let hotkeys = HotkeyMonitor()
     /// 貼り付け前の LLM テキスト整形（失敗時は原文を返すため全スロットで共用できる）
@@ -311,7 +316,28 @@ final class AppController: ObservableObject {
         practiceFormatOverride = false
     }
 
+    /// ライブ字幕サービス（初回アクセス時に生成する）
+    ///
+    /// システム音声のキャプチャ・翻訳・字幕 HUD 一式を持つ。**参照するまで何も作らない**ので、
+    /// 字幕を使わない限り録音〜貼り付けのクリティカルパスには一切乗らない。
+    @available(macOS 26.0, *)
+    var caption: CaptionService {
+        if let existing = captionStorage as? CaptionService { return existing }
+        let created = CaptionService()
+        captionStorage = created
+        log.notice("ライブ字幕サービスを初期化しました")
+        return created
+    }
+
+    /// ライブ字幕が既に生成されているか（終了処理で「作っていなければ触らない」ために使う）
+    var hasCaptionService: Bool { captionStorage != nil }
+
     func shutdown() {
+        // 字幕を動かしていたらタップと Aggregate Device を確実に片付ける
+        // （残すと HAL 側にゴーストデバイスが溜まる）
+        if #available(macOS 26.0, *), let caption = captionStorage as? CaptionService {
+            caption.shutdown()
+        }
         hotkeys.stop()
         warmTimer?.invalidate()
         warmTimer = nil

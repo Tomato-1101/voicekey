@@ -18,7 +18,9 @@ final class ConfigStoreDefaultsTests: XCTestCase {
         return (UserDefaults(suiteName: suite)!, suite)
     }
 
-    // 未保存時の既定値（操作音・ダッキング・履歴＝ON / ピル・Dock 常時表示＝OFF / サイドノッチ＝ON / 再貼り付け＝⌃⌘V）
+    // 未保存時の既定値（操作音・ダッキング・履歴・Dock 常時表示＝ON / ピル常時表示＝OFF /
+    // サイドノッチ＝ON / 再貼り付け＝⌃⌘V）
+    // Dock 常時表示は personal でライブ字幕を統合した際に既定 ON へ変更した（2026-08-10 ユーザー要望）
     func testNewFieldDefaults() {
         let (defaults, suite) = makeDefaults()
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -28,7 +30,7 @@ final class ConfigStoreDefaultsTests: XCTestCase {
         XCTAssertTrue(store.duckMediaEnabled)
         XCTAssertEqual(store.repasteKey, ["ctrl", "cmd", "v"])
         XCTAssertFalse(store.hudAlwaysVisible)
-        XCTAssertFalse(store.dockIconAlwaysVisible)
+        XCTAssertTrue(store.dockIconAlwaysVisible)
         XCTAssertTrue(store.sideNotchEnabled)
         XCTAssertTrue(store.historyEnabled)
     }

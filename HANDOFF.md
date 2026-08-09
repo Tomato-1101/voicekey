@@ -3,7 +3,22 @@
 セッションをまたぐ作業の現在地。再開時はまずこれを読む。
 承認済み計画の全文: `/Users/tomato/.claude/plans/api-api-api-mac-abstract-hare.md`
 
-## 最新の現在地（2026-07-07 更新）
+## 最新の現在地（2026-08-10 更新）
+
+- **ライブ字幕を voicekey に統合（統合フェーズ 1・personal ブランチ・Mac・macOS 26 以降）**。
+  旧 subglass のモジュール一式を `macos/Sources/Voicekey/Caption/`（27 ファイル）へ移植し、
+  メニューバーの「ライブ字幕」サブメニュー・グローバル ⌥⌘S・ConfigStore・Info.plist へ結線した。
+  ディクテーションのクリティカルパスには触れていない（`AppController.caption` は遅延生成）。
+  恒久要件・キー探索・App Nap 対策・ハーネスは `CLAUDE.md` の「ライブ字幕」節が正本。
+  - 検証: `swift build` / `swift test` **116 件 全 PASS**（Dock 常時表示の既定を personal で ON に
+    変更したため `ConfigStoreDefaultsTests` の期待値を更新）。ビルド → 再起動 → ⌥⌘S 登録をログで確認。
+  - **未完（ユーザー操作待ち）**: 「システムオーディオを収録するためのアクセス権」の許可ダイアログが
+    voicekey に対して表示され、**未応答のため字幕ハーネス（caption_e2e.sh）はタイムアウト**している
+    （tccd ログで `AUTHREQ_PROMPTING service=kTCCServiceAudioCapture subject=com.voicekey.app` を確認。
+    CoreAudio の `AudioDeviceStart` が応答待ちでブロックする）。**ユーザーが 1 回「許可」を押せば解決**し、
+    以後 e2e / tts-loop / scope の 3 ハーネスを回せる。
+  - 並行稼働の注意: 旧 subglass も ⌥⌘S を登録しているため、両方起動中はどちらがホットキーを
+    受け取るか不定。字幕の操作はメニューからも行える。subglass の廃止は統合フェーズ 3。
 
 - **HUD 再発 2 件を計測で根治（release `05b29f8` / main `6fe045b`・push 済み・常用アプリ反映済み）**:
   ①「変換中…」の横揺れ＝ジオメトリは不動（0px 実測）で、**正体は明滅の谷で「…」が先に視認閾値を割り

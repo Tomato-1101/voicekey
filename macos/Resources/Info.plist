@@ -41,8 +41,14 @@
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string></string>
+	<!-- ライブ字幕（システム音声 → 日本語字幕）で Core Audio の Process Tap を使うために必要 -->
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>再生中の動画や配信の音声をその場で字幕にするため、このMacで再生されている音声を取り込みます。マイクは使いません。音声はこのMac内で認識されます。</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>音声入力（文字起こし）のためにマイクを使用します。</string>
+	<!-- ライブ字幕の英語認識（SpeechAnalyzer）はオンデバイスで行う -->
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>取り込んだ音声を字幕にするために、このMac上のオンデバイス音声認識を使用します。</string>
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUFeedURL</key>

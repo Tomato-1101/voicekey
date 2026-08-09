@@ -63,6 +63,32 @@ Mac（`macos/` Swift）と Windows（`src/` Python）の両方を同じ作業で
   値が 490 超だと Hidden Bar / ノッチ下で不可視 → 250 程度に再設定して再起動。
 - UI インジケーターは「動作速度 > 見た目」。音声入力に待ち時間を足す実装（close() のタイムアウト待ち等）は禁止。
 
+## ライブ字幕（personal ブランチ・Mac・macOS 26 以降）
+
+旧 subglass を voicekey に統合した機能（2026-08-10 ユーザー決定「subglass を voicekey に完全統合し、
+最終的に subglass を廃止」のフェーズ 1）。**コードは `macos/Sources/Voicekey/Caption/` に隔離**し、
+全型を `@available(macOS 26.0, *)` でゲートする（`Package.swift` の `.macOS(.v14)` は上げない）。
+
+- **ディクテーションのクリティカルパスに 1ms も足さない**: `AppController.caption` は遅延生成。
+  字幕を開始するまで何も初期化されない。既存の録音〜貼り付け経路に手を入れない。
+- **恒久要件（subglass から引き継ぎ・変更しない）**:
+  - タップは自プロセス除外（読み上げ音声を拾い直す TTS ループ禁止）。
+  - **確定文は全部訳す**。ロール表示（確定 2 行＋ライブ行）で `max(3秒, 文字数×0.15秒)` の
+    最低表示時間を保証する。鮮度優先で捨ててよいのは**ライブ行（部分訳）だけ**。
+  - 部分訳は Apple / モックのときだけ。クラウド（Gemini / Groq）は**確定文のみ**・
+    429/失敗時は Apple へフォールバック・**既定エンジンは Apple のまま**。
+  - 読み上げは確定訳のみ・既定 OFF。既定のキャプチャ対象は「最前面のアプリだけ」。
+- **API キー**: 環境変数 → 中央 Keychain（service = 変数名 / account = `shared`・`/usr/bin/security` を
+  子プロセスで読む）。**書き込みはしない**（voicekey 本体の Keychain 項目に触らない）。値はログ・UI に出さない。
+- **権限（TCC）**: システムオーディオ収録の許可は「字幕を開始」操作のときだけ発火させる。
+  初回起動時は自動開始しない（`captionEverStarted`）＝ voicekey の初回権限プロンプト直列化を壊さない。
+- **App Nap**: 字幕動作中は `ProcessInfo.beginActivity(.background)` を張る（行の自主退場・
+  無音フェードのタイマーが nap で沈黙する実事故があるため）。
+- **画素判定ハーネス**: `VOICEKEY_CAPTION_DISABLE=1` で字幕を丸ごと無効化できる。
+  `scripts/dev/fullscreen_helper.swift` を使う計測では必ずこの env を付けて voicekey を起動する。
+- **検証**: `macos/scripts/dev/caption_e2e.sh`（`VOICEKEY_CAPTION_TRANSLATOR=mock` で外部通信なし版も）/
+  `caption_tts_loop.sh` / `caption_scope.sh` / `caption_bench.sh`（**課金あり・手動のみ**）。
+
 ## Project Overview
 
 voicekey は、ホットキーを押している間だけ音声を録音し、文字起こし結果を**今使っているアプリのカーソル位置へ自動入力**する常駐型の音声入力ツール（Mac=メニューバー / Windows=タスクトレイ）。

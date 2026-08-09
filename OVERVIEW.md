@@ -62,6 +62,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | 使用実績（統計＋チャート＋レベル） | レベル/経験値・推定節約時間・連続利用日数に加え、今日/今週/累計の入力量と期間切替（週/月/年）の棒グラフを表示（**Mac はホーム画面**／Win は「実績」タブ・カウントアップ／棒伸びアニメ・集計は貼付後の処理＝遅延ゼロ）。Mac はアプリ別使用状況も集計。**ログイン中はアカウントに紐付き複数端末で合算・再インストール後も引き継ぎ**（`usage_stats`／release 製品版・未ログインはローカルのみ） | ✅ | ✅ |
 | 自動更新 | Mac=Sparkle / Win=version.json フィード（バックグラウンドでサイレント自動確認・手動確認は「バージョン情報」タブのみ。**Mac は新版検知時にホーム左上へ「更新する」ピル**） | ✅ | ✅ |
 | ログイン起動 | OS のログイン時に自動起動 | ✅ | ✅ |
+| ライブ字幕（personal のみ・macOS 26+） | 再生中のシステム音声（英語）を認識 → 日本語訳 → ガラス HUD に字幕。最前面アプリの音だけが既定・翻訳は Apple/Gemini/Groq・⌥⌘S で開始停止（統合元は旧 subglass。詳細は CHANGELOG） | ✅ | ❌ |
 
 ## 5. アーキ地図（責務 → ファイル）
 
@@ -88,6 +89,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | HUD / トレイ | `UI/Hud.swift` / `VoicekeyApp.swift`（メニューバー） | `ui/hud.py` / `system_tray.py` |
 | API キー保管 | `Core/Keychain.swift` / `Config/EmbeddedKeys.generated.swift` | `utils/secrets.py` / `.env` |
 | 自動更新 | `Core/UpdaterController.swift`（Sparkle） | `utils/updater.py` |
+| ライブ字幕（personal のみ） | `Caption/`（`CaptionService` / `Audio` システム音声タップ / `Speech` 認識・読み上げ / `Translation` Apple・Gemini・Groq / `Pipeline` / `UI` 字幕 HUD・メニュー / `CLI` 検証ハーネス） | — （Mac 専用） |
 | OS 権限 | `AppController.swift`（マイク/入力監視/アクセシビリティ） | — （Windows は OS ゲートなし） |
 | OS 抽象化 / ログイン起動 / ログ | ネイティブ API 直 | `platform/` / `utils/autostart.py` / `utils/logger.py` |
 
