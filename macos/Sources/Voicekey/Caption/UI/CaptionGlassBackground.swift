@@ -26,6 +26,7 @@ final class CaptionGlassBackground: NSVisualEffectView {
         cornerRadius: CGFloat = CaptionGlassBackground.cornerRadius,
         alpha: CGFloat = CaptionGlassBackground.defaultAlpha
     ) {
+        currentRadius = cornerRadius
         super.init(frame: frameRect)
         // HUD 用に設計された material。迷ったらこれ。
         material = .hudWindow
@@ -37,6 +38,21 @@ final class CaptionGlassBackground: NSVisualEffectView {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) は使わない") }
+
+    /// いま適用している角丸半径（作り直しの要否判定に使う）
+    private var currentRadius: CGFloat
+
+    /// 角丸半径を差し替える
+    ///
+    /// 字幕は行数で高さが変わるため、ピル状の見た目を保つには高さに応じて半径も変える。
+    /// マスク画像の作り直しはちらつくので、実際に変わったときだけ作り直す。
+    ///
+    /// - Parameter radius: 新しい角丸半径
+    func setCornerRadius(_ radius: CGFloat) {
+        guard abs(radius - currentRadius) > 0.5 else { return }
+        currentRadius = radius
+        maskImage = Self.roundedMask(radius: radius)
+    }
 
     /// 角丸マスクを作る
     ///

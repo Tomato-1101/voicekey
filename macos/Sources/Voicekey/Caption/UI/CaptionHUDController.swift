@@ -68,10 +68,44 @@ final class CaptionHUDController {
     ///
     /// 短い訳文では文字幅まで縮めるが、これを下回ると「⏸ 停止 ⚙ 設定」がはみ出す。
     private static let minimumWidth: CGFloat = 190
-    /// 画面下端からの既定マージン（Dock を避ける）
-    private static let defaultBottomMargin: CGFloat = 120
     /// 新しい字幕が来ないまま消えるまでの秒数
     private static let autoHideDelay: TimeInterval = 8.0
+
+    /// ピルのカプセル下端の、画面下端（visibleFrame.minY）からの高さ
+    ///
+    /// voicekey 本体の HUD パネルは `visibleFrame.minY + 2` に置かれ、その中でカプセルは
+    /// 下端から 6pt 浮かせてある（`Hud.swift` の `positionPanel` と `.padding(.bottom, 6)`）。
+    /// 字幕もここへ下端を揃えることで「ピルがそのまま上へ育った」ように見せる。
+    ///
+    /// Hud.swift の内部には触れない方針のため数値をここに写している。
+    /// あちらを変えたらここも合わせること。
+    private static let pillCapsuleBottom: CGFloat = 2 + 6
+
+    /// 角丸半径の上限
+    ///
+    /// 1 行のときは高さの半分＝完全なカプセルにしてピルと同じ形にする。行が増えても
+    /// 半径を上げ続けると端の曲率に文字が食い込むため、ここで頭打ちにする。
+    private static let maximumCornerRadius: CGFloat = 22
+
+    /// 「ピルから生えて／ピルへ戻る」ときの種になるカプセルの大きさ
+    ///
+    /// 待機ピルとほぼ同じ見かけの小ささ。ここから目標サイズへ伸ばすことで、
+    /// ピルがそのまま字幕へ育ったように見せる。
+    private static let seedWidth: CGFloat = 96
+    private static let seedHeight: CGFloat = 22
+
+    /// 伸びるときの所要時間（voicekey ピルの spring(response:0.3) に合わせる）
+    private static let growDuration: TimeInterval = 0.3
+    /// 縮んで消えるときの所要時間（出るときより速く畳む）
+    private static let shrinkDuration: TimeInterval = 0.22
+
+    /// 伸縮のイージング
+    ///
+    /// ピル側は `spring(response: 0.3, dampingFraction: 0.82)`。減衰が強く行き過ぎが
+    /// ほぼ無いので、AppKit 側は同じ立ち上がりのイーズアウトで合わせる。
+    private static var growTiming: CAMediaTimingFunction {
+        CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
+    }
 
     /// 画面に残す確定行の数
     ///
@@ -100,7 +134,6 @@ final class CaptionHUDController {
     private let container: HUDContainerView
     private let glass: CaptionGlassBackground
     private let rim: GlassRimView
-    private let handle: HUDDragHandleView
     private let hoverBar: HUDHoverBarView
     private let resizeHandle: HUDResizeHandleView
 
@@ -114,8 +147,27 @@ final class CaptionHUDController {
 
     private var hideTimer: Timer?
     private var isVisible = false
-    /// 自前のレイアウトでフレームを動かしている最中か（位置の保存を止めるための印）
-    private var isAdjustingFrame = false
+
+    /// 音声入力（録音・変換中・通知）の最中は字幕を隠す
+    ///
+    /// 「音声入力しているときは字幕は表示されなくていい」（2026-08-10 ユーザー指示）。
+    /// 隠すのは表示だけで、認識・翻訳は止めない（戻ったときに話が飛ばないように）。
+    var isSuppressed = false {
+        didSet {
+            guard isSuppressed != oldValue else { return }
+            if isSuppressed {
+                wasVisibleBeforeSuppression = isVisible
+                if isVisible { fadeOut(clearsLines: false) }
+            } else if wasVisibleBeforeSuppression, !orderedLines.isEmpty {
+                // 隠す前に出ていた行がまだ残っていれば出し直す
+                relayout()
+                fadeIn()
+                scheduleAutoHide()
+            }
+        }
+    }
+    /// 隠す直前に表示されていたか（音声入力が終わったときに戻すかの判断に使う）
+    private var wasVisibleBeforeSuppression = false
 
     /// マウス移動の監視（ホバー操作バーの出し入れ用）
     private var globalMouseMonitor: Any?
@@ -158,18 +210,18 @@ final class CaptionHUDController {
         // フルスクリーンの YouTube の上にも出す。ignoresCycle で Cmd+` の巡回に混ざらないようにする。
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle, .stationary]
         panel.alphaValue = 0
-        // 表示専用だが、移動用ハンドルだけはクリックを受けたいので false のままにし、
-        // hitTest 側でハンドル以外を透過させる（ignoresMouseEvents=true だと掴めなくなる）。
+        // 表示専用だが、ホバー操作バーとリサイズグリップはクリックを受けたいので false のままにし、
+        // hitTest 側でそれ以外を透過させる（ignoresMouseEvents=true だと押せなくなる）。
         panel.ignoresMouseEvents = false
 
         container = HUDContainerView(frame: initialFrame)
-        // 映像を隠しすぎないよう、字幕 HUD だけ既定より透けさせる（2026-08-09 ユーザー指示）
+        // 映像を隠しすぎないよう、字幕 HUD だけ既定より透けさせる（2026-08-09 ユーザー指示）。
+        // ピル（0.7）に合わせず字幕は字幕の透明度を保つ（2026-08-10 ユーザー指示）。
         glass = CaptionGlassBackground(frame: initialFrame, alpha: 0.62)
         glass.autoresizingMask = [.width, .height]
         rim = GlassRimView(frame: initialFrame)
         rim.autoresizingMask = [.width, .height]
 
-        handle = HUDDragHandleView(frame: .zero)
         hoverBar = HUDHoverBarView(frame: .zero)
         hoverBar.isHidden = true
         resizeHandle = HUDResizeHandleView(frame: .zero)
@@ -177,10 +229,8 @@ final class CaptionHUDController {
 
         container.addSubview(glass)
         container.addSubview(rim)
-        container.addSubview(handle)
         container.addSubview(hoverBar)
         container.addSubview(resizeHandle)
-        container.dragHandle = handle
         container.hoverBar = hoverBar
         container.resizeHandle = resizeHandle
         panel.contentView = container
@@ -194,11 +244,7 @@ final class CaptionHUDController {
             self?.applyScaleDelta(delta)
         }
 
-        // ドラッグ後の位置を覚える
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(panelDidMove), name: NSWindow.didMoveNotification, object: panel
-        )
-        // 画面構成が変わったら既定位置を取り直す（外部ディスプレイの抜き差し）
+        // 画面構成が変わったら位置を取り直す（Dock 出没・解像度変更・外部ディスプレイの抜き差し）
         NotificationCenter.default.addObserver(
             self, selector: #selector(screenParametersChanged),
             name: NSApplication.didChangeScreenParametersNotification, object: nil
@@ -210,7 +256,7 @@ final class CaptionHUDController {
             name: NSWorkspace.activeSpaceDidChangeNotification, object: nil
         )
 
-        applyStoredPosition()
+        applyPillAnchoredPosition()
     }
 
     deinit {
@@ -309,8 +355,6 @@ final class CaptionHUDController {
             width: size.width,
             height: size.height
         )
-        let handleSize: CGFloat = 20
-        handle.frame = NSRect(x: 4, y: panel.frame.height - handleSize - 4, width: handleSize, height: handleSize)
         let resizeSize: CGFloat = 16
         resizeHandle.frame = NSRect(
             x: panel.frame.width - resizeSize - 3, y: 3, width: resizeSize, height: resizeSize
@@ -377,14 +421,13 @@ final class CaptionHUDController {
         fadeOut()
     }
 
-    /// 位置と大きさを既定に戻す
+    /// 大きさを既定に戻す
     ///
-    /// HUD をディスプレイ外へ動かした・小さくしすぎた、のどちらからも復帰できるようにする。
-    func resetPosition() {
-        CaptionSettings.hudAnchor = nil
+    /// 位置はピルに固定なので動かせない。小さくしすぎた／大きくしすぎたときの復帰用。
+    func resetSize() {
         CaptionSettings.hudScale = 1.0
         scale = 1.0
-        applyStoredPosition()
+        applyPillAnchoredPosition()
     }
 
     // MARK: - 行の管理
@@ -580,12 +623,19 @@ final class CaptionHUDController {
         var totalHeight = Self.verticalPadding * 2 + heights.reduce(0, +)
         if lines.count > 1 { totalHeight += Self.lineSpacing * CGFloat(lines.count - 1) }
 
-        let bottom = panel.frame.minY
-        let centerX = panel.frame.midX
+        // 位置はピル固定。下端をピルのカプセル下端に揃え、上へ伸ばす。
+        let anchor = Self.pillAnchor
         let size = NSSize(width: width, height: totalHeight)
         setPanelFrame(
-            NSRect(origin: Self.clampedOrigin(CGPoint(x: centerX - width / 2, y: bottom), size: size), size: size)
+            NSRect(origin: Self.clampedOrigin(CGPoint(x: anchor.x - width / 2, y: anchor.y), size: size), size: size),
+            animated: isVisible
         )
+
+        // 1 行のときは完全なカプセル＝ピルと同じ形。行が増えたら上限で頭打ちにする。
+        let radius = min(totalHeight / 2, Self.maximumCornerRadius)
+        glass.setCornerRadius(radius)
+        rim.cornerRadius = radius
+        rim.needsDisplay = true
 
         // 最下段（＝配列の末尾）から上へ積む
         var y = Self.verticalPadding
@@ -622,46 +672,58 @@ final class CaptionHUDController {
         }
     }
 
-    /// 保存位置（無ければ既定位置）へ動かす
+    /// ピルの真上（下辺の中心）へ位置を合わせる
     ///
-    /// 覚えているのは「下辺の中心」なので、そこへ現在の幅を割り付ける。
-    private func applyStoredPosition() {
-        guard let screen = NSScreen.main else { return }
+    /// ピル固定なので保存も復元もしない。`visibleFrame` 基準なので、Dock の出没・
+    /// 解像度変更・外部ディスプレイの抜き差しにはピルと同じように追従する。
+    private func applyPillAnchoredPosition() {
+        let anchor = Self.pillAnchor
         var frame = panel.frame
-        let visible = screen.visibleFrame
-        let anchor: CGPoint
-        if let stored = CaptionSettings.hudAnchor, isAnchorOnAnyScreen(stored) {
-            anchor = stored
-        } else {
-            anchor = CGPoint(x: visible.midX, y: visible.minY + Self.defaultBottomMargin)
-        }
         frame.origin = CGPoint(x: anchor.x - frame.width / 2, y: anchor.y)
         setPanelFrame(frame)
         relayout()
     }
 
-    /// 保存した基準点がいずれかの画面に残っているか（外部ディスプレイを外した後の迷子対策）
-    private func isAnchorOnAnyScreen(_ anchor: CGPoint) -> Bool {
-        NSScreen.screens.contains { $0.frame.contains(anchor) }
+    /// 検証用: パネルの現在フレーム
+    var panelFrame: NSRect { panel.frame }
+
+    /// 検証用: いま実際に画面へ出ているか
+    var isOnScreen: Bool { panel.isVisible && panel.alphaValue > 0.5 }
+
+    /// ピルのカプセル下端の中心（字幕はここへ下辺を揃えて上へ伸びる）
+    static var pillAnchor: CGPoint {
+        guard let visible = NSScreen.main?.visibleFrame else { return .zero }
+        return CGPoint(x: visible.midX, y: visible.minY + pillCapsuleBottom)
     }
 
-    /// 自前のレイアウトでパネルを動かす
+    /// パネルのフレームを反映する
     ///
-    /// 幅の伸縮で中心を保つために origin も動かすため、その移動は「ユーザーが動かした」
-    /// として保存しない（保存すると幅が変わるたびに記憶位置がずれていく）。
-    private func setPanelFrame(_ frame: NSRect) {
-        isAdjustingFrame = true
-        panel.setFrame(frame, display: true)
-        isAdjustingFrame = false
+    /// - Parameters:
+    ///   - frame: 目標フレーム
+    ///   - animated: 行が増減したときに、ピルのモーフィングと同じ速さで伸縮させるか
+    private func setPanelFrame(_ frame: NSRect, animated: Bool = false) {
+        guard animated, panel.isVisible else {
+            panel.setFrame(frame, display: true)
+            return
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = Self.growDuration
+            context.timingFunction = Self.growTiming
+            panel.animator().setFrame(frame, display: true)
+        }
     }
 
-    @objc private func panelDidMove() {
-        guard !isAdjustingFrame else { return }
-        CaptionSettings.hudAnchor = CGPoint(x: panel.frame.midX, y: panel.frame.minY)
+    /// ピルから生える／ピルへ戻るときの種フレーム（下辺の中心は目標と同じ）
+    ///
+    /// - Parameter target: 伸ばしきったときのフレーム
+    private func seedFrame(for target: NSRect) -> NSRect {
+        let width = min(target.width, Self.seedWidth)
+        let height = min(target.height, Self.seedHeight)
+        return NSRect(x: target.midX - width / 2, y: target.minY, width: width, height: height)
     }
 
     @objc private func screenParametersChanged() {
-        applyStoredPosition()
+        applyPillAnchoredPosition()
     }
 
     /// Space が切り替わったら最前面へ出し直す
@@ -678,33 +740,49 @@ final class CaptionHUDController {
         }
     }
 
+    /// ピルから生えるように伸ばしながら出す
     private func fadeIn() {
+        // 音声入力中は出さない（表示だけ止めて、認識・翻訳は裏で進める）
+        guard !isSuppressed else { return }
         // 字幕が更新されるたびに最前面へ出し直す。フルスクリーン動画や Space 切替の直後に
         // 裏へ回ったまま「時々表示されない」状態になるのを塞ぐ（呼び出しは軽い）。
         panel.orderFrontRegardless()
         guard !isVisible else { return }
         isVisible = true
+
+        // いったんピル相当の小ささへ畳んでから目標サイズへ伸ばす＝「ピルが字幕に育つ」。
+        let target = panel.frame
+        panel.setFrame(seedFrame(for: target), display: false)
+        panel.alphaValue = 0
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.18
+            context.duration = Self.growDuration
+            context.timingFunction = Self.growTiming
             panel.animator().alphaValue = 1.0
+            panel.animator().setFrame(target, display: true)
         }
     }
 
-    private func fadeOut() {
+    /// ピルへ戻るように縮めながら消す
+    ///
+    /// - Parameter clearsLines: 行も片付けるか。音声入力で一時的に隠すだけのときは残す。
+    private func fadeOut(clearsLines: Bool = true) {
         guard isVisible else {
             panel.alphaValue = 0
-            removeAllLines()
+            if clearsLines { removeAllLines() }
             return
         }
         isVisible = false
+        let seed = seedFrame(for: panel.frame)
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.35
+            context.duration = Self.shrinkDuration
+            context.timingFunction = Self.growTiming
             panel.animator().alphaValue = 0
+            panel.animator().setFrame(seed, display: true)
         }, completionHandler: { [weak self] in
             guard let self, !self.isVisible else { return }
             self.panel.orderOut(nil)
             // 次に喋り出したとき、前の話の行が残っていると混乱するので片付ける
-            self.removeAllLines()
+            if clearsLines { self.removeAllLines() }
         })
     }
 
@@ -871,13 +949,11 @@ final class CaptionLineView: NSView {
 
 /// HUD の中身を載せるビュー
 ///
-/// 移動ハンドル以外のクリックを下のアプリへ通す。macOS は透明ピクセルを自動で
-/// 透過させるが、ガラス背景は不透明なピクセルなので hitTest で明示的に落とす必要がある。
+/// ホバー中の操作バーとリサイズグリップ以外のクリックを下のアプリへ通す。macOS は透明ピクセルを
+/// 自動で透過させるが、ガラス背景は不透明なピクセルなので hitTest で明示的に落とす必要がある。
 @available(macOS 26.0, *)
 final class HUDContainerView: NSView {
 
-    /// クリックを受け付ける領域（移動ハンドル）
-    weak var dragHandle: NSView?
     /// ホバー中だけクリックを受け付ける操作バー
     weak var hoverBar: NSView?
     /// ホバー中だけクリックを受け付けるリサイズハンドル
@@ -891,8 +967,7 @@ final class HUDContainerView: NSView {
         if let resizeHandle, !resizeHandle.isHidden, resizeHandle.frame.contains(local) {
             return super.hitTest(point)
         }
-        guard let dragHandle, dragHandle.frame.contains(local) else { return nil }
-        return super.hitTest(point)
+        return nil
     }
 }
 
@@ -945,46 +1020,6 @@ final class HUDHoverBarView: NSView {
     @objc private func stopTapped() { onStop?() }
 
     @objc private func menuTapped() { onMenu?(menuButton) }
-}
-
-/// HUD を掴んで動かすための小さなハンドル
-///
-/// クリックスルーを既定 ON にしているので、移動手段が無いと HUD が邪魔になったときに
-/// 詰む。常時見える最小限のグリップを置く（メニューから位置リセットもできる）。
-@available(macOS 26.0, *)
-final class HUDDragHandleView: NSView {
-
-    override func draw(_ dirtyRect: NSRect) {
-        let dotColor = NSColor.labelColor.withAlphaComponent(0.28)
-        dotColor.setFill()
-        // 2×3 のグリップドット
-        let radius: CGFloat = 1.3
-        let spacing: CGFloat = 4.5
-        let originX = bounds.midX - spacing / 2
-        let originY = bounds.midY - spacing
-        for column in 0..<2 {
-            for row in 0..<3 {
-                let center = NSPoint(
-                    x: originX + CGFloat(column) * spacing,
-                    y: originY + CGFloat(row) * spacing
-                )
-                let rect = NSRect(
-                    x: center.x - radius, y: center.y - radius,
-                    width: radius * 2, height: radius * 2
-                )
-                NSBezierPath(ovalIn: rect).fill()
-            }
-        }
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        // borderless パネルはタイトルバーが無いので、明示的にドラッグを始める
-        window?.performDrag(with: event)
-    }
-
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .openHand)
-    }
 }
 
 /// HUD の大きさを変える右下のハンドル

@@ -82,7 +82,7 @@ final class CaptionMenuController: NSObject, NSMenuDelegate {
         preview.target = self
         menu.addItem(preview)
 
-        let reset = NSMenuItem(title: "字幕の位置をリセット", action: #selector(resetPosition), keyEquivalent: "")
+        let reset = NSMenuItem(title: "字幕の大きさをリセット", action: #selector(resetSize), keyEquivalent: "")
         reset.target = self
         menu.addItem(reset)
     }
@@ -190,7 +190,7 @@ final class CaptionMenuController: NSObject, NSMenuDelegate {
         controller?.caption.previewCaption()
     }
 
-    @objc private func resetPosition() {
-        controller?.caption.resetHUDPosition()
+    @objc private func resetSize() {
+        controller?.caption.resetHUDSize()
     }
 }

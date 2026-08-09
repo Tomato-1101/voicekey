@@ -26,7 +26,18 @@ final class HudModel: ObservableObject {
         case notice(String)
     }
 
-    @Published var mode: Mode = .hidden
+    /// 表示状態が変わったときに呼ばれる通知フック
+    ///
+    /// ライブ字幕を「音声入力中は隠す」ために AppController が繋ぐ（2026-08-10）。
+    /// HUD 側は誰が聞いているかを知らない（配線だけ）。
+    var onModeChanged: ((Mode) -> Void)?
+
+    @Published var mode: Mode = .hidden {
+        didSet {
+            guard mode != oldValue else { return }
+            onModeChanged?(mode)
+        }
+    }
     /// 直近の音声レベル履歴（波形バー描画用）
     @Published var levels: [Float] = Array(repeating: 0, count: HudView.barCount)
     /// 貼り付け先アプリのアイコン（録音中/変換中にピル左端へ表示。nil なら非表示）

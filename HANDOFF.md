@@ -29,9 +29,19 @@
   - **今後この周辺を触るときの鉄則**: HAL（Process Tap / Aggregate Device）の作成・破棄を
     ループに入れない。どんな再試行にも必ず上限を置く。「無音＝壊れている」と判定しない。
   - 回帰: `--caption-mic-coexist-test`（修正前 `rebuilds=3` fail → 修正後 `rebuilds=0` ok）。
-  - **`captionAutoStart` の既定は当面 false のまま**にしてある
-    （`defaults write com.voicekey.app captionAutoStart -bool false` 済み）。
-    しばらく実運用で問題が出ないことを確認してから既定 ON に戻すか判断する。
+  - 根治を実測で確認できたため、`captionAutoStart` は **true に戻した**（統合フェーズ 2）。
+
+- **ライブ字幕をピルと一体化（統合フェーズ 2・personal・2026-08-10）**。
+  ユーザー指示「字幕の場所は voicekey ピルと同じ場所に固定して。ピルが字幕に大きくなっていく感じがいい」
+  「音声入力しているときは字幕は表示されなくていい」。
+  - 字幕パネルの下辺を**ピルのカプセル下端（`visibleFrame.minY + 8`）**に固定し、上へ伸ばす。
+    ドラッグ移動と位置記憶は撤去（大きさのグリップだけ残す）。`Hud.swift` のパネル内部は触っていない。
+  - 音声入力中（録音・変換中・通知）は字幕を隠す。配線は `HudModel.onModeChanged` →
+    `AppController.applyCaptionVisibility` → `CaptionService.setDictationActive` の一方向。
+  - 回帰は **`--caption-hud-test`**（±1pt で機械判定。`[PHASE-START]` を待って screencapture すると
+    各状態のスクショが撮れる）。実測 `bottom=60.0 期待=60.0 / 1行 90pt → 2行 172pt / 音声入力中 onScreen=no`。
+  - **既知の挙動**: 字幕が出ている間、字幕パネルは待機ピルを覆う（「ピルが字幕に育った」ように見せる意図）。
+    隠している間も行の自主退場タイマーは動くので、長い音声入力のあとは古い行が残らず次の文から出る。
 
 - **HUD 再発 2 件を計測で根治（release `05b29f8` / main `6fe045b`・push 済み・常用アプリ反映済み）**:
   ①「変換中…」の横揺れ＝ジオメトリは不動（0px 実測）で、**正体は明滅の谷で「…」が先に視認閾値を割り

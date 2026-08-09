@@ -62,9 +62,6 @@ enum CaptionSettings {
         static let everStarted = "captionEverStarted"
         static let speak = "captionSpeak"
         static let showSource = "captionShowSource"
-        // 幅が可変なので、記憶する点は「左下」ではなく「下辺の中心」。
-        static let hudAnchorX = "captionHudAnchorX"
-        static let hudAnchorY = "captionHudAnchorY"
         static let hudScale = "captionHudScale"
     }
 
@@ -195,29 +192,6 @@ enum CaptionSettings {
             return UserDefaults.standard.bool(forKey: Key.showSource)
         }
         set { UserDefaults.standard.set(newValue, forKey: Key.showSource) }
-    }
-
-    /// 字幕 HUD の基準点（横は中心・縦は下端。未設定なら nil ＝ 既定位置を使う）
-    ///
-    /// 左下座標ではなく「下辺の中心」を覚える。HUD の幅は表示中の文字量に合わせて
-    /// 伸び縮みするので、左端を覚えると幅が変わるたびに字幕が横へずれてしまう。
-    static var hudAnchor: CGPoint? {
-        get {
-            let defaults = UserDefaults.standard
-            guard defaults.object(forKey: Key.hudAnchorX) != nil,
-                  defaults.object(forKey: Key.hudAnchorY) != nil else { return nil }
-            return CGPoint(x: defaults.double(forKey: Key.hudAnchorX), y: defaults.double(forKey: Key.hudAnchorY))
-        }
-        set {
-            let defaults = UserDefaults.standard
-            guard let newValue else {
-                defaults.removeObject(forKey: Key.hudAnchorX)
-                defaults.removeObject(forKey: Key.hudAnchorY)
-                return
-            }
-            defaults.set(Double(newValue.x), forKey: Key.hudAnchorX)
-            defaults.set(Double(newValue.y), forKey: Key.hudAnchorY)
-        }
     }
 
     /// 字幕 HUD の大きさ倍率（幅とフォントを同時に拡大縮小する）

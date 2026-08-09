@@ -322,9 +322,19 @@ final class CaptionService {
         _ = semaphore.wait(timeout: .now() + 3.0)
     }
 
-    /// HUD の位置を既定に戻す
-    func resetHUDPosition() {
-        hud.resetPosition()
+    /// HUD の大きさを既定に戻す（位置はピル固定なので動かない）
+    func resetHUDSize() {
+        hud.resetSize()
+    }
+
+    /// 音声入力中かを伝える
+    ///
+    /// 録音・変換中・通知の間は字幕を隠す（「音声入力しているときは字幕は表示されなくていい」
+    /// 2026-08-10 ユーザー指示）。認識・翻訳は止めないので、戻れば続きから出る。
+    ///
+    /// - Parameter active: 音声入力中なら true
+    func setDictationActive(_ active: Bool) {
+        hud.isSuppressed = active
     }
 
     /// 動作確認用に HUD へ任意の字幕を出す

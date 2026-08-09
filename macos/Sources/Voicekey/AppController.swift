@@ -125,6 +125,10 @@ final class AppController: ObservableObject {
         }
         hud.enabled = config.hudEnabled
         hud.alwaysVisible = config.hudAlwaysVisible
+        // 音声入力中（録音・変換中・通知）はライブ字幕を隠す。字幕を一度も使っていなければ何もしない。
+        hud.model.onModeChanged = { [weak self] mode in
+            self?.applyCaptionVisibility(for: mode)
+        }
         // 起動時に常時表示 ON なら待機ピルを出す（state は初期値 idle のままで変化しないため明示的に呼ぶ）
         if hud.alwaysVisible { hud.update(for: .idle) }
         // デバッグ用: VOICEKEY_HUD_DEBUG_STATE が指定されていれば HUD を固定状態で表示する（検証専用・
@@ -325,12 +329,30 @@ final class AppController: ObservableObject {
         if let existing = captionStorage as? CaptionService { return existing }
         let created = CaptionService()
         captionStorage = created
+        // 録音中に字幕を開始したときも隠れた状態から始まるよう、今の HUD 状態を反映しておく
+        applyCaptionVisibility(for: hud.model.mode)
         log.notice("ライブ字幕サービスを初期化しました")
         return created
     }
 
     /// ライブ字幕が既に生成されているか（終了処理で「作っていなければ触らない」ために使う）
     var hasCaptionService: Bool { captionStorage != nil }
+
+    /// HUD の表示状態に合わせてライブ字幕を隠す／戻す
+    ///
+    /// 音声入力（録音・変換中・通知）の間は字幕を出さない（2026-08-10 ユーザー指示）。
+    /// 字幕サービスを**作っていなければ何もしない**（遅延生成を壊さないため）。
+    ///
+    /// - Parameter mode: HUD の新しい表示状態
+    private func applyCaptionVisibility(for mode: HudModel.Mode) {
+        guard #available(macOS 26.0, *), let caption = captionStorage as? CaptionService else { return }
+        let dictating: Bool
+        switch mode {
+        case .recording, .transcribing, .notice: dictating = true
+        case .hidden, .idlePill: dictating = false
+        }
+        caption.setDictationActive(dictating)
+    }
 
     func shutdown() {
         // 字幕を動かしていたらタップと Aggregate Device を確実に片付ける

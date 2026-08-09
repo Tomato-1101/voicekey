@@ -78,6 +78,14 @@ Mac（`macos/` Swift）と Windows（`src/` Python）の両方を同じ作業で
   - 部分訳は Apple / モックのときだけ。クラウド（Gemini / Groq）は**確定文のみ**・
     429/失敗時は Apple へフォールバック・**既定エンジンは Apple のまま**。
   - 読み上げは確定訳のみ・既定 OFF。既定のキャプチャ対象は「最前面のアプリだけ」。
+- **表示位置はピル固定（2026-08-10 ユーザー指示）**: 字幕は voicekey ピルと同じ場所
+  （画面下辺中央・`visibleFrame.minY + 8` にパネル下辺）に固定し、行が増えたら**上へ伸びる**。
+  ドラッグ移動・位置記憶は持たせない（「ピルが字幕に大きくなっていく感じ」）。
+  1 行のときは角丸＝高さの半分でピルと同じカプセル形。透明度は字幕 0.62 / ピル 0.7 で**別のまま**。
+  `Hud.swift` のパネル内部には手を入れない（字幕は別 NSPanel のまま・重なりと整列で一体に見せる）。
+- **音声入力中は字幕を隠す**: HUD が録音・変換中・通知の間だけ非表示。認識・翻訳は止めない。
+  配線は `HudModel.onModeChanged` → `AppController.applyCaptionVisibility` →
+  `CaptionService.setDictationActive` の一方向のみ（字幕未生成なら何もしない）。
 - **API キー**: 環境変数 → 中央 Keychain（service = 変数名 / account = `shared`・`/usr/bin/security` を
   子プロセスで読む）。**書き込みはしない**（voicekey 本体の Keychain 項目に触らない）。値はログ・UI に出さない。
 - **権限（TCC）**: システムオーディオ収録の許可は「字幕を開始」操作のときだけ発火させる。
@@ -97,8 +105,10 @@ Mac（`macos/` Swift）と Windows（`src/` Python）の両方を同じ作業で
   `scripts/dev/fullscreen_helper.swift` を使う計測では必ずこの env を付けて voicekey を起動する。
 - **検証**: `macos/scripts/dev/caption_e2e.sh`（`VOICEKEY_CAPTION_TRANSLATOR=mock` で外部通信なし版も）/
   `caption_tts_loop.sh` / `caption_scope.sh` / `caption_bench.sh`（**課金あり・手動のみ**）/
-  `dist/voicekey.app/Contents/MacOS/voicekey --caption-mic-coexist-test`（マイクとの共存。
-  `open -n ... --args --caption-mic-coexist-test --log-file <path>` で起動する）。
+  `--caption-mic-coexist-test`（マイクとの共存）/ `--caption-hud-test`（ピル固定と音声入力中の非表示）。
+  後者 2 つは `open -n dist/voicekey.app --args <mode> --log-file <path>` で起動し、
+  `[VERDICT] status=ok` を確認する（`--caption-hud-test` は `[PHASE-START]` を出すので、
+  それを待ってから `screencapture` すると各状態のスクショが撮れる）。
 
 ## Project Overview
 

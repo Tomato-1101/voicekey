@@ -5,6 +5,31 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased] - 2026-08-02
 
 ### Changed
+- **personal: ライブ字幕を voicekey ピルと一体化した（統合フェーズ 2・Mac・2026-08-10）**。
+  ユーザー指示「字幕の場所は voicekey ピルと同じ場所に固定して。ピルが字幕に大きくなっていく感じがいい」
+  「統合してるんだから右下の subglass（ピル）はいらない。同じアプリにして」
+  「音声入力しているときは字幕は表示されなくていい」。
+  - **位置をピルに固定**: 画面下辺中央・`visibleFrame.minY + 8`（＝ピルのカプセル下端）に字幕の下辺を
+    合わせ、行が増えたら**上へ伸びる**。ドラッグ移動と位置記憶（`captionHudAnchorX/Y`）は撤去し、
+    移動グリップも外した（大きさのリサイズグリップは残す）。メニューは「字幕の位置をリセット」→
+    「字幕の大きさをリセット」に変更。Dock 出没・解像度変更・外部ディスプレイ着脱には
+    ピルと同じ `visibleFrame` 基準で追従する。
+  - **ピルが字幕に育つ見た目**: 1 行のときは角丸半径＝高さの半分＝完全なカプセル（ピルと同じ形）、
+    行が増えたら半径 22 で頭打ち。出現時はピル相当の小さなカプセル（96×22）から目標サイズへ
+    0.3 秒で伸ばし、消えるときは 0.22 秒で same-anchor のまま畳む（ピルの
+    `spring(response: 0.3, dampingFraction: 0.82)` に合わせたイージング）。
+  - **透明度はモード別のまま**: 字幕は 0.62、ピルは 0.7。別パネルなので互いに影響しない。
+  - **音声入力中は字幕を隠す**: HUD が録音・変換中・通知の間は字幕パネルを自動で隠し、待機に戻ったら
+    また出す。**認識・翻訳は止めない**（表示だけ止める）。`HudModel.onModeChanged` →
+    `AppController.applyCaptionVisibility` → `CaptionService.setDictationActive` の一方向配線で、
+    字幕サービスを作っていなければ何もしない（遅延生成を壊さない）。
+  - **回帰ハーネス `--caption-hud-test` を追加**: 待機ピルと字幕を同時に出し、
+    (a) 下辺がピルのカプセル下端と一致 (b) 横中心が画面中心と一致 (c) 行が増えても下辺が動かず高さだけ伸びる
+    (d) 音声入力中は画面から消える (e) 終わったらまた同じ位置に出る、を ±1pt で機械判定する。
+    実測 `bottom=60.0 期待=60.0 / 中心X=756.0 期待=756.0 / 1行 90pt → 2行 172pt`。
+- **personal: ライブ字幕の起動時自動開始を既定 ON に戻した**。共存バグ（下記 Fixed）を根治し、
+  `--caption-mic-coexist-test` が `rebuilds=0` で通ることを実測したため解禁。
+  初回起動時は自動開始しないガード（`captionEverStarted`）はそのまま維持する。
 - **personal: 文字起こしの選択肢を特徴名でなく実プロバイダー名 + モデル名で表示するようにした（personal ブランチのみ・Mac）**。自分用ビルドは「何が動いているか」を隠す必要がないため（2026-08-02 ユーザー指示）、ピッカーの表示が **Deepgram nova-3 / OpenAI gpt-live-transcribe / Groq whisper-large-v3-turbo** になる（ラベルも「文字起こしモード」→「文字起こしエンジン」）。release（製品版）は従来の特徴名 2 択のまま。
   - **Technical Details**: `Backend.developerLabel`（`providerName` + `defaultModel`）を追加し、`UI/SettingsView.swift` が `EmbeddedKeys.isPersonal` のときだけこちらを使う。バックエンド切替時に `slot.model` は `defaultModel` へ揃うので、表示名と実際に使われるモデルは常に一致する（`BackendLabelTests` で固定・3 ケース）。
 
