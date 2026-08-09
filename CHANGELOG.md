@@ -9,6 +9,17 @@ voicekeyの変更履歴を記録するファイルです。
   - **Technical Details**: `Backend.developerLabel`（`providerName` + `defaultModel`）を追加し、`UI/SettingsView.swift` が `EmbeddedKeys.isPersonal` のときだけこちらを使う。バックエンド切替時に `slot.model` は `defaultModel` へ揃うので、表示名と実際に使われるモデルは常に一致する（`BackendLabelTests` で固定・3 ケース）。
 
 ### Added
+- **personal: 字幕とマイク録音の共存を実測する回帰ハーネスを追加（`--caption-mic-coexist-test`）**。
+  ライブ字幕を一度動かすと同一プロセスの HAL クライアントが壊れ、以後ディクテーションが
+  マイクの既定入力デバイスを解決できなくなる不具合（`HALC_ProxySystem::DestroyIOContext` エラー →
+  `Could not find default device` → `入力デバイスが見つかりません`）の**再現と根治確認**に使う。
+  「字幕パイプライン開始 → 3 秒 → 停止」を 3 サイクル回し、各サイクル後に
+  (a) 既定入力デバイスが解決できる (b) AVAudioEngine の入力にフレームが届く (c) 入力フォーマットが生きている
+  を機械判定する（`[MIC] phase=... status=ok|ng` と `[VERDICT]`）。
+  - **注意（2026-08-10 時点）**: このハーネスの初回実行時、環境側の CoreAudio（coreaudiod）が
+    既に応答不能になっており、**baseline の HAL 呼び出しで待ちに入って計測できていない**。
+    まず `sudo killall coreaudiod` で音声サブシステムを復旧させてから実行すること。
+
 - **personal: ライブ字幕（システム音声 → 英語認識 → 日本語字幕）を統合した（personal ブランチのみ・Mac・macOS 26 以降）**。
   別アプリだった subglass を voicekey に取り込む統合フェーズ 1。再生中の動画・配信の音声をそのまま拾って
   日本語字幕をガラス HUD に出す。**ディクテーション（本来の voicekey）とは完全に独立**していて、

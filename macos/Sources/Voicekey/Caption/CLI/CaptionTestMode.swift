@@ -6,6 +6,7 @@
 ///   --caption-pipeline-test <秒数>  : キャプチャ＋認識＋翻訳を N 秒回して全文保証まで判定
 ///   --caption-tts-loop-test         : 読み上げ音声を自分で拾い直していないかを実測
 ///   --caption-scope-test            : 2 プロセス同時再生で「最前面のアプリだけ」の絞り込みを実測
+///   --caption-mic-coexist-test      : 字幕の開始/停止を 3 サイクル回してもマイク録音が壊れないかを実測
 ///   --caption-bench                 : 翻訳エンジンの一括ベンチ（**課金あり・手動のみ**）
 ///   --caption-groq-models           : Groq のモデル一覧＋候補 3 文の小テスト
 ///
@@ -23,7 +24,7 @@ enum CaptionTestMode {
         let arguments = CommandLine.arguments
         let modes = [
             "--caption-pipeline-test", "--caption-tts-loop-test", "--caption-scope-test",
-            "--caption-bench", "--caption-groq-models",
+            "--caption-mic-coexist-test", "--caption-bench", "--caption-groq-models",
         ]
         guard let mode = modes.first(where: { arguments.contains($0) }) else { return false }
 
@@ -41,6 +42,8 @@ enum CaptionTestMode {
             runAsync { await CaptionTTSLoopTestRunner.run(logFilePath: logFilePath) }
         case "--caption-scope-test":
             runAsync { await CaptionScopeTestRunner.run(logFilePath: logFilePath) }
+        case "--caption-mic-coexist-test":
+            runAsync { await CaptionMicCoexistTestRunner.run(logFilePath: logFilePath) }
         case "--caption-bench":
             runAsync { await CaptionBenchRunner.run(logFilePath: logFilePath) }
         default:
