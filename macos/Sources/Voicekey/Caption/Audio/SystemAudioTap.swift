@@ -30,8 +30,23 @@ final class SystemAudioTap: @unchecked Sendable {
     /// 「届かない」は音が無いのではなく経路が壊れている（BT の A2DP↔HFP 切替等）ことを意味する。
     private static let frameStallThreshold: CFAbsoluteTime = 3.0
 
-    /// 再構成に失敗したときの再試行間隔（秒）
+    /// 再構成に失敗したときの最初の再試行間隔（秒）
+    ///
+    /// 失敗が続くたびに倍にして `maxRetryInterval` で頭打ちにする（指数バックオフ）。
     private static let retryInterval: TimeInterval = 2.0
+
+    /// 再試行間隔の上限（秒）
+    private static let maxRetryInterval: TimeInterval = 30.0
+
+    /// 連続失敗をこの回数まで許す。超えたら諦めて停止する
+    ///
+    /// **無制限に再試行してはいけない**（2026-08-10 の実事故）。CoreAudio が不調になると
+    /// タップ生成が必ず失敗するようになり、固定 2 秒間隔の再試行が
+    /// `AudioHardwareCreateProcessTap` を延々と撃ち続けて coreaudiod を詰まらせた。
+    /// その結果、同じ Mac の**全プロセス**でオーディオが応答不能になった
+    /// （無関係な afplay すら HAL の初期化でハングし、復旧に coreaudiod の再起動が要った）。
+    /// 諦めたあとはユーザーが字幕を開始し直せば再挑戦できる。
+    private static let maxRebuildAttempts = 5
 
     private let logger = makeCaptionLogger("SystemAudioTap")
     private let controlQueue = DispatchQueue(label: "com.voicekey.caption.tap.control")
@@ -45,6 +60,10 @@ final class SystemAudioTap: @unchecked Sendable {
     private var running = false
     private var watchdogTimer: DispatchSourceTimer?
     private var deviceListenerBlock: AudioObjectPropertyListenerBlock?
+    /// 連続で構築に失敗した回数（成功で 0 に戻す）
+    private var consecutiveFailures = 0
+    /// 上限まで失敗して再試行を諦めたか（start() し直すまで何もしない）
+    private var hasGivenUp = false
 
     /// 最後にフレームが届いた時刻。IO キューが書き、watchdog（controlQueue）が読む。
     private let lastFrameArrival = OSAllocatedUnfairLock<CFAbsoluteTime>(initialState: 0)
@@ -74,6 +93,9 @@ final class SystemAudioTap: @unchecked Sendable {
     func start() {
         controlQueue.async { [weak self] in
             guard let self, !self.running else { return }
+            // 前回諦めた状態を持ち越さない（ユーザーの開始し直しが再挑戦の契機になる）
+            self.consecutiveFailures = 0
+            self.hasGivenUp = false
             self.installDefaultOutputDeviceListener()
             self.setUpAndRun()
             self.startWatchdog()
@@ -113,21 +135,43 @@ final class SystemAudioTap: @unchecked Sendable {
     /// タップと Aggregate Device を作り、IOProc を開始する
     private func setUpAndRun() {
         dispatchPrecondition(condition: .onQueue(controlQueue))
+        guard !hasGivenUp else { return }
         do {
             let format = try createTapAndAggregateDevice()
             try startIOProc(format: format)
             running = true
+            consecutiveFailures = 0
             lastFrameArrival.withLock { $0 = CFAbsoluteTimeGetCurrent() }
             currentFormatDescription = describe(format)
             logger.notice("システム音声タップを開始しました format=\(self.currentFormatDescription, privacy: .public)")
         } catch {
             running = false
             teardownResources()
-            logger.error("タップの構築に失敗: \(String(describing: error), privacy: .public)")
-            // 出力デバイスの切替直後などは一時的に失敗する。あきらめず再試行する。
-            controlQueue.asyncAfter(deadline: .now() + Self.retryInterval) { [weak self] in
-                guard let self, !self.running else { return }
-                self.logger.notice("タップの再構築を再試行します")
+            consecutiveFailures += 1
+            logger.error(
+                "タップの構築に失敗(\(self.consecutiveFailures, privacy: .public)/\(Self.maxRebuildAttempts, privacy: .public)): \(String(describing: error), privacy: .public)"
+            )
+
+            // 上限を超えたら諦める。撃ち続けると coreaudiod ごと詰まらせて
+            // Mac 全体のオーディオを巻き添えにするため（実事故あり）。
+            guard consecutiveFailures < Self.maxRebuildAttempts else {
+                hasGivenUp = true
+                stopWatchdog()
+                removeDefaultOutputDeviceListener()
+                logger.error(
+                    "タップの構築に \(Self.maxRebuildAttempts, privacy: .public) 回続けて失敗したため再試行を停止します（字幕を開始し直すと再挑戦します）"
+                )
+                return
+            }
+
+            // 出力デバイスの切替直後などは一時的に失敗する。指数バックオフで間隔を空けて再試行する。
+            let delay = min(
+                Self.retryInterval * pow(2.0, Double(consecutiveFailures - 1)),
+                Self.maxRetryInterval
+            )
+            logger.notice("タップの再構築を \(delay, privacy: .public) 秒後に再試行します")
+            controlQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, !self.running, !self.hasGivenUp else { return }
                 self.setUpAndRun()
             }
         }
