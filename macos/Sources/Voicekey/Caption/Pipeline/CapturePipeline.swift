@@ -39,6 +39,9 @@ final class CapturePipeline: @unchecked Sendable {
     /// いま対象にしているアプリ名（メニュー表示用。すべてモードでは nil）
     var currentTargetName: String? { scopeTracker?.target?.name }
 
+    /// タップを作り直した回数（回帰ハーネスの判定材料。停止すると 0 に戻る）
+    var tapRebuildCount: Int { tap?.rebuildCount ?? 0 }
+
     /// 解析を開始した実時刻
     ///
     /// 認識結果が持つ音声タイムライン（`Segment.range`）は解析開始を 0 とするため、

@@ -6,11 +6,15 @@
 /// `HALDefaultDevice.cpp Could not find default device` → `入力デバイスが見つかりません`）。
 /// subglass 時代は別プロセスだったので同じ壊れ方をしてもマイクに影響しなかった＝統合で初めて出た衝突。
 ///
-/// **判定**: 「字幕パイプライン開始 → 数秒 → 停止」を 3 サイクル回し、各サイクルの後に
+/// **判定**: 「字幕パイプライン開始 → 数秒 → 停止」を 3 サイクル回し、
+/// **字幕が動いている最中（during）と停止した後（after）の両方**で
 ///   (a) 既定入力デバイスが解決できる
 ///   (b) AVAudioEngine の入力からフレームが実際に届く（環境ノイズで可・無音でもフレーム数は増える）
 ///   (c) 入力フォーマットが壊れていない（サンプルレート > 0）
-/// を確かめる。1 つでも欠けたらそのサイクルは NG。
+/// を確かめる。1 つでも欠けたらそのフェーズは NG。
+///
+/// during を測るのは、実運用では字幕が常時 ON のままディクテーションを始めるためで、
+/// 事故もその状態で起きた（停止後だけ見ていると再現しない）。
 import AVFoundation
 import Foundation
 import os
@@ -19,7 +23,7 @@ import os
 @available(macOS 26.0, *)
 enum CaptionMicCoexistTestRunner {
 
-    /// 1 サイクルで字幕を動かす秒数
+    /// 1 サイクルで字幕を動かす秒数（このうち途中でマイクを 1 回測る）
     private static let captionSeconds: Double = 3.0
     /// マイク確認で録音する秒数
     private static let micProbeSeconds: Double = 1.2
@@ -45,24 +49,36 @@ enum CaptionMicCoexistTestRunner {
         }
 
         var failedPhases: [String] = []
+        var rebuildTotal = 0
 
         for cycle in 1...cycleCount {
             writer.write("[CYCLE] \(cycle) 字幕パイプラインを開始します")
-            await runCaptionCycle(writer: writer)
+            let (during, rebuilds) = await runCaptionCycle(cycle: cycle, writer: writer)
             writer.write("[CYCLE] \(cycle) 字幕パイプラインを停止しました")
+            rebuildTotal += rebuilds
+
+            if let during {
+                let phase = "cycle\(cycle)-during"
+                writer.write(during.line(phase: phase))
+                if !during.isOK { failedPhases.append(phase) }
+            }
 
             // 停止直後は HAL 側の後始末が非同期に走るので少しだけ待ってから測る
             try? await Task.sleep(for: .seconds(1))
 
             let result = await probeMicrophone()
-            let phase = "cycle\(cycle)"
+            let phase = "cycle\(cycle)-after"
             writer.write(result.line(phase: phase))
             if !result.isOK { failedPhases.append(phase) }
         }
 
+        // 無音のまま回しているので、タップを作り直す理由はどこにも無い。
+        // ここが 0 でないと HAL を無駄に叩き続けている（事故の直接原因）。
+        if rebuildTotal > 0 { failedPhases.append("タップ再構成\(rebuildTotal)回") }
+
         let isPass = failedPhases.isEmpty
         writer.write(
-            "[VERDICT] status=\(isPass ? "ok" : "fail") cycles=\(cycleCount) "
+            "[VERDICT] status=\(isPass ? "ok" : "fail") cycles=\(cycleCount) rebuilds=\(rebuildTotal) "
                 + "failedPhases=\(failedPhases.isEmpty ? "なし" : failedPhases.joined(separator: ","))"
         )
         return isPass ? 0 : 1
@@ -71,7 +87,11 @@ enum CaptionMicCoexistTestRunner {
     /// 字幕パイプラインを 1 サイクル動かす（本番と同じ CapturePipeline を使う）
     ///
     /// 翻訳・HUD は使わない。**HAL を触る部分（タップ生成 → 破棄）だけ**を再現するのが目的。
-    private static func runCaptionCycle(writer: CaptionTestLogWriter) async {
+    ///
+    /// - Returns: 字幕が動いている最中に測ったマイクの結果（開始に失敗したら nil）と、タップの作り直し回数
+    private static func runCaptionCycle(
+        cycle: Int, writer: CaptionTestLogWriter
+    ) async -> (probe: MicProbe?, rebuilds: Int) {
         // ハーネスは `say` などを鳴らさないので、対象を絞らない「すべて」モードで回す
         let pipeline = CapturePipeline(scopeMode: .all)
         let frames = OSAllocatedUnfairLock(initialState: 0)
@@ -82,11 +102,17 @@ enum CaptionMicCoexistTestRunner {
             try await pipeline.start()
         } catch {
             writer.write("[CAPTION-ERROR] パイプラインを開始できません: \(String(describing: error))")
-            return
+            return (nil, 0)
         }
+        // 字幕が動いている「最中」にマイクを測る（実運用と同じ同時使用）
+        try? await Task.sleep(for: .seconds(1))
+        let during = await probeMicrophone()
         try? await Task.sleep(for: .seconds(captionSeconds))
+        // 停止すると数えられなくなるので、止める前に読む
+        let rebuilds = pipeline.tapRebuildCount
         await pipeline.stop()
-        writer.write("[CAPTION] 受け取ったフレーム数=\(frames.withLock { $0 })")
+        writer.write("[CAPTION] 受け取ったフレーム数=\(frames.withLock { $0 }) タップ再構成回数=\(rebuilds)")
+        return (during, rebuilds)
     }
 
     /// マイクが使えるかを実測する

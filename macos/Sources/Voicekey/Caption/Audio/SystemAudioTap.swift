@@ -26,9 +26,18 @@ final class SystemAudioTap: @unchecked Sendable {
 
     /// フレームがこの秒数届かなければ「黙死」とみなしてタップを作り直す
     ///
-    /// Aggregate Device は無音でも IO サイクルごとにバッファを配るため、
-    /// 「届かない」は音が無いのではなく経路が壊れている（BT の A2DP↔HFP 切替等）ことを意味する。
+    /// ただし「誰も音を出していない」だけでもフレームは 1 つも来ない。
+    /// 当初は「グローバルタップなら無音でも IO サイクルごとに配られる」と考えていたが、
+    /// 実測では内蔵スピーカーでも BT でも**無音時はフレームが 0**だった（2026-08-10）。
+    /// そのため作り直す前に必ず「本当に誰かが鳴らしているか」を確かめる。
     private static let frameStallThreshold: CFAbsoluteTime = 3.0
+
+    /// 鳴っているのにフレームが来ない状態での作り直しを、この回数まで許す
+    ///
+    /// **無制限に作り直してはいけない**（2026-08-10 の実事故）。上の前提が誤っていたため、
+    /// 無音のあいだ 4 秒おきに Process Tap と Aggregate Device を作り直し続け、
+    /// その churn が既定デバイスの再評価を繰り返し起こして coreaudiod を詰まらせた。
+    private static let maxStallRebuilds = 3
 
     /// 再構成に失敗したときの最初の再試行間隔（秒）
     ///
@@ -64,9 +73,24 @@ final class SystemAudioTap: @unchecked Sendable {
     private var consecutiveFailures = 0
     /// 上限まで失敗して再試行を諦めたか（start() し直すまで何もしない）
     private var hasGivenUp = false
+    /// フレーム途絶で連続して作り直した回数（本物のフレームが届いたら 0 に戻す）
+    private var consecutiveStallRebuilds = 0
+    /// 直近の作り直し直後に記録したフレーム到達時刻（これが動いていれば本当に届いた）
+    private var stallBaselineArrival: CFAbsoluteTime = 0
+    /// Aggregate Device を組んだときの既定出力デバイス（本当に変わったかの判定基準）
+    private var builtOutputDeviceID = AudioObjectID(kAudioObjectUnknown)
 
     /// 最後にフレームが届いた時刻。IO キューが書き、watchdog（controlQueue）が読む。
     private let lastFrameArrival = OSAllocatedUnfairLock<CFAbsoluteTime>(initialState: 0)
+
+    /// タップを作り直した回数（回帰ハーネスの判定材料。controlQueue が書き、他スレッドが読む）
+    private let rebuildCounter = OSAllocatedUnfairLock(initialState: 0)
+
+    /// タップを作り直した回数
+    ///
+    /// Process Tap と Aggregate Device の作り直しは HAL 全体に波及するため、
+    /// 無音のあいだにこれが増えるのは異常（2026-08-10 の事故の直接原因）。
+    var rebuildCount: Int { rebuildCounter.withLock { $0 } }
 
     /// タップが現在使っているフォーマット（デバッグ表示用）。controlQueue 専有。
     private(set) var currentFormatDescription: String = "(未確定)"
@@ -211,6 +235,7 @@ final class SystemAudioTap: @unchecked Sendable {
         // タップを main sub-device にすると HAL は無言でゼロサンプルを返す。
         let outputDeviceID = try readDefaultSystemOutputDeviceID()
         let outputUID = try readDeviceUID(outputDeviceID)
+        builtOutputDeviceID = outputDeviceID
         let aggregateDescription: [String: Any] = [
             kAudioAggregateDeviceNameKey: "voicekey-caption-aggregate",
             kAudioAggregateDeviceUIDKey: UUID().uuidString,
@@ -364,6 +389,7 @@ final class SystemAudioTap: @unchecked Sendable {
     private func rebuild(reason: String) {
         dispatchPrecondition(condition: .onQueue(controlQueue))
         logger.notice("タップを再構成します 理由=\(reason, privacy: .public)")
+        rebuildCounter.withLock { $0 += 1 }
         teardownResources()
         running = false
         setUpAndRun()
@@ -391,23 +417,46 @@ final class SystemAudioTap: @unchecked Sendable {
 
     /// フレームが途切れていないか確認し、途切れていればタップを作り直す
     ///
-    /// 対象プロセス限定のタップは、**対象が黙っている間はフレームを 1 つも配らない**
-    /// （グローバルタップは無音でも IO サイクルごとに配るので、そこが決定的に違う）。
+    /// タップは**対象が黙っている間はフレームを 1 つも配らない**（グローバルタップでも同じ）。
     /// そのため「届かない＝壊れた」とは言えず、対象が実際に出力中のときだけ黙死とみなす。
+    /// ここを取り違えると、無音のあいだ延々とタップを作り直し続けることになる。
     private func checkFrameFlow() {
         dispatchPrecondition(condition: .onQueue(controlQueue))
         guard running else { return }
         let last = lastFrameArrival.withLock { $0 }
         let elapsed = CFAbsoluteTimeGetCurrent() - last
         guard elapsed > Self.frameStallThreshold else { return }
-        if case let .processes(objectIDs) = scope {
-            let emitting = readAudioProcesses().contains {
-                objectIDs.contains($0.objectID) && $0.isRunningOutput
-            }
-            // 対象が鳴っていないだけなら正常。ここで作り直すと 3 秒ごとに張り替え続けてしまう。
-            guard emitting else { return }
+        // 誰も鳴らしていないだけなら正常。ここで作り直すと数秒ごとに張り替え続けてしまう。
+        guard isAnyTargetEmitting() else { return }
+
+        // 前回の作り直し以降に本物のフレームが届いていたなら、連続回数は数え直す
+        if last != stallBaselineArrival { consecutiveStallRebuilds = 0 }
+
+        consecutiveStallRebuilds += 1
+        guard consecutiveStallRebuilds <= Self.maxStallRebuilds else {
+            logger.error(
+                "鳴っているのにフレームが届かない状態が \(Self.maxStallRebuilds, privacy: .public) 回の作り直しでも直らないため監視を止めます（字幕を開始し直してください）"
+            )
+            stopWatchdog()
+            return
         }
         rebuild(reason: String(format: "フレームが %.1f 秒届いていない", elapsed))
+        stallBaselineArrival = lastFrameArrival.withLock { $0 }
+    }
+
+    /// いまタップ対象のプロセスが実際に音を出しているか
+    ///
+    /// - Returns: 出力中のプロセスがあれば true
+    private func isAnyTargetEmitting() -> Bool {
+        let processes = readAudioProcesses()
+        switch scope {
+        case .allExcludingSelf:
+            // 自プロセスはタップから除外しているので、自分が鳴っていても対象にはならない
+            let ownPID = getpid()
+            return processes.contains { $0.isRunningOutput && $0.pid != ownPID }
+        case let .processes(objectIDs):
+            return processes.contains { objectIDs.contains($0.objectID) && $0.isRunningOutput }
+        }
     }
 
     // MARK: - 既定出力デバイスの変更監視
@@ -422,7 +471,12 @@ final class SystemAudioTap: @unchecked Sendable {
         var address = globalPropertyAddress(kAudioHardwarePropertyDefaultSystemOutputDevice)
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             // リスナは controlQueue 上で呼ばれる（登録時に指定しているため）
-            self?.rebuild(reason: "既定システム出力デバイスの変更")
+            guard let self else { return }
+            // HAL は中身が変わっていなくても通知を投げてくる。作り直しは HAL に負荷を掛けるので、
+            // Aggregate Device を組んだときのデバイスと実際に違うときだけ張り替える。
+            let current = (try? readDefaultSystemOutputDeviceID()) ?? AudioObjectID(kAudioObjectUnknown)
+            guard current != self.builtOutputDeviceID else { return }
+            self.rebuild(reason: "既定システム出力デバイスの変更")
         }
         let status = AudioObjectAddPropertyListenerBlock(
             AudioObjectID(kAudioObjectSystemObject), &address, controlQueue, block
