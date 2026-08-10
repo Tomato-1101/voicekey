@@ -43,6 +43,21 @@
   - **既知の挙動**: 字幕が出ている間、字幕パネルは待機ピルを覆う（「ピルが字幕に育った」ように見せる意図）。
     隠している間も行の自主退場タイマーは動くので、長い音声入力のあとは古い行が残らず次の文から出る。
 
+- **字幕の設定を設定ウィンドウへ集約（統合フェーズ 4・personal・2026-08-10）**。
+  ユーザー指示「字幕の設定が voicekey の設定画面からできないので、できるようにして。設定の置き場所は
+  設定 UI に集約」「『字幕の表示テスト』は要らないので消して」。
+  - サイドバーに「ライブ字幕」タブ（id=9・`Caption/UI/CaptionSettingsTab.swift`）。personal かつ
+    macOS 26 以降でだけ出す。メニューバーのサブメニューは残す（ユーザーが「残してもいい」と明言）。
+  - 値の正本は `CaptionSettings`。UI は `ConfigStore` のミラー経由
+    （`captionSpeak` / `captionShowSource` / `captionGeminiModel` / `captionGroqModel` を追加）。
+  - **踏んだ罠**: `onAppear` や状態コールバックの中で `@Published` を同期的に触ると
+    SwiftUI が AttributeGraph の precondition で **abort する**（実際に落ちた。
+    クラッシュレポート `voicekey-2026-08-10-094727.ips`）。状態の反映は必ず
+    `Task { @MainActor in ... }` で更新サイクルの外へ逃がす。
+  - **踏んだ罠 2**: `APIKeyStore.load` は `/usr/bin/security` を子プロセスで起動するので、
+    SwiftUI の body から呼ぶと再描画のたびにプロセスが 3 つ立つ。`onAppear` で一度だけ調べて保持する。
+  - 検証は `VOICEKEY_OPEN_SETTINGS=9` で起動すればタブを直接開ける（スクショ用の既存デバッグ経路）。
+
 - **HUD 再発 2 件を計測で根治（release `05b29f8` / main `6fe045b`・push 済み・常用アプリ反映済み）**:
   ①「変換中…」の横揺れ＝ジオメトリは不動（0px 実測）で、**正体は明滅の谷で「…」が先に視認閾値を割り
   可視インクの重心が ±7pt 振れる知覚現象**。変換中テキストを完全静止化（明滅撤去・両 OS）。after は

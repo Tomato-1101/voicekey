@@ -78,10 +78,6 @@ final class CaptionMenuController: NSObject, NSMenuDelegate {
         engineItem.submenu = engineMenu
         menu.addItem(engineItem)
 
-        let preview = NSMenuItem(title: "字幕の表示テスト", action: #selector(previewCaption), keyEquivalent: "")
-        preview.target = self
-        menu.addItem(preview)
-
         let reset = NSMenuItem(title: "字幕の大きさをリセット", action: #selector(resetSize), keyEquivalent: "")
         reset.target = self
         menu.addItem(reset)
@@ -184,10 +180,6 @@ final class CaptionMenuController: NSObject, NSMenuDelegate {
               let engine = TranslationEngine(rawValue: raw) else { return }
         controller?.caption.translationEngine = engine
         controller?.config.captionEngine = engine
-    }
-
-    @objc private func previewCaption() {
-        controller?.caption.previewCaption()
     }
 
     @objc private func resetSize() {

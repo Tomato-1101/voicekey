@@ -86,8 +86,14 @@ Mac（`macos/` Swift）と Windows（`src/` Python）の両方を同じ作業で
 - **音声入力中は字幕を隠す**: HUD が録音・変換中・通知の間だけ非表示。認識・翻訳は止めない。
   配線は `HudModel.onModeChanged` → `AppController.applyCaptionVisibility` →
   `CaptionService.setDictationActive` の一方向のみ（字幕未生成なら何もしない）。
+- **設定の置き場所は設定 UI に集約（2026-08-10 ユーザー指示）**: 字幕の設定項目を増やすときは
+  **設定ウィンドウの「ライブ字幕」タブ（`Caption/UI/CaptionSettingsTab.swift`・タブ id=9）**に足す。
+  メニューバーのサブメニューは残してよいが、そちらだけにしない。値は `ConfigStore` の
+  `@Published` ミラー経由（正本は `CaptionSettings`）。
 - **API キー**: 環境変数 → 中央 Keychain（service = 変数名 / account = `shared`・`/usr/bin/security` を
   子プロセスで読む）。**書き込みはしない**（voicekey 本体の Keychain 項目に触らない）。値はログ・UI に出さない。
+  設定 UI には**状態だけ**を出す（入力欄は置かない）。`APIKeyStore.load` は子プロセスを起動するので
+  SwiftUI の body から呼ばない（`onAppear` で一度だけ）。
 - **権限（TCC）**: システムオーディオ収録の許可は「字幕を開始」操作のときだけ発火させる。
   初回起動時は自動開始しない（`captionEverStarted`）＝ voicekey の初回権限プロンプト直列化を壊さない。
 - **App Nap**: 字幕動作中は `ProcessInfo.beginActivity(.background)` を張る（行の自主退場・

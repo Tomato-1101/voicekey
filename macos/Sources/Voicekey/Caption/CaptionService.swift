@@ -337,12 +337,6 @@ final class CaptionService {
         hud.isSuppressed = active
     }
 
-    /// 動作確認用に HUD へ任意の字幕を出す
-    ///
-    /// 設定直後に「本当に画面に出るのか」を確かめられるようにするための導線。
-    func previewCaption() {
-        hud.showTranslation(source: "This is a voicekey caption display test.", japanese: "これは voicekey のライブ字幕の表示テストです。")
-    }
 
     // MARK: - 内部処理
 

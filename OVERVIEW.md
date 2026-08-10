@@ -89,7 +89,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | HUD / トレイ | `UI/Hud.swift` / `VoicekeyApp.swift`（メニューバー） | `ui/hud.py` / `system_tray.py` |
 | API キー保管 | `Core/Keychain.swift` / `Config/EmbeddedKeys.generated.swift` | `utils/secrets.py` / `.env` |
 | 自動更新 | `Core/UpdaterController.swift`（Sparkle） | `utils/updater.py` |
-| ライブ字幕（personal のみ） | `Caption/`（`CaptionService` / `Audio` システム音声タップ / `Speech` 認識・読み上げ / `Translation` Apple・Gemini・Groq / `Pipeline` / `UI` 字幕 HUD・メニュー / `CLI` 検証ハーネス） | — （Mac 専用） |
+| ライブ字幕（personal のみ） | `Caption/`（`CaptionService` / `Audio` システム音声タップ / `Speech` 認識・読み上げ / `Translation` Apple・Gemini・Groq / `Pipeline` / `UI` 字幕 HUD・メニュー・設定タブ / `CLI` 検証ハーネス） | — （Mac 専用） |
 | OS 権限 | `AppController.swift`（マイク/入力監視/アクセシビリティ） | — （Windows は OS ゲートなし） |
 | OS 抽象化 / ログイン起動 / ログ | ネイティブ API 直 | `platform/` / `utils/autostart.py` / `utils/logger.py` |
 

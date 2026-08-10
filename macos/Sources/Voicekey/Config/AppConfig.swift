@@ -262,6 +262,14 @@ final class ConfigStore: ObservableObject {
     @Published var captionEngine: TranslationEngine
     /// ライブ字幕で最前面のアプリだけを対象にするか（既定 ON）
     @Published var captionFrontmostOnly: Bool
+    /// ライブ字幕の訳文を読み上げるか（既定 OFF）
+    @Published var captionSpeak: Bool
+    /// ライブ字幕で英語の原文も併記するか（既定 ON）
+    @Published var captionShowSource: Bool
+    /// Gemini 翻訳のモデル ID（空なら既定値を使う）
+    @Published var captionGeminiModel: String
+    /// Groq 翻訳のモデル ID（空なら既定値を使う）
+    @Published var captionGroqModel: String
 
     /// 保護リストの既定シード（一人／二人＝ひとり・ふたり、十分＝じゅうぶん 等の誤変換を守る）
     static let defaultNumeralProtectWords = [
@@ -349,6 +357,10 @@ final class ConfigStore: ObservableObject {
         captionAutoStart = CaptionSettings.startsOnLaunch
         captionEngine = CaptionSettings.translationEngine
         captionFrontmostOnly = CaptionSettings.captureScopeMode == .frontmost
+        captionSpeak = CaptionSettings.speakTranslation
+        captionShowSource = CaptionSettings.showSourceText
+        captionGeminiModel = CaptionSettings.geminiModelID
+        captionGroqModel = CaptionSettings.groqModelID
         sideNotchEnabled = defaults.object(forKey: Keys.sideNotchEnabled) as? Bool ?? true
         historyEnabled = defaults.object(forKey: Keys.historyEnabled) as? Bool ?? true
         // 数字入力: マスター・助数詞は既定 ON。保護リストは未保存ならシード、
@@ -407,6 +419,11 @@ final class ConfigStore: ObservableObject {
         $captionEngine.dropFirst().sink { CaptionSettings.translationEngine = $0 }.store(in: &cancellables)
         $captionFrontmostOnly.dropFirst().sink { CaptionSettings.captureScopeMode = $0 ? .frontmost : .all }
             .store(in: &cancellables)
+        $captionSpeak.dropFirst().sink { CaptionSettings.speakTranslation = $0 }.store(in: &cancellables)
+        $captionShowSource.dropFirst().sink { CaptionSettings.showSourceText = $0 }.store(in: &cancellables)
+        // モデル ID は空欄＝「既定に戻す」の意味にする（CaptionSettings 側が既定値を返す）
+        $captionGeminiModel.dropFirst().sink { CaptionSettings.geminiModelID = $0 }.store(in: &cancellables)
+        $captionGroqModel.dropFirst().sink { CaptionSettings.groqModelID = $0 }.store(in: &cancellables)
     }
 
     /// ユーザー辞書の確定置換を最終テキストに適用する。

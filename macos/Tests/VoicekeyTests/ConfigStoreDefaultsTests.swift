@@ -35,6 +35,58 @@ final class ConfigStoreDefaultsTests: XCTestCase {
         XCTAssertTrue(store.historyEnabled)
     }
 
+    // ライブ字幕のミラーが CaptionSettings（正本）と一致して初期化される
+    //
+    // 字幕設定の正本は UserDefaults.standard 側の caption* キーなので、ここでは
+    // **書かずに読むだけ**にする（テストが実ユーザーの字幕設定を書き換えないため）。
+    func testCaptionMirrorsReflectCaptionSettings() {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let store = ConfigStore(defaults: defaults)
+        XCTAssertEqual(store.captionAutoStart, CaptionSettings.startsOnLaunch)
+        XCTAssertEqual(store.captionEngine, CaptionSettings.translationEngine)
+        XCTAssertEqual(store.captionFrontmostOnly, CaptionSettings.captureScopeMode == .frontmost)
+        XCTAssertEqual(store.captionSpeak, CaptionSettings.speakTranslation)
+        XCTAssertEqual(store.captionShowSource, CaptionSettings.showSourceText)
+        XCTAssertEqual(store.captionGeminiModel, CaptionSettings.geminiModelID)
+        XCTAssertEqual(store.captionGroqModel, CaptionSettings.groqModelID)
+        // モデル ID は未設定でも既定値が返る（設定 UI のプレースホルダと一致させるため）
+        XCTAssertFalse(store.captionGeminiModel.isEmpty)
+        XCTAssertFalse(store.captionGroqModel.isEmpty)
+    }
+
+    // 設定 UI（ConfigStore のミラー）を変えると CaptionSettings（正本）へ書き抜ける
+    //
+    // 正本は UserDefaults.standard 側なので、**元の値を退避して必ず戻す**
+    // （テストがユーザーの字幕設定を書き換えたままにしないため）。
+    func testCaptionMirrorWritesThroughToCaptionSettings() {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let savedSpeak = CaptionSettings.speakTranslation
+        let savedShowSource = CaptionSettings.showSourceText
+        let savedGeminiModel = CaptionSettings.geminiModelID
+        defer {
+            CaptionSettings.speakTranslation = savedSpeak
+            CaptionSettings.showSourceText = savedShowSource
+            CaptionSettings.geminiModelID = savedGeminiModel
+        }
+
+        let store = ConfigStore(defaults: defaults)
+        store.captionSpeak = !savedSpeak
+        store.captionShowSource = !savedShowSource
+        store.captionGeminiModel = "gemini-test-model"
+
+        XCTAssertEqual(CaptionSettings.speakTranslation, !savedSpeak)
+        XCTAssertEqual(CaptionSettings.showSourceText, !savedShowSource)
+        XCTAssertEqual(CaptionSettings.geminiModelID, "gemini-test-model")
+
+        // 空欄は「既定に戻す」の意味（設定 UI のプレースホルダと揃える）
+        store.captionGeminiModel = ""
+        XCTAssertEqual(CaptionSettings.geminiModelID, CaptionSettings.defaultGeminiModelID)
+    }
+
     // 変更した値が保存され、作り直したストアで復元される
     func testNewFieldsPersist() {
         let (defaults, suite) = makeDefaults()

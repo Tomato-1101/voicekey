@@ -62,6 +62,10 @@ struct MainWindowView: View {
             .init(id: 2, title: "録音キー 2（サブ）", icon: "2.circle"),
             .init(id: 8, title: "ユーザー辞書", icon: "character.book.closed"),
         ]
+        // ライブ字幕は personal 限定・macOS 26 以降でしか動かないので、使える環境でだけ出す
+        if EmbeddedKeys.isPersonal, #available(macOS 26.0, *) {
+            items.append(.init(id: 9, title: "ライブ字幕", icon: "captions.bubble"))
+        }
         // personal（個人用最速版）は埋め込みキーで常に利用可＝ログイン/アカウントの概念が無いので
         // アカウントタブを出さない。配布/開発ビルドでは従来どおり出す。
         if !EmbeddedKeys.isPersonal {
@@ -315,6 +319,12 @@ struct MainWindowView: View {
         case 1: SlotSettingsTab(title: "録音キー 1（メイン）", slot: $config.slot1)
         case 2: SlotSettingsTab(title: "録音キー 2（サブ）", slot: $config.slot2)
         case 8: DictionaryTab(config: config)
+        case 9:
+            if #available(macOS 26.0, *) {
+                CaptionSettingsTab(config: config, controller: controller)
+            } else {
+                GeneralSettingsTab(config: config)
+            }
         case 6: AccountTab()
         case 7: AboutTab()
         case 5: ApiKeysTab()
