@@ -54,14 +54,15 @@ actor AppleTranslator: Translator {
 
     /// 既に導入済みの場合だけ準備する（ダウンロード承認 UI を絶対に出さない）
     ///
-    /// CLI ハーネス用。ハーネスでユーザー操作待ちの UI を出すと計測が止まってしまうため、
-    /// 「導入済みなら使う・未導入なら諦める」に限定した入口を分けている。
+    /// 用途は 2 つ。CLI ハーネス（ユーザー操作待ちの UI が出ると計測が止まる）と、
+    /// クラウドエンジン選択時のライブ行＆フォールバック用の準備（ダイアログを出せない場面）。
+    /// どちらも「導入済みなら使う・未導入なら諦める」に限定した入口が要る。
     ///
     /// - Returns: 準備できたか
     func prepareIfInstalled() async -> Bool {
         if isPrepared { return true }
         let status = await availability.status(from: Self.sourceLanguage, to: Self.targetLanguage)
-        logger.notice("Apple 翻訳の言語状態(ハーネス): \(String(describing: status), privacy: .public)")
+        logger.notice("Apple 翻訳の言語状態(承認なし準備): \(String(describing: status), privacy: .public)")
         guard status == .installed else { return false }
         let session = await currentSession()
         guard await session.isReady else { return false }

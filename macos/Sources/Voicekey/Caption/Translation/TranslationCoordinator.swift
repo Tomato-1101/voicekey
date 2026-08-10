@@ -16,14 +16,42 @@ import os
 @available(macOS 26.0, *)
 final class TranslationCoordinator: @unchecked Sendable {
 
+    // MARK: - 区切りポリシー（2026-08-10 ユーザー指摘「一文が長すぎて翻訳されるまで時間がかかりすぎる。
+    // もっと文を区切れ区切れにして。ある程度長くなったら一旦すぐ翻訳して」を受けた調整値）
+    //
+    // 考え方: 字幕は「読める粒度」で早く出るほうが体感が良い。1 行の最低表示時間は
+    // `max(3秒, 文字数×0.15秒)` なので、**日本語 20〜30 字＝英語 40〜50 字**あたりが
+    // 「3〜4 秒で読み切れる 1 行」に収まる。ここを超えて溜めると、読む速さではなく
+    // 待ち時間のほうが長くなる。
+
     /// 文末とみなす記号
     private static let sentenceEndings: Set<Character> = [".", "!", "?", "。", "！", "？"]
-    /// 文末が来なくてもこの文字数を超えたら送る
+
+    /// 文末が来なくてもこの文字数を超えたら送る（ハード上限）
     ///
-    /// 長く溜めるほど 1 行が遅れて出る。鮮度優先で短めにしている。
-    private static let maxBufferedCharacters = 80
+    /// 英語 48 字 ≒ 日本語 25 字前後 ≒ 1 行で読み切れる量。以前は 80 字だったが、
+    /// 接続詞で延々と続く話し方（実測の配信音声）では 1 行が出るまで数秒待たされていた。
+    private static let maxBufferedCharacters = 48
+
+    /// 節区切りを探し始める長さ
+    ///
+    /// これ未満で切ると「単語だけの行」が並んで逆に読みにくい。
+    /// 32 字あれば 1 つの節として意味が通る。
+    private static let clauseBreakMinimumCharacters = 32
+
+    /// 節の切れ目とみなす目印（見つけた目印の**直後**で切る）
+    ///
+    /// カンマと等位・従属接続詞。話し言葉は文末記号がなかなか来ないので、
+    /// ここで刻まないと 1 文がいつまでも確定しない。
+    private static let clauseBreakMarkers = [
+        ", ", " and ", " but ", " so ", " because ", " then ", " or ", " while ", " when ",
+    ]
+
     /// 新しい確定が来ないまま経過したら送る（言い切りで止まった時に字幕が出ないのを防ぐ）
-    private static let idleFlushInterval: TimeInterval = 0.7
+    ///
+    /// 0.7 秒だと「言い切って黙った」ときの空白が体感ではっきり分かるため詰めた。
+    /// これ以上短くすると、単に息継ぎしただけの間で切れて行が細切れになる。
+    private static let idleFlushInterval: TimeInterval = 0.45
     /// 翻訳待ちキューの上限
     ///
     /// 翻訳は実測 1 文 30ms なので、喋る速さ（数秒に 1 文）に対して実質詰まらない。
@@ -78,17 +106,13 @@ final class TranslationCoordinator: @unchecked Sendable {
         guard !text.isEmpty else { return }
         queue.async { [self] in
             buffer = buffer.isEmpty ? text : buffer + " " + text
-            if shouldFlushBuffer() {
-                flushBufferLocked()
-            } else {
-                scheduleIdleFlush()
-            }
+            drainBufferLocked(force: false)
         }
     }
 
     /// バッファに残っている分を強制的に流す（停止時など）
     func flush() {
-        queue.async { [self] in flushBufferLocked() }
+        queue.async { [self] in drainBufferLocked(force: true) }
     }
 
     /// 状態を初期化する（字幕の停止→再開で前の文脈を引きずらないように）
@@ -103,20 +127,124 @@ final class TranslationCoordinator: @unchecked Sendable {
 
     // MARK: - 内部処理（すべて queue 上で実行）
 
-    /// バッファを送るべきか
-    private func shouldFlushBuffer() -> Bool {
-        guard let last = buffer.last else { return false }
-        if Self.sentenceEndings.contains(last) { return true }
-        return buffer.count >= Self.maxBufferedCharacters
+    /// 送れる分だけバッファから切り出して流す
+    ///
+    /// 1 回の呼び出しで複数の節が出ることがある（長い確定が一度に来たとき）。
+    /// 残った端切れは次の確定か idle タイマーで出るので、**取りこぼしはしない**
+    /// （全文翻訳保証＝ `[COVERAGE]` を壊さない）。
+    ///
+    /// - Parameter force: 短くても残り全部を出す（停止時・言い切りで黙ったとき）
+    private func drainBufferLocked(force: Bool) {
+        cancelIdleFlush()
+        while let segment = takeFlushableSegmentLocked() {
+            emitLocked(segment)
+        }
+        let rest = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rest.isEmpty else {
+            buffer = ""
+            return
+        }
+        if force {
+            buffer = ""
+            emitLocked(rest)
+        } else {
+            scheduleIdleFlush()
+        }
     }
 
-    /// バッファをキューへ移して翻訳を起動する
-    private func flushBufferLocked() {
-        cancelIdleFlush()
+    /// バッファの先頭から「いま送出してよい部分」を切り出す
+    ///
+    /// **長さの判定を文末判定より先に行う**のが要点。音声認識は 40 語を超える 1 文を
+    /// まるごと 1 件の確定として渡してくることがあり（実測 199 字）、
+    /// 「文末で終わっていたらそのまま出す」を先に見ると、その巨大な 1 文が
+    /// 1 行として出るまで丸ごと待たされてしまう。
+    ///
+    /// - Returns: 送出する文字列。まだ溜めておくなら nil
+    private func takeFlushableSegmentLocked() -> String? {
         let text = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
-        buffer = ""
-        guard !text.isEmpty else { return }
+        guard !text.isEmpty else { return nil }
 
+        // 1. 上限より長いものは、文末で終わっていても刻む
+        if text.count > Self.maxBufferedCharacters {
+            let cut = clauseBreakIndex(in: text, limit: Self.maxBufferedCharacters)
+                ?? wordBreakIndex(in: text, limit: Self.maxBufferedCharacters)
+            if let cut { return splitLocked(text, at: cut) }
+            // 切れ目がまったく無い（1 単語が異常に長い等）ときだけ、そのまま出す
+            buffer = ""
+            return text
+        }
+        // 2. 上限内で文末まで来ていれば 1 文としてそのまま出す
+        if let last = text.last, Self.sentenceEndings.contains(last) {
+            buffer = ""
+            return text
+        }
+        // 3. ある程度の長さになったら、節の切れ目で先に出す（文末を待たない）
+        guard text.count >= Self.clauseBreakMinimumCharacters,
+              let cut = clauseBreakIndex(in: text, limit: Self.maxBufferedCharacters) else { return nil }
+        return splitLocked(text, at: cut)
+    }
+
+    /// 指定位置で切り、前半を返して後半をバッファに残す
+    private func splitLocked(_ text: String, at cut: String.Index) -> String? {
+        let head = String(text[text.startIndex..<cut]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !head.isEmpty else { return nil }
+        buffer = String(text[cut...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return head
+    }
+
+    /// 節の切れ目（目印の直後の位置）を探す
+    ///
+    /// 候補のうち**上限に収まる範囲でいちばん後ろ**を採る。前寄りで切ると
+    /// 「単語 2〜3 個だけの行」になり、かえって読みにくくなるため。
+    ///
+    /// - Parameters:
+    ///   - text: 探索対象（トリム済み）
+    ///   - limit: 切り出す先頭の最大文字数
+    /// - Returns: 切る位置。適切な切れ目が無ければ nil
+    private func clauseBreakIndex(in text: String, limit: Int) -> String.Index? {
+        var best: String.Index?
+        var bestOffset = 0
+        for marker in Self.clauseBreakMarkers {
+            var searchStart = text.startIndex
+            while let found = text.range(of: marker, range: searchStart..<text.endIndex) {
+                let offset = text.distance(from: text.startIndex, to: found.upperBound)
+                // 短すぎる先頭は採らない／上限を超える位置も採らない
+                if offset >= Self.clauseBreakMinimumCharacters, offset <= limit,
+                   found.upperBound < text.endIndex, offset > bestOffset {
+                    best = found.upperBound
+                    bestOffset = offset
+                }
+                searchStart = found.upperBound
+            }
+        }
+        return best
+    }
+
+    /// 節の切れ目が無いときの保険：上限内で最後の単語境界を探す
+    ///
+    /// 単語の途中で切ると訳が壊れるため、必ず空白で切る。
+    ///
+    /// - Parameters:
+    ///   - text: 探索対象（トリム済み）
+    ///   - limit: 切り出す先頭の最大文字数
+    /// - Returns: 切る位置。見つからなければ nil
+    private func wordBreakIndex(in text: String, limit: Int) -> String.Index? {
+        var best: String.Index?
+        var offset = 0
+        var index = text.startIndex
+        while index < text.endIndex, offset <= limit {
+            if text[index].isWhitespace, offset >= Self.clauseBreakMinimumCharacters {
+                best = text.index(after: index)
+            }
+            index = text.index(after: index)
+            offset += 1
+        }
+        return best
+    }
+
+    /// 1 区切りぶんをキューへ移して翻訳を起動する
+    private func emitLocked(_ text: String) {
+        guard !text.isEmpty else { return }
         onSourceReady?(text)
 
         pending.append((text, sequenceProvider()))
@@ -193,7 +321,8 @@ final class TranslationCoordinator: @unchecked Sendable {
         cancelIdleFlush()
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + Self.idleFlushInterval)
-        timer.setEventHandler { [weak self] in self?.flushBufferLocked() }
+        // 言い切って黙ったときは短くても出す（無言で待たせない）
+        timer.setEventHandler { [weak self] in self?.drainBufferLocked(force: true) }
         timer.resume()
         idleTimer = timer
     }

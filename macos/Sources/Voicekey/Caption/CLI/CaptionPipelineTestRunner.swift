@@ -83,13 +83,14 @@ enum CaptionPipelineTestRunner {
 
         // 認識だけでなく翻訳まで通しで確かめられるよう、本番と同じ調停役を挟む。
         // 翻訳器は 1 個だけ作って使い回す（Apple 側はセッションを保持するため）
-        let translator = makeTranslator()
-        // Apple 翻訳は導入済みのときだけ準備する。ここでダウンロード承認 UI を出すと
-        // ユーザー操作待ちで計測が止まるため、未導入なら翻訳せずに進む。
-        if let apple = translator as? AppleTranslator {
-            let ready = await apple.prepareIfInstalled()
-            writer.write("[INFO] Apple 翻訳の準備: \(ready ? "済" : "未導入のためスキップ")")
-        }
+        //
+        // Apple 翻訳は 1 個だけ作り、「クラウド失敗時の落とし先」と「ライブ行の暫定訳」で共有する
+        // （本番の CaptionService と同じ構成）。準備は導入済みのときだけ行う。ここでダウンロード
+        // 承認 UI を出すとユーザー操作待ちで計測が止まるため、未導入なら翻訳せずに進む。
+        let apple = AppleTranslator()
+        let appleReady = await apple.prepareIfInstalled()
+        writer.write("[INFO] Apple 翻訳の準備: \(appleReady ? "済" : "未導入のためスキップ")")
+        let translator = makeTranslator(apple: apple)
 
         let latency = CaptionLatencyLog()
         // 表示順の採番。ハーネスでは単調増加していれば足りる。
@@ -122,9 +123,11 @@ enum CaptionPipelineTestRunner {
             writer.write("[STREAM] \(japanese)")
         }
 
-        // 本番と同じ条件で部分訳も回す（Gemini では無効になる）
+        // 本番と同じ条件で部分訳も回す（クラウド選択時は Apple オンデバイスに切り替わる）
+        let livePartialTranslator = partialTranslator(translator, apple: apple, appleReady: appleReady)
+        writer.write("[INFO] ライブ行の暫定訳: \(livePartialTranslator == nil ? "なし（原文のみ）" : "あり")")
         let partialDriver = PartialTranslationDriver(
-            translatorProvider: { partialTranslator(translator) },
+            translatorProvider: { livePartialTranslator },
             sequenceProvider: { sequence.withLock { value in value += 1; return value } }
         )
         partialDriver.onPartial = { _, japanese, _ in
@@ -225,19 +228,26 @@ enum CaptionPipelineTestRunner {
     /// ハーネスで使う翻訳器
     ///
     /// 本番と同じ選択規則（モック指定 → 設定エンジン）。
-    private static func makeTranslator() -> Translator {
+    private static func makeTranslator(apple: AppleTranslator) -> Translator {
         if CaptionService.usesMockTranslator { return MockTranslator() }
         switch CaptionSettings.translationEngine {
-        case .apple: return AppleTranslator()
-        case .gemini: return FallbackTranslator(primary: GeminiTranslator(), fallback: AppleTranslator())
-        case .groq: return FallbackTranslator(primary: GroqTranslator(), fallback: AppleTranslator())
+        case .apple: return apple
+        case .gemini: return FallbackTranslator(primary: GeminiTranslator(), fallback: apple)
+        case .groq: return FallbackTranslator(primary: GroqTranslator(), fallback: apple)
         }
     }
 
-    /// 部分訳に使う翻訳器（本番と同じ規則。クラウドは高頻度呼び出しを避けるため対象外）
-    private static func partialTranslator(_ translator: Translator) -> Translator? {
+    /// 部分訳（ライブ行）に使う翻訳器（本番の CaptionService と同じ規則）
+    ///
+    /// クラウドへは確定文しか送らない。ライブ行の暫定訳は Apple オンデバイスで出す
+    /// （無料・ローカルなので高頻度に呼んでも課金も外部通信も起きない）。
+    /// 言語モデル未導入なら nil を返し、原文だけのライブ行にする。
+    private static func partialTranslator(
+        _ translator: Translator, apple: AppleTranslator, appleReady: Bool
+    ) -> Translator? {
         if CaptionService.usesMockTranslator { return translator }
-        return CaptionSettings.translationEngine.isCloud ? nil : translator
+        guard CaptionSettings.translationEngine.isCloud else { return translator }
+        return appleReady ? apple : nil
     }
 
     /// ログに出すエンジン名

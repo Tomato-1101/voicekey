@@ -54,6 +54,12 @@ final class CaptionService {
     private var pipeline: CapturePipeline?
     private var coordinator: TranslationCoordinator?
     private var partialDriver: PartialTranslationDriver?
+
+    /// クラウドエンジン選択時に、ライブ行の暫定訳を Apple で出せるか
+    ///
+    /// 言語モデルが**既に入っている場合だけ** true にする（ダウンロード承認 UI は絶対に出さない）。
+    /// 部分訳ドライバの queue から読むので unfair lock で守る。
+    private let appleLiveLineReady = OSAllocatedUnfairLock(initialState: false)
     /// 遅延計測（実運用でも .notice で残す）
     private let latency = CaptionLatencyLog()
     /// 字幕動作中の App Nap 抑止トークン
@@ -133,6 +139,8 @@ final class CaptionService {
             logger.notice("翻訳エンジンを切り替えました: \(newValue.rawValue, privacy: .public)")
             // Apple へ切り替えたら、その場でモデルの準備状況を確かめて画面に出す
             if newValue == .apple, state.isActive { prepareAppleTranslationIfNeeded() }
+            // クラウドへ切り替えたら、ライブ行用の Apple 翻訳を裏で用意する
+            if state.isActive { prepareAppleLiveLineIfNeeded() }
         }
     }
 
@@ -255,6 +263,7 @@ final class CaptionService {
                 // （開始から再生までの待ち時間を遅延に混ぜないため）
                 await MainActor.run { self.state = .running }
                 self.prepareAppleTranslationIfNeeded()
+                self.prepareAppleLiveLineIfNeeded()
             } catch {
                 let message = String(describing: error)
                 self.logger.error("字幕の開始に失敗: \(message, privacy: .public)")
@@ -360,12 +369,34 @@ final class CaptionService {
         }
     }
 
-    /// 部分訳に使う翻訳器（対応しないエンジンでは nil）
+    /// 部分訳（ライブ行）に使う翻訳器（使えないときは nil）
     ///
-    /// クラウド（Gemini / Groq）では、認識途中の高頻度呼び出しはしない（恒久方針）。
+    /// **クラウドへは確定文しか送らない**という恒久要件は変えない。そのうえで、
+    /// ライブ行の暫定訳だけは **Apple のオンデバイス翻訳**で出す（2026-08-10 ユーザー指摘
+    /// 「翻訳されるまで時間がかかりすぎる」への対処）。無料・ローカルなので高頻度に呼んでも
+    /// 課金も外部通信も発生せず、恒久要件に抵触しない。確定したらクラウドの訳で置き換わる。
+    ///
+    /// Apple の言語モデルが入っていない環境では nil を返し、従来どおり原文だけのライブ行にする。
     private func partialTranslator() -> Translator? {
         if Self.usesMockTranslator { return mockTranslator }
-        return CaptionSettings.translationEngine.isCloud ? nil : appleTranslator
+        guard CaptionSettings.translationEngine.isCloud else { return appleTranslator }
+        return appleLiveLineReady.withLock { $0 } ? appleTranslator : nil
+    }
+
+    /// クラウドエンジンのときに、ライブ行用の Apple 翻訳を裏で用意する
+    ///
+    /// `prepareIfInstalled()` は**未導入なら何もしない**（ダウンロード承認 UI を出さない）ので、
+    /// クラウドを選んでいるユーザーに余計なダイアログや通知を出すことがない。
+    private func prepareAppleLiveLineIfNeeded() {
+        guard !Self.usesMockTranslator, CaptionSettings.translationEngine.isCloud else { return }
+        guard !appleLiveLineReady.withLock({ $0 }) else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            let ready = await self.appleTranslator.prepareIfInstalled()
+            self.appleLiveLineReady.withLock { $0 = ready }
+            let description = ready ? "利用可" : "言語モデル未導入のため原文のみ"
+            self.logger.notice("ライブ行の暫定訳(Apple): \(description, privacy: .public)")
+        }
     }
 
     /// いま使う翻訳器を返す
