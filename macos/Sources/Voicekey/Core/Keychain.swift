@@ -7,7 +7,11 @@
 //
 
 import Foundation
+import OSLog
 import Security
+
+/// 中央 Keychain からの取得を記録するロガー（値は出さない）
+private let centralLogger = Logger(subsystem: "com.voicekey.app", category: "Keychain")
 
 /// 保存する認証セッション（Supabase）。
 /// expiresAt は access_token の失効時刻（UNIX エポック秒）。
@@ -88,9 +92,45 @@ enum Keychain {
         if let env = ProcessInfo.processInfo.environment[envVar], !env.isEmpty {
             return env
         }
+        // 中央 Keychain（service = 環境変数名 / account = shared）。
+        // プロバイダーごとにキーを 1 本だけ発行して全プロジェクトで使い回すための共通置き場
+        // （2026-08-09 導入。字幕側の APIKeyStore は既にここを読んでいる）。
+        if let central = readCentral(service: envVar) {
+            // 値は出さない（取得元と末尾 4 桁のみ）。キーがどこから来たかを後から追えないと
+            // 「キー未設定」系の不具合を実機で切り分けられないため .notice で残す
+            centralLogger.notice(
+                "中央 Keychain から取得 service=\(envVar, privacy: .public) suffix=\(String(central.suffix(4)), privacy: .public)"
+            )
+            lock.lock(); cache[svc] = central; lock.unlock()
+            return central
+        }
         // 配布ビルドにプロバイダーキーは埋め込まない（製品版はサーバー経由）。
-        // Keychain にも環境変数にも無ければ未設定として nil を返す。
+        // どこにも無ければ未設定として nil を返す。
         return nil
+    }
+
+    /// 中央 Keychain（service = 環境変数名 / account = `shared`）から読む
+    ///
+    /// `/usr/bin/security` を子プロセスで起動する。SecItem で直読みすると項目ごとに
+    /// アクセス承認ダイアログが出てしまうため（字幕側の `APIKeyStore` と同じ方式）。
+    private static func readCentral(service: String) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        process.arguments = ["find-generic-password", "-s", service, "-a", "shared", "-w"]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = Pipe()
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+        let value = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? nil : value
     }
 
     /// API キーを保存する
