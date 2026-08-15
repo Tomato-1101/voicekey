@@ -14,8 +14,6 @@ import os.log
 
 private let log = Logger(subsystem: "com.voicekey.app", category: "app")
 
-/// ダブルタップ（auto_enter）の判定ウィンドウ（秒）
-private let kDoubleTapWindow: TimeInterval = 0.4
 /// 録音がこの秒数を超えたら自動停止する保険
 private let kMaxRecordingSec: TimeInterval = 300
 /// これより短い録音は誤操作とみなして破棄（秒）
@@ -67,9 +65,10 @@ final class AppController: ObservableObject {
     private var failsafeTask: Task<Void, Never>?
 
     // --- ダブルタップ検出 ---
-    private var lastReleaseTime: TimeInterval = 0
-    private var lastReleaseSlot: Int?
-    /// 録音開始時刻（短いタップ＝ダブルタップ 1 打目の判定用）
+    /// 直前のタップ（押下・離鍵時刻とスロット）。2 打目の押下時に DoubleTapPolicy へ渡す。
+    /// 押下時刻まで持つのは press-to-press で判定するため（DoubleTapPolicy の説明を参照）
+    private var lastTap: DoubleTapPolicy.Tap?
+    /// 録音開始時刻（＝押下時刻。ダブルタップ 1 打目のホールド時間の算出に使う）
     private var recordingStartedAt: TimeInterval = 0
 
     /// 文字起こしパイプラインの直列化チェーン。
@@ -487,8 +486,20 @@ final class AppController: ObservableObject {
             // ダブルタップ: 同スロットを短時間内に再押下 → auto_enter
             // （ハンズフリー toggle 起動時はダブルタップ判定を使わない）
             let now = ProcessInfo.processInfo.systemUptime
-            let isDoubleTap = !handsfree && lastReleaseSlot == slotId
-                && now - lastReleaseTime < kDoubleTapWindow
+            var isDoubleTap = false
+            if !handsfree {
+                // 窓はシステム設定のダブルクリック間隔に追従させる（ユーザーが伸ばしていれば広がる）
+                let window = DoubleTapPolicy.gapWindow(
+                    doubleClickInterval: NSEvent.doubleClickInterval)
+                let decision = DoubleTapPolicy.decide(
+                    first: lastTap, slotId: slotId, pressedAt: now, gapWindow: window)
+                logDoubleTap(decision, slotId: slotId, first: lastTap, pressedAt: now, window: window)
+                isDoubleTap = decision.isDoubleTap
+                if isDoubleTap {
+                    // 成立した 1 打目は使い切る（3 回目のタップが連鎖して Enter を撃たないように）
+                    lastTap = nil
+                }
+            }
             beginRecording(slotId: slotId, autoEnter: isDoubleTap, effectiveMode: effectiveMode)
             break
         }
@@ -516,28 +527,53 @@ final class AppController: ObservableObject {
         }
         if isHotkeyKey {
             // ダブルタップ確定後（autoEnter）の離鍵は 2 打目の待ち窓に入れず即確定する。
-            // ここで再び kDoubleTapWindow 待つと、短い録音でも Enter 自動送信が 0.4 秒遅れていた
+            // ここで再び窓のぶん待つと、短い録音でも Enter 自動送信がそのぶん遅れる
             if autoEnter {
                 finishRecording()
                 return
             }
             let now = ProcessInfo.processInfo.systemUptime
-            if now - recordingStartedAt < kDoubleTapWindow {
-                // 短いタップだけをダブルタップの 1 打目として記録する
-                // （長い口述の直後に素早く次の録音を始めただけで
-                //  auto_enter（Enter 自動送信）になってしまうのを防ぐ）
-                lastReleaseTime = now
-                lastReleaseSlot = slotId
-                // 離鍵に対して即座に確定する（quietIfNoSpeech＝無音なら通知を出さず静かに捨てる）。
-                // 以前はここで 2 打目を kDoubleTapWindow(0.4s) 待ってから確定していたため、
-                // HUD の「録音中→変換中/待機」への切替が 0.4 秒遅れ、離鍵の反応が鈍く見えていた。
-                // ダブルタップ（auto_enter）は 2 打目の押下時に handlePress 側が lastRelease から
-                // 検出し、新しい録音を auto_enter で始める（連続録音の仕組みを流用）。
+            // ホールドの長短に関わらず 1 打目として記録する。成立/不成立は 2 打目の押下時に
+            // DoubleTapPolicy が決める（ここで捨てると「hold が長くて不成立」という理由すら
+            // ログに残らず、「たまに検出されない」を実測で追えなくなる）
+            lastTap = DoubleTapPolicy.Tap(
+                slotId: slotId, pressedAt: recordingStartedAt, releasedAt: now)
+            if now - recordingStartedAt <= kTapHoldMax {
+                // タップ相当の短さなら、離鍵に対して即座に確定する
+                // （quietIfNoSpeech＝無音なら通知を出さず静かに捨てる）。
+                // 以前はここで 2 打目を待ってから確定していたため、HUD の「録音中→変換中/待機」への
+                // 切替が遅れ、離鍵の反応が鈍く見えていた。ダブルタップ（auto_enter）は 2 打目の
+                // 押下時に handlePress 側が lastTap から検出し、新しい録音を auto_enter で始める
+                // （連続録音の仕組みを流用）。
                 finishRecording(quietIfNoSpeech: true)
             } else {
                 finishRecording()
             }
         }
+    }
+
+    /// ダブルタップ判定の実測値をそのまま残す。
+    /// 「たまに検出されない」を次回は推測でなく数値で追うための記録なので、
+    /// **必ず .notice**（info は永続化されず `log show` から追えない）。
+    /// 出すのは数値と結果だけ（キー名や本文は出さない）。
+    private func logDoubleTap(
+        _ decision: DoubleTapPolicy.Decision,
+        slotId: Int,
+        first: DoubleTapPolicy.Tap?,
+        pressedAt: TimeInterval,
+        window: TimeInterval
+    ) {
+        let hold = first.map { String(format: "%.2f", $0.hold) } ?? "-"
+        let gap = first.map { String(format: "%.2f", pressedAt - $0.releasedAt) } ?? "-"
+        let p2p = first.map { String(format: "%.2f", pressedAt - $0.pressedAt) } ?? "-"
+        log.notice("""
+            ダブルタップ判定 slot=\(slotId, privacy: .public) \
+            hold=\(hold, privacy: .public)s gap=\(gap, privacy: .public)s \
+            press間隔=\(p2p, privacy: .public)s \
+            hold上限=\(String(format: "%.2f", kTapHoldMax), privacy: .public)s \
+            窓=\(String(format: "%.2f", window), privacy: .public)s \
+            結果=\(decision.logLabel, privacy: .public)
+            """)
     }
 
     /// スロットの必要キーがすべて押されているか
