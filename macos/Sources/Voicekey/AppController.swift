@@ -19,6 +19,21 @@ private let kMaxRecordingSec: TimeInterval = 300
 /// これより短い録音は誤操作とみなして破棄（秒）
 private let kMinAudioSec = 0.3
 
+/// ログ用の秒表記。os_log の補間は @escaping autoclosure なので、
+/// MainActor 隔離のメンバーを掴ませないよう free function にしてある
+private func secText(_ seconds: TimeInterval) -> String { String(format: "%.2f", seconds) }
+
+/// 録音末尾の指定秒数を切り落とす。ダブルタップの 2 打目を待つあいだ録音を止めない設計なので、
+/// 2 打目が来なかったときは待っていたぶんの無音が末尾に付く。それを文字起こしへ送らないため。
+/// audio キューの完了ハンドラから呼ばれるので MainActor には触れない。
+private func trimTrailing(_ samples: [Float], seconds: TimeInterval) -> [Float] {
+    guard seconds > 0 else { return samples }
+    let drop = Int(seconds * AudioRecorder.sampleRate)
+    guard drop > 0 else { return samples }
+    guard drop < samples.count else { return [] }
+    return Array(samples.prefix(samples.count - drop))
+}
+
 @MainActor
 final class AppController: ObservableObject {
 
@@ -65,9 +80,11 @@ final class AppController: ObservableObject {
     private var failsafeTask: Task<Void, Never>?
 
     // --- ダブルタップ検出 ---
-    /// 直前のタップ（押下・離鍵時刻とスロット）。2 打目の押下時に DoubleTapPolicy へ渡す。
-    /// 押下時刻まで持つのは press-to-press で判定するため（DoubleTapPolicy の説明を参照）
-    private var lastTap: DoubleTapPolicy.Tap?
+    /// 1 打目を離した後、2 打目を待っているあいだの状態。**録音は止めずに続いている**。
+    /// nil でなければ「キーは離されたが録音は継続中」を意味する。
+    private var pendingDoubleTap: DoubleTapPolicy.Pending?
+    /// 2 打目が来なかったときに録音を確定させるタイマー
+    private var pendingFinishTask: Task<Void, Never>?
     /// 録音開始時刻（＝押下時刻。ダブルタップ 1 打目のホールド時間の算出に使う）
     private var recordingStartedAt: TimeInterval = 0
 
@@ -377,6 +394,9 @@ final class AppController: ObservableObject {
         // 字幕を畳んだので待機ピルの退避も解く（ピルが出せない状態で残らないように）
         hud.captionCovering = false
         hotkeys.stop()
+        pendingFinishTask?.cancel()
+        pendingFinishTask = nil
+        pendingDoubleTap = nil
         warmTimer?.invalidate()
         warmTimer = nil
         if let activity = antiNapActivity {
@@ -455,6 +475,34 @@ final class AppController: ObservableObject {
             return
         }
 
+        // 1 打目を離した後、録音を止めずに 2 打目を待っている状態。
+        // 下の「録音中」分岐より先に見る（recordingSlot は入ったままなので、
+        // ここで拾わないと 2 打目が「録音中の再押下」に食われて無視される）。
+        if let pending = pendingDoubleTap {
+            let handsfree = !config.handsfreeKey.isEmpty && handsfreeKeyPressed(pressed)
+            let hitSlot = [1, 2].first { slotId in
+                let slot = config.slot(slotId)
+                return !slot.hotkey.isEmpty && slotMatches(slot, pressed: pressed)
+            }
+            let now = ProcessInfo.processInfo.systemUptime
+            let window = DoubleTapPolicy.gapWindow(doubleClickInterval: NSEvent.doubleClickInterval)
+            let decision: DoubleTapPolicy.Decision
+            if let hitSlot, !handsfree {
+                decision = DoubleTapPolicy.decide(
+                    pending: pending, slotId: hitSlot, pressedAt: now, gapWindow: window)
+            } else {
+                // ハンズフリー起動や無関係なキーはダブルタップにしない
+                decision = .otherSlot
+            }
+            logDoubleTap(decision, pending: pending, pressedAt: now, window: window)
+            if decision.isDoubleTap {
+                acceptDoubleTap()
+                return
+            }
+            // 2 打目ではなかった。1 打目を単発の録音として確定してから通常処理へ進む
+            resolvePendingAsSingleTap()
+        }
+
         if let slotId = recordingSlot {
             let slot = config.slot(slotId)
             // toggle 実効モード: 録音中の再押下で停止（ハンズフリー切替キー併用での起動も含む）
@@ -462,10 +510,8 @@ final class AppController: ObservableObject {
                 finishRecording()
                 return
             }
-            // hold 実効モードのダブルタップは「離鍵で即確定 → 2 打目の押下時に新録音を
-            // auto_enter で始める」方式に変更したため、録音中の再押下でここに来ることはない
-            // （短いタップは離鍵時点で recordingSlot=nil になる）。連続録音の 2 打目は下の
-            // 非録音経路（isDoubleTap 判定）で auto_enter として開始される。
+            // hold 実効モードのダブルタップは上の保留分岐で処理済み。ここに来るのは
+            // 押しっぱなし中の別キー押下など（録音は続行させる）。
             return
         }
 
@@ -483,24 +529,11 @@ final class AppController: ObservableObject {
             // （切替キーは空でなく全キーが押されていること。スロット設定が hold でも toggle になる）
             let handsfree = !config.handsfreeKey.isEmpty && handsfreeKeyPressed(pressed)
             let effectiveMode: HotkeyMode = handsfree ? .toggle : slot.mode
-            // ダブルタップ: 同スロットを短時間内に再押下 → auto_enter
-            // （ハンズフリー toggle 起動時はダブルタップ判定を使わない）
-            let now = ProcessInfo.processInfo.systemUptime
-            var isDoubleTap = false
-            if !handsfree {
-                // 窓はシステム設定のダブルクリック間隔に追従させる（ユーザーが伸ばしていれば広がる）
-                let window = DoubleTapPolicy.gapWindow(
-                    doubleClickInterval: NSEvent.doubleClickInterval)
-                let decision = DoubleTapPolicy.decide(
-                    first: lastTap, slotId: slotId, pressedAt: now, gapWindow: window)
-                logDoubleTap(decision, slotId: slotId, first: lastTap, pressedAt: now, window: window)
-                isDoubleTap = decision.isDoubleTap
-                if isDoubleTap {
-                    // 成立した 1 打目は使い切る（3 回目のタップが連鎖して Enter を撃たないように）
-                    lastTap = nil
-                }
-            }
-            beginRecording(slotId: slotId, autoEnter: isDoubleTap, effectiveMode: effectiveMode)
+            // ダブルタップ（auto_enter）はここでは決めない。1 打目の離鍵で「保留」に入り、
+            // 2 打目の押下で **同じ録音を auto_enter に切り替える**方式にしたため。
+            // 録音を作り直さないので、1 打目に入った声が消えず、録音の開始タイミングも
+            // auto_enter かどうかで変わらない（どちらも最初の押下が開始点）。
+            beginRecording(slotId: slotId, autoEnter: false, effectiveMode: effectiveMode)
             break
         }
     }
@@ -526,30 +559,67 @@ final class AppController: ObservableObject {
             KeyToken.acceptableNames(for: required).contains(token)
         }
         if isHotkeyKey {
-            // ダブルタップ確定後（autoEnter）の離鍵は 2 打目の待ち窓に入れず即確定する。
-            // ここで再び窓のぶん待つと、短い録音でも Enter 自動送信がそのぶん遅れる
+            // ダブルタップ確定後（autoEnter）の離鍵はもう待たない。この録音で確定する。
             if autoEnter {
                 finishRecording()
                 return
             }
             let now = ProcessInfo.processInfo.systemUptime
-            // ホールドの長短に関わらず 1 打目として記録する。成立/不成立は 2 打目の押下時に
-            // DoubleTapPolicy が決める（ここで捨てると「hold が長くて不成立」という理由すら
-            // ログに残らず、「たまに検出されない」を実測で追えなくなる）
-            lastTap = DoubleTapPolicy.Tap(
+            let pending = DoubleTapPolicy.Pending(
                 slotId: slotId, pressedAt: recordingStartedAt, releasedAt: now)
-            if now - recordingStartedAt <= kTapHoldMax {
-                // タップ相当の短さなら、離鍵に対して即座に確定する
-                // （quietIfNoSpeech＝無音なら通知を出さず静かに捨てる）。
-                // 以前はここで 2 打目を待ってから確定していたため、HUD の「録音中→変換中/待機」への
-                // 切替が遅れ、離鍵の反応が鈍く見えていた。ダブルタップ（auto_enter）は 2 打目の
-                // 押下時に handlePress 側が lastTap から検出し、新しい録音を auto_enter で始める
-                // （連続録音の仕組みを流用）。
-                finishRecording(quietIfNoSpeech: true)
-            } else {
+            guard DoubleTapPolicy.isTapCandidate(hold: pending.hold) else {
+                // 口述の長さ。ダブルタップの 1 打目にはしない（長く喋った直後に素早く
+                // 押し直しただけで Enter が自動送信される事故を防ぐ）。そのまま確定する。
+                log.notice("""
+                    ダブルタップ判定 slot=\(slotId, privacy: .public) \
+                    hold=\(secText(pending.hold), privacy: .public)s \
+                    hold上限=\(secText(kTapHoldMax), privacy: .public)s \
+                    結果=不成立(hold超過)
+                    """)
                 finishRecording()
+                return
             }
+            // タップ相当の短さ。**録音は止めずに**2 打目を待つ。ここで止めると 2 打目で
+            // 録り直しになり、1 打目に入った声が捨てられるうえ、auto_enter のときだけ
+            // 録音の開始点が 2 打目までずれる（どちらもユーザー指摘）。
+            beginPendingDoubleTap(pending)
         }
+    }
+
+    /// 1 打目の離鍵。録音は続けたまま 2 打目を待ち、来なければ単発として確定する。
+    private func beginPendingDoubleTap(_ pending: DoubleTapPolicy.Pending) {
+        pendingDoubleTap = pending
+        let window = DoubleTapPolicy.gapWindow(doubleClickInterval: NSEvent.doubleClickInterval)
+        pendingFinishTask?.cancel()
+        pendingFinishTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(window))
+            guard let self, !Task.isCancelled, self.pendingDoubleTap == pending else { return }
+            self.logDoubleTap(
+                .noSecondTap, pending: pending,
+                pressedAt: pending.releasedAt + window, window: window)
+            self.resolvePendingAsSingleTap()
+        }
+    }
+
+    /// 2 打目が来た。**録音は作り直さず**、いま録っているものを auto_enter に切り替えるだけ。
+    private func acceptDoubleTap() {
+        pendingFinishTask?.cancel()
+        pendingFinishTask = nil
+        pendingDoubleTap = nil
+        autoEnter = true
+        // HUD は録音中のまま auto_enter 表示に変わる（作り直しの明滅が起きない）
+        emitState()
+    }
+
+    /// 2 打目が来なかった（または無関係なキーが来た）。1 打目を単発の録音として確定する。
+    /// 待っていたあいだに伸びた末尾は切り落とす（その無音を文字起こしへ送らないため）。
+    private func resolvePendingAsSingleTap() {
+        guard let pending = pendingDoubleTap else { return }
+        pendingFinishTask?.cancel()
+        pendingFinishTask = nil
+        pendingDoubleTap = nil
+        let extra = ProcessInfo.processInfo.systemUptime - pending.releasedAt
+        finishRecording(quietIfNoSpeech: true, trimTrailingSec: extra)
     }
 
     /// ダブルタップ判定の実測値をそのまま残す。
@@ -558,20 +628,16 @@ final class AppController: ObservableObject {
     /// 出すのは数値と結果だけ（キー名や本文は出さない）。
     private func logDoubleTap(
         _ decision: DoubleTapPolicy.Decision,
-        slotId: Int,
-        first: DoubleTapPolicy.Tap?,
+        pending: DoubleTapPolicy.Pending,
         pressedAt: TimeInterval,
         window: TimeInterval
     ) {
-        let hold = first.map { String(format: "%.2f", $0.hold) } ?? "-"
-        let gap = first.map { String(format: "%.2f", pressedAt - $0.releasedAt) } ?? "-"
-        let p2p = first.map { String(format: "%.2f", pressedAt - $0.pressedAt) } ?? "-"
         log.notice("""
-            ダブルタップ判定 slot=\(slotId, privacy: .public) \
-            hold=\(hold, privacy: .public)s gap=\(gap, privacy: .public)s \
-            press間隔=\(p2p, privacy: .public)s \
-            hold上限=\(String(format: "%.2f", kTapHoldMax), privacy: .public)s \
-            窓=\(String(format: "%.2f", window), privacy: .public)s \
+            ダブルタップ判定 slot=\(pending.slotId, privacy: .public) \
+            hold=\(secText(pending.hold), privacy: .public)s \
+            gap=\(secText(pressedAt - pending.releasedAt), privacy: .public)s \
+            hold上限=\(secText(kTapHoldMax), privacy: .public)s \
+            窓=\(secText(window), privacy: .public)s \
             結果=\(decision.logLabel, privacy: .public)
             """)
     }
@@ -766,8 +832,13 @@ final class AppController: ObservableObject {
         }
     }
 
-    private func finishRecording(quietIfNoSpeech: Bool = false) {
+    private func finishRecording(quietIfNoSpeech: Bool = false, trimTrailingSec: TimeInterval = 0) {
         guard recordingSlot != nil else { return }
+        // 保留（2 打目待ち）から抜ける。保険タイマーや toggle 経由でここに来たときも
+        // 保留を残さない（残すと次の押下が「2 打目」として扱われる）
+        pendingFinishTask?.cancel()
+        pendingFinishTask = nil
+        pendingDoubleTap = nil
         // 停止の操作音・メディア音量の復元（撃ちっぱなし）。
         // restore は無条件で呼ぶ（録音中に設定を OFF にしても、下げた音量を確実に戻すため）。
         if config.soundEffectsEnabled { SoundFX.shared.play(.stop) }
@@ -787,8 +858,9 @@ final class AppController: ObservableObject {
 
         recorder.stop { [weak self] samples in
             // audio キューから呼ばれる。メインへホップしてタスク起動
+            let kept = trimTrailing(samples, seconds: trimTrailingSec)
             DispatchQueue.main.async {
-                self?.processAudio(samples, context: context,
+                self?.processAudio(kept, context: context,
                                    autoEnter: useAutoEnter, streamer: activeStreamer,
                                    quietIfNoSpeech: quietIfNoSpeech)
             }

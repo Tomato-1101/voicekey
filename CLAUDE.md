@@ -62,6 +62,13 @@ Mac（`macos/` Swift）と Windows（`src/` Python）の両方を同じ作業で
 - メニューバーアイコンが見えない時: `defaults read com.voicekey.app "NSStatusItem Preferred Position Item-0"` を確認。
   値が 490 超だと Hidden Bar / ノッチ下で不可視 → 250 程度に再設定して再起動。
 - UI インジケーターは「動作速度 > 見た目」。音声入力に待ち時間を足す実装（close() のタイムアウト待ち等）は禁止。
+- **恒久要件: ダブルタップ（auto_enter）で録音を作り直さない**（2026-08-15 ユーザー指示
+  「1 打目の音声を消さずそのまま使え。auto_enter でもそうでなくても録音の開始タイミングを揃えろ」）。
+  1 打目の離鍵では**録音を止めず**に保留（`DoubleTapPolicy.Pending`）へ入り、2 打目が来たら
+  同じ録音を `autoEnter = true` に切り替えるだけにする。2 打目で `beginRecording` を呼び直す実装に
+  戻さない（1 打目の声が消え、開始点が 2 打目までずれ、ストリーミング WS も張り直しになる）。
+  ホールドのガードは `DoubleTapPolicy.isTapCandidate` の 1 か所だけに置く。判定条件を
+  「ホールド」と「間隔」の 2 か所に散らしたのが「たまに検出されない」の原因だった。
 
 ## ライブ字幕（personal ブランチ・Mac・macOS 26 以降）
 
