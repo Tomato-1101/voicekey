@@ -77,6 +77,12 @@ final class CaptionService {
     /// 状態が変わったときに呼ばれる（メニューバー更新用・メインスレッドで呼ぶ）
     var onStateChange: ((CaptionRunState) -> Void)?
 
+    /// 字幕 HUD の表示/非表示が変わったときに呼ばれる（メインスレッドで呼ぶ）
+    ///
+    /// 字幕は voicekey の待機ピルと同じ場所に出るので、出ている間はピルを引っ込めてもらう。
+    /// ここは HUD からの通知を上位（AppController）へ素通しするだけ。
+    var onHUDVisibilityChanged: ((Bool) -> Void)?
+
     /// 現在の状態
     private(set) var state: CaptionRunState = .stopped {
         didSet {
@@ -147,6 +153,7 @@ final class CaptionService {
     init() {
         hud.showsSourceText = CaptionSettings.showSourceText
         hud.onStopRequested = { [weak self] in self?.stop() }
+        hud.onVisibilityChanged = { [weak self] visible in self?.onHUDVisibilityChanged?(visible) }
     }
 
     /// 字幕を開始する
@@ -288,6 +295,9 @@ final class CaptionService {
         logger.notice("遅延サマリ: \(self.latency.summaryLine(), privacy: .public)")
         narrator.stop()
         hud.clear()
+        // 止めた拍子に待機ピルが戻らなくなるのを塞ぐ。clear() の畳みアニメ完了でも false は
+        // 流れるが、その途中で HUD が解放されると通知が消えるため、ここで確実に流しておく。
+        onHUDVisibilityChanged?(false)
         state = .stopped
         endAntiNap()
 
@@ -320,6 +330,8 @@ final class CaptionService {
     /// 終了処理は同期的に待つ。
     func shutdown() {
         narrator.stop()
+        // HUD を捨てる経路でもピルを戻せるようにしておく（畳みアニメの完了通知は届かない）
+        onHUDVisibilityChanged?(false)
         endAntiNap()
         guard let pipeline else { return }
         self.pipeline = nil

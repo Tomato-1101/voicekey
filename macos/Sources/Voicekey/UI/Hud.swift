@@ -96,6 +96,31 @@ final class HudController {
     /// 待機中も小型ピルを常時表示するか（config.hudAlwaysVisible）
     var alwaysVisible = false
 
+    /// ライブ字幕パネルが同じ場所（画面下辺中央）を占めている間は待機ピルを出さない
+    ///
+    /// 字幕は待機ピルのカプセル下端に揃えて上へ伸びる＝「ピルがそのまま字幕へ育つ」設計なので、
+    /// 字幕が出ている間はピルが字幕に置き換わっているのが正。残したままだと字幕ガラス
+    /// （alpha 0.62）越しに濃いカプセルが字幕テキストの裏へ透け、別々の物体に見える。
+    /// 干渉するのは待機ピルだけ。録音・変換中・通知には触らない（その間は字幕側が
+    /// isSuppressed で自分から隠れるので衝突しない）。
+    var captionCovering = false {
+        didSet {
+            guard captionCovering != oldValue else { return }
+            if captionCovering {
+                if model.mode == .idlePill { hide() }
+            } else if alwaysVisible, lastState == .idle {
+                // 字幕が畳まれ、実状態も待機のままならピルを出し直す
+                update(for: .idle)
+            }
+        }
+    }
+
+    /// 検証ハーネス用: 待機ピルの実ウィンドウ（`--caption-hud-test` から可視状態を直に見る）
+    ///
+    /// 定数（pillAnchor）と字幕パネルの座標を突き合わせるだけでは「字幕の裏にピルが残っている」
+    /// 不具合を素通ししたため、実物のウィンドウを見られるようにした。
+    var pillPanelForTesting: NSPanel? { panel }
+
     init() {
         // パネルは全 Space に居座る（.canJoinAllSpaces + .fullScreenAuxiliary）ため、Space や
         // フルスクリーンを切り替えると HudBackdrop（背後サンプルのガラス）が旧 Space の内容のまま
@@ -213,8 +238,9 @@ final class HudController {
         case .idle:
             // 通知表示中は消さない（通知は自身のタイマーで消える）
             if case .notice = model.mode { return }
-            // 常時表示 ON なら待機中も小型ピル（mic のみ）を残す
-            if alwaysVisible {
+            // 常時表示 ON なら待機中も小型ピル（mic のみ）を残す。
+            // ただし字幕が同じ場所を占めている間は出さない（字幕越しに透けて二重に見えるため）。
+            if alwaysVisible && !captionCovering {
                 model.appIcon = nil  // 待機中は貼り付け先アイコンを出さない
                 model.mode = .idlePill
                 show()

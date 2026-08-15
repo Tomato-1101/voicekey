@@ -329,6 +329,21 @@ final class AppController: ObservableObject {
         if let existing = captionStorage as? CaptionService { return existing }
         let created = CaptionService()
         captionStorage = created
+        // 字幕が出ている間は待機ピルを引っ込める。字幕はピルの真上でピルから育つ設計なので、
+        // 残したままだと半透明の字幕越しにピルが透け、字幕とピルが別物に見える（2026-08-12 修正）。
+        // 通常はメインスレッドから来るので同期で反映する（字幕の伸縮と同じ実行ターンで
+        // ピルを出し入れしないと、順序が入れ替わってピルが出たままになりうる）。
+        // ただし停止経路は CoreAudio のコールバック側から呼ばれうるため、そのときだけ
+        // main へ回す。assumeIsolated をメイン以外で直に踏むとその場で落ちる。
+        created.onHUDVisibilityChanged = { [weak self] visible in
+            guard Thread.isMainThread else {
+                DispatchQueue.main.async { [weak self] in
+                    MainActor.assumeIsolated { self?.hud.captionCovering = visible }
+                }
+                return
+            }
+            MainActor.assumeIsolated { self?.hud.captionCovering = visible }
+        }
         // 録音中に字幕を開始したときも隠れた状態から始まるよう、今の HUD 状態を反映しておく
         applyCaptionVisibility(for: hud.model.mode)
         log.notice("ライブ字幕サービスを初期化しました")
@@ -360,6 +375,8 @@ final class AppController: ObservableObject {
         if #available(macOS 26.0, *), let caption = captionStorage as? CaptionService {
             caption.shutdown()
         }
+        // 字幕を畳んだので待機ピルの退避も解く（ピルが出せない状態で残らないように）
+        hud.captionCovering = false
         hotkeys.stop()
         warmTimer?.invalidate()
         warmTimer = nil

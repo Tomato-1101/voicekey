@@ -187,6 +187,14 @@ final class CaptionHUDController {
     /// 操作バーの「設定」が押されたとき（基準ビューを渡してメニューを出させる）
     var onMenuRequested: ((NSView, NSPoint) -> Void)?
 
+    /// 字幕パネルの表示/非表示が変わったときに呼ばれる（メインスレッド）
+    ///
+    /// なぜ要るか: 字幕はピルの真上に固定され「ピルがそのまま字幕へ育つ」設計なので、
+    /// 字幕を出している間もピルが残っていると、半透明のガラス（alpha 0.62）越しに濃いカプセルが
+    /// 字幕テキストの裏へ透け、字幕とピルが別々の物体に見える。voicekey 本体側で待機ピルを
+    /// 引っ込めてもらうために、可視状態だけを外へ通知する（誰が聞いているかは知らない）。
+    var onVisibilityChanged: ((Bool) -> Void)?
+
     /// 原文の併記を出すか（メニューのトグルと連動）
     var showsSourceText: Bool = CaptionSettings.showSourceText {
         didSet { relayout() }
@@ -749,6 +757,9 @@ final class CaptionHUDController {
         panel.orderFrontRegardless()
         guard !isVisible else { return }
         isVisible = true
+        // 伸び始めと同時にピルを引っ込めてもらう（育ちきってからだと、伸びる途中の
+        // 半透明のガラス越しにピルが透けて二重に見える）
+        onVisibilityChanged?(true)
 
         // いったんピル相当の小ささへ畳んでから目標サイズへ伸ばす＝「ピルが字幕に育つ」。
         let target = panel.frame
@@ -769,6 +780,9 @@ final class CaptionHUDController {
         guard isVisible else {
             panel.alphaValue = 0
             if clearsLines { removeAllLines() }
+            // すでに非表示でもここで false を流す。流さないとピル側と状態が食い違い、
+            // 一度引っ込んだ待機ピルが二度と戻らなくなる。
+            onVisibilityChanged?(false)
             return
         }
         isVisible = false
@@ -783,6 +797,9 @@ final class CaptionHUDController {
             self.panel.orderOut(nil)
             // 次に喋り出したとき、前の話の行が残っていると混乱するので片付ける
             if clearsLines { self.removeAllLines() }
+            // ピルを戻すのは畳み終わってから。縮んでいく 0.22 秒の途中で戻すと、
+            // 半透明の字幕の裏にピルが透けて二重に見える（今回直した不具合そのもの）。
+            self.onVisibilityChanged?(false)
         })
     }
 

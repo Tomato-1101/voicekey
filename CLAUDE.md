@@ -66,7 +66,9 @@ Mac（`macos/` Swift）と Windows（`src/` Python）の両方を同じ作業で
 ## ライブ字幕（personal ブランチ・Mac・macOS 26 以降）
 
 旧 subglass を voicekey に統合した機能（2026-08-10 ユーザー決定「subglass を voicekey に完全統合し、
-最終的に subglass を廃止」のフェーズ 1）。**コードは `macos/Sources/Voicekey/Caption/` に隔離**し、
+最終的に subglass を廃止」）。**2026-08-12 に subglass はフォルダごと `~/Project/_archive/subglass/` へ
+退避し、LaunchServices の登録も解除した**（`~/Project` 直下にはもう無い）。ライブ字幕の実装・修正は
+ここが唯一の置き場所で、subglass を掘り起こして直さない。**コードは `macos/Sources/Voicekey/Caption/` に隔離**し、
 全型を `@available(macOS 26.0, *)` でゲートする（`Package.swift` の `.macOS(.v14)` は上げない）。
 
 - **ディクテーションのクリティカルパスに 1ms も足さない**: `AppController.caption` は遅延生成。
@@ -82,6 +84,15 @@ Mac（`macos/` Swift）と Windows（`src/` Python）の両方を同じ作業で
     このため**クラウド選択時も共有 `AppleTranslator` を `prepareIfInstalled()` で用意する**
     ＝ 429 のときのフォールバック先が実際に効く前提でもある（未準備だと落とし先ごと失敗する）。
   - 読み上げは確定訳のみ・既定 OFF。既定のキャプチャ対象は「最前面のアプリだけ」。
+  - **字幕が出ている間は待機ピルを出さない**（2026-08-12。「ピルが統合されなくなった」の修正）。
+    字幕はピルのカプセル下端に揃えて上へ伸びる＝ピルが字幕へ育つ設計なので、ピルを残すと
+    alpha 0.62 のガラス越しに透けて別物に見える。結線は `CaptionHUDController.onVisibilityChanged`
+    → `CaptionService` → `AppController` → `HudController.captionCovering` の一方向。
+    ピルを戻すのは**畳みアニメの完了後**（途中で戻すと同じ透け方が再発する）。
+    干渉するのは `.idlePill` だけ（録音・変換中・通知には触らない）。
+  - **2 つの UI を「一体に見せる」実装の回帰テストは、相手の実ウィンドウを見る**。
+    自分の座標を定数（相手の位置の写し）と突き合わせるだけでは、重なり・透けの不具合を
+    素通しする（`--caption-hud-test` が実際に素通しした）。
   - **エンジンの切替はユーザー操作のみ**（2026-08-11 Tomato 指示）。特に**課金の Gemini へ
     Claude が勝手に切り替えない**（ベンチ最良でも不可。無料 = Apple / Groq を既定運用とし、
     Groq の 429 は Apple フォールバックで吸収する）。
