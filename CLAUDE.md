@@ -66,9 +66,10 @@ Mac（`macos/` Swift）と Windows（`src/` Python）の両方を同じ作業で
 ## ライブ字幕（personal ブランチ・Mac・macOS 26 以降）
 
 旧 subglass を voicekey に統合した機能（2026-08-10 ユーザー決定「subglass を voicekey に完全統合し、
-最終的に subglass を廃止」）。**2026-08-12 に subglass はフォルダごと `~/Project/_archive/subglass/` へ
-退避し、LaunchServices の登録も解除した**（`~/Project` 直下にはもう無い）。ライブ字幕の実装・修正は
-ここが唯一の置き場所で、subglass を掘り起こして直さない。**コードは `macos/Sources/Voicekey/Caption/` に隔離**し、
+最終的に subglass を廃止」）。**2026-08-15 に subglass はユーザー指示で完全削除した**（フォルダ・git 履歴・
+ビルド済みアプリごと。`~/Project` にも `~/Project/_archive/` にも存在せず、LaunchServices の登録も解除済み）。
+最後まで未移植だった Groq 解析ハーネスは `Tests/VoicekeyTests/CaptionGroqParseTests.swift` へ移植済み。
+ライブ字幕の実装・修正はここが唯一の置き場所で、subglass を掘り起こす手段はもう無い。**コードは `macos/Sources/Voicekey/Caption/` に隔離**し、
 全型を `@available(macOS 26.0, *)` でゲートする（`Package.swift` の `.macOS(.v14)` は上げない）。
 
 - **ディクテーションのクリティカルパスに 1ms も足さない**: `AppController.caption` は遅延生成。
