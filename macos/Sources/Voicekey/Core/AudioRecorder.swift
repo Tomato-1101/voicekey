@@ -46,6 +46,30 @@ final class BufferAvailability {
 
 final class AudioRecorder {
 
+    /// 録音開始に失敗した理由（HUD にそのまま出せる短文を持つ）
+    enum StartFailure: Equatable {
+        case deviceMissing        // 入力デバイス消失
+        case outOfMemory          // coreaudiod がメモリを確保できず IO を開始できない
+        case other(Int)           // その他（NSError.code の生値）
+
+        /// HUD ピルに表示するユーザー向け文言
+        var noticeText: String {
+            switch self {
+            case .deviceMissing: return "録音を開始できませんでした（マイクが見つかりません）"
+            case .outOfMemory:   return "メモリ不足でマイクを開始できませんでした"
+            case .other(let c):  return "録音を開始できませんでした（マイクを確認: \(c)）"
+            }
+        }
+
+        /// engine.start() の失敗を理由に分類する（純関数・テスト対象）。
+        /// 2003329396 = 'what' (kAudioHardwareUnspecifiedError)。実測では coreaudiod が
+        /// メモリ枯渇で IO 用バッファを mlock できないときにこのコードで拒否される。
+        static func classify(_ error: Error) -> StartFailure {
+            let code = (error as NSError).code
+            return code == 2003329396 ? .outOfMemory : .other(code)
+        }
+    }
+
     /// 出力サンプリングレート（Whisper 系 API の標準）
     static let sampleRate: Double = 16000
 
@@ -171,7 +195,7 @@ final class AudioRecorder {
         }
         recentRestarts += 1
 
-        if installTapAndStart() {
+        if installTapAndStart() == nil {
             log.info("構成変更で停止したエンジンを再開しました（録音継続）")
             return
         }
@@ -251,11 +275,11 @@ final class AudioRecorder {
         }
     }
 
-    /// 録音を開始する（即座に返る。結果はコールバック）
-    func start(completion: @escaping (Bool) -> Void) {
+    /// 録音を開始する（即座に返る。結果はコールバック。nil=成功、非 nil=失敗理由）
+    func start(completion: @escaping (StartFailure?) -> Void) {
         queue.async { [self] in
             guard !recording else {
-                completion(true)
+                completion(nil)
                 return
             }
             samplesLock.lock()
@@ -266,32 +290,32 @@ final class AudioRecorder {
             // stop 後に呼ばれる）。設定が前回から変わっていなければ何もしない
             applyInputDevice()
 
-            if installTapAndStart() {
+            if let failure = installTapAndStart() {
+                completion(failure)
+            } else {
                 // この物理録音が受理するストリーミング世代を確定する（recording=true より前）。
                 // 旧録音の stop ドレイン中はこの値が進まないため、ドレイン中に差し替えられた
                 // 次録音の streamer（より新しい世代）には旧音声が渡らない。
                 stateLock.lock(); _activeChunkGen = _chunkGen; stateLock.unlock()
                 recording = true
                 bufferAvailability.markAvailable()  // この録音の buffer を取り出し可能にする（#20）
-                completion(true)
-            } else {
-                completion(false)
+                completion(nil)
             }
         }
     }
 
     /// 現在の入力フォーマットでタップと 16kHz 変換器を作り直し、エンジンを開始する。
-    /// queue 上・エンジン停止中に呼ぶ。成功で true（録音開始/継続が可能）。
+    /// queue 上・エンジン停止中に呼ぶ。成功で nil（録音開始/継続が可能）、失敗なら理由を返す。
     /// samples はクリアしないため、構成変更からの再開でも既存の録音を継続できる。
     @discardableResult
-    private func installTapAndStart() -> Bool {
+    private func installTapAndStart() -> StartFailure? {
         let input = engine.inputNode
         let hwFormat = input.inputFormat(forBus: 0)
         guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
             // デバイス消失（切断後の再接続で ID が変わる）の可能性があるため次回は再解決する
             appliedDeviceUID = nil
             log.error("入力デバイスが見つかりません")
-            return false
+            return .deviceMissing
         }
 
         // 変換先: 16kHz モノラル Float32
@@ -302,7 +326,7 @@ final class AudioRecorder {
             interleaved: false
         ), let converter = AVAudioConverter(from: hwFormat, to: outFormat) else {
             log.error("音声フォーマット変換の初期化に失敗")
-            return false
+            return .other(0)
         }
 
         input.removeTap(onBus: 0)
@@ -314,13 +338,13 @@ final class AudioRecorder {
             engine.prepare()
             try engine.start()
             log.info("録音開始 (HW: \(Int(hwFormat.sampleRate))Hz \(hwFormat.channelCount)ch)")
-            return true
+            return nil
         } catch {
             // デバイス起因の失敗に備えて次回はデバイスを解決し直す
             appliedDeviceUID = nil
             input.removeTap(onBus: 0)
-            log.error("録音開始に失敗: \(error.localizedDescription)")
-            return false
+            log.error("録音開始に失敗: code=\((error as NSError).code, privacy: .public) \(error.localizedDescription)")
+            return StartFailure.classify(error)
         }
     }
 
@@ -361,7 +385,7 @@ final class AudioRecorder {
         queue.async { [self] in
             guard !recording, !monitoring else { completion(true); return }
             applyInputDevice()
-            if installTapAndStart() {
+            if installTapAndStart() == nil {
                 monitoring = true
                 log.info("マイクモニタリングを開始しました（録音なし・レベルのみ）")
                 completion(true)

@@ -54,6 +54,17 @@ voicekeyの変更履歴を記録するファイルです。
     `--caption-mic-coexist-test` status=ok cycles=3 rebuilds=0、`swift test` 121 件 PASS。
 
 ### Changed
+- **Mac: 録音開始に失敗したときの HUD 通知を原因別の文言にした（2026-08-16）**。
+  一律「録音を開始できませんでした（マイクを確認）」だったため、ローカル LLM がメモリを
+  食い尽くして coreaudiod が IO を開始できず `AVAudioEngine.start()` が OSStatus
+  **2003329396（'what' = kAudioHardwareUnspecifiedError）** で失敗し続けた実事故で、
+  マイクの故障と区別が付かなかった。`AudioRecorder.StartFailure` で失敗理由を分類し、
+  このコードのときは「**メモリ不足**でマイクを開始できませんでした」、デバイス消失なら
+  「マイクが見つかりません」、その他は OSStatus のコード付きで表示する。
+  失敗時のログにも `code=` を `privacy: .public` で残す（`localizedDescription` は
+  `<private>` に潰れて coreaudiod 側ログと突合できなかったため）。
+  分類は失敗パスでのみ実行するので録音開始のクリティカルパスには影響しない。
+  回帰テストは `Tests/VoicekeyTests/AudioStartFailureTests.swift`。
 - **personal: ライブ字幕を「節ごとに刻んで」訳すようにし、ライブ行をハイブリッド化した（統合フェーズ 5・Mac・2026-08-10）**。
   ユーザー指摘「一文が長すぎて翻訳されるまで時間がかかりすぎる。もっと文を区切れ区切れにして。
   ある程度長くなったら一旦すぐ翻訳して」。

@@ -782,8 +782,8 @@ final class AppController: ObservableObject {
 
         // マイク起動を最優先で仕掛ける（プリウォーム類は後ろに置き、
         // メインスレッドの Keychain 読みなどで録音開始を遅らせない）
-        recorder.start { [weak self] ok in
-            guard !ok else { return }
+        recorder.start { [weak self] failure in
+            guard let failure else { return }
             DispatchQueue.main.async {
                 guard let self, self.recordingSlot == slotId else { return }
                 // ストリーミングセッションも後始末する（残すと次の録音のチャンクが
@@ -794,7 +794,7 @@ final class AppController: ObservableObject {
                 self.recorder.chunkHandler = nil
                 self.recordingSlot = nil
                 self.emitState()
-                self.hud.notice("録音を開始できませんでした（マイクを確認）")
+                self.hud.notice(failure.noticeText)
             }
         }
 
