@@ -167,6 +167,12 @@ actor DictationTranslator {
         guard !trimmed.isEmpty else {
             return DictationTranslationResult(text: text, didTranslate: false, failureReason: "empty")
         }
+        // 話す言語と出力言語が同じなら訳す必要が無い（Apple 翻訳は同一ペアをそもそも受け付けない）。
+        // 失敗扱いにすると入力のたびに「翻訳できなかった」通知が出てしまうので、原文をそのまま
+        // 最終テキストとして返す（実機ログで ja→ja の指定を検出したため 2026-08-23 に追加）。
+        guard sourceCode != targetCode else {
+            return DictationTranslationResult(text: text, didTranslate: true, failureReason: nil)
+        }
         do {
             let translated: String
             switch engine {

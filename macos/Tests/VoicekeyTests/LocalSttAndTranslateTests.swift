@@ -112,6 +112,17 @@ final class LocalSttAndTranslateTests: XCTestCase {
         XCTAssertFalse(DictationTranslation.isEnabled)
     }
 
+    /// 話す言語と出力言語が同じなら、失敗扱いにせず原文をそのまま返す。
+    /// （実機で ja→ja が指定され「翻訳できなかった」通知が毎回出た回帰を防ぐ）
+    @available(macOS 26.0, *)
+    func testSameLanguagePairReturnsSourceWithoutFailing() async {
+        let translator = DictationTranslator(engine: .apple, sourceLanguage: "ja", targetLanguage: "ja")
+        let result = await translator.translate("今日は良い天気ですね。")
+        XCTAssertEqual(result.text, "今日は良い天気ですね。", "原文がそのまま最終テキストになる")
+        XCTAssertTrue(result.didTranslate, "失敗扱いにしない（HUD の通知を出さない）")
+        XCTAssertNil(result.failureReason)
+    }
+
     /// Groq のシステムプロンプトに出力言語が入り、訳文だけを返させる指示になっていること。
     @available(macOS 26.0, *)
     func testGroqSystemPromptNamesTargetLanguage() {

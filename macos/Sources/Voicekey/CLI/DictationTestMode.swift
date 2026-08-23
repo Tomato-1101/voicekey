@@ -227,6 +227,12 @@ enum TranslateTestRunner {
             writer.write("[DONE] status=fail reason=\(result.failureReason ?? "unknown")")
             return 1
         }
+        // 話す言語と出力言語が同じときは「訳さずそのまま」が正しい挙動なので、
+        // 「変わっていない＝失敗」とは判定しない
+        guard source != target else {
+            writer.write("[DONE] status=ok reason=same-language-noop chars=\(result.text.count)")
+            return 0
+        }
         guard result.text != text else {
             writer.write("[DONE] status=fail reason=unchanged")
             return 1
