@@ -59,6 +59,12 @@ final class SpeechRecognizer: @unchecked Sendable {
     /// 初回だけ数百 MB のダウンロードが走るため、無言で固まって見えないよう外へ出せるようにする。
     var onAssetProgress: ((String) -> Void)?
 
+    /// 進捗を出し始めるまでの猶予（秒）
+    ///
+    /// 導入済みのときアセット取得は数 ms で終わる。すぐ通知すると毎録音で HUD の
+    /// 録音表示を上書きしてしまうので、これを超えて待たされたときだけ知らせる。
+    private static let assetProgressGrace: TimeInterval = 0.8
+
     private var transcriber: SpeechTranscriber?
     private var analyzer: SpeechAnalyzer?
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
@@ -165,8 +171,13 @@ final class SpeechRecognizer: @unchecked Sendable {
         if status != .installed {
             if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
                 let progress = request.progress
-                // ダウンロードは数百 MB になりうるので、無言で止まって見えないよう進捗を出す
+                // **導入済みでも status は `.supported` を返すことがあり、この経路は録音のたびに通る**
+                // （実測: `downloadAndInstall()` が 5ms で完了する＝実ダウンロードは起きていない）。
+                // 以前は即座に「ダウンロード中 0%」を流していたため、毎録音で HUD の通知が
+                // 録音中の波形表示を上書きしていた。**本当に待たされているときだけ**知らせるよう、
+                // 猶予を置いてまだ終わっていない場合の最初の tick から進捗を出す。
                 let progressTask = Task {
+                    try? await Task.sleep(for: .seconds(Self.assetProgressGrace))
                     while !Task.isCancelled {
                         let percent = Int(progress.fractionCompleted * 100)
                         self.logger.notice("言語モデルをダウンロード中 \(percent, privacy: .public)%")
@@ -175,8 +186,15 @@ final class SpeechRecognizer: @unchecked Sendable {
                     }
                 }
                 defer { progressTask.cancel() }
+                let startedAt = CFAbsoluteTimeGetCurrent()
                 try await request.downloadAndInstall()
-                logger.notice("言語モデルのダウンロードが完了しました")
+                let elapsed = CFAbsoluteTimeGetCurrent() - startedAt
+                if elapsed >= Self.assetProgressGrace {
+                    logger.notice("言語モデルのダウンロードが完了しました")
+                } else {
+                    // 実ダウンロードなし（導入済み）。毎録音で出るので 1 行だけに留める。
+                    logger.notice("言語モデルは導入済み（即完了 \(Int(elapsed * 1000), privacy: .public)ms）")
+                }
             } else {
                 logger.notice("ダウンロード要求は不要でした（既に利用可能）")
             }
