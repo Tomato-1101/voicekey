@@ -33,6 +33,13 @@ voicekeyの変更履歴を記録するファイルです。
     検証: `py_compile` 全 8 ファイル OK / `QT_QPA_PLATFORM=offscreen python -m unittest discover -s tests` **512 件 PASS**。
 
 ### Added
+- **personal: 設定画面にモデル選択と整形の編集 UI を復元（Mac・2026-08-23 に main から移植）**。
+  自分用ビルドは「何が動いているか隠さない」方針なので、製品版で固定していた項目を選べるようにした
+  （保存先 `formatModel` / `autoFormatPrompt` / スロット別 `model` は personal に元からあり、UI だけ欠けていた）。
+  - 録音キータブ: **モデル Picker**（先頭が「（推奨）」表記）。選択肢が 1 つだけのエンジン
+    （ローカル（Apple））では出さない。
+  - 一般タブ: **整形モデル Picker**（保存済みモデルがリスト外でも選択を保持）と
+    **整形の指示（プロンプト）の編集欄＋「既定に戻す」**。
 - **personal: 文字起こしバックエンドに「ローカル（Apple）」を追加（Mac・macOS 26+・2026-08-23）**。
   動機はユーザー要望「Talkify がすごく速い」＝**速度**。Apple のオンデバイス音声認識
   （SpeechAnalyzer / SpeechTranscriber）で **Mac の中だけ**で文字起こしする。

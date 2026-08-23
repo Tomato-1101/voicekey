@@ -440,8 +440,33 @@ private struct GeneralSettingsTab: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            // 製品版はテキスト整形のモデル・指示文を固定（UI 非公開）。
+            // 自分用ビルドは整形のモデル・指示文まで自分で選べる（何が動いているか隠さない方針）。
             // オンオフは録音キー各タブの「文章を自動で整える」トグルで切り替える。
+            Picker("整形モデル", selection: $config.formatModel) {
+                // 表示は推奨モデル（リスト先頭）に「（推奨）」を付け、tag はモデル識別子のまま
+                ForEach(TextFormatter.knownModels, id: \.self) { model in
+                    Text(model == TextFormatter.knownModels[0] ? "\(model)（推奨）" : model)
+                        .tag(model)
+                }
+                // 保存済みモデルがリスト外でも選択を保持して表示する
+                if !TextFormatter.knownModels.contains(config.formatModel) {
+                    Text(config.formatModel).tag(config.formatModel)
+                }
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("整形の指示")
+                    Spacer()
+                    Button("既定に戻す") {
+                        config.autoFormatPrompt = TextFormatter.defaultPrompt
+                    }
+                    .font(.caption)
+                }
+                TextField("", text: $config.autoFormatPrompt, axis: .vertical)
+                    .lineLimit(4...8)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption)
+            }
 
             Divider()
 
@@ -605,6 +630,18 @@ private struct SlotSettingsTab: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
+
+            // 自分用ビルドはモデルまで自分で選べる（製品版はモデル非選択で固定）。
+            // 選択肢が 1 つだけのエンジン（ローカル）は選ばせても意味が無いので出さない。
+            if slot.backend.knownModels.count > 1 {
+                Picker("モデル", selection: $slot.model) {
+                    // 表示は推奨モデルに「（推奨）」を付け、tag（保存値）はモデル識別子のまま
+                    ForEach(slot.backend.knownModels, id: \.self) { model in
+                        Text(model == slot.backend.defaultModel ? "\(model)（推奨）" : model)
+                            .tag(model)
+                    }
+                }
+            }
 
             Toggle("文章を自動で整える", isOn: $slot.formatEnabled)
             // 整形 ON のときだけ「整え方」プリセットを選ばせる（削り方の強さを切り替える）。
