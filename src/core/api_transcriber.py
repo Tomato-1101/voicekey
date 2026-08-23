@@ -484,9 +484,68 @@ class DeepgramTranscriber(ApiTranscriber):
         "nova-2",  # 旧世代
     )
 
+    def __init__(self, *args, **kwargs) -> None:
+        """基底の初期化に加えて、短命 JWT 直叩き用クライアントの器を用意する。"""
+        super().__init__(*args, **kwargs)
+        # 固定の認証ヘッダーを持たない共有クライアント（Bearer はリクエスト毎に渡す）
+        self._jwt_client: Optional[httpx.Client] = None
+        self._jwt_client_lock = threading.Lock()
+
     def _auth_headers(self, api_key: str) -> dict:
         """Deepgram は Bearer ではなく Token スキームで認証する。"""
         return {"Authorization": f"Token {api_key}"}
+
+    def _get_jwt_client(self) -> httpx.Client:
+        """短命 JWT 直叩き用の共有 httpx クライアントを取得または生成する。
+
+        録音ごとにモジュール関数 httpx.post を使うと毎回 TCP+TLS を張り直し、確定
+        レイテンシにハンドシェイク分が乗る。API キーを持たない配布版でも使えるよう
+        認証ヘッダーは固定せず（リクエスト毎に Bearer を渡す）、接続プールと prewarm の
+        暖機だけを共有する。httpx.Client はスレッドセーフなので並列送信でも共有できる。
+        """
+        with self._jwt_client_lock:
+            if self._jwt_client is None:
+                self._jwt_client = httpx.Client(
+                    base_url=self.base_url,
+                    timeout=_TIMEOUT,
+                    # keepalive を長めに取り、録音中に prewarm した接続を再利用する
+                    limits=httpx.Limits(
+                        max_connections=5,
+                        max_keepalive_connections=2,
+                        keepalive_expiry=60.0,
+                    ),
+                    transport=httpx.HTTPTransport(retries=2),
+                )
+            return self._jwt_client
+
+    def prewarm(self) -> None:
+        """製品版（ログイン済み）は JWT 直叩き用クライアントの接続を温める。
+
+        基底の prewarm は API キー必須の共有クライアントを温めるため、キーを持たない
+        配布版では何も温まらず、_transcribe_via_jwt の毎回のハンドシェイクが残っていた。
+        """
+        if not backend_client.is_logged_in():
+            super().prewarm()
+            return
+        try:
+            client = self._get_jwt_client()
+            # 認証なしなので 401 が返るが、TCP+TLS の確立という目的は達せられる
+            client.get("/models", timeout=httpx.Timeout(5.0, connect=5.0))
+            logger.debug(f"{self.display_name} 接続をプリウォームしました")
+        except Exception as e:
+            logger.debug(f"{self.display_name} プリウォーム失敗（無視）: {e}")
+
+    def close(self) -> None:
+        """基底の共有クライアントに加えて JWT 直叩き用クライアントも閉じる。"""
+        super().close()
+        with self._jwt_client_lock:
+            client = self._jwt_client
+            self._jwt_client = None
+        if client is not None:
+            try:
+                client.close()
+            except Exception as e:
+                logger.warning(f"{self.display_name} クライアント close に失敗: {e}")
 
     @property
     def _dg_language(self) -> str:
@@ -513,8 +572,8 @@ class DeepgramTranscriber(ApiTranscriber):
         """製品版（ログイン済み）: 短命 JWT を取得し Deepgram を直叩きする。
 
         低レイテンシ核心を保つため、ElevenLabs と違いプロキシではなく直叩き。
-        キャッシュ済みクライアント（固定 Token ヘッダー）はバイパスし、
-        リクエストごとに Bearer JWT を載せた一発の POST を投げる。
+        キャッシュ済みクライアント（固定 Token ヘッダー）はバイパスし、認証ヘッダーを
+        持たない共有クライアント（prewarm 済み）へリクエスト毎に Bearer JWT を載せて送る。
         """
         try:
             grant = backend_client.fetch_ephemeral_token()
@@ -527,26 +586,16 @@ class DeepgramTranscriber(ApiTranscriber):
             "punctuate": "true",
             "smart_format": "true",
         }
-        api_start = time.perf_counter()
-        try:
-            resp = httpx.post(
-                f"{self.base_url}/listen",
-                params=params,
-                content=wav_bytes,
-                headers={
-                    "Authorization": f"Bearer {grant['token']}",
-                    "Content-Type": "audio/wav",
-                },
-                timeout=_TIMEOUT,
-            )
-        except httpx.TimeoutException:
-            raise TranscriptionError(
-                f"{self.display_name} API がタイムアウトしました（ネットワークを確認してください）"
-            )
-        except httpx.HTTPError as e:
-            raise TranscriptionError(f"{self.display_name} API への接続に失敗しました: {e}")
-        self.last_api_time = (time.perf_counter() - api_start) * 1000
-        self._raise_for_status(resp)
+        resp = self._post(
+            self._get_jwt_client(),
+            "/listen",
+            params=params,
+            content=wav_bytes,
+            headers={
+                "Authorization": f"Bearer {grant['token']}",
+                "Content-Type": "audio/wav",
+            },
+        )
 
         text = self._parse_transcript(resp)
         logger.info(

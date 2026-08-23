@@ -4,7 +4,7 @@
 """
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import httpx
 import numpy as np
@@ -134,22 +134,27 @@ class TestServerRouting(unittest.TestCase):
         t = DeepgramTranscriber("nova-3", "ja")
         captured = {}
 
-        def fake_post(url, **kwargs):
-            captured["url"] = url
+        def fake_post(path, **kwargs):
+            captured["url"] = path
             captured["auth"] = kwargs["headers"]["Authorization"]
             return httpx.Response(
                 200,
                 json={"results": {"channels": [{"alternatives": [{"transcript": "本日は晴天"}]}]}},
             )
 
+        # JWT 経路は共有クライアント（prewarm で温める接続プール）を使う
+        jwt_client = Mock()
+        jwt_client.post.side_effect = fake_post
+
         with patch.object(api_transcriber.backend_client, "is_logged_in", return_value=True), \
                 patch.object(api_transcriber.backend_client, "fetch_ephemeral_token",
                              return_value={"token": "dg-jwt"}), \
-                patch.object(api_transcriber.httpx, "post", side_effect=fake_post), \
+                patch.object(t, "_get_jwt_client", return_value=jwt_client), \
                 patch.object(t, "_get_client") as direct:
             self.assertEqual(t.transcribe(self._audio()), "本日は晴天")
             self.assertEqual(captured["auth"], "Bearer dg-jwt")  # Token ではなく Bearer
             self.assertTrue(captured["url"].endswith("/listen"))
+            jwt_client.post.assert_called_once()  # 毎回 httpx.post ではなく共有クライアント
             direct.assert_not_called()  # キャッシュ済み Token クライアントはバイパス
 
     def test_deepgram_token_error_becomes_transcription_error(self):

@@ -5,6 +5,7 @@ YAMLファイルからの設定読み込み、保存、ホットリロードを�
 設定ファイルが変更されると自動的に再読み込みされる。
 """
 
+import copy
 import os
 import sys
 import threading
@@ -204,10 +205,16 @@ class ConfigManager:
 
         Returns:
             すべてのキーが保証された設定辞書
+
+        Note:
+            土台は必ず DEFAULT_CONFIG の deepcopy にする。浅い copy / _deep_merge だと
+            「保存側に無いネスト辞書」（audio_preprocess・hotkey1 等）をモジュール既定値と
+            共有参照したまま返し、後続の矯正処理（_force_always_on 等）が既定値そのものを
+            書き換えて以降のロード結果を汚染する。
         """
         if not os.path.exists(self.config_path):
             logger.warning(f"設定ファイルが見つかりません: {self.config_path}。デフォルト値を使用します。")
-            return DEFAULT_CONFIG.copy()
+            return copy.deepcopy(DEFAULT_CONFIG)
 
         try:
             self.last_mtime = os.path.getmtime(self.config_path)
@@ -219,7 +226,7 @@ class ConfigManager:
             loaded_config = self._migrate_legacy_config(loaded_config)
 
             # デフォルト設定と深くマージ（ネストされた辞書も保証）
-            config = _deep_merge(DEFAULT_CONFIG, loaded_config)
+            config = _deep_merge(copy.deepcopy(DEFAULT_CONFIG), loaded_config)
             # 常時 ON 固定の項目を矯正（UI から撤去したため保存済みの古い false を上書き）
             self._force_always_on(config)
             # 製品版は文字起こしバックエンドを 3 択に制限（範囲外の openai 等は groq へ移行・deepgram は維持）
@@ -230,7 +237,7 @@ class ConfigManager:
 
         except Exception as e:
             logger.error(f"設定読み込みエラー: {e}")
-            return DEFAULT_CONFIG.copy()
+            return copy.deepcopy(DEFAULT_CONFIG)
 
     @staticmethod
     def _force_always_on(config: Dict[str, Any]) -> None:

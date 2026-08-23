@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QApplication
 
 from .app import VoicekeyApp
 from .platform import get_platform_adapter
-from .utils.logger import get_logger, setup_logger
+from .utils.logger import default_log_dir, get_logger, setup_logger
 
 # .env ファイルから環境変数を読み込み（API キー等）。
 # 配布（DIST）ビルドでは読み込まない＝作業ディレクトリの .env で接続先や鍵を
@@ -98,11 +98,21 @@ def _handle_critical_error(error: Exception) -> None:
     """
     error_msg = f"致命的エラー: {error}"
     logger.critical(error_msg, exc_info=True)
-    
-    # 詳細なエラー情報をファイルに書き出し
-    with open("error_log.txt", "w", encoding="utf-8") as f:
-        traceback.print_exc(file=f)
-    
+
+    # 詳細なエラー情報をファイルに書き出し。書き先は startup_log.txt と同じ OS 標準ログ
+    # ディレクトリ（Windows は %LOCALAPPDATA%\voicekey\logs）に固定する。凍結ビルドの
+    # 起動時 CWD は Program Files 等の書けない場所もありうるため、相対パスの open だと
+    # PermissionError でクラッシュ報告自体が未処理例外になる（＋ログが散らばる）。
+    try:
+        log_dir = default_log_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with open(log_dir / "error_log.txt", "w", encoding="utf-8") as f:
+            traceback.print_exc(file=f)
+    except OSError as e:
+        # 書けない環境ではファイル出力を諦め、標準エラー出力にだけ残す
+        print(f"error_log.txt を書き出せませんでした: {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+
     print(error_msg)
 
 

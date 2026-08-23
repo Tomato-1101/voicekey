@@ -4,6 +4,34 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased] - 2026-08-02
 
+### Fixed
+- **Windows: コードレビュー指摘の内部欠陥をまとめて修正（2026-08-23 に release から移植）**。
+  ユーザーから見える機能・UI の変更はなし（挙動の劣化を防ぐ修正のみ）。personal の `src/` は
+  2026-07-18 から未更新で、release の同修正（`ecb23d3`）が未反映だったため、単一ブランチ化に
+  合わせてそのまま取り込んだ（対象 8 ファイル＋テスト 1 件は移植前の時点で release の親と
+  バイト単位で同一だったので、差分は完全に一致する）。
+  - **ストリーミング確定スレッドの 4 秒スタール**（`core/streaming_transcriber.py`）: 短命トークン取得を
+    `except backend_client.BackendError` だけで守っていたため、応答に `token` が無い等の想定外例外で
+    受信スレッドが `_resolve_finish()` を呼ばずに死に、`finish()` が猶予 1 秒＋タイムアウト 3 秒を
+    フルに待ってから REST フォールバックしていた。`except Exception` に広げて必ず解決するようにした。
+  - **プロキシの非 JSON 200 がユーザー向けエラー処理を素通り**（`core/backend_client.py`）: 200 応答を
+    無条件に `resp.json()` していたため、プロキシが HTML/テキストを返すと `JSONDecodeError` が
+    呼び出し側の `except BackendError` を抜けていた。`_json_body()` で `BackendError` へ正規化。
+  - **即時入力（JWT 直叩き）が接続プールを使っていなかった**（`core/api_transcriber.py`）: 録音ごとに
+    TCP+TLS を張り直していた。認証ヘッダーを固定しない共有クライアント（`_get_jwt_client`）を持たせ、
+    `prewarm()` / `close()` もそれを扱うようにした。
+  - **貼り付け失敗時にクリップボード原本が復元されない**（`core/input_handler.py`）: コピー以降を
+    try/finally にして必ず復元を予約する。
+  - **更新インストーラの TOCTOU**（`utils/updater.py`）: 検証済みバイト列を `tempfile.mkstemp` の
+    排他生成ファイルへ書き出し、そちらを起動する。
+  - **DEFAULT_CONFIG の共有参照汚染**（`config/config_manager.py`）: 土台を `copy.deepcopy(DEFAULT_CONFIG)` に統一。
+  - **長文録音で VAD 推論が 2 回走る**（`core/vad.py`）: 同一配列に対するフレーム確率をキャッシュして 1 回に減らす。
+  - **致命的エラーのログ書き出し先が CWD 依存**（`main.py`）: `startup_log.txt` と同じ OS 標準ログ
+    ディレクトリに固定し、失敗時は標準エラー出力へフォールバックする。
+  - **Technical Details**: `tests/test_api_transcriber.py` の `test_deepgram_uses_jwt_when_logged_in` を
+    共有クライアント前提へ更新（`httpx.post` パッチ → `_get_jwt_client` パッチ）。
+    検証: `py_compile` 全 8 ファイル OK / `QT_QPA_PLATFORM=offscreen python -m unittest discover -s tests` **512 件 PASS**。
+
 ### Added
 - **personal: 文字起こしバックエンドに「ローカル（Apple）」を追加（Mac・macOS 26+・2026-08-23）**。
   動機はユーザー要望「Talkify がすごく速い」＝**速度**。Apple のオンデバイス音声認識

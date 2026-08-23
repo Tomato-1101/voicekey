@@ -187,11 +187,19 @@ class Updater(QObject):
             if hashlib.sha256(data).hexdigest().lower() != expected:
                 raise ValueError("インストーラの SHA256 が version.json と一致しません")
 
+            # 「検証したバイト列」と「実行するファイル」の同一性を保証する（TOCTOU 対策）。
+            # ダウンロード先は予測可能な名前なので、検証後・起動前に同権限のプロセスが
+            # 中身を差し替えられる。検証済みの data を排他生成のランダム名へ書き出し、
+            # そちらを起動する（差し替えの隙を無くす）。
+            fd, run_path = tempfile.mkstemp(prefix="voicekey-setup-", suffix=".exe")
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+
             # サイレント更新: Inno Setup が実行中の旧プロセスを閉じて上書きし、
             # [Run] セクションで新版を自動再起動する
-            logger.info(f"インストーラを起動します: {path}")
+            logger.info(f"インストーラを起動します: {run_path}")
             subprocess.Popen(
-                [path, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CLOSEAPPLICATIONS", "/NORESTART"],
+                [run_path, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CLOSEAPPLICATIONS", "/NORESTART"],
                 close_fds=True,
             )
             # 終了はメインスレッド側（app._quit_app）に委ねる（クリーンアップを通すため）

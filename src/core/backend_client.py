@@ -148,6 +148,25 @@ def _post(path: str, *, headers: dict, _allow_refresh: bool = True, **kwargs) ->
     return _send("POST", path, headers=headers, _allow_refresh=_allow_refresh, **kwargs)
 
 
+def _json_body(resp: httpx.Response) -> dict:
+    """200 応答の本文を辞書として返し、非 JSON は BackendError へ正規化する。
+
+    プロキシ（Vercel）が障害時に HTML やプレーンテキストの 200 を返すことがある。素の
+    resp.json() だと JSONDecodeError が呼び出し側の except BackendError を素通りして
+    「サーバーエラー」の日本語通知が出ず、分割送信のフォールバック判断も乱れる。
+
+    Raises:
+        BackendError: 本文が JSON オブジェクトとして解釈できない場合
+    """
+    try:
+        data = resp.json()
+    except ValueError:
+        raise BackendError("サーバーの応答を解釈できませんでした", status=resp.status_code)
+    if not isinstance(data, dict):
+        raise BackendError("サーバーの応答を解釈できませんでした", status=resp.status_code)
+    return data
+
+
 def is_logged_in() -> bool:
     """製品版サーバー経由（短命トークン / プロキシ）を使うべきかを返す。
 
@@ -389,7 +408,7 @@ def transcribe_elevenlabs(wav_bytes: bytes, language: str = "") -> str:
         # この呼び出しだけ余裕を持たせる（接続は短く、全体は長く）。
         timeout=httpx.Timeout(90.0, connect=5.0),
     )
-    return resp.json().get("text", "") or ""
+    return _json_body(resp).get("text", "") or ""
 
 
 def warm_elevenlabs() -> None:
@@ -455,7 +474,7 @@ def transcribe_groq(
         # （長文の EL=90s とは別事情）。統合整形時はサーバーで LLM 整形も走るため 90s に広げる。
         timeout=httpx.Timeout(90.0 if server_format else 60.0, connect=5.0),
     )
-    return resp.json().get("text", "") or ""
+    return _json_body(resp).get("text", "") or ""
 
 
 def warm_groq_transcribe() -> None:

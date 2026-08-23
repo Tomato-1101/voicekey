@@ -67,6 +67,10 @@ class SileroVad:
         self._session = None          # onnxruntime.InferenceSession（遅延ロード）
         self._load_failed = False     # ロード失敗を記憶し、毎回の再試行を避ける
         self._lock = threading.Lock()
+        # 直前に計算したフレーム確率のキャッシュ（segment → analyze の二重推論を避ける）。
+        # 同一性（is）で照合するので、別の音声に再利用されることはない
+        self._probs_audio: Optional[npt.NDArray[np.float32]] = None
+        self._probs: Optional[np.ndarray] = None
 
     def _load_session(self) -> bool:
         """ONNX セッションを遅延ロードする。失敗時は False（VAD 無効で続行）。"""
@@ -126,6 +130,30 @@ class SileroVad:
             probs.append(float(out[0, 0]))
         return np.array(probs, dtype=np.float32)
 
+    def _cached_probs(self, audio: npt.NDArray[np.float32]) -> np.ndarray:
+        """フレーム確率を返す（同じ音声で計算済みならキャッシュを使う）。
+
+        長文では segment() が全フレーム確率を計算した直後に、分割不発だと analyze() が
+        同じ音声へもう一度 ONNX 推論を走らせていた（文字起こし前の直列処理に丸ごと上乗せ）。
+        推論は決定的なので、同一配列に対する 2 回目は前回結果をそのまま返してよい。
+
+        呼び出し側で self._lock を保持していること。
+        """
+        if self._probs is not None and self._probs_audio is audio:
+            return self._probs
+        probs = self._frame_probs(audio)
+        self._probs_audio = audio
+        self._probs = probs
+        return probs
+
+    def _clear_probs_cache(self) -> None:
+        """フレーム確率キャッシュを捨てる（音声配列を握り続けないため）。
+
+        呼び出し側で self._lock を保持していること。
+        """
+        self._probs_audio = None
+        self._probs = None
+
     def analyze(
         self, audio: npt.NDArray[np.float32], pad_ms: int = 250
     ) -> Tuple[bool, Optional[npt.NDArray[np.float32]]]:
@@ -156,10 +184,13 @@ class SileroVad:
             if not self._load_session():
                 return (True, None)
             try:
-                probs = self._frame_probs(audio)
+                probs = self._cached_probs(audio)
             except Exception as e:
                 logger.error(f"VAD 推論エラー（発話ありとして続行）: {e}")
                 return (True, None)
+            finally:
+                # analyze はこの録音の終着点なので、ここで音声への参照を手放す
+                self._clear_probs_cache()
 
         # 前後 pad 付き・_KEPT_GAP_SEC 以下の無音をマージしたサンプル区間を得る。
         # 区間が無ければ発話なし（クリックノイズ誤検出の除外は _speech_regions 内）
@@ -233,7 +264,7 @@ class SileroVad:
             if not self._load_session():
                 return []
             try:
-                probs = self._frame_probs(audio)
+                probs = self._cached_probs(audio)
             except Exception as e:
                 logger.error(f"VAD 推論エラー（分割せず 1 本送信）: {e}")
                 return []

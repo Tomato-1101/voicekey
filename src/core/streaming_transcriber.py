@@ -321,9 +321,12 @@ class StreamingTranscriber:
                 self._ephemeral_jti = grant.get("jti")
                 self._ephemeral_meter = bool(grant.get("meter"))
                 auth_header = f"Bearer {grant['token']}"
-            except backend_client.BackendError as e:
+            except Exception as e:
                 # 短命トークン取得失敗（未ログイン扱い・サブスク無効・通信失敗など）
-                # → finish() を解決し、REST フォールバックに委ねる
+                # → finish() を解決し、REST フォールバックに委ねる。
+                # BackendError 以外（応答に token キーが無い KeyError 等）で抜けると、この受信
+                # スレッドが _resolve_finish() を呼ばないまま死に、finish() が猶予 1 秒＋
+                # タイムアウト 3 秒のフル待機に陥る（毎録音 4 秒超の遅延）ため種類を問わず捕捉する。
                 logger.warning(f"Deepgram 短命トークンの取得に失敗: {e}")
                 self._resolve_finish()
                 return
