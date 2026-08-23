@@ -5,6 +5,29 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased] - 2026-08-02
 
 ### Fixed
+- **personal: ライブ字幕を出しっぱなしにするとメモリが 1 日 100MB ずつ増え続けるのを直した（Mac・2026-08-23）**。
+  - **原因**: Apple Speech フレームワーク内部（`SpeechRecognizerWorker.processAudio` の "PerfMeasurements"）が、
+    SpeechAnalyzer のセッションが生きている間ずっと `[(Double, UInt64?)]`（要素 24B）へ **投入バッファ 1 個
+    （約 11.6ms）につき 1 要素を追記し続ける**。上限も間引きも無く、アプリ側から解放する API も無い。
+    字幕はシステム音声タップから**無音でもバッファが流れ続ける**ため、字幕 ON の間は 24 時間伸び続ける。
+    実測: 常駐 4.7 日のプロセスで単一の配列が **512MB**（要素 1,950 万）、footprint の peak が 638MB。
+  - **修正**: `CapturePipeline` に**認識セッションの定期リサイクル**を入れた。認識器（`SpeechRecognizer`）と
+    その入力形式の変換器・結果の受け口を `Session` 1 値にまとめ、新セッションを裏で用意してから
+    アトミックに差し替え、旧セッションは最後の確定を吐き切らせてから畳む。
+    **`SystemAudioTap` は張り替えない**（TCC の許可と対象アプリのロックを維持するため）。
+  - **発動条件**（既存の 1 秒レベルタイマーで判定）: 無音が 8 秒以上続いていて、かつセッション経過 30 分以上
+    → 差し替え（字幕が出ていない静かな瞬間を狙うので体感の途切れが出ない）。音が鳴りっぱなしでも
+    セッション経過 4 時間で強制的に差し替える（上限保証。30 分 ≒ 3.7MB / 4 時間 ≒ 30MB なので実害なし）。
+  - 新しい解析器では音声タイムラインが 0 に戻るため、`analysisStartedAt` / `firstAudioAt` も
+    セッション単位で入れ替える（`CaptionLatencyLog` が異常値を出さないように）。
+  - **実測（`--caption-pipeline-test` + `VOICEKEY_CAPTION_RECYCLE_TEST_SECS=600` で 25 分・無音環境）**:
+    `heap` の最大確保が直前 **2048KB[1]** → 直後 **64KB[2]**（2MB ブロックが消滅）、malloc 合計は
+    8,316,869B → 6,313,413B（**-2,003,456B ＝ ちょうど 2MB**）。`vmmap` の footprint も 21.8MB → 19.2MB。
+    差し替えの所要は **62ms**（ログ 17:17:32.658→.720）。`swift test` 151 件 PASS。
+  - **Technical Details**: `macos/Sources/Voicekey/Caption/Pipeline/CapturePipeline.swift`
+    （`Session` 構造体・`session` ロック・`makeSession()`・`checkRecycle(rms:)`・`recycle(reason:elapsed:)`、
+    `handleCapturedBuffer` は差し替えと競合しないよう「変換 → 集計 → 投入」をロック内で完結）、
+    `macos/Sources/Voicekey/Caption/CaptionSettings.swift`（`recycleTestSeconds`＝ハーネス用の閾値短縮 env）。
 - **personal: ダブルタップ（auto_enter）が「たまに検出されない」のを直した（Mac・2026-08-15）**。
   ユーザー指摘「ダブルタップでの入力がたまに検出されない。もっと絶対に検出されるようにしてほしい」。
   - **原因**: 単一の窓 `kDoubleTapWindow = 0.4` が **2 か所**に効いていた。

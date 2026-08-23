@@ -75,6 +75,16 @@ enum CaptionSettings {
         ProcessInfo.processInfo.environment["VOICEKEY_CAPTION_DISABLE"] == "1"
     }
 
+    /// 認識セッションのリサイクル間隔を秒へ短縮する（`VOICEKEY_CAPTION_RECYCLE_TEST_SECS`）
+    ///
+    /// 本番のしきい値は「無音時 30 分 / 強制 4 時間」だが、それではメモリ回収の実測に
+    /// 数時間かかる。ハーネスからだけ数十秒へ縮められるようにしておく。
+    static var recycleTestSeconds: Double? {
+        guard let raw = ProcessInfo.processInfo.environment["VOICEKEY_CAPTION_RECYCLE_TEST_SECS"],
+              let seconds = Double(raw), seconds > 0 else { return nil }
+        return seconds
+    }
+
     /// 翻訳器をモックに固定するか（`VOICEKEY_CAPTION_TRANSLATOR=mock`）
     ///
     /// 外部通信も言語モデルも無しで、HUD・読み上げ・流量制御の結線だけを検証するために使う。
