@@ -5,21 +5,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **全体像（機能・アーキ・ブランチ・配布の地図）は `OVERVIEW.md` を読む**（プロジェクトが大きくなっても索引から辿れる）。
 **進行中の長期作業がある場合はまず `HANDOFF.md` を読む**（ベータ配布計画の現在地・恒久要件が書いてある）。
 
-## 最重要: 2 ブランチ運用（main=自分用 / release=製品版）— 絶対に混ぜない（2026-06-17 ユーザー指示）
+## 最重要: 単一ブランチ運用（personal 一本）（2026-08-23 ユーザー指示）
 
-voicekey は **2 ブランチに分離**して運用する。**この 2 ブランチは絶対に混ざらないように扱う**。
+voicekey は **`personal` ブランチ 1 本だけ**で運用する。旧 `main`（自分用）/ `release`（製品版）/
+`voice-agent` は **2026-08-23 に personal へ統合してアーカイブ済み**（GitHub からも削除）。
+バックアップは `~/Project/_archive/voicekey-all-branches-2026-08-23.bundle` にある。
 
-- **`main` = 自分用**: 開発者が自分の API キーで毎日使う版（既定ブランチ）。
-  - 4 プロバイダーすべてを**実プロバイダー名で表示**（OpenAI / Groq / ElevenLabs / Deepgram）＋**モデル名も表示・選択可**。テキスト整形（Groq）はモデル・プロンプトともフル設定可。API キータブ表示。
-- **`release` = 製品版**: 顧客配布版（配布タグ `v*` はこのブランチで打つ）。
-  - 文字起こしは **「リアルタイム」=Deepgram / 「スタンダード」=Groq の 2 択のみ**（OpenAI は開発用のみ・ElevenLabs はスタンダードのハンズフリー録音時に内部で自動使用）。
-  - **モデル非選択**（Deepgram=nova-3 / Groq=whisper-large-v3-turbo / EL=scribe_v1 固定）。**Groq 整形はサーバー実行**（モデルはサーバー固定・自由プロンプト入力なし・オンオフトグル＋**整え方プリセット 4 種**〔標準/そのまま/すっきり/箇条書き・2026-07-03 追加〕・既定はモード別＝スタンダード ON / リアルタイム OFF）。配布ビルドは API キータブ非表示＋埋め込みキー。
+- **`personal` = 開発者本人が毎日使う唯一の版**。4 プロバイダーすべてを**実プロバイダー名で表示**
+  （OpenAI / Groq / ElevenLabs / Deepgram）＋**モデル名も表示・選択可**。テキスト整形（Groq）は
+  モデル・プロンプトともフル設定可。API キーは中央 Keychain から直読み（サーバー往復ゼロ＝最速）。
+  ライブ字幕・ローカル（Apple）文字起こし・翻訳して入力も personal 限定機能としてここにある。
+- 製品版（顧客配布・ログイン・課金・アクティベーションキー）の運用は**終了**した。販売まわりのリポジトリ
+  （`voicekey-site` / `voicekey-releases`）は別リポジトリとして現状維持で、本リポジトリからは切り離す。
+- 本リポジトリは今後も **PRIVATE**。
 
 **ブランチ運用ルール（厳守）:**
-- **どのブランチに変更を入れるかは Claude が内容から判断する**（2026-07-03 ユーザー指示で「毎回確認」を廃止）。
-  目安: 製品機能・UI・バグ修正は原則両方（release で実装 → main へ移植）。ブランチ固有仕様（release の認証層、main のモデル選択 UI 等）に関わるものは該当ブランチのみ。判断に迷う特殊ケースだけ確認してよい。
-- 2 ブランチを勝手に荒らさない・混ぜない。一方の変更を勝手にもう一方へ持ち込まない（指示なき cherry-pick / merge 禁止）。
-- 両 OS 同時実装（下節）は**同一ブランチ内**で行う。リリース配布も対象ブランチ（release）を取り違えない。
+- **新しいブランチを勝手に作らない**。作業は `personal` に直接コミットする（実験が要るときだけ一時ブランチを
+  作り、終わったら畳む）。
+- 旧ブランチ名（`main` / `release` / `voice-agent`）を前提にした手順・分岐を新しく書かない。
+  過去の CHANGELOG やメモリに残る「release で実装 → main へ移植」等の記述は**歴史的経緯**として読む。
+- 両 OS 同時実装（下節）は引き続き必須。
 
 ## 最重要: コードを変更したら README も更新する（2026-06-14 ユーザー指示）
 
@@ -32,11 +37,11 @@ voicekey は **2 ブランチに分離**して運用する。**この 2 ブラ�
 
 ## 最重要: 機能・アーキを変えたら OVERVIEW.md も更新する（2026-06-18 ユーザー指示）
 
-`OVERVIEW.md` は**プロジェクト全体の地図**（機能一覧・アーキ地図・2 ブランチの違い・配布構成・ドキュメント体系の索引）。
+`OVERVIEW.md` は**プロジェクト全体の地図**（機能一覧・アーキ地図・配布構成・ドキュメント体系の索引）。
 プロジェクトが大きくなっても全体像を見失わないために置いている。
 - **機能・アーキ・ブランチ仕様・配布構成・ドキュメント構成が変わったら、同じコミットで `OVERVIEW.md` の該当行も直す**（README 更新ルールと同じ精神）。
 - ただし詳細は書かない（重複はドリフトの元）。詳細は各専門ドキュメント（README/CHANGELOG/HANDOFF）に置き、OVERVIEW はリンクと 1 行要約に留める。
-- `OVERVIEW.md` は **`main` / `release` 両ブランチで同一内容**を保つ（ブランチ差は本文内に明記）。両ブランチ同時に直す。
+- `OVERVIEW.md` はブランチが 1 本になったので、`personal` の内容が唯一の正本。
 
 ## 最重要: 両OSに存在する変更は Mac・Windows 同時に実装する（2026-06-16 ユーザー指示）
 
@@ -45,8 +50,8 @@ Mac（`macos/` Swift）と Windows（`src/` Python）の両方を同じ作業で
 - Mac はビルド＆再起動で、Windows は `py_compile`＋`unittest` で各々検証してから報告。
 - Windows 固有（win32・レジストリ自動起動）/ Mac 固有（launchd・SMAppService・CGEventTap）でしか存在しない要素だけ片方で完結してよい。
 - リリース配布も常に両 OS 同期（バージョンは Claude が semver で決める。範囲・版番号はユーザーに聞かない）。
-- バックエンド表示名は**ブランチで異なる**（上節）。`main`=実プロバイダー名、`release`=特徴名 2 択（高速リアルタイム / 正確性）。
-- **VAD・長文分割・ストリーミング・録音 HUD は両ブランチとも常時 ON 固定**（設定 UI から撤去済み）。Mac は `ConfigStore` init で true 固定、Windows は `config_manager._force_always_on` が読込・保存時に矯正する。
+- バックエンド表示名は**実プロバイダー名 + モデル名**（personal 一本化により特徴名 2 択の出し分けは廃止）。
+- **VAD・長文分割・ストリーミング・録音 HUD は常時 ON 固定**（設定 UI から撤去済み）。Mac は `ConfigStore` init で true 固定、Windows は `config_manager._force_always_on` が読込・保存時に矯正する。
 
 ## 最重要: Mac 版（macos/ ディレクトリ・Swift）の作業ルール
 
@@ -155,7 +160,7 @@ Mac（`macos/` Swift）と Windows（`src/` Python）の両方を同じ作業で
 voicekey は、ホットキーを押している間だけ音声を録音し、文字起こし結果を**今使っているアプリのカーソル位置へ自動入力**する常駐型の音声入力ツール（Mac=メニューバー / Windows=タスクトレイ）。
 **文字起こしはすべてクラウド API**（Deepgram / ElevenLabs / OpenAI / Groq）、**発話区間検出（VAD）だけローカル CPU 実行**（Python=Silero ONNX を onnxruntime、Mac=エネルギー RMS）。ローカル GPU 文字起こし（faster-whisper）は廃止済み＝**CUDA / GPU は不要**。
 
-> 機能一覧・アーキ地図（責務 → ファイル）・2 ブランチの違い・配布構成は **`OVERVIEW.md`** に集約してある。ここでは重複させない（ドリフト防止）。Windows は `src/`（Python / PySide6）、Mac は `macos/Sources/Voicekey/`（Swift）の二本立て。
+> 機能一覧・アーキ地図（責務 → ファイル）・配布構成は **`OVERVIEW.md`** に集約してある。ここでは重複させない（ドリフト防止）。Windows は `src/`（Python / PySide6）、Mac は `macos/Sources/Voicekey/`（Swift）の二本立て。
 
 ## Development Commands
 
@@ -209,9 +214,9 @@ GPU / CUDA は不要（文字起こしはクラウド API、VAD は onnxruntime 
 - `constants.py` の `APP_VERSION` がバージョンの**単一ソース**（`src/__init__.__version__`・Windows ビルド・`updater.py` が参照）。
 - **VAD / 長文分割 / ストリーミング / 録音 HUD は常時 ON 固定**（`_force_always_on` が読込・保存時に矯正）。
 
-### release（製品版）固有のサーバー認証層
+### サーバー認証層（Windows 側に残存・Mac の personal では未使用）
 
-- `src/core/auth_client.py` / `backend_client.py` / `login_coordinator.py`: ログイン（deep link）・利用権／無料体験残量の検証・短命トークン／プロキシ取得を担う。`main`（自分用）には存在しない。
+- `src/core/auth_client.py` / `backend_client.py` / `login_coordinator.py`: ログイン（deep link）・利用権／無料体験残量の検証・短命トークン／プロキシ取得を担う。Mac（Swift）側の personal ビルドはこの層を通らず Keychain 直読みで動く。
 
 ## コメントルール（重要）
 

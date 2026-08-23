@@ -172,14 +172,13 @@ API キーは開発者の現行キーをビルド時埋め込み（テスター�
 - 自動アップデートは Mac 版・Windows 版の両方に必ず組み込む（ユーザー強い要望）。
 - ソースコード非公開。配布物に .py 平文を含めない（voicekey.spec の datas=('src','src') は根治対象）。
 - DIST ビルドでは設定画面の API キータブを非表示。
-- ブランチは **2 本運用**（2026-06-17 確定・**main 一本化を上書き**）: **`main`=自分用 / `release`=製品版**。
-  この 2 ブランチは絶対に混ぜない。詳細仕様は `CLAUDE.md` 冒頭「2 ブランチ運用」と memory
-  `project_voicekey_branch_split` を参照。**配布タグ（vX.Y.Z）は `release` ブランチで打ち**、配布物は
-  release の dist ビルドから作る（自分用 main の実プロバイダー名 UI を配布しないため）。どのブランチに変更を
-  入れるかは **Claude が内容から判断**（2026-07-03 改訂・毎回確認を廃止。原則 release 実装→main 移植。
-  混ぜない原則・指示なき merge/cherry-pick 禁止は不変）。beta ブランチ廃止は維持。ソース非公開はブランチではなく
-  「private リポジトリ ＋ 配布物に .py 平文を含めない」で担保（後者は voicekey.spec の datas=('src','src')
-  が根治対象・未完）。
+- ブランチは **1 本運用**（2026-08-23 確定・**2 ブランチ運用を上書き**）: **`personal` のみ**。
+  旧 `main` / `release` / `voice-agent` は personal へ統合してアーカイブ済み（GitHub からも削除。
+  バックアップは `~/Project/_archive/voicekey-all-branches-2026-08-23.bundle`）。詳細は `CLAUDE.md`
+  冒頭「単一ブランチ運用」を参照。製品版の顧客配布・課金運用は終了し、以下の配布物置き場は
+  **`voicekey-site` / `voicekey-releases` 側の歴史的記録**として残す。ソース非公開は
+  「private リポジトリ ＋ 配布物に .py 平文を含めない」で担保（後者は voicekey.spec の
+  datas=('src','src') が根治対象・未完）。
 - 配布物置き場（2026-06-14 確定の実態）:
   - **Mac**: すべて Vercel サイト（https://voicekey.vercel.app、ソースは
     `/Users/tomato/Project/voicekey-site/`、`vercel deploy --prod` で更新）。

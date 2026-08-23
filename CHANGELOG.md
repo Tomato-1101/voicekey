@@ -32,6 +32,26 @@ voicekeyの変更履歴を記録するファイルです。
     共有クライアント前提へ更新（`httpx.post` パッチ → `_get_jwt_client` パッチ）。
     検証: `py_compile` 全 8 ファイル OK / `QT_QPA_PLATFORM=offscreen python -m unittest discover -s tests` **512 件 PASS**。
 
+### Changed
+- **単一ブランチ運用（personal 一本）へ移行し、ドキュメントを実態へ書き換え（2026-08-23）**。
+  旧 `main`（自分用）/ `release`（製品版）/ `voice-agent` を `personal` へ統合してアーカイブした
+  （GitHub からも削除。バックアップは `~/Project/_archive/voicekey-all-branches-2026-08-23.bundle`）。
+  製品版の顧客配布・課金・アクティベーションキーの運用は終了し、販売まわりのリポジトリ
+  （`voicekey-site` / `voicekey-releases`）は別リポジトリとして現状維持で切り離す。本リポジトリは今後も PRIVATE。
+  - `README.md`: 商用版の「配布ステータス表・価格・ダウンロード導線・ポータル経由の入手手順」を撤去し、
+    「開発者本人が毎日使う単一バージョン」の実態へ書き換え。ログイン前提だった記述（実績のアカウント連携・
+    オンボーディングのログインステップ・API キーの入手案内）を personal の実態（中央 Keychain 直読み・
+    ログイン画面なし）に合わせた。バージョン表（`APP_VERSION` との整合をテストが検査する）は維持。
+  - `CLAUDE.md` / `OVERVIEW.md` / `AGENTS.md`: 「2 ブランチ運用」の節を「単一ブランチ運用」へ改訂し、
+    本文中のブランチ名への言及を最小修正した（**恒久要件・教訓・両 OS 同時実装・README/OVERVIEW 更新ルール・
+    ライブ字幕節・コメントルールなど他の節は内容を変更していない**）。
+  - `HANDOFF.md`: **現役の恒久要件**（API キーを git にコミットしない／自動アップデート必須／ソース非公開／
+    Apple Developer Program は販売時／Mac のビルド→kill→open 手順／UI スモークで keyring をモック）が
+    含まれるため**残した**。ブランチ運用の 1 項目だけ実態へ最小修正。
+  - 陳腐化した内部文書 4 件を削除（`FREE_LAUNCH_PLAN.md` / `KEY_ROTATION_runbook.md` /
+    `TEST_v1.3.0_activation.md` / `competitor-research-2026-06-29.md`）。いずれも 2026-06 の製品ローンチ計画で、
+    release では既に削除済み。git 履歴とバックアップ bundle に残る。
+
 ### Added
 - **personal: 設定画面にモデル選択と整形の編集 UI を復元（Mac・2026-08-23 に main から移植）**。
   自分用ビルドは「何が動いているか隠さない」方針なので、製品版で固定していた項目を選べるようにした
