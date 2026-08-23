@@ -65,6 +65,8 @@ struct MainWindowView: View {
         // ライブ字幕は personal 限定・macOS 26 以降でしか動かないので、使える環境でだけ出す
         if EmbeddedKeys.isPersonal, #available(macOS 26.0, *) {
             items.append(.init(id: 9, title: "ライブ字幕", icon: "captions.bubble"))
+            // 「翻訳して入力」も personal 限定・macOS 26 以降（Apple のオンデバイス翻訳が要る）
+            items.append(.init(id: 10, title: "翻訳して入力", icon: "character.bubble"))
         }
         // personal（個人用最速版）は埋め込みキーで常に利用可＝ログイン/アカウントの概念が無いので
         // アカウントタブを出さない。配布/開発ビルドでは従来どおり出す。
@@ -322,6 +324,12 @@ struct MainWindowView: View {
         case 9:
             if #available(macOS 26.0, *) {
                 CaptionSettingsTab(config: config, controller: controller)
+            } else {
+                GeneralSettingsTab(config: config)
+            }
+        case 10:
+            if #available(macOS 26.0, *) {
+                TranslateInputTab(config: config)
             } else {
                 GeneralSettingsTab(config: config)
             }
@@ -657,11 +665,84 @@ private struct SlotSettingsTab: View {
         case .openaiLive:
             return "OpenAI の新しいライブ文字起こしで入力します。\n"
                 + "Deepgram より確定は遅めですが（実測 0.7 秒）、固有名詞や数字に強いエンジンです。"
+        // appleLocal も personal 限定の選択肢
+        case .appleLocal:
+            return "Mac の中だけで文字起こしします。通信もAPIキーも使わないので最速で、オフラインでも動きます。\n"
+                + "初回だけ言語モデルのダウンロードが走ります（進捗は録音 HUD に出ます）。"
         case .groq:
             return "録音後にきれいな文章にして入力します（おすすめ）\n"
                 + "ハンズフリー録音のときは、長い録音に強いエンジンへ自動で切り替わります。"
         default:
             return ""
+        }
+    }
+}
+
+// MARK: - 翻訳して入力
+
+/// 文字起こし結果を訳してから貼り付ける設定（全体で 1 つ・スロット単位ではない）
+@available(macOS 26.0, *)
+private struct TranslateInputTab: View {
+    @ObservedObject var config: ConfigStore
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("翻訳して入力する", isOn: $config.translateInputEnabled)
+                Text("話した内容を翻訳してから貼り付けます（例: 日本語で話す → 英語が入力される）。\n"
+                    + "録音キー 1・2 のどちらでも、どの文字起こしエンジンでも同じように効きます。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if config.translateInputEnabled {
+                Section {
+                    Picker("入力する言語", selection: $config.translateInputTarget) {
+                        ForEach(DictationTranslation.targetLanguages, id: \.code) { language in
+                            Text(language.label).tag(language.code)
+                        }
+                    }
+                    Picker("翻訳エンジン", selection: $config.translateInputEngine) {
+                        ForEach(DictationTranslationEngine.allCases) { engine in
+                            Text(engine.label).tag(engine)
+                        }
+                    }
+                    Text(Self.engineCaption(config.translateInputEngine))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                Section {
+                    // 二重に LLM を叩くと遅くなるので、気付けるようにここで一言添える
+                    // （どちらを切るかはユーザーが決める。勝手に整形を無効化はしない）
+                    Text("「文章を自動で整える」と同時に使うと、整形と翻訳で 2 回 LLM を呼びます。\n"
+                        + "速さを優先するなら、録音キーの設定で整形をオフにしてください。\n"
+                        + "翻訳に失敗したときは原文がそのまま入力されます（文章を失いません）。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+        .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
+        .glassFormRows()                   // 行フィルを半透明化して島の中で「ガラスの棚」に見せる
+        .formStyle(.grouped)
+        .padding(.vertical, 8)
+    }
+
+    /// 選択中の翻訳エンジンの一行説明
+    private static func engineCaption(_ engine: DictationTranslationEngine) -> String {
+        switch engine {
+        case .apple:
+            return "Mac の中だけで翻訳します。無料・オフラインで動きます。\n"
+                + "使う言語が未導入のときは システム設定 > 一般 > 言語と地域 > 翻訳言語 で追加してください。"
+        case .groq:
+            return "Groq の LLM で翻訳します。話し言葉のニュアンスに強い代わりに、通信と API キーが必要です。"
         }
     }
 }

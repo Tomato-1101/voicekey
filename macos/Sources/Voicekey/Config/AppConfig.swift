@@ -37,6 +37,10 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
     /// personal（自分用）ブランチ限定の選択肢＝release（製品版）には出さない。
     /// REST では 404（Realtime WS 専用モデル）なので、経路は必ず WebSocket。
     case openaiLive = "openai_live"
+    /// Apple のオンデバイス音声認識（SpeechAnalyzer / SpeechTranscriber・macOS 26 以降）。
+    /// personal 限定の選択肢＝release（製品版）には出さない。
+    /// ネットワーク往復も API キーも無い＝原理的にいちばん速い経路。
+    case appleLocal = "apple_local"
 
     var id: String { rawValue }
 
@@ -57,6 +61,8 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
         case .openai: return "OpenAI（開発用）"
         // personal 限定の 3 つ目。Deepgram と同じ「離した瞬間に入力」型だが OpenAI 製。
         case .openaiLive: return "OpenAI ライブ"
+        // personal 限定。ネットワークを使わず Mac の中だけで文字起こしする。
+        case .appleLocal: return "ローカル（Apple）"
         }
     }
 
@@ -72,8 +78,13 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
     /// スタンダード=Groq（既定・普通入力）。
     /// enum の case（elevenlabs/openai）は保存値の decode 互換と EL の内部利用のため残す
     /// （「選べる集合」だけを縮める設計）。
-    /// 注意: openaiLive は personal（自分用）専用の選択肢。release へこの行を持ち込まないこと。
-    static var selectableCases: [Backend] { [.deepgram, .openaiLive, .groq] }
+    /// 注意: openaiLive / appleLocal は personal（自分用）専用の選択肢。release へこの行を持ち込まないこと。
+    /// appleLocal は macOS 26 以降の SpeechAnalyzer が要るため、使える環境でだけ選択肢に出す
+    /// （古い OS では保存値も decode 時に groq へ移行する＝選べない値が残らない）。
+    static var selectableCases: [Backend] {
+        if #available(macOS 26.0, *) { return [.deepgram, .appleLocal, .openaiLive, .groq] }
+        return [.deepgram, .openaiLive, .groq]
+    }
 
     /// 提供元名（API キー欄でどのキーかを示すためだけに使う。配布版では
     /// API キータブ自体を隠すので、開発時にしか表示されない）
@@ -83,6 +94,7 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
         case .groq: return "Groq"
         case .elevenlabs: return "ElevenLabs"
         case .deepgram: return "Deepgram"
+        case .appleLocal: return "Apple"
         }
     }
 
@@ -101,6 +113,8 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
         // gpt-live-transcribe が新世代（2026-07-28）。TTFB は前世代 gpt-realtime-whisper より
         // 速い（delay=minimal で 449-524ms vs 637-774ms・2026-07-31 実測）
         case .openaiLive: return ["gpt-live-transcribe", "gpt-realtime-whisper"]
+        // Apple はモデルを選べない（OS が言語ごとに 1 つ持つ）。表示名として 1 件だけ持つ。
+        case .appleLocal: return ["オンデバイス音声認識"]
         }
     }
 
@@ -113,8 +127,8 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
     /// 設定 UI でモードを切り替えたときに整形トグルをこの既定へ追従させる。
     var defaultFormatEnabled: Bool {
         switch self {
-        // ライブ系（Deepgram / OpenAI ライブ）は速度全振りのため既定 OFF
-        case .deepgram, .openaiLive: return false
+        // ライブ系（Deepgram / OpenAI ライブ / ローカル）は速度全振りのため既定 OFF
+        case .deepgram, .openaiLive, .appleLocal: return false
         case .groq, .elevenlabs, .openai: return true
         }
     }
@@ -271,6 +285,18 @@ final class ConfigStore: ObservableObject {
     /// Groq 翻訳のモデル ID（空なら既定値を使う）
     @Published var captionGroqModel: String
 
+    // MARK: - 翻訳して入力（personal・macOS 26 以降）
+
+    /// 文字起こし結果を訳してから貼り付けるか（全体で 1 つ・スロット単位ではない）
+    ///
+    /// ライブ字幕と同じく、正本は UserDefaults（`DictationTranslation`）に置く。
+    /// 貼り付けパイプラインは MainActor 外から同期的に読むため。
+    @Published var translateInputEnabled: Bool
+    /// 翻訳の出力言語コード（既定 en）
+    @Published var translateInputTarget: String
+    /// 翻訳に使うエンジン（既定 Apple のオンデバイス）
+    @Published var translateInputEngine: DictationTranslationEngine
+
     /// 保護リストの既定シード（一人／二人＝ひとり・ふたり、十分＝じゅうぶん 等の誤変換を守る）
     static let defaultNumeralProtectWords = [
         "一時的", "一時停止", "一人", "二人", "十分", "一日中", "一部始終", "一石二鳥",
@@ -361,6 +387,10 @@ final class ConfigStore: ObservableObject {
         captionShowSource = CaptionSettings.showSourceText
         captionGeminiModel = CaptionSettings.geminiModelID
         captionGroqModel = CaptionSettings.groqModelID
+        // 翻訳して入力も DictationTranslation（UserDefaults）が正本。ここはその写し。
+        translateInputEnabled = DictationTranslation.isEnabled
+        translateInputTarget = DictationTranslation.targetLanguage
+        translateInputEngine = DictationTranslation.engine
         sideNotchEnabled = defaults.object(forKey: Keys.sideNotchEnabled) as? Bool ?? true
         historyEnabled = defaults.object(forKey: Keys.historyEnabled) as? Bool ?? true
         // 数字入力: マスター・助数詞は既定 ON。保護リストは未保存ならシード、
@@ -424,6 +454,10 @@ final class ConfigStore: ObservableObject {
         // モデル ID は空欄＝「既定に戻す」の意味にする（CaptionSettings 側が既定値を返す）
         $captionGeminiModel.dropFirst().sink { CaptionSettings.geminiModelID = $0 }.store(in: &cancellables)
         $captionGroqModel.dropFirst().sink { CaptionSettings.groqModelID = $0 }.store(in: &cancellables)
+        // 翻訳して入力も DictationTranslation 経由で書く（キーの正本を 1 か所に保つため）
+        $translateInputEnabled.dropFirst().sink { DictationTranslation.isEnabled = $0 }.store(in: &cancellables)
+        $translateInputTarget.dropFirst().sink { DictationTranslation.targetLanguage = $0 }.store(in: &cancellables)
+        $translateInputEngine.dropFirst().sink { DictationTranslation.engine = $0 }.store(in: &cancellables)
     }
 
     /// ユーザー辞書の確定置換を最終テキストに適用する。

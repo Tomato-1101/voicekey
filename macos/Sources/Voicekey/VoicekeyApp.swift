@@ -35,6 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // ライブ字幕の検証ハーネス（GUI を出さずに計測して終了する）。
         // 通常起動には一切影響しない（引数が無ければ素通り）。
         if CaptionTestMode.runIfRequested() { return }
+        // 音声入力側（ローカル文字起こし・翻訳して入力）の検証ハーネス。同じく素通り。
+        if DictationTestMode.runIfRequested() { return }
 
         let app = NSApplication.shared
         let delegate = AppDelegate()

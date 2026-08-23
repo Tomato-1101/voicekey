@@ -54,6 +54,12 @@ final class AppController: ObservableObject {
     /// **最初に `caption` を参照するまで生成しない**（ディクテーションの起動経路に一切足さない）。
     private var captionStorage: AnyObject?
 
+    /// 「翻訳して入力」の翻訳器。Apple のセッションを使い回して 2 回目以降の遅延を消すため保持する。
+    /// macOS 26 限定型なので caption と同じく AnyObject で持ち、使うときにキャストする。
+    private var translatorStorage: AnyObject?
+    /// 保持中の翻訳器の構成（エンジン/出力言語）。変わったら作り直す。
+    private var translatorKey = ""
+
     private let recorder = AudioRecorder()
     private let hotkeys = HotkeyMonitor()
     /// 貼り付け前の LLM テキスト整形（失敗時は原文を返すため全スロットで共用できる）
@@ -774,6 +780,13 @@ final class AppController: ObservableObject {
                     DispatchQueue.main.async { self?.hud.setLiveText(normalized) }
                 }
             }
+            // ローカル（Apple）は初回だけ言語モデルのダウンロードが走る。無言で固まって
+            // 見えないよう進捗を HUD に出す（2 回目以降は一度も呼ばれない）。
+            if #available(macOS 26.0, *), let local = stream as? LocalSpeechTranscriber {
+                local.onAssetProgress = { [weak self] message in
+                    DispatchQueue.main.async { self?.hud.notice(message) }
+                }
+            }
             if stream.start() {
                 streamer = stream
                 recorder.chunkHandler = { [weak stream] chunk in stream?.send(chunk) }
@@ -804,6 +817,12 @@ final class AppController: ObservableObject {
         if effectiveFormatEnabled {
             formatter.prewarm()
         }
+        // 「翻訳して入力」が ON なら翻訳セッションも録音中に温める（初回のモデルロードを隠す）。
+        // OFF のときは何も生成しない＝他バックエンドのクリティカルパスに一切足さない。
+        if DictationTranslation.isEnabled, #available(macOS 26.0, *) {
+            let translator = dictationTranslator()
+            Task { await translator.prepare() }
+        }
 
         // 録音時間の上限（release 取りこぼし等での永久録音を防ぐ保険）
         failsafeTask?.cancel()
@@ -814,6 +833,50 @@ final class AppController: ObservableObject {
             self.hud.notice("録音時間の上限に達したため停止しました")
             self.finishRecording()
         }
+    }
+
+    // MARK: - 翻訳して入力
+
+    /// 「翻訳して入力」が ON なら最終テキストを訳す（OFF なら経路に一切触れない）。
+    ///
+    /// 訳すのは貼り付け直前の 1 回だけ。失敗したら原文をそのまま返す（テキストを失わない）。
+    ///
+    /// - Parameter text: 整形・数字正規化・ユーザー辞書まで済んだ最終テキスト
+    /// - Returns: 貼り付けるテキスト
+    private func translateIfEnabled(_ text: String) async -> String {
+        guard DictationTranslation.isEnabled, !text.isEmpty else { return text }
+        guard #available(macOS 26.0, *) else { return text }
+
+        let translator = dictationTranslator()
+        let started = ProcessInfo.processInfo.systemUptime
+        let result = await translator.translate(text)
+        let elapsedMs = Int((ProcessInfo.processInfo.systemUptime - started) * 1000)
+        if result.didTranslate {
+            log.info("翻訳して入力: \(DictationTranslation.engine.rawValue, privacy: .public) → \(DictationTranslation.targetLanguage, privacy: .public) \(elapsedMs)ms")
+        } else {
+            // 無言で原文が入ると「翻訳が効いていない」ことに気付けないので必ず知らせる
+            log.notice("翻訳して入力に失敗したため原文を入力します: \(result.failureReason ?? "不明", privacy: .public)")
+            hud.notice("翻訳できなかったため原文を入力しました")
+        }
+        return result.text
+    }
+
+    /// 現在の設定に合う翻訳器を返す（構成が変わらない限り使い回す）
+    @available(macOS 26.0, *)
+    private func dictationTranslator() -> DictationTranslator {
+        let engine = DictationTranslation.engine
+        let target = DictationTranslation.targetLanguage
+        let source = config.language
+        let key = "\(engine.rawValue)/\(source)/\(target)"
+        if key == translatorKey, let existing = translatorStorage as? DictationTranslator {
+            return existing
+        }
+        let created = DictationTranslator(
+            engine: engine, sourceLanguage: source, targetLanguage: target
+        )
+        translatorStorage = created
+        translatorKey = key
+        return created
     }
 
     /// ライブ（WebSocket）文字起こしのセッションをバックエンドに応じて生成する。
@@ -827,6 +890,11 @@ final class AppController: ObservableObject {
             return StreamingTranscriber(model: model, language: language)
         case .openaiLive:
             return OpenAILiveTranscriber(model: model, language: language)
+        case .appleLocal:
+            // オンデバイス（SpeechAnalyzer）。macOS 26 未満では選択肢に出ないが、
+            // 旧 OS に保存値が残っていた場合は nil＝REST 経路でエラー文言を出す。
+            guard #available(macOS 26.0, *) else { return nil }
+            return LocalSpeechTranscriber(language: language)
         case .groq, .elevenlabs, .openai:
             return nil
         }
@@ -905,12 +973,15 @@ final class AppController: ObservableObject {
                         : streamed
                     // 数字表記を半角アラビア数字へ正規化してからユーザー辞書置換を適用
                     // （全角→半角・連続漢数字→算用数字。置換はその後＝正規化後テキストに効かせる）
-                    let output = config.applyReplacements(NumeralNormalizer.normalize(
+                    let corrected = config.applyReplacements(NumeralNormalizer.normalize(
                         formatted,
                         enabled: config.numeralNormalizeEnabled,
                         convertCounter: config.numeralConvertCounter,
                         protectWords: Set(config.numeralProtectWords)
                     ))
+                    // 「翻訳して入力」が ON なら、この最終テキストを 1 回だけ訳す
+                    // （正規化・ユーザー辞書は原文の誤認識を直すためのものなので、翻訳より前に効かせる）
+                    let output = await self.translateIfEnabled(corrected)
                     // 貼り付け先アプリを貼り付け直前に再取得する（録音中に切り替えた場合は今の前面が正）
                     let target = frontApp.snapshot()
                     // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する（履歴保存 OFF はスキップ）
@@ -999,12 +1070,14 @@ final class AppController: ObservableObject {
             let fmtMs = Int((ProcessInfo.processInfo.systemUptime - fmtStart) * 1000)
             // 数字表記を半角アラビア数字へ正規化してからユーザー辞書置換を適用
             // （全角→半角・連続漢数字→算用数字。置換はその後＝正規化後テキストに効かせる）
-            let output = config.applyReplacements(NumeralNormalizer.normalize(
+            let corrected = config.applyReplacements(NumeralNormalizer.normalize(
                 formatted,
                 enabled: config.numeralNormalizeEnabled,
                 convertCounter: config.numeralConvertCounter,
                 protectWords: Set(config.numeralProtectWords)
             ))
+            // 「翻訳して入力」が ON なら、この最終テキストを 1 回だけ訳す（OFF なら素通り）
+            let output = await self.translateIfEnabled(corrected)
             // 貼り付け先アプリを貼り付け直前に再取得する（録音中に切り替えた場合は今の前面が正）
             let target = frontApp.snapshot()
             // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する（履歴保存 OFF はスキップ）

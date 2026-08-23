@@ -22,16 +22,21 @@ struct GroqTranslator: StreamingTranslator {
     private let keyProvider: @Sendable () -> String?
     /// モデル ID も毎回取り直す（設定変更を再起動なしで反映するため）
     private let modelProvider: @Sendable () -> String
+    /// システムプロンプト（既定は字幕の英→日。音声入力の「翻訳して入力」が向きを差し替える）
+    private let systemPromptProvider: @Sendable () -> String
 
     /// - Parameters:
     ///   - keyProvider: API キーを返すクロージャ（未設定なら nil）
     ///   - modelProvider: 使用するモデル ID を返すクロージャ
+    ///   - systemPromptProvider: システムプロンプトを返すクロージャ（既定は字幕の英→日）
     init(
         keyProvider: @escaping @Sendable () -> String? = { APIKeyStore.load(.groq)?.key },
-        modelProvider: @escaping @Sendable () -> String = { CaptionSettings.groqModelID }
+        modelProvider: @escaping @Sendable () -> String = { CaptionSettings.groqModelID },
+        systemPromptProvider: @escaping @Sendable () -> String = { GeminiTranslator.systemPrompt }
     ) {
         self.keyProvider = keyProvider
         self.modelProvider = modelProvider
+        self.systemPromptProvider = systemPromptProvider
 
         let configuration = URLSessionConfiguration.ephemeral
         // 字幕が数十秒固まるより、早く諦めて Apple 翻訳へ落ちる方がよい
@@ -67,7 +72,8 @@ struct GroqTranslator: StreamingTranslator {
             key: key,
             text: trimmed,
             context: context,
-            stream: true
+            stream: true,
+            systemPrompt: systemPromptProvider()
         )
 
         let stream: URLSession.AsyncBytes

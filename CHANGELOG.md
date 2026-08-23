@@ -4,6 +4,52 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased] - 2026-08-02
 
+### Added
+- **personal: 文字起こしバックエンドに「ローカル（Apple）」を追加（Mac・macOS 26+・2026-08-23）**。
+  動機はユーザー要望「Talkify がすごく速い」＝**速度**。Apple のオンデバイス音声認識
+  （SpeechAnalyzer / SpeechTranscriber）で **Mac の中だけ**で文字起こしする。
+  - **通信も API キーも使わない**（`Keychain.apiKey(for: .appleLocal)` は Keychain を引かず必ず nil）。
+    オフラインで動き、音声が外部へ出ない。
+  - **Deepgram ストリーミングと同じ「離した瞬間に入力」型**。`LiveTranscribing` に適合させ、
+    録音中の chunkHandler から並行して解析器へ投入し、キー離しで finalize → 即確定する。
+    解析器の準備（数百 ms）が終わるまでのチャンクは退避してから流すので **1 サンプルも捨てない**。
+  - 認識言語は既存の「言語」設定に従う（空なら OS の言語）。**初回だけ言語モデルのダウンロード**が走り、
+    進捗を録音 HUD に出す（無言で固まらない）。
+  - 認識器は字幕と同じ `Caption/Speech/SpeechRecognizer` を共用する（重複実装でドリフトさせないため）。
+    **字幕とディクテーションで SpeechAnalyzer を 2 本同時に走らせられる**ことをハーネスで実測済み。
+  - **恒久要件（他バックエンドのクリティカルパスに 1ms も足さない）を守る**: ローカルを選んでいない限り
+    何も生成・初期化しない。`Transcriber` の HTTP 経路には到達しない（`transcribe()` の冒頭で分岐）。
+  - **実測（`scripts/dev/local_stt_e2e.sh`・マイク不要）**: 日本語 4.55 秒の音声で認識テキストが
+    **原文と完全一致**（`今日は良い天気ですね。音声入力のテストをしています。`）。確定までの所要は
+    初回 3962ms（モデル DL 込み）→ **2 回目 155ms** → 字幕と並走させて **92ms**。
+  - **Technical Details**: `Core/LocalSpeechTranscriber.swift`（新規）・`Config/AppConfig.swift`
+    （`Backend.appleLocal`・`selectableCases` を macOS 26 でゲート）・`Core/Transcriber.swift`
+    （`transcribeLocally`＝ストリーミングが空だったときの 1 発フォールバック）・`Core/Keychain.swift`
+    （キーを引かない）・`AppController.swift`（`makeLiveTranscriber` / DL 進捗の HUD 配線）・
+    `UI/SettingsView.swift`（モード説明）・`CLI/DictationTestMode.swift`＋`scripts/dev/local_stt_e2e.sh`（新規ハーネス）。
+- **personal: 「翻訳して入力」を追加（Mac・macOS 26+・2026-08-23）**。
+  話した内容を訳してから貼り付ける。本命は「**日本語で話す → 英語が入力される**」。
+  - **全体で 1 つのトグル**（スロット単位ではない・ユーザー決定）＋**出力言語は選択式**
+    （英語＝既定 / 中国語（簡体）/ 韓国語 / スペイン語 / 日本語）。設定は設定ウィンドウの
+    「翻訳して入力」タブに集約（字幕設定と同じ精神）。
+  - **翻訳エンジンは 2 択**: Apple のオンデバイス翻訳（既定・無料・オフライン）と Groq（LLM）。
+    **Gemini は選択肢に出さない**（勝手に課金を発生させない恒久方針）。新しい有料 API も追加しない。
+  - どのバックエンド（クラウド / ローカル）の結果にも効く。**貼り付け直前の最終テキストに 1 回だけ**
+    適用する（部分訳はしない）。**トグル OFF のときは経路に一切触れない**。
+  - 適用順は 整形 → 数字正規化 → ユーザー辞書 → **翻訳**。正規化と辞書は「原文の誤認識を直す」ための
+    ものなので翻訳より前に効かせる。
+  - 録音開始時に翻訳セッションを prepare して初回のモデルロードを隠す（ダウンロード承認 UI は出さない）。
+    **翻訳に失敗したら必ず原文を貼る**（テキストを失わない）。無言にならないよう HUD で知らせる。
+  - 整形と翻訳を両方 ON にすると LLM を 2 回呼ぶ。**整形を勝手に無効化はせず**、設定画面に注意書きを出して
+    ユーザーが選べるようにした（Apple 翻訳はローカルなので実質クラウドは 1 回）。
+  - **実測（`--translate-test`・実機）**: `今日は良い天気ですね。音声入力のテストをしています。` →
+    `It's a nice day today. I'm testing the voice input.` を **243ms**（Apple オンデバイス・ja→en）。
+  - **Technical Details**: `Core/DictationTranslator.swift`（新規・設定 `DictationTranslation` と
+    Apple / Groq の翻訳器）・`Caption/Translation/GroqTranslator.swift`（`systemPromptProvider` を追加＝
+    翻訳の向きを差し替え可能に。既定は従来どおり字幕の英→日）・`Config/AppConfig.swift`（@Published ミラー）・
+    `AppController.swift`（`translateIfEnabled` を 2 つの貼り付け経路へ）・`UI/SettingsView.swift`
+    （「翻訳して入力」タブ）。回帰テスト `Tests/VoicekeyTests/LocalSttAndTranslateTests.swift`（新規 10 件）。
+
 ### Fixed
 - **personal: ライブ字幕を出しっぱなしにするとメモリが 1 日 100MB ずつ増え続けるのを直した（Mac・2026-08-23）**。
   - **原因**: Apple Speech フレームワーク内部（`SpeechRecognizerWorker.processAudio` の "PerfMeasurements"）が、

@@ -130,9 +130,12 @@ final class Transcriber: @unchecked Sendable {
     /// 接続を再利用するためバックエンドごとに URLSession を保持
     private let session: URLSession
 
+    /// 以降の HTTP 経路（baseURL / setAuth / buildRequest / parseResponse）に `.appleLocal` は
+    /// 到達しない（`transcribe()` の冒頭でオンデバイス経路へ分岐するため）。
+    /// switch の網羅性を満たすためだけに `.openai` と同じ枝へ畳んである。
     private var baseURL: URL {
         switch backend {
-        case .openai, .openaiLive: return URL(string: "https://api.openai.com/v1")!
+        case .openai, .openaiLive, .appleLocal: return URL(string: "https://api.openai.com/v1")!
         case .groq: return URL(string: "https://api.groq.com/openai/v1")!
         case .elevenlabs: return URL(string: "https://api.elevenlabs.io/v1")!
         case .deepgram: return URL(string: "https://api.deepgram.com/v1")!
@@ -165,7 +168,7 @@ final class Transcriber: @unchecked Sendable {
         // 軽量な GET エンドポイントにアクセスして接続だけ確立する
         let path: String
         switch backend {
-        case .openai, .openaiLive, .groq, .elevenlabs: path = "models"
+        case .openai, .openaiLive, .groq, .elevenlabs, .appleLocal: path = "models"
         case .deepgram: path = "projects"
         }
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
@@ -177,7 +180,7 @@ final class Transcriber: @unchecked Sendable {
     /// バックエンドごとの認証ヘッダを設定する
     private func setAuth(_ apiKey: String, on request: inout URLRequest) {
         switch backend {
-        case .openai, .openaiLive, .groq:
+        case .openai, .openaiLive, .groq, .appleLocal:
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         case .elevenlabs:
             request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
@@ -195,6 +198,11 @@ final class Transcriber: @unchecked Sendable {
     /// - Returns: 文字起こし結果（前後空白除去済み。serverFormat 時は整形済み）
     func transcribe(samples: [Float], serverFormat: Bool = false, presetId: String = "standard") async throws -> String {
         guard !samples.isEmpty else { return "" }
+
+        // ローカル（Apple）は API を一切叩かない。オンデバイスで 1 回だけ書き起こす。
+        // 通常はストリーミング経路（LocalSpeechTranscriber）を通るので、ここに来るのは
+        // ストリーミングの確定が空だったときのフォールバック。
+        if backend == .appleLocal { return try await transcribeLocally(samples: samples) }
 
         // どの経路で文字起こしするかを純関数で決める（personal=Keychain 直叩き / ログイン=サーバー /
         // 未ログイン開発=Keychain 直叩き / 配布未ログイン=ログイン要求）。selectRoute はテスト対象。
@@ -219,8 +227,9 @@ final class Transcriber: @unchecked Sendable {
             case .groq: return try await transcribeGroqViaProxy(samples: samples, serverFormat: serverFormat, presetId: presetId)
             case .elevenlabs: return try await transcribeElevenLabsViaProxy(samples: samples)
             case .deepgram: return try await transcribeDeepgramViaJWT(samples: samples)
-            case .openai, .openaiLive:
+            case .openai, .openaiLive, .appleLocal:
                 // 配布版は openai / openaiLive を提供しない（openaiLive は personal 限定）。
+                // appleLocal はここに来ない（冒頭でオンデバイス経路へ分岐済み）。
                 // 開発ビルド（ログイン）では従来どおり直叩きへ委ねる。
                 if EmbeddedKeys.isDist {
                     throw TranscriptionError(message: "この文字起こし方式は配布版では利用できません")
@@ -245,6 +254,29 @@ final class Transcriber: @unchecked Sendable {
         let text = TextNormalize.stripCJKSpaces(
             try parseResponse(data).trimmingCharacters(in: .whitespacesAndNewlines)
         )
+        let elapsed = Int(Date().timeIntervalSince(start) * 1000)
+        log.info("\(self.backend.label, privacy: .public) 文字起こし完了: \(elapsed)ms, \(text.count) 文字")
+        return text
+    }
+
+    // MARK: - ローカル（Apple）経路
+
+    /// Apple のオンデバイス音声認識で 1 回だけ書き起こす。
+    /// ネットワーク・API キー・サーバー往復のいずれも通らない。
+    private func transcribeLocally(samples: [Float]) async throws -> String {
+        guard #available(macOS 26.0, *) else {
+            throw TranscriptionError(message: "ローカル（Apple）の文字起こしは macOS 26 以降でのみ使えます")
+        }
+        let start = Date()
+        let session = LocalSpeechTranscriber(language: language)
+        _ = session.start()
+        session.send(samples)
+        let text = await session.finish()
+        guard !text.isEmpty else {
+            throw TranscriptionError(
+                message: "ローカル音声認識で文字を取得できませんでした（システム設定 > 一般 > キーボード > 音声入力 で言語を追加してください）"
+            )
+        }
         let elapsed = Int(Date().timeIntervalSince(start) * 1000)
         log.info("\(self.backend.label, privacy: .public) 文字起こし完了: \(elapsed)ms, \(text.count) 文字")
         return text
@@ -390,7 +422,7 @@ final class Transcriber: @unchecked Sendable {
 
     private func buildRequest(audio: EncodedAudio, apiKey: String) -> URLRequest {
         switch backend {
-        case .openai, .openaiLive, .groq:
+        case .openai, .openaiLive, .groq, .appleLocal:
             return openAIRequest(audio: audio, apiKey: apiKey)
         case .elevenlabs:
             return elevenLabsRequest(audio: audio, apiKey: apiKey)
@@ -476,7 +508,7 @@ final class Transcriber: @unchecked Sendable {
 
     private func parseResponse(_ data: Data) throws -> String {
         switch backend {
-        case .openai, .openaiLive, .groq:
+        case .openai, .openaiLive, .groq, .appleLocal:
             // response_format=text のためプレーンテキストがそのまま返る
             return String(data: data, encoding: .utf8) ?? ""
         case .elevenlabs:

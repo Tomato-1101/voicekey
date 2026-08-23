@@ -54,6 +54,11 @@ final class SpeechRecognizer: @unchecked Sendable {
     let segments: AsyncStream<Segment>
     private let segmentContinuation: AsyncStream<Segment>.Continuation
 
+    /// 言語モデルのダウンロード進捗の通知（音声入力側が HUD に出す。字幕は設定しない）
+    ///
+    /// 初回だけ数百 MB のダウンロードが走るため、無言で固まって見えないよう外へ出せるようにする。
+    var onAssetProgress: ((String) -> Void)?
+
     private var transcriber: SpeechTranscriber?
     private var analyzer: SpeechAnalyzer?
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
@@ -165,6 +170,7 @@ final class SpeechRecognizer: @unchecked Sendable {
                     while !Task.isCancelled {
                         let percent = Int(progress.fractionCompleted * 100)
                         self.logger.notice("言語モデルをダウンロード中 \(percent, privacy: .public)%")
+                        self.onAssetProgress?("音声認識モデルをダウンロード中 \(percent)%")
                         try? await Task.sleep(for: .seconds(2))
                     }
                 }

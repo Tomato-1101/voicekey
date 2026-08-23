@@ -47,6 +47,8 @@ enum Keychain {
         case .groq: return "voicekey.Groq"
         case .elevenlabs: return "voicekey.ElevenLabs"
         case .deepgram: return "voicekey.Deepgram"
+        // ローカル（Apple）はキーを使わない。項目は作らない（apiKey が先に nil を返す）
+        case .appleLocal: return "voicekey.AppleLocal"
         }
     }
 
@@ -61,6 +63,8 @@ enum Keychain {
 
     /// API キーを取得する（Keychain → 環境変数の順。未設定なら nil）
     static func apiKey(for backend: Backend) -> String? {
+        // ローカル（Apple）はオンデバイス処理なのでキーが要らない。Keychain も一切読まない
+        guard backend != .appleLocal else { return nil }
         let svc = service(for: backend)
 
         lock.lock()
@@ -88,6 +92,8 @@ enum Keychain {
         case .groq: envVar = "GROQ_API_KEY"
         case .elevenlabs: envVar = "ELEVENLABS_API_KEY"
         case .deepgram: envVar = "DEEPGRAM_API_KEY"
+        // 上の guard で弾かれるためここには来ない（網羅性のためだけの分岐）
+        case .appleLocal: envVar = ""
         }
         if let env = ProcessInfo.processInfo.environment[envVar], !env.isEmpty {
             return env
