@@ -19,6 +19,7 @@ import sys
 import json
 import time
 import subprocess
+import unicodedata
 from pathlib import Path
 
 import httpx
@@ -39,14 +40,14 @@ GROQ = "https://api.groq.com/openai/v1"
 MODELS = [
     ("openai", OPENAI, "gpt-4o-transcribe"),
     ("openai", OPENAI, "gpt-4o-mini-transcribe"),
-    ("openai", OPENAI, "gpt-4o-transcribe-diarize"),
     ("groq", GROQ, "whisper-large-v3-turbo"),
     ("groq", GROQ, "whisper-large-v3"),
     ("elevenlabs", None, "scribe_v2"),
     ("elevenlabs", None, "scribe_v1"),
-    ("elevenlabs", None, "scribe_v1_experimental"),
-    ("deepgram", None, "nova-2"),
     ("deepgram", None, "nova-3"),
+    ("deepgram", None, "nova-2"),
+    # 文字起こし専用モデル（2026-08-26 公開プレビュー）。整形込みで返る
+    ("gemini", None, "gemini-3.5-transcribe"),
 ]
 
 ENV_VAR = {
@@ -54,12 +55,14 @@ ENV_VAR = {
     "groq": "GROQ_API_KEY",
     "elevenlabs": "ELEVENLABS_API_KEY",
     "deepgram": "DEEPGRAM_API_KEY",
+    "gemini": "GEMINI_API_KEY",
 }
 KEYCHAIN_SERVICE = {
     "openai": "voicekey.OpenAI",
     "groq": "voicekey.Groq",
     "elevenlabs": "voicekey.ElevenLabs",
     "deepgram": "voicekey.Deepgram",
+    "gemini": "voicekey.Gemini",
 }
 
 
@@ -80,11 +83,11 @@ def load_dotenv() -> None:
             os.environ.setdefault(k.strip(), v)
 
 
-def keychain_key(service: str):
+def keychain_key(service: str, account: str = "default"):
     """Keychain から API キーを読む（中身は表示しない）"""
     try:
         r = subprocess.run(
-            ["security", "find-generic-password", "-s", service, "-a", "default", "-w"],
+            ["security", "find-generic-password", "-s", service, "-a", account, "-w"],
             capture_output=True, text=True, timeout=10,
         )
         if r.returncode == 0:
@@ -95,7 +98,12 @@ def keychain_key(service: str):
 
 
 def get_key(provider: str):
-    return os.environ.get(ENV_VAR[provider]) or keychain_key(KEYCHAIN_SERVICE[provider])
+    """環境変数 → アプリの Keychain 項目 → 中央 Keychain（service=変数名 / account=shared）"""
+    return (
+        os.environ.get(ENV_VAR[provider])
+        or keychain_key(KEYCHAIN_SERVICE[provider])
+        or keychain_key(ENV_VAR[provider], account="shared")
+    )
 
 
 # ---- CER 計算 ----
@@ -118,8 +126,17 @@ def levenshtein(a: str, b: str) -> int:
 
 
 def normalize(s: str) -> str:
-    # 空白・改行・句読点・記号を除去（長音「ー」は残す）して比較を安定させる
-    return re.sub(r"[\s、。，．,.!！?？「」『』（）()・…〜~]", "", s)
+    """CER 比較用の正規化。
+
+    モデルごとの**表記の癖**は誤りではないので潰す。潰さないと「12.7% と 12.7 パーセント」の
+    ような等価な出力が誤り扱いになり、精度の比較にならない。
+    - 全角英数字・記号 → 半角（NFKC）
+    - パーセント表記の統一（％ / パーセント → %）
+    - 空白・句読点・記号・ハイフンを除去（長音「ー」は残す）
+    """
+    s = unicodedata.normalize("NFKC", s)
+    s = s.replace("パーセント", "%").replace("％", "%")
+    return re.sub(r"[\s、。，．,.!！?？「」『』（）()・…〜~\-−–—:：;；]", "", s)
 
 
 def cer(hyp: str, truth: str):
@@ -171,6 +188,39 @@ def transcribe_deepgram(key, model, wav) -> str:
     return (alt.get("transcript") or "").strip()
 
 
+def transcribe_gemini(key, model, wav) -> str:
+    """Gemini 3.5 Transcribe（Interactions API）。音声は base64 で JSON に載せる。"""
+    import base64
+    r = httpx.post(
+        "https://generativelanguage.googleapis.com/v1beta/interactions",
+        headers={
+            "x-goog-api-key": key,
+            "Content-Type": "application/json",
+            "Api-Revision": "2026-05-20",
+        },
+        json={
+            "model": model,
+            "input": [{
+                "type": "audio",
+                "data": base64.b64encode(wav).decode("ascii"),
+                "mime_type": "audio/wav",
+            }],
+            "generation_config": {"transcription_config": {
+                "language_codes": ["ja-JP"],
+                "mode": {"type": "smart"},
+            }},
+        },
+        timeout=180,
+    )
+    r.raise_for_status()
+    parts = []
+    for step in r.json().get("steps") or []:
+        for content in step.get("content") or []:
+            if content.get("type") == "text" and content.get("text"):
+                parts.append(content["text"])
+    return "".join(parts).strip()
+
+
 def transcribe(provider, base, model, key, wav) -> str:
     if provider in ("openai", "groq"):
         return transcribe_openai_compat(base, key, model, wav)
@@ -178,6 +228,8 @@ def transcribe(provider, base, model, key, wav) -> str:
         return transcribe_elevenlabs(key, model, wav)
     if provider == "deepgram":
         return transcribe_deepgram(key, model, wav)
+    if provider == "gemini":
+        return transcribe_gemini(key, model, wav)
     raise ValueError(provider)
 
 
@@ -198,10 +250,12 @@ def main():
     load_dotenv()
     RESULTS.mkdir(exist_ok=True)
 
+    names = sys.argv[1:] or ["short", "long"]
     clips = []
-    for name in ("short", "long"):
+    for name in names:
         wav = AUDIO / f"{name}_ja.wav"
-        txt = AUDIO / f"{name}_ja.txt"
+        # 早口・雑音版は原稿を素の版と共有する（正解テキストは同じ）
+        txt = AUDIO / f"{name.replace('_fast_noisy', '')}_ja.txt"
         if not wav.exists() or not txt.exists():
             print(f"!! {name}: 音声または原稿がありません（make_audio.sh を先に実行）", file=sys.stderr)
             continue

@@ -14,19 +14,27 @@ import asyncio
 import audioop
 import base64
 import json
+import os
 import time
 import wave
 from pathlib import Path
 
 import websockets
 
-from run_benchmark import get_key, load_dotenv, cer
+from run_benchmark import get_key, load_dotenv
+# CER は「アプリが貼り付ける形」（漢数字→算用数字の正規化後）で測る。
+# 素の CER はモデルの表記の癖を誤りに数えてしまい、精度の比較にならない
+# （実測 2026-08-27: ElevenLabs は認識は完璧なのに漢数字表記だけで CER 33% と出た）。
+from rescore import cer
 
 ROOT = Path(__file__).parent
 AUDIO = ROOT / "audio"
 SR = 16000
 OPENAI_SR = 24000  # OpenAI Realtime は入力 PCM レート 24000 以上が必須（16k は拒否される）
 CHUNK_MS = 100
+# 受信待ちの上限（秒）。音声はリアルタイム速度で送るので「音声長 + 確定待ち」を賄う長さが要る。
+# 60 秒だと 44 秒のクリップで確定を取りこぼし、部分テキストを採点してしまった（2026-08-27）。
+RECV_TIMEOUT = 180
 BYTES_PER_CHUNK = SR * 2 * CHUNK_MS // 1000  # 16k * 2byte * 0.1s = 3200
 
 # (プロバイダ, モデル)
@@ -36,6 +44,7 @@ STREAM_MODELS = [
     ("deepgram-flux", "flux-general-multi"),   # 会話向け新モデル（end-of-turn 検出）
     ("openai", "gpt-4o-transcribe"),
     ("openai", "gpt-4o-mini-transcribe"),
+    ("openai", "gpt-live-transcribe"),      # 現行の「OpenAI ライブ」（2026-07-28 の新モデル）
     ("openai", "gpt-realtime-whisper"),
     ("elevenlabs", "scribe_v2_realtime"),      # Scribe v2 Realtime（~150ms 公称）
 ]
@@ -47,7 +56,8 @@ def read_pcm(name):
         assert w.getframerate() == SR and w.getnchannels() == 1 and w.getsampwidth() == 2, \
             "16kHz mono pcm16 が必要"
         pcm = w.readframes(w.getnframes())
-    truth = (AUDIO / f"{name}_ja.txt").read_text(encoding="utf-8").strip()
+    # 早口・雑音版は原稿を素の版と共有する（正解テキストは同じ）
+    truth = (AUDIO / f"{name.replace('_fast_noisy', '')}_ja.txt").read_text(encoding="utf-8").strip()
     return pcm, truth, len(pcm) / (SR * 2)
 
 
@@ -206,7 +216,7 @@ async def run_flux(key, model, pcm):
 
         send_task = asyncio.create_task(send())
         try:
-            await asyncio.wait_for(recv(), timeout=60)
+            await asyncio.wait_for(recv(), timeout=RECV_TIMEOUT)
         except asyncio.TimeoutError:
             final_text = current
         send_task.cancel()
@@ -259,7 +269,7 @@ async def run_elevenlabs_rt(key, model, pcm):
 
         send_task = asyncio.create_task(send())
         try:
-            await asyncio.wait_for(recv(), timeout=60)
+            await asyncio.wait_for(recv(), timeout=RECV_TIMEOUT)
         except asyncio.TimeoutError:
             final_text = current
         send_task.cancel()
@@ -287,14 +297,19 @@ def key_for(provider, keys):
 
 async def main():
     load_dotenv()
-    clips = {name: read_pcm(name) for name in ("short", "long")}
+    import sys as _sys
+    clips = {name: read_pcm(name) for name in (_sys.argv[1:] or ["short", "long"])}
     keys = {p: get_key(p) for p in ("openai", "deepgram", "elevenlabs")}
     for p in ("openai", "deepgram", "elevenlabs"):
         print(f"  {p:11s}: {'キーあり' if keys[p] else 'キーなし（スキップ）'}")
     print("  groq: ストリーミング非対応のため対象外\n")
 
     rows = []
+    texts = []
+    only = os.environ.get("VK_ONLY")
     for provider, model in STREAM_MODELS:
+        if only and only not in model:
+            continue
         key = key_for(provider, keys)
         for clip_name, (pcm, truth, dur) in clips.items():
             label = f"{provider}/{model} [{clip_name}]"
@@ -311,15 +326,21 @@ async def main():
                 cs = f"{c*100:.1f}%" if c is not None else "-"
                 print(f"  o {label}: TTFB={ts} 確定={ss} CER={cs}")
                 rows.append((provider, model, clip_name, "ok", ttfb, settle, c))
+                texts.append({"provider": provider, "model": model, "clip": clip_name,
+                              "ttfb": ttfb, "settle": settle, "cer": c, "text": text})
             except Exception as e:
                 print(f"  x {label}: {type(e).__name__}: {e}")
                 rows.append((provider, model, clip_name, f"error:{type(e).__name__}", None, None, None))
+
+    out = ROOT / "results" / f"stream_{time.strftime('%Y%m%d_%H%M%S')}.json"
+    out.parent.mkdir(exist_ok=True)
+    out.write_text(json.dumps(texts, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print("\n## ストリーミング速度測定\n")
     print("| モデル | 音声 | TTFB（最初の字） | 確定レイテンシ（離して→確定） | CER |")
     print("|---|---|---|---|---|")
     for provider, model, clip_name, status, ttfb, settle, c in rows:
-        clip = "短文" if clip_name == "short" else "長文"
+        clip = clip_name
         if status != "ok":
             print(f"| {provider}/{model} | {clip} | {status} | - | - |")
         else:

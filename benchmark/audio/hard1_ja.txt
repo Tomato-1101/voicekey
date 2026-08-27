@@ -1,0 +1,1 @@
+今日の作業ですが、AppController の録音世代が更新されていないのが原因でした。actor 分離をやめて NSLock で直列化する方針に変えます。onnxruntime は 1.20.1 のままで、Deepgram の nova-3 と ElevenLabs の scribe_v1 を比較しました。GitHub の issue 427 と pull request 512 を明日マージしてください。Vercel の Edge Functions で 429 が返ったら、Groq の whisper-large-v3-turbo にフォールバックする実装になっています。えーと、あとキャッシュの有効期限は、火曜、いや水曜の朝までに見直しておいてほしいです。

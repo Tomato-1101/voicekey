@@ -297,7 +297,8 @@ enum RestSttTestRunner {
         let seconds = Double(samples.count) / AudioRecorder.sampleRate
         writer.write(String(format: "[INFO] 音声 %.2fs (%d サンプル)", seconds, samples.count))
 
-        guard Keychain.apiKey(for: backend) != nil else {
+        // ローカル（Apple）はキーを使わないので確認しない（オンデバイス経路もこのハーネスで測れる）
+        guard backend == .appleLocal || Keychain.apiKey(for: backend) != nil else {
             writer.write("[ERROR] \(backend.providerName) の API キーが見つかりません")
             writer.write("[DONE] status=error")
             return 1
