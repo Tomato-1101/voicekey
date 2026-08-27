@@ -9,6 +9,7 @@ from .api_transcriber import (
     ApiTranscriber,
     DeepgramTranscriber,
     ElevenLabsTranscriber,
+    GeminiTranscriber,
     GroqTranscriber,
     OpenAITranscriber,
     TranscriptionError,
@@ -25,6 +26,7 @@ __all__ = [
     "OpenAITranscriber",      # OpenAI API 文字起こし
     "ElevenLabsTranscriber",  # ElevenLabs Scribe 文字起こし
     "DeepgramTranscriber",    # Deepgram Listen 文字起こし（REST）
+    "GeminiTranscriber",      # Gemini 3.5 Transcribe 文字起こし（REST）
     "StreamingTranscriber",   # Deepgram WebSocket ストリーミング
     "TranscriptionError",     # 文字起こし失敗例外
     "InputHandler",           # テキスト入力

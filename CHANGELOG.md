@@ -4,6 +4,25 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased] - 2026-08-02
 
+### Added
+- **Gemini 3.5 Transcribe を文字起こしバックエンドに追加（両 OS・2026-08-27）**。
+  Google が 2026-08-26 に公開プレビューを出した文字起こし専用モデル `gemini-3.5-transcribe` を
+  録音キーの選択肢に足した（設定 UI の表示名は「Gemini 文字起こし」）。
+  - **API**: Interactions API（`POST /v1beta/interactions`）。他 3 社と違い multipart ではなく JSON で、
+    音声は base64 にして `input[].data` へ載せる（小さい音声は Files API を経由せず 1 往復で済む）。
+    認証は `x-goog-api-key`、`Api-Revision: 2026-05-20` ヘッダーが必須。応答は `steps[].content[]` の
+    `type=="text"` を連結したものが本文。
+  - **設定**: `transcription_config.mode=smart`（フィラー除去・句読点付けまでモデル側で行う）。
+    言語は設定値を BCP-47 へ寄せて渡す（`ja` → `ja-JP`）。ユーザー辞書のプロンプトは
+    `custom_vocabulary`（語のリスト）へ写す。**テキスト整形は既定 OFF**（モデル側が整形済みのため）。
+  - **キー**: 中央 Keychain の `GEMINI_API_KEY`（字幕の Gemini 翻訳と同じ 1 本を共有・新規発行しない）。
+  - **実測（2026-08-27・`tests/fixtures/short_ja.wav` 6.8 秒）**: 認識は Groq と同一テキスト。
+    所要は **Gemini 3.8〜4.2 秒 / Groq whisper-large-v3-turbo 0.52 秒**＝**約 8 倍遅い**。
+    **従量課金**（音声 1 分あたり概算 $0.005）。速度優先の用途には向かないので既定にはしない。
+  - **検証ハーネス**: `--rest-stt-test <音声> --backend gemini`（アプリ本体と同じ経路で 1 往復して
+    所要と一致語を機械判定する。**課金 API を叩くので手動実行のみ**）。純関数の解析・言語コード・
+    固有名詞ヒントは Mac `GeminiTranscribeTests` / Windows `TestGeminiTranscriber` で回帰化。
+
 ### Fixed
 - **録音のたびに「モデルダウンロード中」通知が出る件の残りと、ピルに前回の入力が残る件を直した（Mac・2026-08-27）**。
   ユーザー報告「このバグまだ治ってない」「入力し終わった後にすぐまた入力を始めると、

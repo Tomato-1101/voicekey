@@ -117,6 +117,12 @@
   - しゃべり終わった瞬間に確定する「即時入力」型です（録音中から並行して認識し、キーを離すと確定）
   - 認識する言語は設定の「言語」に従います。初回だけ言語モデルのダウンロードが走り、進捗が録音 HUD に出ます
   - ライブ字幕と同時に使えます（字幕を出したまま音声入力しても互いに干渉しません）
+- **✨ Gemini 文字起こし（2026-08-27 追加）**: Google の文字起こし専用モデル **gemini-3.5-transcribe** で入力します。
+  録音キーの設定で文字起こしエンジンに「Gemini 文字起こし」を選ぶと使えます。
+  - **フィラー除去・句読点付け・自動整形までモデル側**で行うため、後段のテキスト整形は既定オフです
+  - **従量課金**です（音声 1 分あたり約 $0.005）。API キーは `GEMINI_API_KEY`
+  - **速さは他エンジンに劣ります**（実測: 6.8 秒の音声で約 4 秒。同じ音声で Groq は 0.5 秒）。
+    速度優先なら「即時入力」や「ローカル（Apple）」を選んでください
 - **🌏 翻訳して入力（Mac・macOS 26 以降・自分用ビルドのみ）**: 話した内容を**翻訳してから貼り付け**ます
   （本命は「**日本語で話す → 英語が入力される**」）。設定ウィンドウの「**翻訳して入力**」タブで切り替えます。
   - **全体で 1 つのトグル**です（録音キー 1・2 のどちらでも、どの文字起こしエンジンでも同じように効きます）
@@ -200,13 +206,14 @@ Copy-Item -Path settings.example.yaml -Destination settings.yaml -ErrorAction Si
 
 ### API キーの設定（起動後）
 
-クラウドの文字起こし（Deepgram / Groq / ElevenLabs）を使うモードでは API キーが必要です。**ローカル（Apple）文字起こしを選べばキーは不要**です：
+クラウドの文字起こし（Deepgram / Groq / ElevenLabs / Gemini）を使うモードでは API キーが必要です。**ローカル（Apple）文字起こしを選べばキーは不要**です：
 
 | サービス | 用途 | 取得先 |
 |---|---|---|
 | Deepgram（即時入力） | 文字起こし（ストリーミング・低遅延） | https://console.deepgram.com/ |
 | Groq（正確性） | 文字起こし（普通入力の既定・最速）＋テキスト整形 | https://console.groq.com/keys |
 | ElevenLabs（高精度） | 文字起こし（ハンズフリーの既定・高精度） | https://elevenlabs.io/ |
+| Gemini（Gemini 文字起こし） | 文字起こし（整形込み・従量課金） | https://aistudio.google.com/apikey |
 
 **設定方法（推奨）**: トレイ/メニューバーのアイコン → 設定ウィンドウ → API キーフィールドに貼り付けて保存。
 キーは **macOS Keychain / Windows Credential Manager** に安全に保存される（`.env` や YAML に書く必要なし）。
@@ -231,7 +238,7 @@ Copy-Item -Path settings.example.yaml -Destination settings.yaml -ErrorAction Si
 | **Python** | 3.10 以上 |
 | **ffmpeg** | `PATH` に通っていること（音声変換用） |
 | **GPU** | **不要**（VAD はローカル CPU 実行＝Silero ONNX を onnxruntime で。文字起こしはすべてクラウド API） |
-| **API キー** | 文字起こし用のキーを中央 Keychain（service = 変数名 / account = `shared`）に置く（Deepgram / Groq / ElevenLabs / OpenAI。整形と翻訳も Groq）。**ログイン・アカウントの概念はありません**。ローカル（Apple）文字起こしと Apple 翻訳はキー不要 |
+| **API キー** | 文字起こし用のキーを中央 Keychain（service = 変数名 / account = `shared`）に置く（Deepgram / Groq / ElevenLabs / OpenAI / Gemini。整形と翻訳も Groq）。**ログイン・アカウントの概念はありません**。ローカル（Apple）文字起こしと Apple 翻訳はキー不要 |
 
 > **💡 Tip**: 文字起こしはすべてクラウド API、発話区間検出（VAD）だけローカル CPU 実行なので、GPU 非搭載 PC でも動作します。
 
@@ -512,6 +519,7 @@ ELEVENLABS_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxx    # 高精度（文字起こし・�
 | **Deepgram**（即時入力） | 文字起こし（ストリーミング・低遅延） | [console.deepgram.com](https://console.deepgram.com/) |
 | **Groq**（正確性） | 文字起こし（普通入力の既定・最速）＋テキスト整形 | [console.groq.com/keys](https://console.groq.com/keys) |
 | **ElevenLabs**（高精度） | 文字起こし（ハンズフリーの既定・高精度） | [elevenlabs.io](https://elevenlabs.io/) |
+| **Gemini**（Gemini 文字起こし） | 文字起こし（整形込み・従量課金） | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
 
 ---
 
@@ -603,7 +611,7 @@ voicekey/
 │   │   ├── audio_preprocess.py   # 音量正規化（Peak+RMS）
 │   │   ├── audio_utils.py        # WAV / MP3 変換
 │   │   ├── vad.py                # silero-vad（ONNX / CPU）ローカル VAD
-│   │   ├── api_transcriber.py    # REST 文字起こし（Deepgram / ElevenLabs / OpenAI / Groq）
+│   │   ├── api_transcriber.py    # REST 文字起こし（Deepgram / ElevenLabs / OpenAI / Groq / Gemini）
 │   │   ├── streaming_transcriber.py # Deepgram ストリーミング（低遅延）
 │   │   ├── text_formatter.py     # Groq LLM によるテキスト整形
 │   │   └── input_handler.py      # クリップボード経由のテキスト挿入

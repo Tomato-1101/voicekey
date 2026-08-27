@@ -20,7 +20,7 @@ class TestDefaults(unittest.TestCase):
     def test_all_backends_have_default_model(self):
         self.assertEqual(
             set(DEFAULT_CONFIG["default_api_models"]),
-            {"groq", "openai", "elevenlabs", "deepgram"},
+            {"groq", "openai", "elevenlabs", "deepgram", "gemini"},
         )
 
 

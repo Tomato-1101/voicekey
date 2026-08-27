@@ -9,8 +9,14 @@
 //        --expect "語1,語2"          : 認識テキストに含まれるべき語（すべて含めば PASS）
 //        --with-caption              : ライブ字幕のパイプラインも同時に走らせ、
 //                                      SpeechAnalyzer を 2 本同時に動かせることを確かめる
+//        --repeat <回数>             : 同じプロセスで N 回続けて認識する（連続録音の再現）。
+//                                      アセット確認が 1 回目だけで済むことの回帰に使う
 //    --translate-test <原文>         : 「翻訳して入力」の 1 往復（エンジン・出力言語は設定に従う）
 //        --to <言語コード>           : 出力言語を上書き（既定は設定値）
+//    --rest-stt-test <音声ファイル>  : REST バックエンド（Groq / Gemini 等）の 1 往復
+//        --backend <識別子>          : gemini / groq / elevenlabs / openai / deepgram（既定 gemini）
+//        --expect "語1,語2"          : 認識テキストに含まれるべき語
+//        **課金 API を叩く**ので手動実行のみ（CI では回さない）
 //
 //  `open` 経由で起動すると標準出力が捨てられるため、`--log-file <path>` を併用する。
 //
@@ -27,7 +33,7 @@ enum DictationTestMode {
     /// - Returns: ハーネスとして実行した（＝通常のアプリ起動をしない）なら true
     static func runIfRequested() -> Bool {
         let arguments = CommandLine.arguments
-        let modes = ["--local-stt-test", "--translate-test"]
+        let modes = ["--local-stt-test", "--translate-test", "--rest-stt-test"]
         guard let mode = modes.first(where: { arguments.contains($0) }) else { return false }
 
         guard #available(macOS 26.0, *) else {
@@ -43,9 +49,28 @@ enum DictationTestMode {
                 .split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty }
             let withCaption = arguments.contains("--with-caption")
+            let repeats = max(1, Int(optionValue("--repeat", in: arguments) ?? "1") ?? 1)
             runAsync {
-                await LocalSttTestRunner.run(
-                    audioPath: path, expected: expect, withCaption: withCaption, writer: writer
+                var code: Int32 = 0
+                for round in 1...repeats {
+                    writer.write("[ROUND] \(round)/\(repeats)")
+                    code = await LocalSttTestRunner.run(
+                        audioPath: path, expected: expect, withCaption: withCaption,
+                        writer: writer, closeWriter: round == repeats
+                    )
+                    if code != 0 { break }
+                }
+                return code
+            }
+        case "--rest-stt-test":
+            let path = optionValue("--rest-stt-test", in: arguments) ?? ""
+            let backend = Backend(rawValue: optionValue("--backend", in: arguments) ?? "gemini") ?? .gemini
+            let expect = (optionValue("--expect", in: arguments) ?? "")
+                .split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            runAsync {
+                await RestSttTestRunner.run(
+                    audioPath: path, backend: backend, expected: expect, writer: writer
                 )
             }
         default:
@@ -87,11 +112,13 @@ enum LocalSttTestRunner {
     ///   - expected: 認識テキストに含まれるべき語（小文字比較）
     ///   - withCaption: ライブ字幕も同時に動かして SpeechAnalyzer 2 本同時を確かめるか
     ///   - writer: 行出力先
+    ///   - closeWriter: 最後の 1 回だけ true（--repeat で続けて呼ぶ間は閉じない）
     /// - Returns: 終了コード（0=PASS / 1=FAIL）
     static func run(
-        audioPath: String, expected: [String], withCaption: Bool, writer: CaptionTestLogWriter
+        audioPath: String, expected: [String], withCaption: Bool,
+        writer: CaptionTestLogWriter, closeWriter: Bool = true
     ) async -> Int32 {
-        defer { writer.close() }
+        defer { if closeWriter { writer.close() } }
         writer.write("[INFO] local-stt-test 開始 pid=\(getpid()) file=\(audioPath)")
 
         guard let samples = loadSamples(audioPath) else {
@@ -158,7 +185,7 @@ enum LocalSttTestRunner {
     /// 音声ファイルを 16kHz モノラル Float32 の配列として読む
     ///
     /// `say -o` が作る aiff（22.05kHz など）をそのまま渡せるよう、変換まで面倒を見る。
-    private static func loadSamples(_ path: String) -> [Float]? {
+    static func loadSamples(_ path: String) -> [Float]? {
         guard let file = try? AVAudioFile(forReading: URL(fileURLWithPath: path)) else { return nil }
         guard let target = AVAudioFormat(
             commonFormat: .pcmFormatFloat32, sampleRate: AudioRecorder.sampleRate,
@@ -238,6 +265,76 @@ enum TranslateTestRunner {
             return 1
         }
         writer.write("[DONE] status=ok chars=\(result.text.count) ms=\(elapsedMs)")
+        return 0
+    }
+}
+
+/// REST バックエンド（Gemini / Groq など）の 1 往復を確かめる実行本体
+///
+/// マイクを使わず既知の音声ファイルを Transcriber へ渡し、**アプリ本体と同じ経路**で
+/// 文字起こしできることと所要時間を測る（curl での確認は実装の証明にならないため）。
+/// **課金 API を叩く**ので自動実行はしない。
+@available(macOS 26.0, *)
+enum RestSttTestRunner {
+
+    /// - Parameters:
+    ///   - audioPath: 読み込む音声ファイル
+    ///   - backend: 使うバックエンド
+    ///   - expected: 認識テキストに含まれるべき語
+    ///   - writer: 行出力先
+    /// - Returns: 終了コード（0=PASS / 1=FAIL）
+    static func run(
+        audioPath: String, backend: Backend, expected: [String], writer: CaptionTestLogWriter
+    ) async -> Int32 {
+        defer { writer.close() }
+        writer.write("[INFO] rest-stt-test 開始 backend=\(backend.rawValue) file=\(audioPath)")
+
+        guard let samples = LocalSttTestRunner.loadSamples(audioPath) else {
+            writer.write("[ERROR] 音声ファイルを 16kHz モノラルへ読み込めませんでした: \(audioPath)")
+            writer.write("[DONE] status=error")
+            return 1
+        }
+        let seconds = Double(samples.count) / AudioRecorder.sampleRate
+        writer.write(String(format: "[INFO] 音声 %.2fs (%d サンプル)", seconds, samples.count))
+
+        guard Keychain.apiKey(for: backend) != nil else {
+            writer.write("[ERROR] \(backend.providerName) の API キーが見つかりません")
+            writer.write("[DONE] status=error")
+            return 1
+        }
+
+        let language = UserDefaults.standard.string(forKey: "language") ?? "ja"
+        let transcriber = Transcriber(
+            backend: backend, model: backend.defaultModel, language: language, prompt: ""
+        )
+        writer.write("[INFO] model=\(backend.defaultModel) language=\(language)")
+
+        let started = Date()
+        let text: String
+        do {
+            text = try await transcriber.transcribe(samples: samples)
+        } catch {
+            let message = (error as? TranscriptionError)?.message ?? String(describing: error)
+            writer.write("[ERROR] \(message)")
+            writer.write("[DONE] status=fail reason=request-failed")
+            return 1
+        }
+        let elapsedMs = Int(Date().timeIntervalSince(started) * 1000)
+        writer.write("[TEXT] \(text)")
+        writer.write("[MS] \(elapsedMs)")
+
+        guard !text.isEmpty else {
+            writer.write("[DONE] status=fail reason=empty")
+            return 1
+        }
+        let lowered = text.lowercased()
+        let missing = expected.filter { !lowered.contains($0.lowercased()) }
+        writer.write("[MATCH] expected=\(expected.count) missing=\(missing.count) \(missing.joined(separator: ","))")
+        guard missing.isEmpty else {
+            writer.write("[DONE] status=fail reason=missing-words")
+            return 1
+        }
+        writer.write("[DONE] status=ok chars=\(text.count) ms=\(elapsedMs)")
         return 0
     }
 }

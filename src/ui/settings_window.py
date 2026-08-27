@@ -76,6 +76,7 @@ _BACKEND_TO_SERVICE = {
     TranscriptionBackend.OPENAI.value: secrets.SERVICE_OPENAI,
     TranscriptionBackend.ELEVENLABS.value: secrets.SERVICE_ELEVENLABS,
     TranscriptionBackend.DEEPGRAM.value: secrets.SERVICE_DEEPGRAM,
+    TranscriptionBackend.GEMINI.value: secrets.SERVICE_GEMINI,
 }
 
 # 提供元名（API キー欄でどのキーかを示すためだけに使う。配布版では API キータブを
@@ -85,9 +86,10 @@ _BACKEND_PROVIDER_NAMES = {
     TranscriptionBackend.GROQ.value: "Groq",
     TranscriptionBackend.ELEVENLABS.value: "ElevenLabs",
     TranscriptionBackend.DEEPGRAM.value: "Deepgram",
+    TranscriptionBackend.GEMINI.value: "Google",
 }
 
-# 製品版（release）でユーザーが文字起こしに選べる 2 択（表示順）。モデルは推奨固定で非選択:
+# ユーザーが文字起こしに選べるバックエンド（表示順）。モデルは推奨固定で非選択:
 # 即時入力=Deepgram（nova-3・短命トークン直叩き＋ストリーミング。しゃべり終わった瞬間に全文を一括入力）/
 # スタンダード=Groq（既定・whisper-large-v3-turbo・プロキシ経由。録音後にきれいに整形）。
 # ElevenLabs（scribe_v1）は選択肢から外し、スタンダードのハンズフリー録音時に内部でのみ使う。
@@ -95,6 +97,8 @@ _BACKEND_PROVIDER_NAMES = {
 _TRANSCRIBE_BACKEND_LABELS = [
     (TranscriptionBackend.DEEPGRAM.value, "即時入力"),
     (TranscriptionBackend.GROQ.value, "スタンダード"),
+    # Gemini 3.5 Transcribe（2026-08-27 追加）。整形込みで返るが課金かつ遅い。
+    (TranscriptionBackend.GEMINI.value, "Gemini 文字起こし"),
 ]
 
 # 製品版の API キータブに出すバックエンド（開発ビルドのみ表示）。
@@ -103,6 +107,7 @@ _API_KEY_BACKENDS = [
     TranscriptionBackend.DEEPGRAM.value,
     TranscriptionBackend.ELEVENLABS.value,
     TranscriptionBackend.GROQ.value,
+    TranscriptionBackend.GEMINI.value,
 ]
 
 # ホットキー動作モードの表示順と UI ラベル（Mac 版 HotkeyMode.label と完全一致させる）
@@ -137,6 +142,11 @@ def _backend_caption_text(backend: str) -> str:
         return (
             "録音後にきれいな文章にして入力します（おすすめ）\n"
             "ハンズフリー録音のときは、長い録音に強いエンジンへ自動で切り替わります。"
+        )
+    if backend == TranscriptionBackend.GEMINI.value:
+        return (
+            "Google の文字起こし専用モデルで入力します。フィラー除去と句読点付けまでモデル側で行います。\n"
+            "従量課金（音声 1 分あたり約 $0.005）で、確定は遅めです（実測 4 秒前後）。"
         )
     return ""
 
@@ -2920,12 +2930,13 @@ class SettingsWindow(QWidget):
             # ホットキー2 設定
             "hotkey2": self._collect_slot_config(2),
 
-            # APIモデルデフォルト値（全 4 バックエンド）
+            # APIモデルデフォルト値（全 5 バックエンド）
             "default_api_models": self._config_manager.get("default_api_models", {
                 "groq": "whisper-large-v3-turbo",
                 "openai": "gpt-4o-mini-transcribe",
                 "elevenlabs": "scribe_v1",
                 "deepgram": "nova-3",
+                "gemini": "gemini-3.5-transcribe",
             }),
 
             # その他の設定

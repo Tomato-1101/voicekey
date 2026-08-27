@@ -44,6 +44,7 @@ from .core import (
     AudioRecorder,
     DeepgramTranscriber,
     ElevenLabsTranscriber,
+    GeminiTranscriber,
     GroqTranscriber,
     InputHandler,
     OpenAITranscriber,
@@ -73,6 +74,7 @@ _BACKEND_CLASSES = {
     TranscriptionBackend.OPENAI.value: OpenAITranscriber,
     TranscriptionBackend.ELEVENLABS.value: ElevenLabsTranscriber,
     TranscriptionBackend.DEEPGRAM.value: DeepgramTranscriber,
+    TranscriptionBackend.GEMINI.value: GeminiTranscriber,
 }
 
 # 録音の最大継続時間（秒）。release 取りこぼし等による永久録音を防ぐ保険

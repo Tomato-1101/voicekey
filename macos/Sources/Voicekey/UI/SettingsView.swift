@@ -709,6 +709,10 @@ private struct SlotSettingsTab: View {
         case .groq:
             return "録音後にきれいな文章にして入力します（おすすめ）\n"
                 + "ハンズフリー録音のときは、長い録音に強いエンジンへ自動で切り替わります。"
+        // gemini も personal 限定の選択肢。**課金**なので、そのことを最初に書く
+        case .gemini:
+            return "Google の文字起こし専用モデルで入力します。フィラー除去と句読点付けまでモデル側で行います。\n"
+                + "従量課金（音声 1 分あたり約 $0.005）で、確定は遅めです（実測 4 秒前後）。"
         default:
             return ""
         }
