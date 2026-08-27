@@ -65,6 +65,33 @@ final class SpeechRecognizer: @unchecked Sendable {
     /// 録音表示を上書きしてしまうので、これを超えて待たされたときだけ知らせる。
     private static let assetProgressGrace: TimeInterval = 0.8
 
+    /// このプロセスで「導入済み」を確認できたロケール（BCP-47）
+    ///
+    /// `AssetInventory.status` は**導入済みでも `.supported` を返す**ため、キャッシュしないと
+    /// 録音のたびにダウンロード要求の経路を通る（実測 3〜9ms。進捗通知が暴発する経路でもある）。
+    /// 猶予（`assetProgressGrace`）は「たまたま遅かった 1 回」を防げないので、確認自体を
+    /// 1 プロセス 1 回に減らして根を断つ。認識開始に失敗したら取り消して再確認へ戻す。
+    private static let readyLock = NSLock()
+    private static var readyLocales: Set<String> = []
+
+    /// 指定ロケールのアセットが確認済みか（＝アセット確認を丸ごと省いてよいか）
+    static func isAssetReady(_ identifier: String) -> Bool {
+        readyLock.lock(); defer { readyLock.unlock() }
+        return readyLocales.contains(identifier)
+    }
+
+    /// 確認済みとして記録する
+    static func markAssetReady(_ identifier: String) {
+        readyLock.lock(); defer { readyLock.unlock() }
+        readyLocales.insert(identifier)
+    }
+
+    /// 確認済みを取り消す（他アプリの利用でモデルが外された場合に再取得へ戻すため）
+    static func clearAssetReady(_ identifier: String) {
+        readyLock.lock(); defer { readyLock.unlock() }
+        readyLocales.remove(identifier)
+    }
+
     private var transcriber: SpeechTranscriber?
     private var analyzer: SpeechAnalyzer?
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
@@ -89,7 +116,13 @@ final class SpeechRecognizer: @unchecked Sendable {
         guard let resolvedLocale = await SpeechTranscriber.supportedLocale(equivalentTo: locale) else {
             throw SpeechRecognizerError.unsupportedLocale(locale.identifier)
         }
-        logger.notice("音声認識ロケール: \(resolvedLocale.identifier(.bcp47), privacy: .public)")
+        let localeKey = resolvedLocale.identifier(.bcp47)
+        logger.notice("音声認識ロケール: \(localeKey, privacy: .public)")
+
+        // 開始に失敗したらアセットの「確認済み」を取り消し、次回はアセット確認からやり直す
+        // （モデルが外された状態のままセッション中ずっと無音になるのを防ぐ）
+        var startedSuccessfully = false
+        defer { if !startedSuccessfully { Self.clearAssetReady(localeKey) } }
 
         // ボラタイル結果（途中経過）を有効にして、字幕が発話中から出るようにする。
         //
@@ -129,6 +162,7 @@ final class SpeechRecognizer: @unchecked Sendable {
         }
 
         logger.notice("音声認識を開始しました")
+        startedSuccessfully = true
         return format
     }
 
@@ -165,6 +199,10 @@ final class SpeechRecognizer: @unchecked Sendable {
     ///   - transcriber: 対象モジュール
     ///   - locale: 予約するロケール
     private func ensureAssetsInstalled(for transcriber: SpeechTranscriber, locale: Locale) async throws {
+        // このプロセスで一度確認できていれば丸ごと省く（録音のクリティカルパスから外す）
+        let localeKey = locale.identifier(.bcp47)
+        if Self.isAssetReady(localeKey) { return }
+
         let status = await AssetInventory.status(forModules: [transcriber])
         logger.notice("言語モデルアセットの状態: \(String(describing: status), privacy: .public)")
 
@@ -181,7 +219,8 @@ final class SpeechRecognizer: @unchecked Sendable {
                     while !Task.isCancelled {
                         let percent = Int(progress.fractionCompleted * 100)
                         self.logger.notice("言語モデルをダウンロード中 \(percent, privacy: .public)%")
-                        self.onAssetProgress?("音声認識モデルをダウンロード中 \(percent)%")
+                        // 文言は短く保つ（HUD のピル内に収める。長いと頭が切れて読めない）
+                        self.onAssetProgress?("モデル準備中 \(percent)%")
                         try? await Task.sleep(for: .seconds(2))
                     }
                 }
@@ -207,6 +246,9 @@ final class SpeechRecognizer: @unchecked Sendable {
         } catch {
             logger.notice("ロケール予約に失敗（動作は継続）: \(String(describing: error), privacy: .public)")
         }
+
+        // ここまで来れば使える状態。次の録音からはこの関数ごと素通りする
+        Self.markAssetReady(localeKey)
     }
 
     /// 認識結果を読み出して後段ストリームへ流す

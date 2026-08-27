@@ -234,12 +234,25 @@ final class HudController {
         // デバッグ固定表示中（VOICEKEY_HUD_DEBUG_STATE）は実状態で上書きしない
         if debugState != nil { return }
         lastState = state
+        if case .idle = state {
+            // 通知表示中は消さない（通知は自身のタイマーで消え、そのとき実状態へ戻る）
+            if case .notice = model.mode { return }
+        } else {
+            noticeTask?.cancel()
+        }
+        applyState(state)
+    }
+
+    /// 実状態（待機・録音中・変換中）に対応する表示へ切り替える。
+    ///
+    /// `update(for:)` と「通知が消えたときの復帰」の両方から呼ぶ。通知の扱い（出しっぱなしの
+    /// 待機を消さない等）は呼び出し側の責務にして、ここは状態→表示の写像だけを持つ。
+    func applyState(_ state: AppState) {
         switch state {
         case .idle:
-            // 通知表示中は消さない（通知は自身のタイマーで消える）
-            if case .notice = model.mode { return }
             // 常時表示 ON なら待機中も小型ピル（mic のみ）を残す。
             // ただし字幕が同じ場所を占めている間は出さない（字幕越しに透けて二重に見えるため）。
+            clearRecordingContent()
             if alwaysVisible && !captionCovering {
                 model.appIcon = nil  // 待機中は貼り付け先アイコンを出さない
                 model.mode = .idlePill
@@ -248,20 +261,26 @@ final class HudController {
                 hide()
             }
         case .recording(let autoEnter, let handsFree):
-            noticeTask?.cancel()
-            // 録音中の auto_enter 昇格（ダブルタップ確定）では波形を維持する
-            // （リセットすると表示が一瞬消えて見える）
-            if case .recording = model.mode {} else {
-                model.resetLevels()
-                model.liveText = ""  // 新しい録音のたびに前回のライブ字幕を消す
-            }
+            // 波形とライブ字幕は「録音が終わったとき」に捨てる（下の .transcribing / .idle）。
+            // ここでは何も消さない＝ auto_enter 昇格（ダブルタップ確定）や通知からの復帰で
+            // 表示が一瞬消えたり、喋っている途中の字幕が飛んだりしない。
             model.mode = .recording(autoEnter: autoEnter, handsFree: handsFree)
             show()
         case .transcribing:
-            noticeTask?.cancel()
+            clearRecordingContent()
             model.mode = .transcribing
             show()
         }
+    }
+
+    /// 録音中だけ意味を持つ表示（波形・ライブ字幕）を捨てる。
+    ///
+    /// **録音が終わった時点で消す**のが肝。次の録音の開始時に消す方式だと、直前の録音の
+    /// 確定が遅れて届く（ストリーミングの最終セグメントは離鍵の 100ms 前後あとに来る）ぶんが
+    /// 新しい録音のピルに残り、「前回の入力の文字が出たまま波形が出ない」状態になる。
+    private func clearRecordingContent() {
+        model.resetLevels()
+        model.liveText = ""
     }
 
     /// 一時通知を 2 秒間表示する
@@ -272,16 +291,18 @@ final class HudController {
         noticeTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(2))
             guard let self, !Task.isCancelled else { return }
-            if case .notice = self.model.mode {
-                // 連続録音の変換が進行中なら、隠さず「変換中…」表示へ戻す
-                if case .transcribing = self.lastState {
-                    self.model.mode = .transcribing
-                    self.show()
-                } else {
-                    self.hide()
-                }
-            }
+            self.restoreAfterNotice()
         }
+    }
+
+    /// 通知の表示時間が終わったときに、その時点の実状態へ戻す。
+    ///
+    /// 以前は「変換中なら戻す・それ以外は隠す」だったため、**録音中に通知が出ると 2 秒後に
+    /// HUD ごと消えて録音表示が戻らなかった**（モデル準備の進捗や無音通知で毎回起きた）。
+    /// 実状態が録音中なら録音ピルへ戻す。テストから直接呼べるよう internal にしてある。
+    func restoreAfterNotice() {
+        guard case .notice = model.mode else { return }
+        applyState(lastState)
     }
 
     /// 音声レベルを反映する（メインスレッドから呼ぶ）

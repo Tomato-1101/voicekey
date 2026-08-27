@@ -84,6 +84,13 @@ final class AppController: ObservableObject {
     private var outstanding = 0
     /// 録音の最大時間の保険タイマー
     private var failsafeTask: Task<Void, Never>?
+    /// 録音セッションの世代（録音を始めるたびに +1）。
+    ///
+    /// ライブ字幕やモデル準備の進捗は**離鍵より後に**遅れて届く（ストリーミングの最終確定は
+    /// 実測で離鍵の 100ms 前後あと・パイプラインが詰まればさらに遅れる）。すぐ次の録音を
+    /// 始めるとその取りこぼしが新しい録音のピルに書き込まれ、「前回の入力の文字が残って
+    /// 波形が出ない」状態になる。コールバックに開始時の世代を持たせ、古いものは捨てる。
+    private var recordingGeneration = 0
 
     // --- ダブルタップ検出 ---
     /// 1 打目を離した後、2 打目を待っているあいだの状態。**録音は止めずに続いている**。
@@ -712,6 +719,9 @@ final class AppController: ObservableObject {
         // 貼り付け先アプリのアイコンを HUD に載せる（録音開始時点のスナップショット。emitState 前に設定）
         hud.setAppIcon(frontApp.currentIcon())
         recordingSlot = slotId
+        // この録音の世代。ライブ系のコールバックはこれを捕まえて、前の録音のぶんを捨てる
+        recordingGeneration &+= 1
+        let generation = recordingGeneration
         recordingEffectiveMode = effectiveMode
         self.autoEnter = autoEnter
         recordingStartedAt = ProcessInfo.processInfo.systemUptime
@@ -777,14 +787,23 @@ final class AppController: ObservableObject {
                     // NumeralNormalizer は純関数なので受信キューから直接呼んで描画直前に一枚噛ませる。
                     let normalized = NumeralNormalizer.normalize(
                         text, enabled: numEnabled, convertCounter: numCounter, protectWords: numProtect)
-                    DispatchQueue.main.async { self?.hud.setLiveText(normalized) }
+                    DispatchQueue.main.async {
+                        // 前の録音の遅れて届いた更新は捨てる（新しいピルに前回の文字を残さない）
+                        guard let self, self.recordingGeneration == generation else { return }
+                        self.hud.setLiveText(normalized)
+                    }
                 }
             }
             // ローカル（Apple）は初回だけ言語モデルのダウンロードが走る。無言で固まって
-            // 見えないよう進捗を HUD に出す（2 回目以降は一度も呼ばれない）。
+            // 見えないよう進捗を出す（導入済みなら一度も呼ばれない）。
+            // **通知（notice）ではなくピルの中に出す**。通知はピルを丸ごと置き換えるので、
+            // 進捗が来るたびに録音表示が消えてしまう（ユーザー指摘の再発源）。
             if #available(macOS 26.0, *), let local = stream as? LocalSpeechTranscriber {
                 local.onAssetProgress = { [weak self] message in
-                    DispatchQueue.main.async { self?.hud.notice(message) }
+                    DispatchQueue.main.async {
+                        guard let self, self.recordingGeneration == generation else { return }
+                        self.hud.setLiveText(message)
+                    }
                 }
             }
             if stream.start() {
@@ -895,7 +914,8 @@ final class AppController: ObservableObject {
             // 旧 OS に保存値が残っていた場合は nil＝REST 経路でエラー文言を出す。
             guard #available(macOS 26.0, *) else { return nil }
             return LocalSpeechTranscriber(language: language)
-        case .groq, .elevenlabs, .openai:
+        case .groq, .elevenlabs, .openai, .gemini:
+            // gemini はライブ（WS）が無く REST 1 往復のみ＝ここは nil
             return nil
         }
     }
