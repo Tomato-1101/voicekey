@@ -54,8 +54,9 @@ final class AppController: ObservableObject {
     /// **最初に `caption` を参照するまで生成しない**（ディクテーションの起動経路に一切足さない）。
     private var captionStorage: AnyObject?
 
-    /// Meet 議事録ボットの実体（`meetBot` を参照するまで作らない）
-    private var meetBotStorage: MeetBotService?
+    /// Meet 議事録ボットの実体（`meetBot` を参照するまで作らない）。
+    /// 字幕と同じく macOS 26 限定型なので AnyObject で持つ。
+    private var meetBotStorage: AnyObject?
 
     /// 「翻訳して入力」の翻訳器。Apple のセッションを使い回して 2 回目以降の遅延を消すため保持する。
     /// macOS 26 限定型なので caption と同じく AnyObject で持ち、使うときにキャストする。
@@ -389,10 +390,19 @@ final class AppController: ObservableObject {
     ///
     /// 字幕と同じく**参照するまで何も作らない**。Chrome の起動もユーザーが「会議に参加」を
     /// 押すまで行わない。
+    @available(macOS 26.0, *)
     var meetBot: MeetBotService {
-        if let existing = meetBotStorage { return existing }
+        if let existing = meetBotStorage as? MeetBotService { return existing }
         let created = MeetBotService()
         meetBotStorage = created
+        // 会議音声を拾い始める前にライブ字幕を止める。同じ Chrome の音を 2 本のタップで
+        // 拾うことになり（HAL に余計な負荷）、議事録も二重に書かれてしまうため。
+        created.onWillStartRecording = { [weak self] in
+            guard let self, let caption = self.captionStorage as? CaptionService else { return }
+            guard caption.state.isActive else { return }
+            log.notice("会議の記録を始めるためライブ字幕を停止します")
+            caption.stop()
+        }
         log.notice("Meet 議事録ボットを初期化しました")
         return created
     }
@@ -422,8 +432,10 @@ final class AppController: ObservableObject {
         if #available(macOS 26.0, *), let caption = captionStorage as? CaptionService {
             caption.shutdown()
         }
-        // 会議ボットを動かしていたら、保留中の発言を書き出して Chrome も畳む
-        meetBotStorage?.shutdown()
+        // 会議ボットを動かしていたら、議事録を閉じて Chrome とタップも畳む
+        if #available(macOS 26.0, *), let bot = meetBotStorage as? MeetBotService {
+            bot.shutdown()
+        }
         // 字幕を畳んだので待機ピルの退避も解く（ピルが出せない状態で残らないように）
         hud.captionCovering = false
         hotkeys.stop()

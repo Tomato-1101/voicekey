@@ -5,6 +5,7 @@ import XCTest
 
 @testable import voicekey
 
+@available(macOS 26.0, *)
 @MainActor
 final class MeetBotURLTests: XCTestCase {
 

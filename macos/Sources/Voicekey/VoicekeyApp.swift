@@ -312,8 +312,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private var onboardingFinished = false
     /// 「ライブ字幕」サブメニュー（macOS 26 以降のみ。型を直接持てないので AnyObject で保持）
     private var captionMenu: AnyObject?
-    /// 「Meet 議事録ボット」サブメニュー
-    private var meetBotMenu: MeetBotMenuController?
+    /// 「Meet 議事録ボット」サブメニュー（macOS 26 限定型なので AnyObject で保持）
+    private var meetBotMenu: AnyObject?
 
     init(controller: AppController) {
         self.controller = controller
@@ -354,7 +354,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         }
 
         // Google Meet 議事録ボット（Chrome が入っているときだけ出す）
-        if MeetBotService.isAvailable {
+        if #available(macOS 26.0, *), MeetBotService.isAvailable {
             let bot = MeetBotMenuController(controller: controller)
             menu.addItem(bot.menuItem)
             meetBotMenu = bot

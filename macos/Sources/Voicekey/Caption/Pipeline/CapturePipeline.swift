@@ -113,13 +113,22 @@ final class CapturePipeline: @unchecked Sendable {
     /// - Parameters:
     ///   - locale: 認識対象の言語（既定 en-US）
     ///   - scopeMode: キャプチャ対象のモード（既定は設定・環境変数から解決）
+    ///   - fixedPID: 対象を固定したいプロセス（Meet ボットが起動した Chrome など）。
+    ///     指定すると最前面の追従をやめ、そのアプリ（と責任 PID が一致する子プロセス）の音だけを拾う。
     init(
         locale: Locale = Locale(identifier: "en-US"),
-        scopeMode: CaptureScopeMode = CaptionSettings.effectiveCaptureScopeMode
+        scopeMode: CaptureScopeMode = CaptionSettings.effectiveCaptureScopeMode,
+        fixedPID: pid_t? = nil
     ) {
         self.locale = locale
-        self.scopeMode = scopeMode
+        // PID を固定するときは、対象を追いかける必要があるので frontmost 側の経路に載せる
+        // （CaptureScopeTracker が固定 PID を見て、そのプロセスの音声だけを拾う）。
+        self.scopeMode = fixedPID == nil ? scopeMode : .frontmost
+        self.fixedPID = fixedPID
     }
+
+    /// 対象を固定するプロセス（nil なら環境変数 / 最前面の追従に任せる）
+    private let fixedPID: pid_t?
 
     /// パイプラインを開始する
     ///
@@ -141,7 +150,7 @@ final class CapturePipeline: @unchecked Sendable {
         self.tap = tap
 
         if scopeMode == .frontmost {
-            let tracker = CaptureScopeTracker(fixedPID: CaptionSettings.fixedCaptureTargetPID)
+            let tracker = CaptureScopeTracker(fixedPID: fixedPID ?? CaptionSettings.fixedCaptureTargetPID)
             tracker.onScopeChanged = { [weak self] scope, target in
                 self?.tap?.setScope(scope)
                 self?.onTargetChanged?(target?.name)

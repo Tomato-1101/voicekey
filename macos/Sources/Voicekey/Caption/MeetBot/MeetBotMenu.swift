@@ -6,6 +6,7 @@ import AppKit
 import Foundation
 
 /// ボットの操作メニュー
+@available(macOS 26.0, *)
 @MainActor
 final class MeetBotMenuController: NSObject, NSMenuDelegate {
 

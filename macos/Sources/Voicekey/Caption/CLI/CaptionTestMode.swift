@@ -26,7 +26,7 @@ enum CaptionTestMode {
         let modes = [
             "--caption-pipeline-test", "--caption-tts-loop-test", "--caption-scope-test",
             "--caption-mic-coexist-test", "--caption-hud-test", "--caption-bench", "--caption-groq-models",
-            "--meetbot-test",
+            "--meetbot-test", "--meetbot-audio-test", "--meetbot-stt-test",
         ]
         guard let mode = modes.first(where: { arguments.contains($0) }) else { return false }
 
@@ -53,6 +53,19 @@ enum CaptionTestMode {
         case "--meetbot-test":
             let url = optionValue("--meetbot-test", in: arguments)
             runAsync { await MeetBotTestRunner.run(urlString: url, logFilePath: logFilePath) }
+        case "--meetbot-audio-test":
+            let seconds = Double(optionValue("--meetbot-audio-test", in: arguments) ?? "") ?? 10.0
+            runAsync { await MeetBotTestRunner.runAudioTest(seconds: seconds, logFilePath: logFilePath) }
+        case "--meetbot-stt-test":
+            let audio = optionValue("--meetbot-stt-test", in: arguments) ?? ""
+            let expect = (optionValue("--expect", in: arguments) ?? "")
+                .split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            runAsync {
+                await MeetBotTestRunner.runSpeechTest(
+                    audioPath: audio, expected: expect, logFilePath: logFilePath
+                )
+            }
         default:
             runAsync { await CaptionBenchRunner.runGroqModelTest(logFilePath: logFilePath) }
         }

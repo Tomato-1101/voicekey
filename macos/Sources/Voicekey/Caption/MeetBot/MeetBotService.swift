@@ -1,22 +1,26 @@
 /// Google Meet 議事録ボット
 ///
 /// 会議 URL を渡すと、**専用プロファイルの Chrome を裏で起動して会議に参加し**、
-/// Meet の字幕（話者名つき）を読んで `TranscriptRecorder` へ保存する。
+/// その Chrome が鳴らしている会議音声を拾って**この Mac の中だけで文字起こし**して保存する。
 ///
-/// **なぜ Meet の内蔵字幕を読むのか**（2026-08-28 の設計判断）:
-/// - 話者名が取れる。議事録で「誰が言ったか」は本文と同じくらい重要。
-/// - 会議の音声を別途タップしなくて済む。voicekey 本体のマイク／システム音声の経路に
-///   一切触らないので、ディクテーションやライブ字幕と同時に動かしても干渉しない。
-/// - 追加の API 課金がゼロ（Meet 側の認識をそのまま使う）。
+/// **文字起こしは全部ローカル計算で行う**（2026-08-28 ユーザー指示）。
+/// 認識は Apple のオンデバイス音声認識（`SpeechTranscriber`）で、音声もテキストも外へ出さない。
+/// 最初の実装では Meet の内蔵字幕（＝ Google 側の認識）を読んでいたが、この指示により
+/// **音声を Process Tap で拾ってローカル認識する方式へ差し替えた**。Meet の DOM を読むのは
+/// 「いま誰が話しているか」を議事録の話者名に添えるためだけで、文字起こしには使わない。
+///
+/// **音声の取り方**: voicekey のシステム音声タップ（`CapturePipeline`）を、ボットが起動した
+/// Chrome の PID に固定して張る。ヘッドレスの Chrome でも音は出ており、実測で
+/// RMS 0.26 / 188,911 フレームを拾えることを確認済み（`--meetbot-audio-test`）。
 ///
 /// **Chrome の使い方**: 普段使いの Chrome とは別の `--user-data-dir` を使う。作業中のタブを
 /// 巻き込まないためと、ボットのログイン状態を分けて持てるようにするため。初回だけは
 /// `showLoginWindow()` で見える Chrome を出し、本人に Google ログインしてもらう
-/// （ログイン操作は本人にしかできない）。ログインしないままでもゲストとして参加を
-/// リクエストできるが、ホストの承認が要る。
+/// （ログイン操作は本人にしかできない）。
 import AppKit
 import Foundation
 import OSLog
+import os
 
 /// ボットの状態
 enum MeetBotState: Equatable {
@@ -26,7 +30,7 @@ enum MeetBotState: Equatable {
     case launching
     /// 会議に入ろうとしている（承認待ちを含む）
     case joining(String)
-    /// 参加して字幕を記録している
+    /// 参加して文字起こしを記録している
     case recording(String)
     /// 失敗して止まった
     case failed(String)
@@ -51,7 +55,8 @@ enum MeetBotState: Equatable {
     }
 }
 
-/// Meet に入って字幕を記録するボット
+/// Meet に入って会議の音声をローカル認識し、議事録に残すボット
+@available(macOS 26.0, *)
 @MainActor
 final class MeetBotService {
 
@@ -63,14 +68,10 @@ final class MeetBotService {
     /// 会議で表示されるボットの名前（ゲスト参加のときに入力される）
     private static let botDisplayName = "voicekey 議事録ボット"
 
-    /// 字幕を読みにいく間隔
+    /// 「いま誰が話しているか」を見にいく間隔
     ///
-    /// Meet の字幕は書きながら伸びるので、短すぎると同じ文を何度も見ることになる。
-    /// 1 秒あれば伸び方を追える。
-    private static let pollInterval: TimeInterval = 1.0
-
-    /// この秒数だけ更新が止まったら、その発言を確定として記録する
-    private static let settleSeconds: TimeInterval = 2.5
+    /// 話者は発話中に何度も入れ替わるので短めに。DOM を 1 回読むだけなので負荷は軽い。
+    private static let speakerPollInterval: TimeInterval = 0.8
 
     /// ボット専用の Chrome プロファイル
     static var profileDirectory: URL {
@@ -80,22 +81,31 @@ final class MeetBotService {
 
     private var chrome: Process?
     private var devTools: ChromeDevTools?
-    private var pollTimer: Timer?
+    private var pipeline: CapturePipeline?
+    private var speakerTimer: Timer?
     private let recorder = TranscriptRecorder()
 
     /// 記録中の会議名（議事録のヘッダに残す）
     private var meetingName = "Google Meet"
 
-    /// 話者ごとの「まだ確定していない発言」
-    private var pending: [String: PendingLine] = [:]
+    /// いま話している参加者（DOM から拾えたときだけ入る）
+    ///
+    /// 認識コールバックは音声スレッドから来るので lock 付きで持つ。
+    private let speakerNow = OSAllocatedUnfairLock<String?>(initialState: nil)
+    /// いま認識中の発話に添える話者（確定したらリセットする）
+    private let speakerForCurrentSegment = OSAllocatedUnfairLock<String?>(initialState: nil)
 
     /// 記録が動いている間の App Nap 抑止
-    ///
-    /// ポーリングは Timer なので、nap に入ると字幕を取りこぼす（voicekey で実績のある事故）。
     private var antiNapActivity: NSObjectProtocol?
 
     /// 状態が変わったときに呼ばれる（メニュー更新用）
     var onStateChange: ((MeetBotState) -> Void)?
+
+    /// 会議の音声を拾い始める直前に呼ばれる
+    ///
+    /// システム音声タップを二重に張らないため、ライブ字幕が動いていたら止めてもらう
+    /// （同じ Chrome の音を字幕とボットの両方が拾うと、議事録が二重になるという実害もある）。
+    var onWillStartRecording: (() -> Void)?
 
     /// 現在の状態
     private(set) var state: MeetBotState = .idle {
@@ -136,12 +146,11 @@ final class MeetBotService {
     /// 会議から退出して記録を閉じる
     func leave() {
         guard state.isActive else { return }
-        // 見えている途中の発言を取りこぼさないよう、閉じる前に全部書き出す
-        flushAllPending()
         recorder.endSession()
+        let tools = devTools
         Task { [weak self] in
             guard let self else { return }
-            try? await self.devTools?.evaluate(Self.leaveScript)
+            try? await tools?.evaluate(Self.leaveScript)
             self.teardown()
             self.state = .idle
         }
@@ -154,18 +163,16 @@ final class MeetBotService {
     func showLoginWindow() {
         guard !state.isActive else { return }
         do {
-            let process = try ChromeDevTools.launchChrome(
+            chrome = try ChromeDevTools.launchChrome(
                 port: Self.devToolsPort, profileDirectory: Self.profileDirectory, headless: false
             )
-            chrome = process
             Task { [weak self] in
                 try? await ChromeDevTools.waitForDevTools(port: Self.devToolsPort)
-                let tools = ChromeDevTools()
-                if let socket = try? await ChromeDevTools.openTab(
+                guard let socket = try? await ChromeDevTools.openTab(
                     url: "https://accounts.google.com/", port: Self.devToolsPort
-                ) {
-                    tools.connect(to: socket)
-                }
+                ) else { return }
+                let tools = ChromeDevTools()
+                tools.connect(to: socket)
                 self?.devTools = tools
             }
         } catch {
@@ -175,14 +182,13 @@ final class MeetBotService {
 
     /// アプリ終了時の後片付け（Chrome を残さない）
     func shutdown() {
-        flushAllPending()
         recorder.endSession()
         teardown()
     }
 
     // MARK: - 参加の流れ
 
-    /// Chrome を起動して会議に入るまで
+    /// Chrome を起動して会議に入り、音声の記録を始めるまで
     private func startChromeAndJoin(url: URL) async throws {
         if chrome == nil || chrome?.isRunning != true {
             chrome = try ChromeDevTools.launchChrome(
@@ -212,22 +218,20 @@ final class MeetBotService {
         let joined = (joinResult as? [String: Any])?["clicked"] as? String
         logger.notice("参加操作: \(joined ?? "ボタンが見つからない", privacy: .public)")
 
-        // 承認待ちのことがあるので、字幕領域が現れるまで粘る
+        // 承認待ちのことがあるので、会議画面になるまで粘る
         state = .joining("会議への入室を待っています")
         let entered = try await waitUntilInMeeting(tools: tools, timeout: 120)
         guard entered else {
             throw ChromeDevToolsError.protocolError("会議に入れませんでした（ホストの承認待ちのままか、URL が違います）")
         }
 
-        state = .joining("字幕をオンにしています")
-        _ = try? await tools.evaluate(Self.enableCaptionsScript)
-        try await Task.sleep(for: .seconds(2))
-
         if let title = try? await tools.evaluate("document.title") as? String, !title.isEmpty {
             meetingName = title.replacingOccurrences(of: " - Google Meet", with: "")
         }
+
+        try await startRecognition()
         state = .recording(meetingName)
-        startPolling()
+        startSpeakerPolling()
     }
 
     /// 会議に入れたか（会議画面の要素が出たか）を待つ
@@ -242,96 +246,110 @@ final class MeetBotService {
         return false
     }
 
-    // MARK: - 字幕の読み取り
+    // MARK: - ローカル文字起こし
 
-    /// 字幕のポーリングを始める
-    private func startPolling() {
-        pollTimer?.invalidate()
-        let timer = Timer.scheduledTimer(withTimeInterval: Self.pollInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in await self?.pollCaptions() }
+    /// ボットの Chrome が鳴らしている音声を拾って、オンデバイス認識を始める
+    ///
+    /// 対象は **Chrome の PID に固定**する（最前面の追従はしない）。会議中に他のアプリを
+    /// 触っても、拾うのは会議の音だけになる。
+    private func startRecognition() async throws {
+        guard let chromePID = chrome?.processIdentifier else {
+            throw ChromeDevToolsError.protocolError("Chrome のプロセスが見つかりません")
         }
-        // 会議中はメニュー操作などで RunLoop のモードが変わるので common に載せる
-        RunLoop.main.add(timer, forMode: .common)
-        pollTimer = timer
-    }
+        // 同じ音を字幕とボットの両方で拾わないよう、先に字幕を止めてもらう
+        onWillStartRecording?()
 
-    /// 字幕を 1 回読んで、落ち着いた発言を記録する
-    private func pollCaptions() async {
-        guard let tools = devTools, case .recording = state else { return }
-        guard let raw = try? await tools.evaluate(Self.captionScript),
-              let payload = raw as? [String: Any],
-              let entries = payload["entries"] as? [[String: Any]] else { return }
-
-        let now = Date()
-        for entry in entries {
-            let speaker = ((entry["speaker"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            let text = ((entry["text"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { continue }
-            let key = speaker.isEmpty ? "（話者不明）" : speaker
-
-            if var current = pending[key] {
-                if text == current.text {
-                    // 変化なし（このあと settle を過ぎたら確定する）
-                } else if text.hasPrefix(current.text) {
-                    // 同じ発言が伸びている
-                    current.text = text
-                    current.lastChanged = now
-                    pending[key] = current
-                } else {
-                    // 別の発言に切り替わった。前の発言をここで確定する。
-                    record(current, speaker: key)
-                    pending[key] = PendingLine(text: text, lastChanged: now)
-                }
+        state = .joining("音声認識を準備しています")
+        let language = CaptionSettings.language
+        let pipeline = CapturePipeline(locale: language.locale, fixedPID: chromePID)
+        pipeline.onSegment = { [weak self] segment in
+            guard let self else { return }
+            if segment.isFinal {
+                self.recordFinal(segment.text)
             } else {
-                pending[key] = PendingLine(text: text, lastChanged: now)
+                // 発話中に見えている話者を覚えておく（確定時にはもう切り替わっていることがある）
+                if let speaker = self.speakerNow.withLock({ $0 }) {
+                    self.speakerForCurrentSegment.withLock { $0 = speaker }
+                }
             }
         }
+        try await pipeline.start()
+        self.pipeline = pipeline
+        logger.notice("会議音声のローカル認識を開始 pid=\(chromePID, privacy: .public) locale=\(language.rawValue, privacy: .public)")
+    }
 
-        // 一定時間伸びなくなった発言を確定する
-        for (key, line) in pending where now.timeIntervalSince(line.lastChanged) >= Self.settleSeconds {
-            record(line, speaker: key)
-            pending.removeValue(forKey: key)
+    /// 確定した文字起こしを議事録へ書く
+    ///
+    /// - Parameter text: 認識テキスト
+    nonisolated private func recordFinal(_ text: String) {
+        guard CaptionSettings.savesTranscript else { return }
+        let speaker = speakerForCurrentSegment.withLock { value -> String? in
+            let current = value
+            value = nil
+            return current
+        } ?? speakerNow.withLock { $0 }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.logger.notice("確定: \(speaker ?? "話者不明", privacy: .public): \(text, privacy: .public)")
+            self.recorder.record(
+                text: text,
+                speaker: speaker,
+                context: "Google Meet / \(self.meetingName)",
+                language: CaptionSettings.language.displayName
+            )
         }
     }
 
-    /// 保留中の発言をすべて書き出す（退出時・終了時）
-    private func flushAllPending() {
-        for (key, line) in pending { record(line, speaker: key) }
-        pending.removeAll()
+    // MARK: - 話者名（ベストエフォート）
+
+    /// 「いま誰が話しているか」を定期的に読む
+    ///
+    /// **文字起こしには使わない**（それはローカル認識の担当）。議事録の行頭に添える名前を
+    /// 取るためだけに Meet の DOM を見る。取れなくても記録は続く（話者名なしの行になる）。
+    private func startSpeakerPolling() {
+        speakerTimer?.invalidate()
+        let timer = Timer.scheduledTimer(withTimeInterval: Self.speakerPollInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in await self?.pollSpeaker() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        speakerTimer = timer
     }
 
-    /// 1 発言を議事録へ書く
-    private func record(_ line: PendingLine, speaker: String) {
-        guard CaptionSettings.savesTranscript else { return }
-        logger.notice("\(speaker, privacy: .public): \(line.text, privacy: .public)")
-        recorder.record(
-            text: line.text,
-            speaker: speaker == "（話者不明）" ? nil : speaker,
-            context: "Google Meet / \(meetingName)",
-            language: "会議の字幕"
-        )
+    /// 話者を 1 回読む
+    private func pollSpeaker() async {
+        guard let tools = devTools, case .recording = state else { return }
+        guard let value = try? await tools.evaluate(Self.activeSpeakerScript) else { return }
+        let name = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let name, !name.isEmpty else { return }
+        speakerNow.withLock { $0 = name }
     }
 
     // MARK: - 後片付け
 
-    /// Chrome と接続を閉じる
+    /// Chrome・タップ・タイマーを閉じる
     private func teardown() {
-        pollTimer?.invalidate()
-        pollTimer = nil
+        speakerTimer?.invalidate()
+        speakerTimer = nil
+        let pipeline = self.pipeline
+        self.pipeline = nil
         devTools?.close()
         devTools = nil
         if let chrome, chrome.isRunning {
             chrome.terminate()
         }
         chrome = nil
+        speakerNow.withLock { $0 = nil }
+        speakerForCurrentSegment.withLock { $0 = nil }
         endAntiNap()
+        // タップと Aggregate Device は必ず畳む（残すと HAL にゴーストデバイスが溜まる）
+        Task { await pipeline?.stop() }
     }
 
     /// 記録中だけ App Nap を止める
     private func beginAntiNap() {
         guard antiNapActivity == nil else { return }
         antiNapActivity = ProcessInfo.processInfo.beginActivity(
-            options: .background, reason: "meet bot caption polling"
+            options: .background, reason: "meet bot recording"
         )
     }
 
@@ -361,11 +379,5 @@ final class MeetBotService {
     static func meetingCode(from url: URL) -> String? {
         let code = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         return code.isEmpty ? nil : code
-    }
-
-    /// 確定待ちの発言
-    private struct PendingLine {
-        var text: String
-        var lastChanged: Date
     }
 }
