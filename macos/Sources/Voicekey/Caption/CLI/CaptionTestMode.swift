@@ -26,6 +26,7 @@ enum CaptionTestMode {
         let modes = [
             "--caption-pipeline-test", "--caption-tts-loop-test", "--caption-scope-test",
             "--caption-mic-coexist-test", "--caption-hud-test", "--caption-bench", "--caption-groq-models",
+            "--meetbot-test",
         ]
         guard let mode = modes.first(where: { arguments.contains($0) }) else { return false }
 
@@ -49,6 +50,9 @@ enum CaptionTestMode {
             runAsync { await CaptionHUDTestRunner.run(logFilePath: logFilePath) }
         case "--caption-bench":
             runAsync { await CaptionBenchRunner.run(logFilePath: logFilePath) }
+        case "--meetbot-test":
+            let url = optionValue("--meetbot-test", in: arguments)
+            runAsync { await MeetBotTestRunner.run(urlString: url, logFilePath: logFilePath) }
         default:
             runAsync { await CaptionBenchRunner.runGroqModelTest(logFilePath: logFilePath) }
         }

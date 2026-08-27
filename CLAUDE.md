@@ -155,6 +155,29 @@ Mac（`macos/` Swift）と Windows（`src/` Python）の両方を同じ作業で
   `[VERDICT] status=ok` を確認する（`--caption-hud-test` は `[PHASE-START]` を出すので、
   それを待ってから `screencapture` すると各状態のスクショが撮れる）。
 
+## 議事録と Google Meet ボット（personal ブランチ・Mac）
+
+2026-08-28 ユーザー指示（「ライブ翻訳の字幕バージョン＝普通の文字起こしも入れて、日本語対応で、
+ローカルに全部保存＝議事録にしたい。あと Meet に URL を渡したら勝手に入るボットも」）で追加した。
+
+- **字幕は 2 モード**（`CaptionSettings.mode`）: `translate`（英→日・従来）と `transcribe`（訳さない）。
+  認識ロケールはモードが決める（`CaptionSettings.recognitionLocale`）。翻訳は `AppleTranslator` が
+  en→ja 固定なので**翻訳モードの認識は英語で固定**。文字起こしモードだけ日本語 / 英語を選べる。
+  Apple の `SpeechTranscriber` は**ロケール指定式で自動判定を持たない**ため、言語は必ずユーザーが選ぶ。
+- **議事録に保存するのは文字起こしだけ**（訳文は保存しない）。`TranscriptRecorder` が
+  `~/Documents/voicekey/transcripts/YYYY-MM-DD_HHmm.md` へ**追記**する。メモリに貯めて終了時に
+  一括保存しない（落ちたら全部消えるため）。5 分以上あいたら別ファイル＝別の会議。
+- **Meet ボットは Chrome を CDP で動かす**（`Caption/MeetBot/`）。Playwright / Node は同梱しない
+  （Chromium ごと数百 MB になるため）。**Meet の DOM 依存は `MeetBotScripts.swift` だけ**に閉じ込め、
+  クラス名に頼らず `jsname` / `aria-label` / 表示文字（日英両方）で探す。壊れたらここだけ直す。
+- **ボットは Mac の音声経路に触らない**（Meet の内蔵字幕を読む）。マイク・カメラは切って参加する。
+  ディクテーション・ライブ字幕と同時に動いても干渉しないこと＝この設計の眼目なので、
+  「ボットの音声をシステム音声タップで拾う」方式へ勝手に変えない（HAL を余計に触ることになる）。
+- ボット用 Chrome は**必ず専用プロファイル**（`~/Library/Application Support/voicekey/meetbot-profile`）。
+  普段使いの Chrome を巻き込まない。初回の Google ログインは本人にやってもらう（メニューに導線あり）。
+- 疎通確認は `open -n dist/voicekey.app --args --meetbot-test [URL] --log-file <path>` →
+  `[VERDICT] status=ok`。実会議での参加確認はログイン済みプロファイルと実 URL が要る。
+
 ## Project Overview
 
 voicekey は、ホットキーを押している間だけ音声を録音し、文字起こし結果を**今使っているアプリのカーソル位置へ自動入力**する常駐型の音声入力ツール（Mac=メニューバー / Windows=タスクトレイ）。

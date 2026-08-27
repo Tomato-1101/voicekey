@@ -54,6 +54,9 @@ final class AppController: ObservableObject {
     /// **最初に `caption` を参照するまで生成しない**（ディクテーションの起動経路に一切足さない）。
     private var captionStorage: AnyObject?
 
+    /// Meet 議事録ボットの実体（`meetBot` を参照するまで作らない）
+    private var meetBotStorage: MeetBotService?
+
     /// 「翻訳して入力」の翻訳器。Apple のセッションを使い回して 2 回目以降の遅延を消すため保持する。
     /// macOS 26 限定型なので caption と同じく AnyObject で持ち、使うときにキャストする。
     private var translatorStorage: AnyObject?
@@ -382,6 +385,21 @@ final class AppController: ObservableObject {
     /// ライブ字幕が既に生成されているか（終了処理で「作っていなければ触らない」ために使う）
     var hasCaptionService: Bool { captionStorage != nil }
 
+    /// Google Meet 議事録ボット（初回アクセス時に生成する）
+    ///
+    /// 字幕と同じく**参照するまで何も作らない**。Chrome の起動もユーザーが「会議に参加」を
+    /// 押すまで行わない。
+    var meetBot: MeetBotService {
+        if let existing = meetBotStorage { return existing }
+        let created = MeetBotService()
+        meetBotStorage = created
+        log.notice("Meet 議事録ボットを初期化しました")
+        return created
+    }
+
+    /// ボットが既に生成されているか（終了処理で「作っていなければ触らない」ために使う）
+    var hasMeetBot: Bool { meetBotStorage != nil }
+
     /// HUD の表示状態に合わせてライブ字幕を隠す／戻す
     ///
     /// 音声入力（録音・変換中・通知）の間は字幕を出さない（2026-08-10 ユーザー指示）。
@@ -404,6 +422,8 @@ final class AppController: ObservableObject {
         if #available(macOS 26.0, *), let caption = captionStorage as? CaptionService {
             caption.shutdown()
         }
+        // 会議ボットを動かしていたら、保留中の発言を書き出して Chrome も畳む
+        meetBotStorage?.shutdown()
         // 字幕を畳んだので待機ピルの退避も解く（ピルが出せない状態で残らないように）
         hud.captionCovering = false
         hotkeys.stop()
