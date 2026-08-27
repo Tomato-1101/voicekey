@@ -272,6 +272,12 @@ final class ConfigStore: ObservableObject {
     /// 字幕の音声・翻訳経路は MainActor 外から同期的に設定を読むため、正本を UserDefaults に置き、
     /// ここは UI 用の @Published ミラーとして持つ。
     @Published var captionAutoStart: Bool
+    /// 字幕の動作モード（翻訳 / 文字起こし）
+    @Published var captionMode: CaptionMode
+    /// 文字起こしモードで認識する言語（日本語 / 英語）
+    @Published var captionLanguage: CaptionLanguage
+    /// 文字起こしをローカルへ自動保存するか（議事録・既定 ON）
+    @Published var captionSaveTranscript: Bool
     /// ライブ字幕の翻訳エンジン（Apple / Gemini / Groq）
     @Published var captionEngine: TranslationEngine
     /// ライブ字幕で最前面のアプリだけを対象にするか（既定 ON）
@@ -381,6 +387,9 @@ final class ConfigStore: ObservableObject {
         dockIconAlwaysVisible = defaults.object(forKey: Keys.dockIconAlwaysVisible) as? Bool ?? true
         // ライブ字幕は CaptionSettings（UserDefaults の caption* キー）が正本。ここはその写し。
         captionAutoStart = CaptionSettings.startsOnLaunch
+        captionMode = CaptionSettings.mode
+        captionLanguage = CaptionSettings.language
+        captionSaveTranscript = CaptionSettings.savesTranscript
         captionEngine = CaptionSettings.translationEngine
         captionFrontmostOnly = CaptionSettings.captureScopeMode == .frontmost
         captionSpeak = CaptionSettings.speakTranslation
@@ -446,6 +455,11 @@ final class ConfigStore: ObservableObject {
         $numeralProtectWords.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.numeralProtectWords) }.store(in: &cancellables)
         // ライブ字幕は CaptionSettings 経由で書く（キーの正本を 1 か所に保つため）
         $captionAutoStart.dropFirst().sink { CaptionSettings.startsOnLaunch = $0 }.store(in: &cancellables)
+        // モード・言語は認識セッションを張り直す必要があるので、動作中の反映は
+        // CaptionService 側の setter（設定 UI / メニューが呼ぶ）が受け持つ。ここは永続化だけ。
+        $captionMode.dropFirst().sink { CaptionSettings.mode = $0 }.store(in: &cancellables)
+        $captionLanguage.dropFirst().sink { CaptionSettings.language = $0 }.store(in: &cancellables)
+        $captionSaveTranscript.dropFirst().sink { CaptionSettings.savesTranscript = $0 }.store(in: &cancellables)
         $captionEngine.dropFirst().sink { CaptionSettings.translationEngine = $0 }.store(in: &cancellables)
         $captionFrontmostOnly.dropFirst().sink { CaptionSettings.captureScopeMode = $0 ? .frontmost : .all }
             .store(in: &cancellables)

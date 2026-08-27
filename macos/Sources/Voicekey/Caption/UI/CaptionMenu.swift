@@ -58,14 +58,51 @@ final class CaptionMenuController: NSObject, NSMenuDelegate {
         menu.addItem(disabledItem(captureTargetLine(service)))
         menu.addItem(.separator())
 
-        // 3. トグル
+        // 3. モードと言語（翻訳するか、そのまま文字起こしするか）
+        let modeItem = NSMenuItem(title: "モード", action: nil, keyEquivalent: "")
+        let modeMenu = NSMenu()
+        for mode in CaptionMode.allCases {
+            let item = NSMenuItem(title: mode.displayName, action: #selector(selectMode(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = mode.rawValue
+            item.state = service.mode == mode ? .on : .off
+            modeMenu.addItem(item)
+        }
+        modeItem.submenu = modeMenu
+        menu.addItem(modeItem)
+
+        if service.mode == .transcribe {
+            let languageItem = NSMenuItem(title: "認識する言語", action: nil, keyEquivalent: "")
+            let languageMenu = NSMenu()
+            for language in CaptionLanguage.allCases {
+                let item = NSMenuItem(
+                    title: language.displayName, action: #selector(selectLanguage(_:)), keyEquivalent: ""
+                )
+                item.target = self
+                item.representedObject = language.rawValue
+                item.state = service.language == language ? .on : .off
+                languageMenu.addItem(item)
+            }
+            languageItem.submenu = languageMenu
+            menu.addItem(languageItem)
+        }
+
+        menu.addItem(checkItem("文字起こしを保存（議事録）", #selector(toggleSaveTranscript), service.savesTranscript))
+        let openTranscripts = NSMenuItem(
+            title: "議事録フォルダを開く", action: #selector(openTranscriptFolder), keyEquivalent: ""
+        )
+        openTranscripts.target = self
+        menu.addItem(openTranscripts)
+        menu.addItem(.separator())
+
+        // 4. トグル
         menu.addItem(checkItem("最前面のアプリだけを翻訳", #selector(toggleFrontmostOnly), service.capturesFrontmostOnly))
         menu.addItem(checkItem("起動時に字幕を自動開始", #selector(toggleAutoStart), CaptionSettings.startsOnLaunch))
         menu.addItem(checkItem("訳文を読み上げる", #selector(toggleSpeech), service.speaksTranslation))
         menu.addItem(checkItem("英語の原文も表示", #selector(toggleSource), service.showsSourceText))
         menu.addItem(.separator())
 
-        // 4. 翻訳エンジン
+        // 5. 翻訳エンジン
         let engineItem = NSMenuItem(title: "翻訳エンジン", action: nil, keyEquivalent: "")
         let engineMenu = NSMenu()
         for engine in TranslationEngine.allCases {
@@ -87,6 +124,10 @@ final class CaptionMenuController: NSObject, NSMenuDelegate {
 
     /// 翻訳の構成と準備状況を 1 行で
     private func translationStatusLine(_ service: CaptionService) -> String {
+        // 文字起こしモードでは翻訳器を一切使わないので、翻訳の構成ではなく認識言語を出す
+        if service.mode == .transcribe {
+            return "文字起こし: \(service.language.displayName)（端末内・Apple）"
+        }
         if CaptionService.usesMockTranslator {
             return "翻訳: モック（検証用・APIは呼ばれません）"
         }
@@ -173,6 +214,35 @@ final class CaptionMenuController: NSObject, NSMenuDelegate {
 
     @objc private func toggleSource() {
         controller?.caption.showsSourceText.toggle()
+    }
+
+    /// 字幕モードを選ぶ（動作中なら CaptionService 側が認識セッションを張り直す）
+    @objc private func selectMode(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let mode = CaptionMode(rawValue: raw) else { return }
+        controller?.caption.mode = mode
+        controller?.config.captionMode = mode
+    }
+
+    /// 文字起こしの認識言語を選ぶ
+    @objc private func selectLanguage(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let language = CaptionLanguage(rawValue: raw) else { return }
+        controller?.caption.language = language
+        controller?.config.captionLanguage = language
+    }
+
+    @objc private func toggleSaveTranscript() {
+        guard let service = controller?.caption else { return }
+        service.savesTranscript.toggle()
+        controller?.config.captionSaveTranscript = service.savesTranscript
+    }
+
+    /// 議事録の保存先を Finder で開く（無ければ作ってから開く）
+    @objc private func openTranscriptFolder() {
+        let directory = CaptionService.transcriptDirectory
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(directory)
     }
 
     @objc private func selectEngine(_ sender: NSMenuItem) {

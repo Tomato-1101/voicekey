@@ -8,6 +8,7 @@
 /// `ConfigStore` の `@Published` ミラーを bind して、書き込みは ConfigStore の sink 経由にする。
 /// ただし**動作中の字幕へ即時反映**が要るもの（読み上げ・原文表示・対象・エンジン）は
 /// `CaptionService` にも配る（メニューバーから変えたときと同じ経路）。
+import AppKit
 import SwiftUI
 
 /// 字幕の状態をを SwiftUI へ流すための小さな観測モデル
@@ -83,6 +84,10 @@ struct CaptionSettingsTab: View {
             VStack(alignment: .leading, spacing: 18) {
                 statusSection
                 Divider()
+                modeSection
+                Divider()
+                transcriptSection
+                Divider()
                 engineSection
                 Divider()
                 displaySection
@@ -117,6 +122,60 @@ struct CaptionSettingsTab: View {
             Text("一度でも字幕を開始したあとから効きます（初回起動でいきなり許可を求めないため）。")
                 .font(.caption).foregroundStyle(.secondary)
         }
+    }
+
+    // MARK: - モードと言語
+
+    private var modeSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("モード").font(.headline)
+            Picker("字幕の動作", selection: modeBinding) {
+                ForEach(CaptionMode.allCases, id: \.self) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            .pickerStyle(.radioGroup)
+
+            if config.captionMode == .transcribe {
+                Picker("認識する言語", selection: languageBinding) {
+                    ForEach(CaptionLanguage.allCases, id: \.self) { language in
+                        Text(language.displayName).tag(language)
+                    }
+                }
+                .frame(maxWidth: 260)
+                Text("端末内（Apple の音声認識）で文字起こしします。翻訳もクラウド送信も行いません。")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("英語を聞いて日本語に訳します（認識は英語で固定）。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    // MARK: - 議事録
+
+    private var transcriptSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("議事録（文字起こしの保存）").font(.headline)
+            Toggle("文字起こしを自動で保存する", isOn: saveTranscriptBinding)
+            Text("字幕が動いている間、確定した文字起こしを Markdown に追記します"
+                 + "（訳文は保存しません）。5 分以上あくと別のファイルになります。")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Text(CaptionService.transcriptDirectory.path)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+                Spacer()
+                Button("保存先を開く") { openTranscriptDirectory() }
+            }
+        }
+    }
+
+    /// 議事録フォルダを Finder で開く（無ければ作ってから開く）
+    private func openTranscriptDirectory() {
+        let directory = CaptionService.transcriptDirectory
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(directory)
     }
 
     // MARK: - 翻訳エンジン
@@ -206,6 +265,39 @@ struct CaptionSettingsTab: View {
     }
 
     // MARK: - 動作中の字幕へも配る binding
+
+    /// 字幕モード（動作中なら CaptionService 側が認識セッションを張り直す）
+    private var modeBinding: Binding<CaptionMode> {
+        Binding(
+            get: { config.captionMode },
+            set: { newValue in
+                config.captionMode = newValue
+                controller?.caption.mode = newValue
+            }
+        )
+    }
+
+    /// 文字起こしの認識言語（同上）
+    private var languageBinding: Binding<CaptionLanguage> {
+        Binding(
+            get: { config.captionLanguage },
+            set: { newValue in
+                config.captionLanguage = newValue
+                controller?.caption.language = newValue
+            }
+        )
+    }
+
+    /// 議事録の自動保存
+    private var saveTranscriptBinding: Binding<Bool> {
+        Binding(
+            get: { config.captionSaveTranscript },
+            set: { newValue in
+                config.captionSaveTranscript = newValue
+                controller?.caption.savesTranscript = newValue
+            }
+        )
+    }
 
     /// 翻訳エンジン（動作中のサービスにも即反映する）
     private var engineBinding: Binding<TranslationEngine> {

@@ -403,6 +403,15 @@ final class CaptionHUDController {
         }
     }
 
+    /// 文字起こしモード（訳さない）の確定文を積む
+    ///
+    /// 訳文の行と同じ扱い（大きい文字）で出したいので `japanese` に本文を入れ、原文は空にする。
+    /// 原文が空なら併記ラベルは出ない（`CaptionLineView` の `showsSecondary` 判定）ので、
+    /// 「翻訳できなかった原文」の小さい表示（`.sourceOnly`）とは見た目が別になる。
+    func showTranscript(_ text: String) {
+        appendConfirmedLine(kind: .confirmed, japanese: text, source: "")
+    }
+
     /// 翻訳できないので原文のみ確定行として積む
     func showSourceOnly(_ text: String) {
         appendConfirmedLine(kind: .sourceOnly, japanese: "", source: text)

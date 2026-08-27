@@ -54,6 +54,13 @@ final class CaptionService {
     private var pipeline: CapturePipeline?
     private var coordinator: TranslationCoordinator?
     private var partialDriver: PartialTranslationDriver?
+    /// 確定文をローカルへ保存する記録係（議事録）
+    private let recorder = TranscriptRecorder()
+
+    /// 記録に残す対象アプリ名（認識コールバックから読むので lock 付きで持つ）
+    ///
+    /// `captureTargetName` はメインスレッド専用の表示用。こちらは音声スレッドから読む写し。
+    private let recordingTarget = OSAllocatedUnfairLock<String?>(initialState: nil)
 
     /// クラウドエンジン選択時に、ライブ行の暫定訳を Apple で出せるか
     ///
@@ -131,6 +138,42 @@ final class CaptionService {
         set {
             CaptionSettings.showSourceText = newValue
             hud.showsSourceText = newValue
+        }
+    }
+
+    /// 字幕の動作モード（翻訳 / 文字起こし）
+    ///
+    /// モードで認識ロケールが変わる（翻訳は英語固定・文字起こしは選んだ言語）ため、
+    /// 動作中に変えたときは認識セッションを張り直す。
+    var mode: CaptionMode {
+        get { CaptionSettings.mode }
+        set {
+            guard newValue != CaptionSettings.mode else { return }
+            CaptionSettings.mode = newValue
+            logger.notice("字幕モード: \(newValue.rawValue, privacy: .public)")
+            restartIfRunning()
+        }
+    }
+
+    /// 文字起こしモードで認識する言語
+    ///
+    /// 認識器はロケールを指定して起動する仕様なので、切り替えたら張り直す。
+    var language: CaptionLanguage {
+        get { CaptionSettings.language }
+        set {
+            guard newValue != CaptionSettings.language else { return }
+            CaptionSettings.language = newValue
+            logger.notice("認識言語: \(newValue.rawValue, privacy: .public)")
+            restartIfRunning()
+        }
+    }
+
+    /// 文字起こしをローカルへ保存するか
+    var savesTranscript: Bool {
+        get { CaptionSettings.savesTranscript }
+        set {
+            CaptionSettings.savesTranscript = newValue
+            logger.notice("議事録の保存: \(newValue ? "ON" : "OFF", privacy: .public)")
         }
     }
 
@@ -228,8 +271,11 @@ final class CaptionService {
         self.partialDriver = partialDriver
 
         captureTargetName = nil
-        let pipeline = CapturePipeline()
+        recordingTarget.withLock { $0 = nil }
+        // 認識ロケールはモードで決まる（翻訳＝英語固定 / 文字起こし＝選んだ言語）
+        let pipeline = CapturePipeline(locale: CaptionSettings.recognitionLocale)
         pipeline.onTargetChanged = { [weak self] name in
+            self?.recordingTarget.withLock { $0 = name }
             DispatchQueue.main.async { self?.captureTargetName = name }
         }
         // 対象の再生開始を待っている間は、無言で固まって見えないよう HUD に出す
@@ -250,13 +296,21 @@ final class CaptionService {
         }
         pipeline.onSegment = { [weak self] segment in
             guard let self else { return }
+            // 文字起こしモードでは翻訳器を一切通さない（訳す時間ぶんの遅れも課金も出さない）
+            let isTranscribing = CaptionSettings.mode == .transcribe
             if segment.isFinal {
-                self.logger.notice("英文（確定）: \(segment.text, privacy: .public)")
+                self.logger.notice("確定: \(segment.text, privacy: .public)")
                 self.latency.noteFinal(audioEndSeconds: segment.range.end.seconds)
-                coordinator.submit(segment.text)
+                // 保存するのは文字起こしだけ（訳文は保存しない）。モードは問わない。
+                self.saveTranscript(segment.text)
+                if isTranscribing {
+                    DispatchQueue.main.async { self.hud.showTranscript(segment.text) }
+                } else {
+                    coordinator.submit(segment.text)
+                }
             } else {
                 self.latency.noteVolatile(audioEndSeconds: segment.range.end.seconds)
-                partialDriver.submit(segment.text)
+                if !isTranscribing { partialDriver.submit(segment.text) }
                 DispatchQueue.main.async { self.hud.showListening(segment.text) }
             }
         }
@@ -293,6 +347,8 @@ final class CaptionService {
         partialDriver?.reset()
         partialDriver = nil
         logger.notice("遅延サマリ: \(self.latency.summaryLine(), privacy: .public)")
+        // 議事録はここで閉じる（次に開始したときは別ファイルになる）
+        recorder.endSession()
         narrator.stop()
         hud.clear()
         // 止めた拍子に待機ピルが戻らなくなるのを塞ぐ。clear() の畳みアニメ完了でも false は
@@ -359,6 +415,33 @@ final class CaptionService {
     }
 
 
+    // MARK: - 議事録
+
+    /// 議事録の保存先フォルダ
+    static var transcriptDirectory: URL { TranscriptRecorder.directory }
+
+    /// 確定文をローカルへ保存する（設定 OFF なら何もしない）
+    private func saveTranscript(_ text: String) {
+        guard CaptionSettings.savesTranscript else { return }
+        recorder.record(
+            text: text,
+            context: recordingTarget.withLock { $0 },
+            language: CaptionSettings.recognitionLanguageName
+        )
+    }
+
+    /// 動作中なら認識セッションを張り直す（モード・言語の変更を反映するため）
+    ///
+    /// タップと Aggregate Device の作り直しは Mac 全体の既定デバイス再評価を誘発するので、
+    /// stop の後片付け（非同期）が終わる時間を置いてから開始する。
+    private func restartIfRunning() {
+        guard state.isActive else { return }
+        stop()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            self?.start()
+        }
+    }
+
     // MARK: - 内部処理
 
     /// 表示順の連番を 1 つ払い出す
@@ -400,6 +483,7 @@ final class CaptionService {
     /// `prepareIfInstalled()` は**未導入なら何もしない**（ダウンロード承認 UI を出さない）ので、
     /// クラウドを選んでいるユーザーに余計なダイアログや通知を出すことがない。
     private func prepareAppleLiveLineIfNeeded() {
+        guard CaptionSettings.mode == .translate else { return }
         guard !Self.usesMockTranslator, CaptionSettings.translationEngine.isCloud else { return }
         guard !appleLiveLineReady.withLock({ $0 }) else { return }
         Task { [weak self] in
@@ -438,6 +522,7 @@ final class CaptionService {
     ///
     /// ダウンロードが要る場合は数十秒〜かかるため、無言で待たせず HUD と状態に出す。
     private func prepareAppleTranslationIfNeeded() {
+        guard CaptionSettings.mode == .translate else { return }
         guard !Self.usesMockTranslator, CaptionSettings.translationEngine == .apple else { return }
         Task { [weak self] in
             guard let self else { return }

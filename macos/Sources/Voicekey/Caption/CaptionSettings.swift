@@ -41,6 +41,47 @@ enum TranslationEngine: String, CaseIterable {
     }
 }
 
+/// 字幕の動作モード
+enum CaptionMode: String, CaseIterable {
+    /// 英語を聞いて日本語に訳して出す（従来のライブ翻訳）
+    case translate
+    /// 聞いた言葉をそのまま出す（翻訳しない・議事録用）
+    case transcribe
+
+    /// メニュー・設定に出す表示名
+    var displayName: String {
+        switch self {
+        case .translate: return "翻訳（英語 → 日本語）"
+        case .transcribe: return "文字起こし（訳さない）"
+        }
+    }
+}
+
+/// 文字起こしモードで認識する言語
+///
+/// Apple の `SpeechTranscriber` は**言語を指定して起動する**仕様で自動判定を持たないため、
+/// ユーザーが選んだ言語で認識セッションを張る（2026-08-28 ユーザー選択）。
+enum CaptionLanguage: String, CaseIterable {
+    case japanese = "ja"
+    case english = "en"
+
+    /// メニュー・設定に出す表示名
+    var displayName: String {
+        switch self {
+        case .japanese: return "日本語"
+        case .english: return "英語"
+        }
+    }
+
+    /// 認識に使うロケール
+    var locale: Locale {
+        switch self {
+        case .japanese: return Locale(identifier: "ja-JP")
+        case .english: return Locale(identifier: "en-US")
+        }
+    }
+}
+
 /// どのアプリの音を拾うか
 enum CaptureScopeMode: String, CaseIterable {
     /// 最前面のアプリだけ（既定。裏で鳴っている音楽を訳さない）
@@ -56,6 +97,9 @@ enum CaptionSettings {
     enum Key {
         static let scope = "captionScope"
         static let engine = "captionEngine"
+        static let mode = "captionMode"
+        static let language = "captionLanguage"
+        static let saveTranscript = "captionSaveTranscript"
         static let geminiModel = "captionGeminiModel"
         static let groqModel = "captionGroqModel"
         static let autoStart = "captionAutoStart"
@@ -126,6 +170,57 @@ enum CaptionSettings {
         return pid
     }
 
+    /// 字幕の動作モード（既定は翻訳＝従来の挙動）
+    static var mode: CaptionMode {
+        get {
+            guard let raw = UserDefaults.standard.string(forKey: Key.mode),
+                  let mode = CaptionMode(rawValue: raw) else { return .translate }
+            return mode
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: Key.mode) }
+    }
+
+    /// 文字起こしモードで認識する言語（既定 日本語）
+    static var language: CaptionLanguage {
+        get {
+            guard let raw = UserDefaults.standard.string(forKey: Key.language),
+                  let language = CaptionLanguage(rawValue: raw) else { return .japanese }
+            return language
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: Key.language) }
+    }
+
+    /// 実際に認識セッションを張るロケール
+    ///
+    /// 翻訳モードは英語 → 日本語の一方向（`AppleTranslator`）なので英語で固定する。
+    /// 文字起こしモードだけユーザーが選んだ言語を使う。
+    static var recognitionLocale: Locale {
+        switch mode {
+        case .translate: return Locale(identifier: "en-US")
+        case .transcribe: return language.locale
+        }
+    }
+
+    /// 認識中の言語の表示名（議事録のヘッダ・メニュー表示に使う）
+    static var recognitionLanguageName: String {
+        switch mode {
+        case .translate: return CaptionLanguage.english.displayName
+        case .transcribe: return language.displayName
+        }
+    }
+
+    /// 文字起こしをローカルへ自動保存するか（既定 ON）
+    ///
+    /// 「字幕が動いている間は常に自動保存」（2026-08-28 ユーザー選択）。保存するのは
+    /// 認識テキストだけで、訳文は保存しない。
+    static var savesTranscript: Bool {
+        get {
+            guard UserDefaults.standard.object(forKey: Key.saveTranscript) != nil else { return true }
+            return UserDefaults.standard.bool(forKey: Key.saveTranscript)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: Key.saveTranscript) }
+    }
+
     /// 使用する翻訳エンジン（既定 Apple）
     ///
     /// 既定をオンデバイスにしているのは、キー設定なしで初回から使えて課金も発生しないため。
@@ -159,15 +254,13 @@ enum CaptionSettings {
         set { storeModelID(newValue, key: Key.groqModel, fallback: defaultGroqModelID) }
     }
 
-    /// 起動と同時に字幕を開始するか（既定 ON）
+    /// 起動と同時に字幕を開始するか（既定 OFF）
     ///
-    /// 「Mac を開いている間ずっと翻訳」（2026-08-10 ユーザー指示）。voicekey 自体が
-    /// ログイン起動するので、これで常時稼働になる。
+    /// 当初は「Mac を開いている間ずっと翻訳」（2026-08-10）で既定 ON だったが、
+    /// **意図しないタイミングで勝手に字幕が出る**のが不便だったため 2026-08-28 に
+    /// ユーザー指示で既定 OFF へ変更した。開始はメニュー／設定からの明示操作で行う。
     static var startsOnLaunch: Bool {
-        get {
-            guard UserDefaults.standard.object(forKey: Key.autoStart) != nil else { return true }
-            return UserDefaults.standard.bool(forKey: Key.autoStart)
-        }
+        get { UserDefaults.standard.bool(forKey: Key.autoStart) }
         set { UserDefaults.standard.set(newValue, forKey: Key.autoStart) }
     }
 
