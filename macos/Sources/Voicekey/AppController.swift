@@ -914,8 +914,7 @@ final class AppController: ObservableObject {
             // 旧 OS に保存値が残っていた場合は nil＝REST 経路でエラー文言を出す。
             guard #available(macOS 26.0, *) else { return nil }
             return LocalSpeechTranscriber(language: language)
-        case .groq, .elevenlabs, .openai, .gemini:
-            // gemini はライブ（WS）が無く REST 1 往復のみ＝ここは nil
+        case .groq, .elevenlabs, .openai:
             return nil
         }
     }

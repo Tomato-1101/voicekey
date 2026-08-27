@@ -139,7 +139,6 @@ final class Transcriber: @unchecked Sendable {
         case .groq: return URL(string: "https://api.groq.com/openai/v1")!
         case .elevenlabs: return URL(string: "https://api.elevenlabs.io/v1")!
         case .deepgram: return URL(string: "https://api.deepgram.com/v1")!
-        case .gemini: return URL(string: "https://generativelanguage.googleapis.com/v1beta")!
         }
     }
 
@@ -171,8 +170,6 @@ final class Transcriber: @unchecked Sendable {
         switch backend {
         case .openai, .openaiLive, .groq, .elevenlabs, .appleLocal: path = "models"
         case .deepgram: path = "projects"
-        // 認証なしでも TLS を張れれば十分（温めるのは接続であってレスポンスではない）
-        case .gemini: path = "models"
         }
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
         setAuth(apiKey, on: &request)
@@ -187,9 +184,6 @@ final class Transcriber: @unchecked Sendable {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         case .elevenlabs:
             request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
-        case .gemini:
-            // Google は Authorization ではなく専用ヘッダでキーを渡す
-            request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
         case .deepgram:
             request.setValue("Token \(apiKey)", forHTTPHeaderField: "Authorization")
         }
@@ -233,8 +227,8 @@ final class Transcriber: @unchecked Sendable {
             case .groq: return try await transcribeGroqViaProxy(samples: samples, serverFormat: serverFormat, presetId: presetId)
             case .elevenlabs: return try await transcribeElevenLabsViaProxy(samples: samples)
             case .deepgram: return try await transcribeDeepgramViaJWT(samples: samples)
-            case .openai, .openaiLive, .appleLocal, .gemini:
-                // 配布版は openai / openaiLive / gemini を提供しない（いずれも personal 限定）。
+            case .openai, .openaiLive, .appleLocal:
+                // 配布版は openai / openaiLive を提供しない（openaiLive は personal 限定）。
                 // appleLocal はここに来ない（冒頭でオンデバイス経路へ分岐済み）。
                 // 開発ビルド（ログイン）では従来どおり直叩きへ委ねる。
                 if EmbeddedKeys.isDist {
@@ -434,8 +428,6 @@ final class Transcriber: @unchecked Sendable {
             return elevenLabsRequest(audio: audio, apiKey: apiKey)
         case .deepgram:
             return deepgramRequest(audio: audio, apiKey: apiKey)
-        case .gemini:
-            return geminiRequest(audio: audio, apiKey: apiKey)
         }
     }
 
@@ -501,104 +493,10 @@ final class Transcriber: @unchecked Sendable {
         return request
     }
 
-    /// Gemini 3.5 Transcribe（Interactions API・文字起こし専用モデル）
-    ///
-    /// 他の 3 社と違いフォームではなく JSON で、音声は base64 にして `data` に載せる
-    /// （小さい音声は Files API へ上げずに 1 往復で済む。実測で 220KB の WAV でも通る）。
-    /// `Api-Revision` ヘッダは Interactions API の必須指定。
-    private func geminiRequest(audio: EncodedAudio, apiKey: String) -> URLRequest {
-        var request = URLRequest(url: baseURL.appendingPathComponent("interactions"))
-        request.httpMethod = "POST"
-        setAuth(apiKey, on: &request)
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(Self.geminiApiRevision, forHTTPHeaderField: "Api-Revision")
-
-        var transcriptionConfig: [String: Any] = [
-            // smart = フィラー除去・句読点付けまでモデル側でやる（音声入力の用途に合う）。
-            // verbatim は言い直しや「えーと」もそのまま出すので使わない。
-            "mode": ["type": "smart"]
-        ]
-        // 言語未指定は自動判定に任せる（85 言語以上を自動で判別する）
-        if !language.isEmpty {
-            transcriptionConfig["language_codes"] = [Self.geminiLanguageCode(language)]
-        }
-        // ユーザー辞書（固有名詞）はモデルへのヒントとして渡せる
-        let vocabulary = Self.customVocabulary(from: prompt)
-        if !vocabulary.isEmpty {
-            transcriptionConfig["custom_vocabulary"] = vocabulary
-        }
-
-        let body: [String: Any] = [
-            "model": restModel,
-            "input": [[
-                "type": "audio",
-                "data": audio.data.base64EncodedString(),
-                "mime_type": audio.contentType,
-            ]],
-            "generation_config": ["transcription_config": transcriptionConfig],
-        ]
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        return request
-    }
-
-    /// Interactions API のリビジョン（Google のドキュメントが指定している固定値）
-    private static let geminiApiRevision = "2026-05-20"
-
-    /// 設定の言語コード（"ja"）を Gemini が期待する BCP-47（"ja-JP"）へ寄せる。
-    /// 既に地域付き（"zh-Hans" など）ならそのまま使う。
-    static func geminiLanguageCode(_ language: String) -> String {
-        let code = language.trimmingCharacters(in: .whitespacesAndNewlines)
-        // 空（自動判定）と、既に地域・スクリプトが付いているものはそのまま
-        guard !code.isEmpty, !code.contains("-") else { return code }
-        switch code {
-        case "ja": return "ja-JP"
-        case "en": return "en-US"
-        case "ko": return "ko-KR"
-        case "zh": return "zh-CN"
-        default: return code
-        }
-    }
-
-    /// ユーザー設定のプロンプトを固有名詞ヒントの配列にする。
-    /// Whisper 系は文章のプロンプトを受けるが、Gemini は語のリストを受けるため、
-    /// 読点・改行区切りの語だけを取り出して渡す（空なら何も送らない）。
-    static func customVocabulary(from prompt: String) -> [String] {
-        prompt
-            .components(separatedBy: CharacterSet(charactersIn: ",、\n"))
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-    }
-
     // MARK: - 応答解析（バックエンド別）
 
     private struct ElevenLabsResponse: Decodable {
         let text: String
-    }
-
-    /// Interactions API の応答（`steps[].content[]` の text 要素をつないだものが本文）
-    private struct GeminiResponse: Decodable {
-        struct Content: Decodable {
-            let type: String
-            let text: String?
-        }
-        struct Step: Decodable {
-            let type: String?
-            let content: [Content]?
-        }
-        let steps: [Step]?
-    }
-
-    /// Gemini の応答から文字起こしテキストを取り出す（純関数・テスト対象）。
-    /// 応答は step が複数返ることがあるので、text 要素をすべて連結する。
-    static func parseGeminiText(_ data: Data) -> String? {
-        guard let parsed = try? JSONDecoder().decode(GeminiResponse.self, from: data),
-              let steps = parsed.steps else { return nil }
-        let text = steps
-            .flatMap { $0.content ?? [] }
-            .filter { $0.type == "text" }
-            .compactMap { $0.text }
-            .joined()
-        return text.isEmpty ? nil : text
     }
 
     private struct DeepgramResponse: Decodable {
@@ -624,11 +522,6 @@ final class Transcriber: @unchecked Sendable {
                 throw TranscriptionError(message: "\(backend.label) API の応答を解析できませんでした")
             }
             return transcript
-        case .gemini:
-            guard let text = Self.parseGeminiText(data) else {
-                throw TranscriptionError(message: "\(backend.label) API の応答を解析できませんでした")
-            }
-            return text
         }
     }
 }

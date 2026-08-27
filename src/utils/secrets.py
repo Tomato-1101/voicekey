@@ -23,7 +23,6 @@ SERVICE_GROQ: str = "voicekey.Groq"
 SERVICE_OPENAI: str = "voicekey.OpenAI"
 SERVICE_ELEVENLABS: str = "voicekey.ElevenLabs"
 SERVICE_DEEPGRAM: str = "voicekey.Deepgram"
-SERVICE_GEMINI: str = "voicekey.Gemini"
 
 # 製品版の認証基盤用エントリ。
 # DeviceId は「端末固有の識別子」（認証子ではない）。台数制限・悪用検知のために使う。

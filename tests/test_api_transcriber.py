@@ -13,7 +13,6 @@ from src.core import api_transcriber
 from src.core.api_transcriber import (
     DeepgramTranscriber,
     ElevenLabsTranscriber,
-    GeminiTranscriber,
     GroqTranscriber,
     OpenAITranscriber,
     TranscriptionError,
@@ -273,83 +272,3 @@ class TestWhisperPrompt(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class TestGeminiTranscriber(unittest.TestCase):
-    """Gemini 3.5 Transcribe（Interactions API）の純ロジック。
-
-    ネットワークは叩かない（課金 API のため）。実機の 1 往復は Mac 側ハーネス
-    `--rest-stt-test <音声> --backend gemini` で手動確認する。
-    Mac 版 GeminiTranscribeTests と同じケースを持たせて両 OS の挙動を揃える。
-    """
-
-    def test_auth_header_uses_google_key_header(self):
-        """Bearer ではなく x-goog-api-key。Api-Revision も必須。"""
-        headers = GeminiTranscriber("gemini-3.5-transcribe")._auth_headers("K")
-        self.assertEqual(headers["x-goog-api-key"], "K")
-        self.assertEqual(headers["Api-Revision"], GeminiTranscriber.API_REVISION)
-        self.assertNotIn("Authorization", headers)
-
-    def test_parses_real_response(self):
-        """実測（2026-08-27）の応答からテキストを取り出せる。"""
-        payload = {
-            "status": "completed",
-            "steps": [{
-                "type": "model_output",
-                "content": [{"type": "text", "text": "明日の午後3時に渋谷駅で打ち合わせをしましょう。"}],
-            }],
-        }
-        self.assertEqual(
-            GeminiTranscriber.parse_text(payload),
-            "明日の午後3時に渋谷駅で打ち合わせをしましょう。",
-        )
-
-    def test_joins_multiple_steps(self):
-        """step が複数に割れても全文を落とさない。"""
-        payload = {"steps": [
-            {"content": [{"type": "text", "text": "前半です。"}]},
-            {"content": [{"type": "text", "text": "後半です。"}]},
-        ]}
-        self.assertEqual(GeminiTranscriber.parse_text(payload), "前半です。後半です。")
-
-    def test_ignores_non_text_content(self):
-        """word_info 等の注釈は本文に混ぜない。"""
-        payload = {"steps": [{"content": [
-            {"type": "word_info", "text": "捨てる"},
-            {"type": "text", "text": "残す"},
-        ]}]}
-        self.assertEqual(GeminiTranscriber.parse_text(payload), "残す")
-
-    def test_parse_text_empty_for_error_payload(self):
-        """解析できない応答は空文字（呼び出し側が日本語エラーにする）。"""
-        self.assertEqual(GeminiTranscriber.parse_text({"error": {"code": 400}}), "")
-        self.assertEqual(GeminiTranscriber.parse_text({}), "")
-
-    def test_language_code_gets_region(self):
-        """設定の言語コードは BCP-47（地域付き）へ寄せる。"""
-        self.assertEqual(GeminiTranscriber.language_code("ja"), "ja-JP")
-        self.assertEqual(GeminiTranscriber.language_code("en"), "en-US")
-        self.assertEqual(GeminiTranscriber.language_code("ko"), "ko-KR")
-
-    def test_language_code_keeps_explicit_region(self):
-        """地域・スクリプト付きと空（自動判定）はそのまま。"""
-        self.assertEqual(GeminiTranscriber.language_code("en-GB"), "en-GB")
-        self.assertEqual(GeminiTranscriber.language_code("zh-Hans"), "zh-Hans")
-        self.assertEqual(GeminiTranscriber.language_code(""), "")
-
-    def test_custom_vocabulary_splits_words(self):
-        """ユーザー辞書は語のリストへ分解して渡す。"""
-        self.assertEqual(
-            GeminiTranscriber.custom_vocabulary("voicekey、Deepgram, 渋谷"),
-            ["voicekey", "Deepgram", "渋谷"],
-        )
-
-    def test_custom_vocabulary_drops_empty(self):
-        """空要素は落とす（空リストなら送らない）。"""
-        self.assertEqual(GeminiTranscriber.custom_vocabulary("  "), [])
-        self.assertEqual(GeminiTranscriber.custom_vocabulary("語, ,,語2"), ["語", "語2"])
-
-    def test_empty_audio_returns_empty(self):
-        """空音声は API を叩かずに空文字。"""
-        empty = np.array([], dtype=np.float32)
-        self.assertEqual(GeminiTranscriber("gemini-3.5-transcribe").transcribe(empty), "")

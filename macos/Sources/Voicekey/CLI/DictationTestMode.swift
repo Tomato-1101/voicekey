@@ -14,9 +14,9 @@
 //    --translate-test <原文>         : 「翻訳して入力」の 1 往復（エンジン・出力言語は設定に従う）
 //        --to <言語コード>           : 出力言語を上書き（既定は設定値）
 //    --rest-stt-test <音声ファイル>  : REST バックエンド（Groq / Gemini 等）の 1 往復
-//        --backend <識別子>          : gemini / groq / elevenlabs / openai / deepgram（既定 gemini）
+//        --backend <識別子>          : groq / elevenlabs / openai / deepgram / apple_local（既定 groq）
 //        --expect "語1,語2"          : 認識テキストに含まれるべき語
-//        **課金 API を叩く**ので手動実行のみ（CI では回さない）
+//        **課金 API を叩く**ので手動実行のみ（CI では回さない。apple_local は無料）
 //
 //  `open` 経由で起動すると標準出力が捨てられるため、`--log-file <path>` を併用する。
 //
@@ -64,7 +64,7 @@ enum DictationTestMode {
             }
         case "--rest-stt-test":
             let path = optionValue("--rest-stt-test", in: arguments) ?? ""
-            let backend = Backend(rawValue: optionValue("--backend", in: arguments) ?? "gemini") ?? .gemini
+            let backend = Backend(rawValue: optionValue("--backend", in: arguments) ?? "groq") ?? .groq
             let expect = (optionValue("--expect", in: arguments) ?? "")
                 .split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty }

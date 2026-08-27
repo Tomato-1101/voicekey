@@ -41,11 +41,6 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
     /// personal 限定の選択肢＝release（製品版）には出さない。
     /// ネットワーク往復も API キーも無い＝原理的にいちばん速い経路。
     case appleLocal = "apple_local"
-    /// Google の文字起こし専用モデル（gemini-3.5-transcribe・2026-08-26 公開プレビュー）。
-    /// personal 限定の選択肢。フィラー除去・自動整形まで込みで返す（＝整形は既定 OFF）。
-    /// **課金 API**（音声 1 分あたり概算 $0.005）。速度は実測で Groq の約 8 倍かかるので、
-    /// 速さではなく「整形込みの精度」を試したいときに選ぶ。
-    case gemini
 
     var id: String { rawValue }
 
@@ -68,8 +63,6 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
         case .openaiLive: return "OpenAI ライブ"
         // personal 限定。ネットワークを使わず Mac の中だけで文字起こしする。
         case .appleLocal: return "ローカル（Apple）"
-        // personal 限定。整形込みで返る Google の文字起こし専用モデル（課金）。
-        case .gemini: return "Gemini 文字起こし"
         }
     }
 
@@ -89,8 +82,8 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
     /// appleLocal は macOS 26 以降の SpeechAnalyzer が要るため、使える環境でだけ選択肢に出す
     /// （古い OS では保存値も decode 時に groq へ移行する＝選べない値が残らない）。
     static var selectableCases: [Backend] {
-        if #available(macOS 26.0, *) { return [.deepgram, .appleLocal, .openaiLive, .groq, .gemini] }
-        return [.deepgram, .openaiLive, .groq, .gemini]
+        if #available(macOS 26.0, *) { return [.deepgram, .appleLocal, .openaiLive, .groq] }
+        return [.deepgram, .openaiLive, .groq]
     }
 
     /// 提供元名（API キー欄でどのキーかを示すためだけに使う。配布版では
@@ -102,7 +95,6 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
         case .elevenlabs: return "ElevenLabs"
         case .deepgram: return "Deepgram"
         case .appleLocal: return "Apple"
-        case .gemini: return "Google"
         }
     }
 
@@ -123,8 +115,6 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
         case .openaiLive: return ["gpt-live-transcribe", "gpt-realtime-whisper"]
         // Apple はモデルを選べない（OS が言語ごとに 1 つ持つ）。表示名として 1 件だけ持つ。
         case .appleLocal: return ["オンデバイス音声認識"]
-        // 文字起こし専用モデル（公開プレビュー）。ほかに選べるモデルは無い
-        case .gemini: return ["gemini-3.5-transcribe"]
         }
     }
 
@@ -139,9 +129,6 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
         switch self {
         // ライブ系（Deepgram / OpenAI ライブ / ローカル）は速度全振りのため既定 OFF
         case .deepgram, .openaiLive, .appleLocal: return false
-        // Gemini はモデル側がフィラー除去・句読点付けまでやる（smart モード）。
-        // 後段の LLM 整形を重ねても遅くなるだけなので既定 OFF。
-        case .gemini: return false
         case .groq, .elevenlabs, .openai: return true
         }
     }

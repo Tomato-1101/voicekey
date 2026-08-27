@@ -43,13 +43,11 @@ class TranscriptionBackend(str, Enum):
         OPENAI: OpenAI GPT-4o Transcribe API（OpenAI 互換 REST）
         ELEVENLABS: ElevenLabs Scribe API（REST、短文高精度）
         DEEPGRAM: Deepgram Listen API（REST + WebSocket ストリーミング、nova-3）
-        GEMINI: Google Gemini 3.5 Transcribe（Interactions API、文字起こし専用モデル）
     """
     GROQ = "groq"
     OPENAI = "openai"
     ELEVENLABS = "elevenlabs"
     DEEPGRAM = "deepgram"
-    GEMINI = "gemini"
 
 
 @dataclass

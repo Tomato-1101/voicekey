@@ -49,9 +49,6 @@ enum Keychain {
         case .deepgram: return "voicekey.Deepgram"
         // ローカル（Apple）はキーを使わない。項目は作らない（apiKey が先に nil を返す）
         case .appleLocal: return "voicekey.AppleLocal"
-        // Gemini は中央 Keychain（GEMINI_API_KEY / account=shared）の 1 本を読むだけで、
-        // アプリ固有の項目は作らない（字幕の Gemini 翻訳と同じ鍵を共有する）
-        case .gemini: return "voicekey.Gemini"
         }
     }
 
@@ -97,7 +94,6 @@ enum Keychain {
         case .deepgram: envVar = "DEEPGRAM_API_KEY"
         // 上の guard で弾かれるためここには来ない（網羅性のためだけの分岐）
         case .appleLocal: envVar = ""
-        case .gemini: envVar = "GEMINI_API_KEY"
         }
         if let env = ProcessInfo.processInfo.environment[envVar], !env.isEmpty {
             return env
