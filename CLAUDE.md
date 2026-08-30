@@ -170,18 +170,21 @@ Mac（`macos/` Swift）と Windows（`src/` Python）の両方を同じ作業で
 - **Meet ボットは Chrome を CDP で動かす**（`Caption/MeetBot/`）。Playwright / Node は同梱しない
   （Chromium ごと数百 MB になるため）。**Meet の DOM 依存は `MeetBotScripts.swift` だけ**に閉じ込め、
   クラス名に頼らず `jsname` / `aria-label` / 表示文字（日英両方）で探す。壊れたらここだけ直す。
-- **恒久要件: 会議の文字起こしは全部ローカル計算で行う**（2026-08-28 ユーザー指示
-  「ミーティング系の文字起こしは全部ローカルの計算で。ローカルのモデルで」）。
-  ボットは**会議音声を Process Tap で拾って Apple のオンデバイス認識**にかける
-  （`CapturePipeline(locale:fixedPID:)` に Chrome の PID を渡す）。音声もテキストも外へ出さない。
-  - 最初の実装は Meet の内蔵字幕（＝ Google 側の認識）を読んでいたが、この指示で差し替えた。
-    **Meet の字幕・クラウド STT へ戻さない**。DOM を読むのは「いま誰が話しているか」＝
-    議事録の話者名を添えるためだけ（`activeSpeakerScript`・取れなければ話者名なしで続行）。
-  - ヘッドレスの Chrome でも音は出る（実測 RMS 0.21 / 156,775 フレーム）。回帰は
+- **ボットの文字起こしは 2 経路あり、設定で選ぶ**（`CaptionSettings.meetTranscriptSource`）。
+  経緯: 2026-08-28 に「ミーティング系の文字起こしは全部ローカルの計算で」と指示されて
+  ローカル認識へ寄せたが、2026-08-31 に「Google Meet にもともとあるのか。じゃあそれにして。やっぱ」で
+  **Meet の内蔵字幕が既定**になった。**どちらの経路も消さない**（ユーザーがここを行き来している）。
+  - `meetCaptions`（既定）: Meet の字幕を読む。**話者名が取れる**のが利点。認識は Google 側。
+    伸びる字幕の確定判定は `CaptionSettleTracker`（純ロジック・回帰テスト済み）。
+  - `localSpeech`: 会議音声を Process Tap（`CapturePipeline(locale:fixedPID:)` に Chrome の PID）で
+    拾って Apple のオンデバイス認識にかける。音声もテキストも外へ出ない。話者名は
+    `activeSpeakerScript` で読めたときだけ添える。
+  - ヘッドレスの Chrome でも音は出る（実測 RMS 0.21 / 156,775 フレーム）。ローカル経路の回帰は
     `--meetbot-audio-test`（音が拾えるか）と `--meetbot-stt-test <音声> --expect <語,…>`
     （ブラウザの音 → ローカル認識まで通しで文字が出るか）。どちらも `[VERDICT] status=ok`。
-- **ボットが記録を始める前にライブ字幕を止める**（`onWillStartRecording`）。同じ Chrome の音を
+- **`localSpeech` で記録を始める前にはライブ字幕を止める**（`onWillStartRecording`）。同じ Chrome の音を
   2 本のタップで拾うと HAL に余計な負荷がかかり、議事録も二重に書かれる。
+  `meetCaptions` は音を拾わないので止めない。
 - ボット用 Chrome は**必ず専用プロファイル**（`~/Library/Application Support/voicekey/meetbot-profile`）。
   普段使いの Chrome を巻き込まない。初回の Google ログインは本人にやってもらう（メニューに導線あり）。
 - 疎通確認は `open -n dist/voicekey.app --args --meetbot-test [URL] --log-file <path>` →

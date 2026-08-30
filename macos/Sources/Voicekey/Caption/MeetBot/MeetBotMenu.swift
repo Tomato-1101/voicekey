@@ -41,6 +41,11 @@ final class MeetBotMenuController: NSObject, NSMenuDelegate {
         let state = NSMenuItem(title: bot.state.menuTitle, action: nil, keyEquivalent: "")
         state.isEnabled = false
         menu.addItem(state)
+        let source = NSMenuItem(
+            title: "文字起こし: \(CaptionSettings.meetTranscriptSource.summary)", action: nil, keyEquivalent: ""
+        )
+        source.isEnabled = false
+        menu.addItem(source)
         menu.addItem(.separator())
 
         if bot.state.isActive {
@@ -54,6 +59,21 @@ final class MeetBotMenuController: NSObject, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
+
+        // 文字起こしの取り方（Meet の字幕 / 端末内認識）。参加中は変えられない。
+        let sourceItem = NSMenuItem(title: "文字起こしの方法", action: nil, keyEquivalent: "")
+        let sourceMenu = NSMenu()
+        for source in MeetTranscriptSource.allCases {
+            let item = NSMenuItem(title: source.displayName, action: #selector(selectSource(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = source.rawValue
+            item.state = CaptionSettings.meetTranscriptSource == source ? .on : .off
+            item.isEnabled = !bot.state.isActive
+            sourceMenu.addItem(item)
+        }
+        sourceItem.submenu = sourceMenu
+        menu.addItem(sourceItem)
+
         let login = NSMenuItem(
             title: "ボット用ブラウザで Google にログイン…", action: #selector(openLogin), keyEquivalent: ""
         )
@@ -77,6 +97,13 @@ final class MeetBotMenuController: NSObject, NSMenuDelegate {
 
     @objc private func leaveMeeting() {
         controller?.meetBot.leave()
+    }
+
+    /// 文字起こしの取り方を選ぶ（次に参加したときから効く）
+    @objc private func selectSource(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let source = MeetTranscriptSource(rawValue: raw) else { return }
+        CaptionSettings.meetTranscriptSource = source
     }
 
     @objc private func openLogin() {

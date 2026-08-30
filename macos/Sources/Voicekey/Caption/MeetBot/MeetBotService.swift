@@ -1,17 +1,17 @@
 /// Google Meet 議事録ボット
 ///
 /// 会議 URL を渡すと、**専用プロファイルの Chrome を裏で起動して会議に参加し**、
-/// その Chrome が鳴らしている会議音声を拾って**この Mac の中だけで文字起こし**して保存する。
+/// 文字起こしを議事録として保存する。
 ///
-/// **文字起こしは全部ローカル計算で行う**（2026-08-28 ユーザー指示）。
-/// 認識は Apple のオンデバイス音声認識（`SpeechTranscriber`）で、音声もテキストも外へ出さない。
-/// 最初の実装では Meet の内蔵字幕（＝ Google 側の認識）を読んでいたが、この指示により
-/// **音声を Process Tap で拾ってローカル認識する方式へ差し替えた**。Meet の DOM を読むのは
-/// 「いま誰が話しているか」を議事録の話者名に添えるためだけで、文字起こしには使わない。
-///
-/// **音声の取り方**: voicekey のシステム音声タップ（`CapturePipeline`）を、ボットが起動した
-/// Chrome の PID に固定して張る。ヘッドレスの Chrome でも音は出ており、実測で
-/// RMS 0.26 / 188,911 フレームを拾えることを確認済み（`--meetbot-audio-test`）。
+/// **文字起こしの取り方は 2 つあり、切り替えられる**（`CaptionSettings.meetTranscriptSource`）:
+/// - `meetCaptions`（**既定**・2026-08-31 ユーザー判断「Google Meet にもともとあるのか。じゃあそれで」）:
+///   Meet の内蔵字幕を読む。**話者名が取れる**のが最大の利点で、Mac 側の音声経路にも触らない。
+///   認識そのものは Google 側で行われる。
+/// - `localSpeech`（2026-08-28 の「全部ローカルで」に対応した経路。残してある）:
+///   Chrome が鳴らしている会議音声を **PID を固定したシステム音声タップ**で拾い、
+///   Apple のオンデバイス認識にかける。音声もテキストも外へ出ないが、話者名は
+///   会議画面から読めたときだけ添える。
+///   ヘッドレスの Chrome でも音は出る（実測 RMS 0.21 / 156,775 フレーム・`--meetbot-audio-test`）。
 ///
 /// **Chrome の使い方**: 普段使いの Chrome とは別の `--user-data-dir` を使う。作業中のタブを
 /// 巻き込まないためと、ボットのログイン状態を分けて持てるようにするため。初回だけは
@@ -73,6 +73,15 @@ final class MeetBotService {
     /// 話者は発話中に何度も入れ替わるので短めに。DOM を 1 回読むだけなので負荷は軽い。
     private static let speakerPollInterval: TimeInterval = 0.8
 
+    /// 字幕を読みにいく間隔
+    ///
+    /// Meet の字幕は書きながら伸びるので、短すぎると同じ文を何度も見ることになる。
+    /// 1 秒あれば伸び方を追える。
+    private static let captionPollInterval: TimeInterval = 1.0
+
+    /// この秒数だけ更新が止まったら、その発言を確定として記録する
+    private static let settleSeconds: TimeInterval = 2.5
+
     /// ボット専用の Chrome プロファイル
     static var profileDirectory: URL {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -83,7 +92,11 @@ final class MeetBotService {
     private var devTools: ChromeDevTools?
     private var pipeline: CapturePipeline?
     private var speakerTimer: Timer?
+    private var captionTimer: Timer?
     private let recorder = TranscriptRecorder()
+
+    /// 字幕の確定判定（Meet 字幕モードでだけ使う）
+    private var settleTracker = CaptionSettleTracker(settleSeconds: MeetBotService.settleSeconds)
 
     /// 記録中の会議名（議事録のヘッダに残す）
     private var meetingName = "Google Meet"
@@ -146,6 +159,8 @@ final class MeetBotService {
     /// 会議から退出して記録を閉じる
     func leave() {
         guard state.isActive else { return }
+        // 見えている途中の発言を取りこぼさないよう、閉じる前に全部書き出す
+        flushPendingCaptions()
         recorder.endSession()
         let tools = devTools
         Task { [weak self] in
@@ -182,6 +197,7 @@ final class MeetBotService {
 
     /// アプリ終了時の後片付け（Chrome を残さない）
     func shutdown() {
+        flushPendingCaptions()
         recorder.endSession()
         teardown()
     }
@@ -229,9 +245,18 @@ final class MeetBotService {
             meetingName = title.replacingOccurrences(of: " - Google Meet", with: "")
         }
 
-        try await startRecognition()
-        state = .recording(meetingName)
-        startSpeakerPolling()
+        switch CaptionSettings.meetTranscriptSource {
+        case .meetCaptions:
+            state = .joining("字幕をオンにしています")
+            _ = try? await tools.evaluate(Self.enableCaptionsScript)
+            try await Task.sleep(for: .seconds(2))
+            state = .recording(meetingName)
+            startCaptionPolling()
+        case .localSpeech:
+            try await startRecognition()
+            state = .recording(meetingName)
+            startSpeakerPolling()
+        }
     }
 
     /// 会議に入れたか（会議画面の要素が出たか）を待つ
@@ -244,6 +269,54 @@ final class MeetBotService {
             try? await Task.sleep(for: .seconds(2))
         }
         return false
+    }
+
+    // MARK: - Meet の内蔵字幕を読む（既定）
+
+    /// 字幕のポーリングを始める
+    private func startCaptionPolling() {
+        captionTimer?.invalidate()
+        let timer = Timer.scheduledTimer(withTimeInterval: Self.captionPollInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in await self?.pollCaptions() }
+        }
+        // 会議中はメニュー操作などで RunLoop のモードが変わるので common に載せる
+        RunLoop.main.add(timer, forMode: .common)
+        captionTimer = timer
+    }
+
+    /// 字幕を 1 回読んで、確定した発言を記録する
+    ///
+    /// 伸びている途中か言い終わったかの判定は `CaptionSettleTracker` に任せる
+    /// （純粋なロジックなのでブラウザ無しで回帰テストできる）。
+    private func pollCaptions() async {
+        guard let tools = devTools, case .recording = state else { return }
+        guard let raw = try? await tools.evaluate(Self.captionScript),
+              let payload = raw as? [String: Any],
+              let rows = payload["entries"] as? [[String: Any]] else { return }
+
+        let entries = rows.map {
+            CaptionSettleTracker.Entry(
+                speaker: ($0["speaker"] as? String) ?? "", text: ($0["text"] as? String) ?? ""
+            )
+        }
+        for line in settleTracker.ingest(entries, now: Date()) { recordCaption(line) }
+    }
+
+    /// 保留中の発言をすべて書き出す（退出時・終了時に取りこぼさないため）
+    private func flushPendingCaptions() {
+        for line in settleTracker.flush() { recordCaption(line) }
+    }
+
+    /// 字幕 1 件を議事録へ書く
+    private func recordCaption(_ line: CaptionSettleTracker.Line) {
+        guard CaptionSettings.savesTranscript else { return }
+        logger.notice("字幕 \(line.speaker ?? "話者不明", privacy: .public): \(line.text, privacy: .public)")
+        recorder.record(
+            text: line.text,
+            speaker: line.speaker,
+            context: "Google Meet / \(meetingName)",
+            language: "会議の字幕"
+        )
     }
 
     // MARK: - ローカル文字起こし
@@ -330,6 +403,9 @@ final class MeetBotService {
     private func teardown() {
         speakerTimer?.invalidate()
         speakerTimer = nil
+        captionTimer?.invalidate()
+        captionTimer = nil
+        _ = settleTracker.flush()
         let pipeline = self.pipeline
         self.pipeline = nil
         devTools?.close()

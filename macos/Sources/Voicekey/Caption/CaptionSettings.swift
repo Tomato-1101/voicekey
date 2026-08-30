@@ -82,6 +82,35 @@ enum CaptionLanguage: String, CaseIterable {
     }
 }
 
+/// Meet 議事録ボットが文字起こしをどこから取るか
+///
+/// 2026-08-28 にローカル認識へ寄せたあと、2026-08-31 にユーザーが
+/// 「Google Meet にもともと（字幕が）あるのか。じゃあそれにして」と判断したため、
+/// **Meet の内蔵字幕を既定**に戻した。ローカル認識も残してあるので、外に音を出したくないときは
+/// メニューから切り替えられる。
+enum MeetTranscriptSource: String, CaseIterable {
+    /// Meet の内蔵字幕を読む（話者名つき・認識は Google 側）
+    case meetCaptions
+    /// 会議音声を端末内で認識する（音声もテキストも外へ出さない）
+    case localSpeech
+
+    /// メニュー・設定に出す表示名
+    var displayName: String {
+        switch self {
+        case .meetCaptions: return "Meet の字幕を使う（話者名つき）"
+        case .localSpeech: return "端末内で文字起こし（Apple・外に出さない）"
+        }
+    }
+
+    /// 状態表示に出す短い説明
+    var summary: String {
+        switch self {
+        case .meetCaptions: return "Meet の字幕"
+        case .localSpeech: return "端末内（Apple）"
+        }
+    }
+}
+
 /// どのアプリの音を拾うか
 enum CaptureScopeMode: String, CaseIterable {
     /// 最前面のアプリだけ（既定。裏で鳴っている音楽を訳さない）
@@ -100,6 +129,7 @@ enum CaptionSettings {
         static let mode = "captionMode"
         static let language = "captionLanguage"
         static let saveTranscript = "captionSaveTranscript"
+        static let meetSource = "meetBotTranscriptSource"
         static let geminiModel = "captionGeminiModel"
         static let groqModel = "captionGroqModel"
         static let autoStart = "captionAutoStart"
@@ -219,6 +249,16 @@ enum CaptionSettings {
             return UserDefaults.standard.bool(forKey: Key.saveTranscript)
         }
         set { UserDefaults.standard.set(newValue, forKey: Key.saveTranscript) }
+    }
+
+    /// Meet ボットの文字起こしの取得元（既定は Meet の内蔵字幕）
+    static var meetTranscriptSource: MeetTranscriptSource {
+        get {
+            guard let raw = UserDefaults.standard.string(forKey: Key.meetSource),
+                  let source = MeetTranscriptSource(rawValue: raw) else { return .meetCaptions }
+            return source
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: Key.meetSource) }
     }
 
     /// 使用する翻訳エンジン（既定 Apple）

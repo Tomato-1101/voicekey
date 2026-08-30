@@ -88,6 +88,67 @@ extension MeetBotService {
         })()
         """
 
+    /// 字幕をオンにする
+    ///
+    /// 既に ON のときに押して OFF にしてしまわないよう、**「オンにする」意味のラベルだけ**を押す。
+    static let enableCaptionsScript = """
+        (() => {
+            \(helpers)
+            const target = buttons().find((b) => {
+                const text = label(b);
+                if (!/字幕|caption|subtitle/i.test(text)) return false;
+                return /オンにする|turn on|有効/i.test(text);
+            });
+            if (target) { target.click(); return 'clicked'; }
+            // ラベルで見つからないときはキーボードショートカット（c）に頼る
+            document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', bubbles: true }));
+            return 'shortcut';
+        })()
+        """
+
+    /// いま画面に出ている字幕を話者名つきで取り出す
+    ///
+    /// Meet の字幕本文は `jsname="tgaKEf"` の要素に入る（複数の実装で長く使われている手掛かり）。
+    /// 話者名は同じブロックの中にある短いテキストか、参加者アイコンの `alt`。
+    /// どちらも取れないときは、字幕領域（aria-label に「字幕」/Captions）の生テキストで代替する。
+    static let captionScript = """
+        (() => {
+            const clean = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+            const bodies = [...document.querySelectorAll('[jsname="tgaKEf"]')];
+            if (bodies.length) {
+                const entries = bodies.map((body) => {
+                    let block = body.parentElement;
+                    for (let i = 0; i < 3 && block; i++) {
+                        if (block.querySelector('img[alt]') || block.children.length > 1) break;
+                        block = block.parentElement;
+                    }
+                    let speaker = '';
+                    if (block) {
+                        const image = block.querySelector('img[alt]');
+                        if (image) speaker = clean(image.getAttribute('alt'));
+                        if (!speaker) {
+                            const candidate = [...block.children]
+                                .map((el) => clean(el.innerText))
+                                .find((t) => t && t.length <= 40 && t !== clean(body.innerText));
+                            speaker = candidate || '';
+                        }
+                    }
+                    return { speaker, text: clean(body.innerText) };
+                }).filter((e) => e.text);
+                return { found: true, source: 'jsname', entries };
+            }
+
+            const region = [...document.querySelectorAll('[aria-label],[jsname]')].find((el) => {
+                const text = el.getAttribute('aria-label') || '';
+                return /字幕|captions/i.test(text) && el.innerText && el.offsetParent;
+            });
+            if (region) {
+                return { found: true, source: 'region', entries: [{ speaker: '', text: clean(region.innerText) }] };
+            }
+            return { found: false, entries: [] };
+        })()
+        """
+
     /// いま話している参加者の名前を返す（取れなければ null）
     ///
     /// **文字起こしには使わない**。文字起こしはこの Mac の中で（Apple のオンデバイス認識で）
