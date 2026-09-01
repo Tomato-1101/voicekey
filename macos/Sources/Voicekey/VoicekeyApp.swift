@@ -109,6 +109,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 行動ログの最初の 1 行。ここから次の起動行までが 1 セッション分の記録になる
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        ActionLog.shared.write("main", "アプリ起動 (version=\(version))")
+
         // 外観は OS に追従させる（ライト/ダーク双方に自然に馴染む）。以前 personal を .aqua で
         // ライト固定していたが、ダーク環境で HUD の浮遊ガラス（Liquid Glass）まで白くなり
         // 「前のデザインが白くなった」と指摘されたため撤去した（ユーザー指示・2026-07-17）。
@@ -286,7 +290,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        ActionLog.shared.write("main", "アプリ終了")
         controller?.shutdown()
+        // 終了行を書き切ってからプロセスを終える（ここだけは待ってよい）
+        ActionLog.shared.flush()
     }
 }
 

@@ -79,6 +79,7 @@ final class LocalSpeechTranscriber: LiveTranscribing, @unchecked Sendable {
     ///
     /// - Returns: 常に true（開始できたかは finish() の結果で分かる）
     func start() -> Bool {
+        ActionLog.shared.write("localstt", "ローカル音声認識 開始 (locale=\(locale.identifier))")
         prepareTask = Task { [weak self] in
             guard let self else { return }
             let recognizer = SpeechRecognizer(locale: self.locale)
@@ -89,6 +90,7 @@ final class LocalSpeechTranscriber: LiveTranscribing, @unchecked Sendable {
                 self.attach(recognizer: recognizer, format: format)
             } catch {
                 log.error("ローカル音声認識を開始できません: \(String(describing: error), privacy: .public)")
+                ActionLog.shared.write("localstt", "ローカル音声認識 開始失敗: \(String(describing: error))")
             }
         }
         return true
@@ -112,14 +114,17 @@ final class LocalSpeechTranscriber: LiveTranscribing, @unchecked Sendable {
         await consumeTask?.value
 
         let text = TextNormalize.stripCJKSpaces(currentText())
+        let elapsedMs = Int(Date().timeIntervalSince(self.createdAt) * 1000)
         log.notice(
-            "ローカル音声認識 確定まで \(Int(Date().timeIntervalSince(self.createdAt) * 1000), privacy: .public)ms / \(text.count, privacy: .public) 文字"
+            "ローカル音声認識 確定まで \(elapsedMs, privacy: .public)ms / \(text.count, privacy: .public) 文字"
         )
+        ActionLog.shared.write("localstt", "ローカル音声認識 確定 \(text.count) 文字 \(elapsedMs)ms")
         return text
     }
 
     /// 結果を使わずに破棄する（録音破棄時など）
     func cancel() {
+        ActionLog.shared.write("localstt", "ローカル音声認識 終了（結果を破棄）")
         let session = takeRecognizer(markCancelled: true)
         consumeTask?.cancel()
         Task { await session?.finish() }

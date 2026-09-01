@@ -103,6 +103,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | 翻訳して入力（personal のみ） | `Core/DictationTranslator.swift`（設定 `DictationTranslation` ＋ Apple/Groq 翻訳） / `AppController.swift`（貼り付け直前の 1 回適用） / `UI/SettingsView.swift`（「翻訳して入力」タブ） | — （Mac 専用） |
 | OS 権限 | `AppController.swift`（マイク/入力監視/アクセシビリティ） | — （Windows は OS ゲートなし） |
 | OS 抽象化 / ログイン起動 / ログ | ネイティブ API 直 | `platform/` / `utils/autostart.py` / `utils/logger.py` |
+| 行動ログ（操作と状態遷移の記録・14 日で自動削除） | `Core/ActionLog.swift`（`~/Library/Logs/voicekey/voicekey-YYYY-MM-DD.log`） | `utils/logger.py`（日付ローテート・`%LOCALAPPDATA%\voicekey\logs\app.log`） |
 
 ## 6. 配布構成（要点のみ・詳細は HANDOFF.md）
 

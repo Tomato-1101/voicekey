@@ -207,6 +207,7 @@ final class CaptionService {
             logger.notice("VOICEKEY_CAPTION_DISABLE=1 のため字幕を開始しません")
             return
         }
+        ActionLog.shared.write("caption.CaptionService", "ライブ字幕を開始 (mode=\(CaptionSettings.mode.rawValue))")
         state = .preparing("音声認識モデルを確認中…")
         // 一度でも開始したら、次回起動からは設定に従って自動開始してよい
         // （初回はシステム音声録音の許可ダイアログが出るので自動開始しない）
@@ -339,6 +340,7 @@ final class CaptionService {
     /// 字幕を停止する
     func stop() {
         guard state.isActive else { return }
+        ActionLog.shared.write("caption.CaptionService", "ライブ字幕を停止")
         let pipeline = self.pipeline
         self.pipeline = nil
         coordinator?.flush()

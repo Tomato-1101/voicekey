@@ -79,6 +79,7 @@ final class HotkeyMonitor {
                 if !CGEvent.tapIsEnabled(tap: tap) {
                     CGEvent.tapEnable(tap: tap, enable: true)
                     log.warning("ウォッチドッグ: 無効化されたイベントタップを再有効化しました")
+                    ActionLog.shared.write("hotkey", "ウォッチドッグ発火: イベントタップを再有効化")
                 }
             }
             CFRunLoopAddTimer(CFRunLoopGetCurrent(), timer, .commonModes)
@@ -91,6 +92,7 @@ final class HotkeyMonitor {
         thread.start()
         self.thread = thread
         log.info("ホットキー監視を開始しました")
+        ActionLog.shared.write("hotkey", "ホットキー監視を開始")
         return true
     }
 
@@ -140,6 +142,7 @@ final class HotkeyMonitor {
                 CGEvent.tapEnable(tap: tap, enable: true)
                 let reason = type == .tapDisabledByTimeout ? "timeout" : "userInput"
                 log.warning("イベントタップが無効化されたため再有効化しました (理由: \(reason, privacy: .public))")
+                ActionLog.shared.write("hotkey", "イベントタップ無効化を検知し再有効化 (理由=\(reason))")
             }
 
         case .flagsChanged:

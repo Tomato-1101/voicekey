@@ -769,6 +769,10 @@ class VoicekeyApp(QObject):
                             and self._last_release_slot == slot_id
                             and now - self._last_release_time < _DOUBLE_TAP_SEC
                         )
+                        logger.info(
+                            f"ホットキー押下 slot={slot_id} mode={effective_mode} "
+                            f"auto_enter={auto_enter}"
+                        )
                         self._begin_recording(slot_id, auto_enter, effective_mode)
                         break
             else:
@@ -777,6 +781,7 @@ class VoicekeyApp(QObject):
                     return
                 # toggle 実効モード: 録音中の再押下で停止（ハンズフリー切替キー併用での起動も含む）
                 if self._recording_effective_mode == HotkeyMode.TOGGLE.value:
+                    logger.info(f"ホットキー押下 slot={recording_slot} mode=toggle 録音停止")
                     self._finish_recording()
                 # hold 実効モード: 短いタップ後の待機中に再押下されたらダブルタップ確定。
                 # 録音は 1 打目から止めていないため、タップ中・タップ間の音声も残っている
@@ -817,6 +822,10 @@ class VoicekeyApp(QObject):
                 return
 
             if key_str is not None and self._key_in_slot(key_str, slot):
+                logger.info(
+                    f"ホットキー離鍵 slot={recording_slot} mode=hold "
+                    f"auto_enter={self._auto_enter}"
+                )
                 # ダブルタップ確定後（auto_enter）の離鍵は 2 打目の待ち窓に入れず即停止する。
                 # ここで再び _DOUBLE_TAP_SEC 待つと、短い録音でも Enter 自動送信が 0.4 秒遅れていた
                 if self._auto_enter:
@@ -915,6 +924,9 @@ class VoicekeyApp(QObject):
     def _on_record_started(self, ok: bool) -> None:
         """録音開始の結果（AudioControl スレッド上で呼ばれる）。"""
         if ok:
+            # 「開始要求は出したが完了しなかった」を後からログだけで見分けられるよう、
+            # 要求（_begin_recording）と対で完了も残す
+            logger.info("録音開始完了")
             return
         logger.warning("録音を開始できませんでした")
         # 開始失敗時は、この録音セッションのストリーミング接続・送出フックも確実に破棄する。
@@ -1028,6 +1040,10 @@ class VoicekeyApp(QObject):
         # --- ストリーミング経路: Deepgram の確定テキストを受け取って貼り付け ---
         streamer = task.streamer
         if streamer is not None:
+            logger.info(
+                f"文字起こし要求 経路=streaming backend={ctx.slot.backend} "
+                f"model={ctx.slot.api_model} 音声={len(task.audio_data) / SAMPLE_RATE:.2f}s"
+            )
             try:
                 streamed = streamer.finish()
             except Exception as e:
@@ -1079,6 +1095,10 @@ class VoicekeyApp(QObject):
                 # 一部セグメントの失敗（429 等）→ 全体 1 本送信にフォールバック（部分欠落を防ぐ）。
                 # 全体 1 本＝単発送信なのでサーバー統合整形を効かせる（Mac の分割失敗フォールバックと対）。
                 logger.warning("分割送信に失敗したため全体送信にフォールバックします")
+                logger.info(
+                    f"文字起こし要求 経路=rest(全体) backend={slot.backend} "
+                    f"model={slot.api_model} 音声={len(audio) / SAMPLE_RATE:.2f}s"
+                )
                 text = slot.transcriber.transcribe(audio, server_format=ctx.server_format)
                 did_server_format = ctx.server_format
         else:
@@ -1100,6 +1120,10 @@ class VoicekeyApp(QObject):
                     audio = condensed
                 logger.info(f"VAD 処理: {(time.perf_counter() - vad_start) * 1000:.0f}ms")
 
+            logger.info(
+                f"文字起こし要求 経路=rest backend={slot.backend} "
+                f"model={slot.api_model} 音声={len(audio) / SAMPLE_RATE:.2f}s"
+            )
             text = slot.transcriber.transcribe(audio, server_format=ctx.server_format)
             did_server_format = ctx.server_format
         if not text:
@@ -1227,7 +1251,10 @@ class VoicekeyApp(QObject):
         text = self._apply_replacements(text)
         # 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する
         self._history.add(text)
-        self._input_handler.insert_text(text)
+        # 本文は残さない（文字数だけ）。「貼り付けたのに入らない」を切り分けるため対で記録する
+        logger.info(f"貼り付け実行 ({len(text)} 文字)")
+        pasted = self._input_handler.insert_text(text)
+        logger.info(f"貼り付け完了 (成功={pasted})")
         if auto_enter:
             delay_ms = self._config.get("auto_enter_delay_ms", 50)
             time.sleep(max(0, delay_ms) / 1000.0)
@@ -1251,6 +1278,9 @@ class VoicekeyApp(QObject):
             else:
                 state = "idle"
                 hands_free = False
+        # HUD・トレイへ流す状態をそのまま残す（画面が固まったときに
+        # 「どの状態で止まったか」をログだけで追えるようにする）
+        logger.info(f"UI 状態: {state} (hands_free={hands_free})")
         # 着色情報を先に届けてから状態を切り替える（set_state の再描画時に色が確定しているように）
         self.hands_free_changed.emit(hands_free)
         self.status_changed.emit(state)

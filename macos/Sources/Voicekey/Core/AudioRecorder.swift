@@ -163,6 +163,7 @@ final class AudioRecorder {
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
         ) { [weak self] _ in
             // 通知は任意スレッドで届く。エンジン操作を直列化する queue 上で処理する
+            ActionLog.shared.write("audio", "オーディオ構成変更通知を受信")
             self?.queue.async { self?.handleConfigurationChange() }
         }
     }
@@ -190,18 +191,22 @@ final class AudioRecorder {
         if recentRestarts >= 3 {
             recording = false
             log.warning("オーディオ構成変更が頻発し録音を継続できません")
+            ActionLog.shared.write("audio", "構成変更が頻発したため録音を確定 (再構成 \(recentRestarts) 回)")
             deviceChangedHandler?()
             return
         }
         recentRestarts += 1
+        ActionLog.shared.write("audio", "構成変更でエンジンが停止したため再構成します (\(recentRestarts) 回目)")
 
         if installTapAndStart() == nil {
             log.info("構成変更で停止したエンジンを再開しました（録音継続）")
+            ActionLog.shared.write("audio", "再構成に成功し録音を継続")
             return
         }
         // 本当にデバイスが使えない（切断等）
         recording = false
         log.warning("録音中にオーディオ構成が変化し復帰できませんでした")
+        ActionLog.shared.write("audio", "再構成に失敗したため録音を確定")
         deviceChangedHandler?()
     }
 
@@ -246,6 +251,7 @@ final class AudioRecorder {
             if appliedDeviceUID == "", appliedDefaultID == defaultID { return }
             do {
                 try input.auAudioUnit.setDeviceID(defaultID)
+                ActionLog.shared.write("audio", "既定入力デバイスを適用 (id=\(defaultID))")
                 appliedDeviceUID = ""
                 appliedDefaultID = defaultID
             } catch {
@@ -259,6 +265,7 @@ final class AudioRecorder {
         if let deviceID = AudioDevices.deviceID(forUID: uid) {
             do {
                 try input.auAudioUnit.setDeviceID(deviceID)
+                ActionLog.shared.write("audio", "入力デバイスを切り替え (uid=\(uid))")
                 appliedDeviceUID = uid
             } catch {
                 appliedDeviceUID = nil
@@ -277,6 +284,10 @@ final class AudioRecorder {
 
     /// 録音を開始する（即座に返る。結果はコールバック。nil=成功、非 nil=失敗理由）
     func start(completion: @escaping (StartFailure?) -> Void) {
+        // 行動ログは **queue へ投げる前** に書く。audio-control キューが詰まると
+        // 以下の async は一生実行されないので、ここで残さないと「要求したのに完了しない」
+        // という形跡そのものが残らない（2026-09-02 のハング障害で実際に追えなかった）
+        ActionLog.shared.write("audio", "録音開始要求 (device=\(inputDeviceUID.isEmpty ? "既定" : inputDeviceUID))")
         queue.async { [self] in
             guard !recording else {
                 completion(nil)
@@ -291,6 +302,7 @@ final class AudioRecorder {
             applyInputDevice()
 
             if let failure = installTapAndStart() {
+                ActionLog.shared.write("audio", "録音開始失敗 (\(failure))")
                 completion(failure)
             } else {
                 // この物理録音が受理するストリーミング世代を確定する（recording=true より前）。
@@ -299,6 +311,7 @@ final class AudioRecorder {
                 stateLock.lock(); _activeChunkGen = _chunkGen; stateLock.unlock()
                 recording = true
                 bufferAvailability.markAvailable()  // この録音の buffer を取り出し可能にする（#20）
+                ActionLog.shared.write("audio", "録音開始完了")
                 completion(nil)
             }
         }
@@ -338,6 +351,13 @@ final class AudioRecorder {
             engine.prepare()
             try engine.start()
             log.info("録音開始 (HW: \(Int(hwFormat.sampleRate))Hz \(hwFormat.channelCount)ch)")
+            // デバイスは名前ではなく UID で残す。名前の取得は HAL への追加問い合わせになり、
+            // ここは「HAL が詰まると止まる」まさにその経路なので、記録のために叩かない
+            ActionLog.shared.write(
+                "audio",
+                "タップ設置・エンジン開始 (device=\(appliedDeviceUID?.isEmpty == false ? appliedDeviceUID! : "既定"), "
+                    + "\(Int(hwFormat.sampleRate))Hz \(hwFormat.channelCount)ch)"
+            )
             return nil
         } catch {
             // デバイス起因の失敗に備えて次回はデバイスを解決し直す
@@ -350,6 +370,8 @@ final class AudioRecorder {
 
     /// 録音を停止し、確定した音声データを返す（即座に返る。結果はコールバック）
     func stop(completion: @escaping ([Float]) -> Void) {
+        // 開始と同じ理由で queue へ投げる前に書く（キューが詰まると停止も完了しない）
+        ActionLog.shared.write("audio", "録音停止要求")
         queue.async { [self] in
             // 録音中でなくても、デバイス切断で録音が確定済み（recording=false）の場合は
             // それまでに録音済みの buffer を一度だけ取り出す（#20）。二度目以降は空を返す。
@@ -367,6 +389,10 @@ final class AudioRecorder {
             samplesLock.unlock()
 
             log.info("録音停止 (samples=\(result.count), duration=\(String(format: "%.2f", Double(result.count) / Self.sampleRate))s)")
+            ActionLog.shared.write(
+                "audio",
+                "録音停止 (\(String(format: "%.2f", Double(result.count) / Self.sampleRate))s)"
+            )
             completion(result)
 
             // 停止直後にエンジンのリソースを確保し直しておく（completion 後に行うので
@@ -406,6 +432,18 @@ final class AudioRecorder {
             log.info("マイクモニタリングを停止しました")
             completion?()
         }
+    }
+
+    /// 制御キュー（`com.voicekey.audio-control`）が動いているか確かめる ping。
+    ///
+    /// HAL 呼び出しが無期限ブロックするとこの直列キューごと詰まり、以後の録音が全部止まる。
+    /// 詰まりを検知したあとに「復帰したか」を知るために使う。ブロックを 1 つ積むだけで
+    /// **待たない**（呼び出し側は即座に返る）。詰まっている間 completion は呼ばれず、
+    /// キューが動き出した瞬間に呼ばれる＝それが復帰の証拠になる。
+    ///
+    /// - Parameter completion: キューが動いたときに呼ばれる（制御キューのスレッド上）
+    func ping(_ completion: @escaping () -> Void) {
+        queue.async { completion() }
     }
 
     /// マイク使用許可を要求する（初回はシステムダイアログが出る）

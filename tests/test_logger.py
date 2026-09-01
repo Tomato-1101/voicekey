@@ -10,6 +10,7 @@ logging はプロセス全体で共有のため、各テストでルートロガ
 """
 
 import logging
+import logging.handlers
 import os
 import tempfile
 import unittest
@@ -107,6 +108,60 @@ class TestLogPathResolution(_LoggerTestBase):
             h for h in root.handlers if isinstance(h, logging.FileHandler)
         ]
         self.assertEqual(file_handlers, [])
+
+
+class TestLogRotation(_LoggerTestBase):
+    """日付ローテートと古いログの自動削除（行動ログの保持方針）。"""
+
+    def _setup_in(self, tmp: str) -> logging.handlers.TimedRotatingFileHandler:
+        """一時ディレクトリへロガーを設定し、ファイルハンドラーを返す。"""
+        with mock.patch.object(
+            logger_module, "default_log_dir", return_value=Path(tmp)
+        ):
+            logger_module.setup_logger(log_file="app.log")
+        root = logging.getLogger()
+        handlers = [
+            h
+            for h in root.handlers
+            if isinstance(h, logging.handlers.TimedRotatingFileHandler)
+        ]
+        self.assertEqual(len(handlers), 1)
+        return handlers[0]
+
+    def test_uses_daily_rotation_with_14_backups(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            handler = self._setup_in(tmp)
+            self.assertEqual(handler.when, "MIDNIGHT")
+            self.assertEqual(handler.backupCount, logger_module.LOG_RETENTION_DAYS)
+            self.assertEqual(handler.backupCount, 14)
+            self.assertEqual(handler.encoding, "utf-8")
+
+    def test_does_not_truncate_existing_log_on_startup(self):
+        # 起動のたびに上書きしていると障害直前の行動が消える（追記であること）
+        with tempfile.TemporaryDirectory() as tmp:
+            existing = Path(tmp) / "app.log"
+            existing.write_text("前回の起動で書いた行\n", encoding="utf-8")
+            self._setup_in(tmp)
+            logging.getLogger("test").info("今回の行")
+            self.assertIn("前回の起動で書いた行", existing.read_text(encoding="utf-8"))
+
+    def test_rotation_deletes_files_beyond_retention(self):
+        # 15 日分たまっていたら、いちばん古い 1 件がローテート時の削除対象になる
+        with tempfile.TemporaryDirectory() as tmp:
+            handler = self._setup_in(tmp)
+            for day in range(1, 16):
+                (Path(tmp) / f"app.log.2026-08-{day:02d}").write_text("x", encoding="utf-8")
+            doomed = handler.getFilesToDelete()
+            self.assertEqual(
+                [Path(p).name for p in doomed], ["app.log.2026-08-01"]
+            )
+
+    def test_rotation_keeps_files_within_retention(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            handler = self._setup_in(tmp)
+            for day in range(1, 15):
+                (Path(tmp) / f"app.log.2026-08-{day:02d}").write_text("x", encoding="utf-8")
+            self.assertEqual(handler.getFilesToDelete(), [])
 
 
 class TestDefaultLogDir(_LoggerTestBase):

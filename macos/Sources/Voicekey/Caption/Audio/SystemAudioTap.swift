@@ -389,6 +389,7 @@ final class SystemAudioTap: @unchecked Sendable {
     private func rebuild(reason: String) {
         dispatchPrecondition(condition: .onQueue(controlQueue))
         logger.notice("タップを再構成します 理由=\(reason, privacy: .public)")
+        ActionLog.shared.write("caption.SystemAudioTap", "タップを再構成 理由=\(reason)")
         rebuildCounter.withLock { $0 += 1 }
         teardownResources()
         running = false

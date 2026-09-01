@@ -140,6 +140,10 @@ final class MeetBotService {
             return
         }
         meetingName = Self.meetingCode(from: url) ?? "Google Meet"
+        ActionLog.shared.write(
+            "caption.MeetBot",
+            "Meet ボット開始 (会議=\(meetingName), 文字起こし=\(CaptionSettings.meetTranscriptSource.rawValue))"
+        )
         state = .launching
         beginAntiNap()
 
@@ -150,6 +154,7 @@ final class MeetBotService {
             } catch {
                 let message = (error as? CustomStringConvertible)?.description ?? String(describing: error)
                 self.logger.error("会議への参加に失敗: \(message, privacy: .public)")
+                ActionLog.shared.write("caption.MeetBot", "Meet ボット参加失敗: \(message)")
                 self.teardown()
                 self.state = .failed(message)
             }
@@ -159,6 +164,7 @@ final class MeetBotService {
     /// 会議から退出して記録を閉じる
     func leave() {
         guard state.isActive else { return }
+        ActionLog.shared.write("caption.MeetBot", "Meet ボット終了（退出）")
         // 見えている途中の発言を取りこぼさないよう、閉じる前に全部書き出す
         flushPendingCaptions()
         recorder.endSession()
@@ -197,6 +203,9 @@ final class MeetBotService {
 
     /// アプリ終了時の後片付け（Chrome を残さない）
     func shutdown() {
+        if state.isActive {
+            ActionLog.shared.write("caption.MeetBot", "Meet ボット終了（アプリ終了）")
+        }
         flushPendingCaptions()
         recorder.endSession()
         teardown()

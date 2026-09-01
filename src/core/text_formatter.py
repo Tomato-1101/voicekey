@@ -154,13 +154,16 @@ def format_text(text: str, model: str, prompt: str = "") -> str:
     # 空白のみなら整形する意味がない（API を呼ばない）
     if not text.strip():
         return text
+    logger.info(f"テキスト整形開始: {len(text)} 文字 model={model}")
 
     # 製品版（ログイン済み）はサーバープロキシ経由で整形する（モデル/プロンプトは
     # サーバー固定。Groq は短命キー非対応のためプロキシ）。失敗は原文フォールバック
     # ＝整形は「おまけ」であり発話を絶対に失わない（並存ガード）。
     if backend_client.is_logged_in():
         try:
-            return backend_client.format_text(text)
+            formatted = backend_client.format_text(text)
+            logger.info(f"テキスト整形完了（サーバー）: {len(formatted)} 文字")
+            return formatted
         except backend_client.BackendError as e:
             logger.warning(f"サーバー整形に失敗、原文を使用: {e}")
             return text

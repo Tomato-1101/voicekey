@@ -108,6 +108,25 @@ final class AppController: ObservableObject {
     /// 文字起こしパイプラインの直列化チェーン。
     /// 連続録音時も「録音順にテキストが挿入される」ことを保証する
     private var pipelineTail: Task<Void, Never>?
+    /// pipelineTail が担当している録音世代（ハングで打ち切るとき、チェーンの末尾が
+    /// その世代なら鎖を切って次の録音を巻き添えにしない）
+    private var pipelineTailGeneration = 0
+
+    // --- ハング対策（2026-09-02 の「変換中で固まる」障害の恒久対策）---
+    /// 録音開始が返ってこないことを見張るタイマー（**メイン側で走る**。
+    /// 詰まり得る audio-control キューに置くと、見張り役ごと道連れになる）
+    private var recordStartWatchdog: Task<Void, Never>?
+    /// 開始完了をまだ受け取っていない録音世代（受け取ったら nil）。
+    /// **録音中かどうかとは別に持つ**: 短いタップだと開始完了より先に離鍵が来るので、
+    /// recordingSlot を見て判断するとキューの詰まりを取り逃がす
+    private var pendingStartGeneration: Int?
+    /// 文字起こしが返ってこないことを見張るタイマー（録音世代ごと）
+    private var transcribeWatchdogs: [Int: Task<Void, Never>] = [:]
+    /// ウォッチドッグで打ち切った世代。遅れて届いた結果はここと突き合わせて捨てる
+    private var abandonedSessions = AbandonedSessions()
+    /// audio-control キューが詰まっていると判断している間 true。
+    /// 死んだキューに録音要求を積み増さないためのゲート（ping の実行で解除する）
+    private var audioQueueStalled = false
 
     private var configObservation: Any?
 
@@ -145,6 +164,7 @@ final class AppController: ObservableObject {
             // objectWillChange は変更「前」に発火するため次のループで反映する
             DispatchQueue.main.async {
                 guard let self else { return }
+                ActionLog.shared.write("app", "設定変更を反映（トランスクライバ再構築）")
                 self.rebuildTranscribers()
                 self.hud.enabled = self.config.hudEnabled
                 // ピル常時表示トグルの変更を即時反映（待機中なら idle 分岐を再評価する）
@@ -160,6 +180,7 @@ final class AppController: ObservableObject {
         hud.alwaysVisible = config.hudAlwaysVisible
         // 音声入力中（録音・変換中・通知）はライブ字幕を隠す。字幕を一度も使っていなければ何もしない。
         hud.model.onModeChanged = { [weak self] mode in
+            ActionLog.shared.write("app", "HUD 表示: \(Self.hudModeLabel(mode))")
             self?.applyCaptionVisibility(for: mode)
         }
         // 起動時に常時表示 ON なら待機ピルを出す（state は初期値 idle のままで変化しないため明示的に呼ぶ）
@@ -410,6 +431,18 @@ final class AppController: ObservableObject {
     /// ボットが既に生成されているか（終了処理で「作っていなければ触らない」ために使う）
     var hasMeetBot: Bool { meetBotStorage != nil }
 
+    /// 行動ログ用の HUD 状態名（通知の本文は残さない＝状態遷移だけを追う）
+    private static func hudModeLabel(_ mode: HudModel.Mode) -> String {
+        switch mode {
+        case .hidden: return "非表示"
+        case .idlePill: return "待機ピル"
+        case .recording(let autoEnter, let handsFree):
+            return "録音中(auto_enter=\(autoEnter), handsfree=\(handsFree))"
+        case .transcribing: return "変換中"
+        case .notice: return "通知"
+        }
+    }
+
     /// HUD の表示状態に合わせてライブ字幕を隠す／戻す
     ///
     /// 音声入力（録音・変換中・通知）の間は字幕を出さない（2026-08-10 ユーザー指示）。
@@ -442,6 +475,12 @@ final class AppController: ObservableObject {
         pendingFinishTask?.cancel()
         pendingFinishTask = nil
         pendingDoubleTap = nil
+        // ハング見張りのタイマーも畳む（終了処理中に発火して通知を出さない）
+        recordStartWatchdog?.cancel()
+        recordStartWatchdog = nil
+        pendingStartGeneration = nil
+        for task in transcribeWatchdogs.values { task.cancel() }
+        transcribeWatchdogs.removeAll()
         warmTimer?.invalidate()
         warmTimer = nil
         if let activity = antiNapActivity {
@@ -552,6 +591,7 @@ final class AppController: ObservableObject {
             let slot = config.slot(slotId)
             // toggle 実効モード: 録音中の再押下で停止（ハンズフリー切替キー併用での起動も含む）
             if recordingEffectiveMode == .toggle, slotMatches(slot, pressed: pressed) {
+                ActionLog.shared.write("app", "ホットキー押下 slot=\(slotId) mode=toggle 録音停止")
                 finishRecording()
                 return
             }
@@ -604,6 +644,7 @@ final class AppController: ObservableObject {
             KeyToken.acceptableNames(for: required).contains(token)
         }
         if isHotkeyKey {
+            ActionLog.shared.write("app", "ホットキー離鍵 slot=\(slotId) mode=hold auto_enter=\(autoEnter)")
             // ダブルタップ確定後（autoEnter）の離鍵はもう待たない。この録音で確定する。
             if autoEnter {
                 finishRecording()
@@ -621,6 +662,10 @@ final class AppController: ObservableObject {
                     hold上限=\(secText(kTapHoldMax), privacy: .public)s \
                     結果=不成立(hold超過)
                     """)
+                ActionLog.shared.write(
+                    "app",
+                    "ダブルタップ判定 slot=\(slotId) hold=\(secText(pending.hold))s 結果=不成立(hold超過)"
+                )
                 finishRecording()
                 return
             }
@@ -685,6 +730,11 @@ final class AppController: ObservableObject {
             窓=\(secText(window), privacy: .public)s \
             結果=\(decision.logLabel, privacy: .public)
             """)
+        ActionLog.shared.write(
+            "app",
+            "ダブルタップ判定 slot=\(pending.slotId) hold=\(secText(pending.hold))s "
+                + "gap=\(secText(pressedAt - pending.releasedAt))s 結果=\(decision.logLabel)"
+        )
     }
 
     /// スロットの必要キーがすべて押されているか
@@ -745,6 +795,15 @@ final class AppController: ObservableObject {
 
     private func beginRecording(slotId: Int, autoEnter: Bool, effectiveMode: HotkeyMode = .hold) {
         guard recordingSlot == nil else { return }
+        // 直前の録音開始がタイムアウトした（audio-control キューが詰まっている）間は、
+        // 新しい録音要求を積まずにその場で断る。死んだキューにジョブを積み上げても
+        // 全部まとめて刺さるだけで、復帰したときに古い要求が一斉に走って事故になる
+        guard !audioQueueStalled else {
+            log.notice("オーディオシステムの復帰待ちのため録音を開始しません")
+            ActionLog.shared.write("audio", "録音開始を拒否（オーディオキューの復帰待ち）")
+            hud.notice("オーディオシステムの復帰を待っています")
+            return
+        }
         // 操作音・メディアダッキングを撃ちっぱなしで開始（音声パイプラインは一切待たせない）
         if config.soundEffectsEnabled { SoundFX.shared.play(.start) }
         if config.duckMediaEnabled { MediaDucker.duck() }
@@ -761,6 +820,10 @@ final class AppController: ObservableObject {
 
         let slot = config.slot(slotId)
         log.info("録音開始 (スロット\(slotId), \(slot.backend.rawValue, privacy: .public)\(autoEnter ? ", auto_enter" : "", privacy: .public))")
+        ActionLog.shared.write(
+            "app",
+            "ホットキー押下 slot=\(slotId) mode=\(effectiveMode.rawValue) backend=\(slot.backend.rawValue) model=\(slot.model)"
+        )
 
         // ハンズフリー(toggle 実効)で groq スロットのときは、この録音の処理エンジンだけ内部で
         // ElevenLabs(scribe_v1) に差し替える（長時間録音の精度対策。保存値 groq は変えない）。
@@ -847,19 +910,21 @@ final class AppController: ObservableObject {
         // マイク起動を最優先で仕掛ける（プリウォーム類は後ろに置き、
         // メインスレッドの Keychain 読みなどで録音開始を遅らせない）
         recorder.start { [weak self] failure in
-            guard let failure else { return }
+            // 成功・失敗どちらでもメインへ返す。ウォッチドッグを止めるために
+            // 「返ってきた」こと自体を知る必要がある（成功時の遅延は増やさない＝
+            // 録音はこの時点で既に走っており、後片付けの通知にすぎない）
             DispatchQueue.main.async {
-                guard let self, self.recordingSlot == slotId else { return }
-                // ストリーミングセッションも後始末する（残すと次の録音のチャンクが
-                // 旧 WS に流れ、別バックエンドの録音に Deepgram の結果が混ざる）
-                self.streamer?.cancel()
-                self.streamer = nil
-                self.recordContext = nil
-                self.recorder.chunkHandler = nil
-                self.recordingSlot = nil
-                self.emitState()
-                self.hud.notice(failure.noticeText)
+                self?.handleRecordStartResult(failure, slotId: slotId, generation: generation)
             }
+        }
+        // 録音開始が返ってこない（HAL のブロックで audio-control キューごと詰まる）ケースを
+        // 見張る。ブロックそのものは防げないので、待たずに知らせて待機へ戻すのが役目
+        pendingStartGeneration = generation
+        recordStartWatchdog?.cancel()
+        recordStartWatchdog = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(StallPolicy.recordStartTimeout))
+            guard let self, !Task.isCancelled else { return }
+            self.abortStalledRecordStart(slotId: slotId, generation: generation)
         }
 
         // 録音中に TLS 接続を事前確立して、停止後の初回 API 往復を短縮（切替時は EL 側を温める）
@@ -884,6 +949,153 @@ final class AppController: ObservableObject {
             self.hud.notice("録音時間の上限に達したため停止しました")
             self.finishRecording()
         }
+    }
+
+    // MARK: - ハング対策（録音開始・文字起こしのウォッチドッグ）
+
+    /// 録音開始の結果を受け取る（メインスレッド）。
+    ///
+    /// ウォッチドッグを止め、詰まり判定を解除してから、失敗なら録音セッションを畳む。
+    /// ウォッチドッグが先に発火して打ち切った世代の完了は**捨てる**（UI を触らない）。
+    private func handleRecordStartResult(
+        _ failure: AudioRecorder.StartFailure?, slotId: Int, generation: Int
+    ) {
+        // 返ってきた＝キューは生きている。見張りを解く
+        if pendingStartGeneration == generation { pendingStartGeneration = nil }
+        let watchdog = recordStartWatchdog
+        recordStartWatchdog = nil
+        watchdog?.cancel()
+
+        guard recordingGeneration == generation, recordingSlot == slotId else {
+            // 打ち切ったあとにブロックが解けて遅れて届いた完了。ここで UI を触ると
+            // 待機に戻したピルに古い録音の通知が出る
+            ActionLog.shared.write("audio", "遅れて届いた録音開始完了を破棄 gen=\(generation)")
+            return
+        }
+        guard let failure else { return }
+        // ストリーミングセッションも後始末する（残すと次の録音のチャンクが
+        // 旧 WS に流れ、別バックエンドの録音に Deepgram の結果が混ざる）
+        streamer?.cancel()
+        streamer = nil
+        recordContext = nil
+        recorder.chunkHandler = nil
+        recordingSlot = nil
+        emitState()
+        hud.notice(failure.noticeText)
+    }
+
+    /// 録音開始が期限内に返ってこなかった。録音セッションを畳んで待機へ戻す。
+    ///
+    /// **エンジンの作り直しやデバイスの再列挙はしない**（HAL をループで叩くと
+    /// coreaudiod ごと巻き込んで Mac 全体のオーディオが死ぬ）。やるのは通知と状態復帰、
+    /// そしてキューが生き返るのを待つことだけ。
+    private func abortStalledRecordStart(slotId: Int, generation: Int) {
+        // 開始完了を受け取っていれば見張りは役目を終えている（＝何もしない）
+        guard pendingStartGeneration == generation else { return }
+        pendingStartGeneration = nil
+        recordStartWatchdog?.cancel()
+        recordStartWatchdog = nil
+
+        log.notice("""
+            録音開始タイムアウト slot=\(slotId, privacy: .public) \
+            上限=\(secText(StallPolicy.recordStartTimeout), privacy: .public)s
+            """)
+        ActionLog.shared.write(
+            "audio",
+            "録音開始タイムアウト slot=\(slotId) gen=\(generation) 上限=\(secText(StallPolicy.recordStartTimeout))s"
+        )
+        // 制御キューが詰まっている。復帰を確認できるまで新しい録音要求を積まない
+        audioQueueStalled = true
+        waitForAudioQueueRecovery()
+
+        let message = "オーディオシステムが応答しません"
+        guard recordingGeneration == generation, recordingSlot == slotId else {
+            // 短いタップでは開始完了より先に離鍵が来る＝もう「変換中」に入っている。
+            // 音声が入っていないのは確定しているので、上限（60 秒）を待たずに畳む
+            abortStalledTranscription(
+                generation: generation, timeout: StallPolicy.recordStartTimeout, notice: message)
+            return
+        }
+
+        streamer?.cancel()
+        streamer = nil
+        recordContext = nil
+        recorder.chunkHandler = nil
+        recordingSlot = nil
+        autoEnter = false
+        pendingFinishTask?.cancel()
+        pendingFinishTask = nil
+        pendingDoubleTap = nil
+        failsafeTask?.cancel()
+        // 録音中に下げたメディア音量を戻す（畳む経路では必ず戻す）
+        MediaDucker.restore()
+        // 世代を進めて、遅れて届く開始完了・チャンク・進捗を全部捨てる
+        recordingGeneration &+= 1
+        emitState()
+        hud.notice(message)
+    }
+
+    /// 詰まった制御キューへ ping を 1 つ積み、実行されたら詰まり判定を解除する。
+    /// ここでは待たない（ping が走るのはキューが動き出したとき＝それが復帰の証拠）。
+    private func waitForAudioQueueRecovery() {
+        recorder.ping { [weak self] in
+            DispatchQueue.main.async {
+                guard let self, self.audioQueueStalled else { return }
+                self.audioQueueStalled = false
+                log.notice("オーディオキューが復帰しました")
+                ActionLog.shared.write("audio", "オーディオキュー復帰")
+            }
+        }
+    }
+
+    /// 文字起こしが返ってこないことを見張り始める（録音停止＝変換中に入った時点で呼ぶ）
+    ///
+    /// - Parameters:
+    ///   - generation: この録音セッションの世代
+    ///   - backend: 録音開始時に確定したバックエンド（ローカル認識だけ上限が短い）
+    private func startTranscribeWatchdog(generation: Int, backend: Backend?) {
+        let timeout = StallPolicy.transcribeTimeout(for: backend)
+        transcribeWatchdogs[generation]?.cancel()
+        transcribeWatchdogs[generation] = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(timeout))
+            guard let self, !Task.isCancelled else { return }
+            self.abortStalledTranscription(generation: generation, timeout: timeout)
+        }
+    }
+
+    /// 文字起こしが期限内に返ってこなかった。変換中を解いて待機へ戻す。
+    /// - Parameter notice: HUD に出す文言（録音開始の詰まり由来のときは原因に合わせて差し替える）
+    private func abortStalledTranscription(
+        generation: Int, timeout: TimeInterval, notice: String = "文字起こしが応答しません"
+    ) {
+        // 既に完了していれば台帳から消えている（＝二重に片付けない）
+        guard let watchdog = transcribeWatchdogs.removeValue(forKey: generation) else { return }
+        // 録音開始の詰まりから呼ばれたときは、まだ眠っている見張りをここで解く
+        watchdog.cancel()
+
+        log.notice("""
+            文字起こしタイムアウト gen=\(generation, privacy: .public) \
+            上限=\(secText(timeout), privacy: .public)s
+            """)
+        ActionLog.shared.write(
+            "transcriber", "文字起こしタイムアウト gen=\(generation) 上限=\(secText(timeout))s"
+        )
+
+        // この世代の結果は以後どこに届いても捨てる（貼り付けない・UI を触らない）
+        abandonedSessions.abandon(generation)
+        outstanding = max(0, outstanding - 1)
+        // 詰まったタスクがチェーンの末尾なら鎖を切る。切らないと次以降の録音が
+        // 永久に「前のタスク待ち」になって、全部が同じハングに巻き込まれる
+        if pipelineTailGeneration == generation {
+            pipelineTail = nil
+        }
+        emitState()
+        hud.notice(notice)
+    }
+
+    /// この世代の結果を今も受け取ってよいか（打ち切り済みなら false＝捨てる）
+    private func isAbandoned(_ generation: Int) -> Bool {
+        abandonedSessions.contains(generation)
     }
 
     // MARK: - 翻訳して入力
@@ -975,11 +1187,16 @@ final class AppController: ObservableObject {
         outstanding += 1
         emitState()
 
+        // 「変換中」に入った時点から見張る。停止コールバックが返らない（キューの詰まり）でも、
+        // 文字起こしの確定が来ない（ローカル認識の finalization ハング）でも、ここが最後の砦
+        let generation = recordingGeneration
+        startTranscribeWatchdog(generation: generation, backend: context?.transcriber?.backend)
+
         recorder.stop { [weak self] samples in
             // audio キューから呼ばれる。メインへホップしてタスク起動
             let kept = trimTrailing(samples, seconds: trimTrailingSec)
             DispatchQueue.main.async {
-                self?.processAudio(kept, context: context,
+                self?.processAudio(kept, context: context, generation: generation,
                                    autoEnter: useAutoEnter, streamer: activeStreamer,
                                    quietIfNoSpeech: quietIfNoSpeech)
             }
@@ -989,14 +1206,22 @@ final class AppController: ObservableObject {
     // MARK: - 文字起こしパイプライン
 
     private func processAudio(
-        _ samples: [Float], context: RecordContext?, autoEnter: Bool,
+        _ samples: [Float], context: RecordContext?, generation: Int, autoEnter: Bool,
         streamer: (any LiveTranscribing)?, quietIfNoSpeech: Bool = false
     ) {
+        // ウォッチドッグが打ち切ったあとに、ブロックが解けて遅れて届いた音声。
+        // 既に待機へ戻して通知も出しているので、ここから先には一切進めない
+        guard !isAbandoned(generation) else {
+            ActionLog.shared.write("app", "打ち切り済みセッションの音声を破棄 gen=\(generation)")
+            streamer?.cancel()
+            taskFinished(generation: generation)
+            return
+        }
         // ライブ設定でなく録音開始時の snapshot だけを使う
         // （滞留中に設定が変わっても別プロバイダーへ送らないため）
         guard let context, let transcriber = context.transcriber else {
             streamer?.cancel()
-            taskFinished()
+            taskFinished(generation: generation)
             return
         }
         let vadEnabled = context.vadEnabled
@@ -1010,13 +1235,32 @@ final class AppController: ObservableObject {
 
         // 直前のタスク完了を待ってから処理する（録音順のテキスト挿入を保証）
         let previous = pipelineTail
+        pipelineTailGeneration = generation
         pipelineTail = Task {
             await previous?.value
-            defer { taskFinished() }
+            defer { taskFinished(generation: generation) }
+            // 前のタスクを待っている間に打ち切られていたら、ここから先へ進まない
+            guard !isAbandoned(generation) else { return }
 
             // --- ストリーミング経路: ライブ（Deepgram / OpenAI ライブ）の確定テキストを受け取って貼り付け ---
             if let streamer {
+                let streamStart = ProcessInfo.processInfo.systemUptime
+                ActionLog.shared.write(
+                    "transcriber",
+                    "文字起こし要求 経路=streaming backend=\(transcriber.backend.rawValue) "
+                        + "model=\(transcriber.model) 音声=\(secText(Double(samples.count) / AudioRecorder.sampleRate))s"
+                )
                 let streamed = await streamer.finish()
+                ActionLog.shared.write(
+                    "transcriber",
+                    "文字起こし応答 経路=streaming \(streamed.count) 文字 "
+                        + "\(Int((ProcessInfo.processInfo.systemUptime - streamStart) * 1000))ms"
+                )
+                // 確定待ちの最中に打ち切られていたら貼り付けない（今回の障害の実経路）
+                guard !isAbandoned(generation) else {
+                    ActionLog.shared.write("app", "打ち切り済みセッションの確定文字を破棄 gen=\(generation)")
+                    return
+                }
                 if !streamed.isEmpty {
                     // 整形が有効なら貼り付け前に LLM で整形（失敗時は原文が返る）
                     let formatted = formatEnabled
@@ -1070,8 +1314,9 @@ final class AppController: ObservableObject {
             // 1+2. 正規化と VAD（CPU 処理はメインスレッド外で実行される）
             guard let audio = await Self.prepareAudio(samples, vadEnabled: vadEnabled) else {
                 log.info("発話が検出されなかったためスキップ")
-                // 誤タップ由来（ダブルタップ待ちの期限切れ）の無音は通知しない
-                if !quietIfNoSpeech {
+                // 誤タップ由来（ダブルタップ待ちの期限切れ）の無音は通知しない。
+                // 打ち切り済みなら、待機に戻したピルに古い通知を出さない
+                if !quietIfNoSpeech, !isAbandoned(generation) {
                     hud.notice("音声が検出されませんでした")
                 }
                 return
@@ -1084,6 +1329,11 @@ final class AppController: ObservableObject {
             let sttStart = ProcessInfo.processInfo.systemUptime
             let text: String
             let didServerFormat: Bool
+            ActionLog.shared.write(
+                "transcriber",
+                "文字起こし要求 経路=rest backend=\(transcriber.backend.rawValue) "
+                    + "model=\(transcriber.model) 音声=\(secText(Double(audio.count) / AudioRecorder.sampleRate))s"
+            )
             do {
                 (text, didServerFormat) = try await Self.transcribeWithOptionalSplit(
                     audio, transcriber: transcriber, splitEnabled: splitEnabled,
@@ -1091,14 +1341,22 @@ final class AppController: ObservableObject {
                 )
             } catch let error as TranscriptionError {
                 log.error("文字起こし失敗: \(error.message, privacy: .public)")
-                hud.notice(error.message)
+                ActionLog.shared.write("transcriber", "文字起こしエラー: \(error.message)")
+                if !isAbandoned(generation) { hud.notice(error.message) }
                 return
             } catch {
                 log.error("文字起こしで予期しないエラー: \(error.localizedDescription)")
-                hud.notice("文字起こしに失敗しました")
+                ActionLog.shared.write("transcriber", "文字起こしエラー(想定外): \(error.localizedDescription)")
+                if !isAbandoned(generation) { hud.notice("文字起こしに失敗しました") }
                 return
             }
             let sttMs = Int((ProcessInfo.processInfo.systemUptime - sttStart) * 1000)
+            ActionLog.shared.write("transcriber", "文字起こし応答 経路=rest \(text.count) 文字 \(sttMs)ms")
+            // 応答を待っている間に打ち切られていたら貼り付けない
+            guard !isAbandoned(generation) else {
+                ActionLog.shared.write("app", "打ち切り済みセッションの確定文字を破棄 gen=\(generation)")
+                return
+            }
             guard !text.isEmpty else {
                 log.info("文字起こし結果が空でした")
                 return
@@ -1222,7 +1480,15 @@ final class AppController: ObservableObject {
         return VoiceActivity.joinSegments(results)
     }
 
-    private func taskFinished() {
+    private func taskFinished(generation: Int) {
+        // 期限内に終わったので見張りを解く
+        transcribeWatchdogs.removeValue(forKey: generation)?.cancel()
+        // ウォッチドッグが先に片付けた世代は、変換中カウントも既に減らしてある。
+        // ここで二重に減らすと「録音していないのに待機へ戻らない」状態になる
+        if abandonedSessions.consume(generation) {
+            ActionLog.shared.write("app", "打ち切り済みセッションの完了を破棄 gen=\(generation)")
+            return
+        }
         outstanding -= 1
         emitState()
         // 録音 1 回ごとに残量表示を静かに更新する（消費はサーバーが原子的に行うので、

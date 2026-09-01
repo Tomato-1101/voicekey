@@ -6,6 +6,7 @@
 """
 
 import logging
+import logging.handlers
 import os
 import sys
 from pathlib import Path
@@ -13,6 +14,9 @@ from typing import Dict, Optional
 
 # デフォルトのログフォーマット
 LOG_FORMAT: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# ログの保持日数（日付が変わるたびにローテートし、これより古い分は自動削除する）
+LOG_RETENTION_DAYS: int = 14
 
 # シングルトンロガーインスタンス
 _loggers: Dict[str, logging.Logger] = {}
@@ -73,7 +77,17 @@ def setup_logger(
                 log_dir = default_log_dir()
                 log_dir.mkdir(parents=True, exist_ok=True)
                 path = log_dir / path
-            handlers.append(logging.FileHandler(path, mode='w', encoding='utf-8'))
+            # 日付でローテートして LOG_RETENTION_DAYS 日分だけ残す。
+            # 以前は mode='w' で起動のたびに上書きしていたため、再起動を挟むと
+            # 障害直前の行動が消えて原因を追えなかった（Mac の行動ログと方針を揃える）。
+            handlers.append(
+                logging.handlers.TimedRotatingFileHandler(
+                    path,
+                    when='midnight',
+                    backupCount=LOG_RETENTION_DAYS,
+                    encoding='utf-8',
+                )
+            )
         except OSError as e:
             print(
                 f"ログファイルを作成できませんでした（コンソールのみで継続）: {e}",

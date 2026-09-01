@@ -131,6 +131,7 @@ final class TextFormatter {
     func format(_ text: String, prompt: String, model: String, presetId: String = "standard") async -> String {
         // 空白のみの入力は API を呼ばずそのまま返す
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return text }
+        ActionLog.shared.write("formatter", "整形開始 \(text.count) 文字 model=\(model) preset=\(presetId)")
 
         // 製品版（ログイン済み）はサーバープロキシ経由で整形する（モデル/プロンプトは
         // サーバー固定。プリセットだけクライアントが preset_id で指定する。Groq は短命キー
@@ -138,9 +139,12 @@ final class TextFormatter {
         // 絶対に失わない（並存ガード）。
         if BackendClient.isLoggedIn {
             do {
-                return try await BackendClient.formatText(text, presetId: presetId)
+                let formatted = try await BackendClient.formatText(text, presetId: presetId)
+                ActionLog.shared.write("formatter", "整形完了 (サーバー) \(formatted.count) 文字")
+                return formatted
             } catch {
                 log.warning("サーバー整形に失敗: \(error.localizedDescription, privacy: .public)（原文を使用）")
+                ActionLog.shared.write("formatter", "整形エラー (サーバー): \(error.localizedDescription)（原文を使用）")
                 return text
             }
         }
@@ -183,6 +187,7 @@ final class TextFormatter {
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                 let code = (response as? HTTPURLResponse)?.statusCode ?? -1
                 log.warning("整形失敗: HTTP \(code)（原文を使用）")
+                ActionLog.shared.write("formatter", "整形エラー: HTTP \(code)（原文を使用）")
                 return text
             }
             guard let parsed = try? JSONDecoder().decode(ChatResponse.self, from: data),
@@ -204,10 +209,12 @@ final class TextFormatter {
             }
             let elapsed = Int(Date().timeIntervalSince(start) * 1000)
             log.info("テキスト整形完了: \(elapsed)ms, \(formatted.count) 文字")
+            ActionLog.shared.write("formatter", "整形完了 \(formatted.count) 文字 \(elapsed)ms")
             return formatted
         } catch {
             // タイムアウトを含むあらゆる通信エラーでも原文を返す（発話を失わない）
             log.warning("整形失敗: \(error.localizedDescription, privacy: .public)（原文を使用）")
+            ActionLog.shared.write("formatter", "整形エラー: \(error.localizedDescription)（原文を使用）")
             return text
         }
     }

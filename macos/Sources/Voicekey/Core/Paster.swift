@@ -40,6 +40,8 @@ enum Paster {
     @MainActor
     static func paste(_ text: String) async {
         guard !text.isEmpty else { return }
+        // 本文は残さない（文字数だけ）。貼り付けは「実行したのに入らない」の切り分けが要るので対で記録する
+        ActionLog.shared.write("paster", "貼り付け実行 (\(text.count) 文字)")
 
         let pasteboard = NSPasteboard.general
         // ユーザーのクリップボード内容を退避（テキストのみ）
@@ -68,6 +70,7 @@ enum Paster {
         try? await Task.sleep(for: .seconds(pasteDelay))
         postKeystroke(keyV, flags: .maskCommand)
         log.debug("テキストを貼り付けました (\(text.count) 文字)")
+        ActionLog.shared.write("paster", "貼り付け完了 (\(text.count) 文字)")
 
         // クリップボード復元は呼び出し側を待たせない（Enter 自動送信・HUD 非表示を即時化する）。
         // 貼り付け先が読み終えてから復元したいので restoreDelay は別タスクで待つ。
