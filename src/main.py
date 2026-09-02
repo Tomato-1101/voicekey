@@ -24,8 +24,10 @@ from .utils import secrets as _secrets  # noqa: E402
 if not _secrets.is_dist_build():
     load_dotenv()
 
-# ロギング設定
-setup_logger(log_file="startup_log.txt")
+# ロギング設定。行動ログの置き場所は README「ログの場所」と同じ
+# %LOCALAPPDATA%\voicekey\logs\app.log（旧名 startup_log.txt は README・Mac 版の
+# 行動ログの案内とずれていたため改名。ローテートは logger.setup_logger 側）
+setup_logger(log_file="app.log")
 logger = get_logger(__name__)
 
 
@@ -99,7 +101,7 @@ def _handle_critical_error(error: Exception) -> None:
     error_msg = f"致命的エラー: {error}"
     logger.critical(error_msg, exc_info=True)
 
-    # 詳細なエラー情報をファイルに書き出し。書き先は startup_log.txt と同じ OS 標準ログ
+    # 詳細なエラー情報をファイルに書き出し。書き先は app.log と同じ OS 標準ログ
     # ディレクトリ（Windows は %LOCALAPPDATA%\voicekey\logs）に固定する。凍結ビルドの
     # 起動時 CWD は Program Files 等の書けない場所もありうるため、相対パスの open だと
     # PermissionError でクラッシュ報告自体が未処理例外になる（＋ログが散らばる）。

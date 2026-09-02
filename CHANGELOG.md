@@ -5,6 +5,16 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased] - 2026-08-02
 
 ### Fixed
+- **Windows の行動ログの実ファイル名を `app.log` に揃えた（2026-09-02）**。README・OVERVIEW は
+  `%LOCALAPPDATA%` 配下の `voicekey/logs/app.log` と案内していたが、`main.py` の `setup_logger` は
+  旧名 `startup_log.txt` のままだった（Windows 実機で行動ログを探すと見つからない）。
+  日次ローテート・14 日保持の挙動は変えていない。
+- **`tests/test_logger.py` が Windows で落ちるのを修正（2026-09-02）**。①開いたままのログファイルを
+  一時ディレクトリごと削除しようとして `WinError 32` になっていた（6 件）→ ハンドラーを閉じてから
+  削除する `_tmpdir()` に置き換えた。②「ディレクトリを作れない先」として使っていた `/dev/null/nope` は
+  Windows では C: ドライブ直下の `dev/null/nope` として実際に作成できてしまいテストが成立しなかった（1 件）→
+  通常ファイルの下を指すようにした（POSIX / Windows のどちらでも mkdir が失敗する）。
+  Windows 実機で 516 件全パス（skipped 3）。
 - **「変換中」のまま永久に固まる障害を恒久対策（2026-09-02・Mac）**。外部要因
   （coreaudiod の過負荷）で `AVAudioEngine` の HAL 呼び出しが無期限ブロックすると、
   `com.voicekey.audio-control` 直列キューごと詰まり、以後の録音・文字起こしが全部止まっていた。

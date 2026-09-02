@@ -9,6 +9,7 @@ logging はプロセス全体で共有のため、各テストでルートロガ
 モジュールの設定フラグをリセットして独立させる。
 """
 
+import contextlib
 import logging
 import logging.handlers
 import os
@@ -40,10 +41,31 @@ class _LoggerTestBase(unittest.TestCase):
         root.setLevel(self._saved_level)
         logger_module._is_configured = False
 
+    def _close_file_handlers(self) -> None:
+        """ルートロガーのファイルハンドラーを閉じて外す。
+
+        Windows は開いたままのファイルを削除できない（WinError 32）ため、
+        一時ディレクトリを消す前にログファイルを閉じておく必要がある。
+        """
+        root = logging.getLogger()
+        for h in root.handlers[:]:
+            if isinstance(h, logging.FileHandler):
+                h.close()
+                root.removeHandler(h)
+
+    @contextlib.contextmanager
+    def _tmpdir(self):
+        """一時ディレクトリ。抜けるときにファイルハンドラーを閉じてから削除する。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                yield tmp
+            finally:
+                self._close_file_handlers()
+
 
 class TestLogPathResolution(_LoggerTestBase):
     def test_relative_name_goes_to_os_log_dir_not_cwd(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with self._tmpdir() as tmp:
             log_dir = Path(tmp) / "logs"
             with mock.patch.object(
                 logger_module, "default_log_dir", return_value=log_dir
@@ -64,7 +86,7 @@ class TestLogPathResolution(_LoggerTestBase):
             )
 
     def test_absolute_path_used_as_is(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with self._tmpdir() as tmp:
             target = Path(tmp) / "explicit.log"
             called = []
 
@@ -81,11 +103,17 @@ class TestLogPathResolution(_LoggerTestBase):
             self.assertEqual(called, [])  # 絶対パスでは log dir 解決を呼ばない
 
     def test_dir_creation_failure_degrades_to_console(self):
-        # mkdir が失敗してもアプリは止めず、ファイルハンドラ無しで継続する
-        with mock.patch.object(
-            logger_module, "default_log_dir", return_value=Path("/dev/null/nope")
-        ):
-            logger_module.setup_logger(log_file="x.log")
+        # mkdir が失敗してもアプリは止めず、ファイルハンドラ無しで継続する。
+        # 失敗させる先は「通常ファイルの下」にする。POSIX / Windows のどちらでも
+        # ディレクトリを作れない（以前の "/dev/null/nope" は Windows では
+        # C: ドライブ直下の dev/null/nope として実際に作成できてしまいテストが成立しなかった）
+        with self._tmpdir() as tmp:
+            blocker = Path(tmp) / "not_a_dir"
+            blocker.write_text("", encoding="utf-8")
+            with mock.patch.object(
+                logger_module, "default_log_dir", return_value=blocker / "nope"
+            ):
+                logger_module.setup_logger(log_file="x.log")
 
         root = logging.getLogger()
         file_handlers = [
@@ -129,7 +157,7 @@ class TestLogRotation(_LoggerTestBase):
         return handlers[0]
 
     def test_uses_daily_rotation_with_14_backups(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with self._tmpdir() as tmp:
             handler = self._setup_in(tmp)
             self.assertEqual(handler.when, "MIDNIGHT")
             self.assertEqual(handler.backupCount, logger_module.LOG_RETENTION_DAYS)
@@ -138,7 +166,7 @@ class TestLogRotation(_LoggerTestBase):
 
     def test_does_not_truncate_existing_log_on_startup(self):
         # 起動のたびに上書きしていると障害直前の行動が消える（追記であること）
-        with tempfile.TemporaryDirectory() as tmp:
+        with self._tmpdir() as tmp:
             existing = Path(tmp) / "app.log"
             existing.write_text("前回の起動で書いた行\n", encoding="utf-8")
             self._setup_in(tmp)
@@ -147,7 +175,7 @@ class TestLogRotation(_LoggerTestBase):
 
     def test_rotation_deletes_files_beyond_retention(self):
         # 15 日分たまっていたら、いちばん古い 1 件がローテート時の削除対象になる
-        with tempfile.TemporaryDirectory() as tmp:
+        with self._tmpdir() as tmp:
             handler = self._setup_in(tmp)
             for day in range(1, 16):
                 (Path(tmp) / f"app.log.2026-08-{day:02d}").write_text("x", encoding="utf-8")
@@ -157,7 +185,7 @@ class TestLogRotation(_LoggerTestBase):
             )
 
     def test_rotation_keeps_files_within_retention(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with self._tmpdir() as tmp:
             handler = self._setup_in(tmp)
             for day in range(1, 15):
                 (Path(tmp) / f"app.log.2026-08-{day:02d}").write_text("x", encoding="utf-8")
