@@ -672,6 +672,7 @@ class OnboardingWindow(QDialog):
     def _on_back(self) -> None:
         if self._step > 0:
             self._step -= 1
+            self._skip_login_if_personal(direction=-1)
             self._go_to(self._step)
 
     def _on_primary(self) -> None:
@@ -679,7 +680,15 @@ class OnboardingWindow(QDialog):
             self._finish()
             return
         self._step += 1
+        self._skip_login_if_personal(direction=+1)
         self._go_to(self._step)
+
+    def _skip_login_if_personal(self, direction: int) -> None:
+        """personal はログインステップを飛ばす（Mac 版 OnboardingView の goNext/goBack と同じ）。"""
+        from ..utils import secrets
+
+        if self._step == _STEP_LOGIN and secrets.is_personal_build():
+            self._step += direction
 
     def _on_skip(self) -> None:
         """動作確認・体験をスキップしてまとめへ飛ぶ（強制しない）。"""

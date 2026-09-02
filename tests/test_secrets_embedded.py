@@ -19,9 +19,9 @@ from unittest import mock
 from src.utils import secrets
 
 
-def _fake_marker(is_dist: bool = True) -> types.SimpleNamespace:
-    """DIST マーカーモジュール（embedded_keys）の偽物。IS_DIST フラグだけを持つ。"""
-    return types.SimpleNamespace(IS_DIST=is_dist)
+def _fake_marker(is_dist: bool = True, is_personal: bool = False) -> types.SimpleNamespace:
+    """ビルド種別マーカーモジュール（embedded_keys）の偽物。IS_DIST / IS_PERSONAL フラグだけを持つ。"""
+    return types.SimpleNamespace(IS_DIST=is_dist, IS_PERSONAL=is_personal)
 
 
 class _FakeKeyring:
@@ -60,6 +60,61 @@ class TestIsDistBuild(unittest.TestCase):
         """IS_DIST=False のスタブでは DIST 判定が False。"""
         secrets._embedded = _fake_marker(False)
         self.assertFalse(secrets.is_dist_build())
+
+
+class TestIsPersonalBuild(unittest.TestCase):
+    """personal（個人用最速版）はマーカーの IS_PERSONAL で判定し、認証セッションを常に無視する。
+
+    Mac の Keychain.authSession()（personal なら nil）と TranscribeRouteTests に対応する。
+    旧 release（DIST）利用時の失効済みトークンが Credential Manager に残っていても、
+    personal ではログイン扱いにならず、Groq/Deepgram が応答しないサーバー経由へ送られない
+    （2026-09-02 の Windows 実機で文字起こしが全滅した不具合の回帰テスト）。
+    """
+
+    _SESSION_JSON = '{"access_token": "stale", "refresh_token": "r", "expires_at": 1.0}'
+
+    def setUp(self):
+        self._orig_embedded = secrets._embedded
+        self._orig_keyring = secrets._keyring_module
+
+    def tearDown(self):
+        secrets._embedded = self._orig_embedded
+        secrets._keyring_module = self._orig_keyring
+
+    def test_false_in_dev_and_dist(self):
+        """マーカー無し・DIST マーカー・IS_PERSONAL 属性の無い旧マーカーはいずれも personal でない。"""
+        secrets._embedded = None
+        self.assertFalse(secrets.is_personal_build())
+        secrets._embedded = _fake_marker(is_dist=True)
+        self.assertFalse(secrets.is_personal_build())
+        secrets._embedded = types.SimpleNamespace(IS_DIST=True)  # IS_PERSONAL を持たない旧生成物
+        self.assertFalse(secrets.is_personal_build())
+
+    def test_true_with_personal_marker(self):
+        """IS_PERSONAL=True のマーカーがあれば personal 判定が True（DIST は False のまま）。"""
+        secrets._embedded = _fake_marker(is_dist=False, is_personal=True)
+        self.assertTrue(secrets.is_personal_build())
+        self.assertFalse(secrets.is_dist_build())
+
+    def test_personal_ignores_stored_auth_session(self):
+        """personal では keyring に認証セッションが残っていても get_auth_session は None。"""
+        secrets._keyring_module = _FakeKeyring({secrets.SERVICE_AUTH: self._SESSION_JSON})
+        secrets._embedded = _fake_marker(is_dist=False, is_personal=True)
+        self.assertIsNone(secrets.get_auth_session())
+
+    def test_non_personal_still_reads_auth_session(self):
+        """personal でなければ同じ keyring 内容からセッションが読める（挙動を変えていない）。"""
+        secrets._keyring_module = _FakeKeyring({secrets.SERVICE_AUTH: self._SESSION_JSON})
+        secrets._embedded = None
+        self.assertEqual(secrets.get_auth_session()["access_token"], "stale")
+
+    def test_personal_is_never_logged_in(self):
+        """personal では backend_client.is_logged_in() が False＝サーバー経路（プロキシ/短命JWT）へ行かない。"""
+        from src.core import backend_client
+
+        secrets._keyring_module = _FakeKeyring({secrets.SERVICE_AUTH: self._SESSION_JSON})
+        secrets._embedded = _fake_marker(is_dist=False, is_personal=True)
+        self.assertFalse(backend_client.is_logged_in())
 
 
 class TestApiKeyNoEmbeddedFallback(unittest.TestCase):
@@ -134,12 +189,38 @@ class TestGenerateEmbeddedKeys(unittest.TestCase):
             for banned in ("get_key", "_MASK", "_PAYLOAD", "payload"):
                 self.assertNotIn(banned, text, f"生成物に '{banned}' が残っている")
 
-            # 読み込むと IS_DIST=True のフラグだけを持つ
+            # 読み込むと IS_DIST=True・IS_PERSONAL=False のフラグだけを持つ
             spec = importlib.util.spec_from_file_location("embedded_test", out)
             embedded = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(embedded)
             self.assertTrue(embedded.IS_DIST)
+            self.assertFalse(embedded.IS_PERSONAL)
             self.assertFalse(hasattr(embedded, "get_key"))
+
+    def test_personal_flag_generates_personal_marker(self):
+        """--personal は IS_PERSONAL=True・IS_DIST=False のキーレスマーカーを生成する。"""
+        gen = self._load_script()
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "embedded_keys.py"
+            with mock.patch.object(gen, "OUT", out):
+                self.assertEqual(gen.main(["--personal"]), 0)
+            text = out.read_text(encoding="utf-8")
+            for banned in ("get_key", "_MASK", "_PAYLOAD", "payload"):
+                self.assertNotIn(banned, text, f"生成物に '{banned}' が残っている")
+            spec = importlib.util.spec_from_file_location("embedded_personal_test", out)
+            embedded = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(embedded)
+            self.assertTrue(embedded.IS_PERSONAL)
+            self.assertFalse(embedded.IS_DIST)
+
+    def test_unknown_argument_is_rejected(self):
+        """不明な引数は何も生成せず終了コード 2（Mac の generate_embedded_keys.sh と同じ）。"""
+        gen = self._load_script()
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "embedded_keys.py"
+            with mock.patch.object(gen, "OUT", out):
+                self.assertEqual(gen.main(["--dist"]), 2)
+            self.assertFalse(out.exists())
 
 
 if __name__ == "__main__":

@@ -62,6 +62,7 @@ from .core.history import HistoryStore
 from .core.stats import StatsStore
 from .platform import get_platform_adapter
 from .ui import Hud, SettingsWindow, SideNotch, SystemTray
+from .utils import secrets
 from .utils.logger import get_logger
 from .utils.updater import Updater
 
@@ -201,6 +202,10 @@ class VoicekeyApp(QObject):
         """アプリケーションを初期化する。"""
         super().__init__()
         logger.info("voicekey を初期化中...")
+        # どの種別の exe が動いているかをログだけで判別できるようにする（personal なのに
+        # サーバー経由へ行く／dev なのに古いセッションでログイン扱い、の切り分け用）
+        if secrets.is_personal_build():
+            logger.info("ビルド種別: personal（Credential Manager のキーで直叩き・サーバー/ログイン不使用）")
         self._platform = get_platform_adapter()
         self._config = ConfigManager()
 

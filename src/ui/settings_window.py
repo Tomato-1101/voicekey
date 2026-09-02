@@ -926,7 +926,9 @@ class SettingsWindow(QWidget):
         # ユーザー辞書（確定置換）。貼り付け直前に from→to を機械置換する。常時表示。
         page_defs.append(("ユーザー辞書", self._create_dictionary_page()))
         # アカウント（ブラウザ経由ログイン）。製品版の中核機能なので常時表示する。
-        page_defs.append(("アカウント", self._create_account_page()))
+        # personal はアカウント/サーバーを一切使わないので出さない（Mac 版 SettingsView と同じ）
+        if not secrets.is_personal_build():
+            page_defs.append(("アカウント", self._create_account_page()))
         # バージョン情報（現在版表示・更新確認・更新検知時の「今すぐ更新する」）。常時表示。
         page_defs.append(("バージョン情報", self._create_version_page()))
         # 配布ビルドは埋め込みキーで動くため、API キーページは出さない（テスターの混乱防止）

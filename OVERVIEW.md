@@ -21,7 +21,8 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | 言語/UI | Swift（AppKit メニューバー + SwiftUI 設定画面） | Python（PySide6 / Qt） |
 | 置き場所 | `macos/Sources/Voicekey/` | `src/` |
 | 設定の保存先 | `UserDefaults`（`ConfigStore`） | `settings.yaml`（`ConfigManager`）+ `QSettings`（フラグ） |
-| ビルド | `macos/scripts/build_app.sh` / 配布は `build_dmg.sh` | `pyinstaller voicekey.spec` / 配布は GitHub Actions |
+| ビルド | `macos/scripts/build_app.sh` / 配布は `build_dmg.sh` | `scripts/build/generate_embedded_keys.py --personal` → `pyinstaller voicekey.spec` / 配布は GitHub Actions |
+| エディション判定 | `EmbeddedKeys.isPersonal` / `isDist`（生成物） | `utils/secrets.py` の `is_personal_build()` / `is_dist_build()`（生成物 `config/embedded_keys.py`）。personal は認証セッションを常に無視して Credential Manager のキーで直叩き |
 
 同じ機能でも別コードベース。**UI 文言・表示名・設定項目・機能挙動など両 OS に同等に存在する要素を変えるときは、両方を同じコミットで直す**（OS 固有 API でしか存在しないものだけ片方で完結）。詳細は `CLAUDE.md` / `AGENTS.md`。
 

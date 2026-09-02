@@ -58,10 +58,10 @@ except Exception as e:  # ImportError 以外（DBus 不在等）も含めて握�
         "API キーは環境変数からのフォールバック読み込みのみ可能です。"
     )
 
-# 配布（DIST）ビルドのマーカーモジュール。scripts/build/generate_embedded_keys.py が
+# ビルド種別のマーカーモジュール。scripts/build/generate_embedded_keys.py が
 # 生成する git 管理外モジュールで、開発環境には存在しない（ImportError で None になる）。
 # 配布バイナリに長期プロバイダーキーは埋め込まない（製品版は自社サーバー経由・2026-06-28）。
-# このモジュールは IS_DIST フラグだけを持ち、API キーの保管には一切使わない。
+# このモジュールは IS_DIST / IS_PERSONAL フラグだけを持ち、API キーの保管には一切使わない。
 _embedded = None
 try:
     from ..config import embedded_keys as _embedded  # type: ignore
@@ -80,6 +80,21 @@ def is_dist_build() -> bool:
         マーカーモジュールが存在し IS_DIST が True の場合 True
     """
     return _embedded is not None and getattr(_embedded, "IS_DIST", False)
+
+
+def is_personal_build() -> bool:
+    """
+    個人用最速版（personal）ビルドかどうかを返す（Mac の EmbeddedKeys.isPersonal と対）。
+
+    personal は Credential Manager のキーで直叩きし、自社サーバー・ログイン・課金を一切通らない。
+    判定は get_auth_session() の 1 点に集約してあり、そこが None を返すことで
+    backend_client.is_logged_in() 依存のサーバー経路（プロキシ・短命トークン・warm ループ）が
+    まとめて no-op になる。
+
+    Returns:
+        マーカーモジュールが存在し IS_PERSONAL が True の場合 True
+    """
+    return _embedded is not None and getattr(_embedded, "IS_PERSONAL", False)
 
 
 def is_keyring_available() -> bool:
@@ -231,8 +246,17 @@ def get_auth_session() -> Optional[dict]:
     保存済みの認証セッションを取得する。
 
     Returns:
-        {"access_token", "refresh_token", "expires_at"} の dict。未保存・破損時は None
+        {"access_token", "refresh_token", "expires_at"} の dict。未保存・破損時は None。
+        personal ビルドでは常に None
     """
+    # personal はアカウント/バックエンドを一切使わない。旧 release（DIST）利用時に残った
+    # 認証トークンが Credential Manager にあってもログイン扱いにせず None を返す＝
+    # 起動時の利用権確認・warm ループ・短命トークン取得・プロキシ経路を根本から発生させない
+    # （backend_client.is_logged_in も本関数依存なので連動して False になる。Mac の
+    # Keychain.authSession() と同じ単一点）。実害: 失効済みセッションが残ったまま開発ビルドを
+    # 動かすと Groq/Deepgram が応答しないサーバー経由へ送られ、文字起こしが全滅した（2026-09-02）。
+    if is_personal_build():
+        return None
     if _keyring_module is None:
         return None
     try:

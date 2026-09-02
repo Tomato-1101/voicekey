@@ -31,7 +31,7 @@
 | プラットフォーム | バージョン | 状態 | ビルド方法 |
 |---|---|---|---|
 | 🍎 macOS | **v1.8.0** | ✅ 常用中（Swift ネイティブ） | `cd macos && ./scripts/generate_embedded_keys.sh --personal && ./scripts/build_app.sh` |
-| 🪟 Windows | **v1.8.0** | ✅ 動作可（Python / PySide6） | `pyinstaller voicekey.spec --clean --noconfirm` |
+| 🪟 Windows | **v1.8.0** | ✅ 常用中（Python / PySide6） | `python scripts\build\generate_embedded_keys.py --personal && pyinstaller voicekey.spec --clean --noconfirm`（手順は `docs/PERSONAL_EDITION.md` §7） |
 
 > バージョンは `src/config/constants.py` の `APP_VERSION` が単一ソース（この表とのズレはテストが検出します）。
 

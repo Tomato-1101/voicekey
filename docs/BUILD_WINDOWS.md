@@ -6,6 +6,9 @@ Windows 実機での手動ビルドはフォールバック（後述）。
 いずれの場合も「配布前チェックリスト」の実機確認は Windows 機で通すこと
 （ビルドと動作確認は別物）。
 
+> 開発者本人の常用ビルド（personal・Credential Manager のキーで直叩き・非配布）は本書の対象外。
+> `docs/PERSONAL_EDITION.md` §7 を参照。
+
 ## 標準: GitHub Actions でビルド（Mac から完結）
 
 ワークフロー: `.github/workflows/windows-build.yml`（windows-latest ランナー）。

@@ -44,6 +44,16 @@ voicekeyの変更履歴を記録するファイルです。
     実オーディオ・実タイマーの長待ちなし）。
 
 ### Added
+- **Windows にも personal エディション（個人用最速版）を追加（2026-09-02）**。
+  `python scripts/build/generate_embedded_keys.py --personal` で生成したマーカー（`IS_PERSONAL=True`）
+  を含めてビルドすると、Mac の `EmbeddedKeys.isPersonal` と同じく認証セッションを常に無視し
+  （`secrets.get_auth_session()` が None → `is_logged_in()` が False）、Credential Manager のキーで
+  直叩きする。設定画面のアカウントページとオンボーディングのログインステップも出さない。
+  - **きっかけ**: Windows 実機で、旧 release（DIST）利用時の失効済みログインセッションが
+    Credential Manager に残ったまま開発ビルドを動かしたところ、ログイン扱いになって Groq/Deepgram が
+    応答しない開発サーバー（localhost:3000）経由へ送られ文字起こしが全滅、Deepgram は短命トークン
+    取得の再試行で毎回約 4 秒待たされていた。personal では単一点でサーバー経路が no-op になるので再発しない。
+  - 手順は `docs/PERSONAL_EDITION.md` §7。マーカーは git 管理外で、テストを回す前に削除する。
 - **行動ログを追加（2026-09-02）**。ユーザーの操作と内部の状態遷移をファイルへ常時記録し、
   **14 日より古いログは自動削除**するようにした。
   - **きっかけ**: Mac 版が「変換中」のまま固まる障害が起きたが、アプリのログには

@@ -1,6 +1,6 @@
 # personal エディション（個人用最速版）
 
-開発者本人の日常利用専用の Mac ビルド。**配布しない**（顧客に渡さない・GitHub Releases にも載せない）。
+開発者本人の日常利用専用の Mac / Windows ビルド（Windows 版は §7）。**配布しない**（顧客に渡さない・GitHub Releases にも載せない）。
 目的は「サーバー / ログイン / 課金の往復ゼロで最速」「音声入力オンリー」「見た目は製品版（release）と同等・ただしライト固定」。
 
 > ブランチ: **`personal`**（`release` から派生）。`main` / `release` は一切変更しない。
@@ -110,3 +110,44 @@ open /Applications/voicekey.app
 - そうすればブランチは 1 本（または最小限）になり、`merge` の同期作業自体が不要になる。
 - 移行は一気にやらず、まず現在 `isPersonal` で分岐している箇所を `Edition` 経由に置き換えるところから始める
   （挙動を変えずにフラグ体系だけ差し替える）。
+
+## 7. Windows 版の personal（2026-09-02 追加）
+
+Windows も同じ思想で、ビルド種別マーカー `src/config/embedded_keys.py`（git 管理外）の `IS_PERSONAL` で切り替える。
+鍵は Windows の Credential Manager（keyring・`voicekey.Groq` 等）から読む。埋め込みはしない。
+
+| ファイル | 分岐内容 |
+| --- | --- |
+| `scripts/build/generate_embedded_keys.py` | `--personal` で `IS_PERSONAL=True` / `IS_DIST=False` を生成（引数なしは従来どおり DIST） |
+| `src/utils/secrets.py` | `is_personal_build()` を追加。`get_auth_session()` が personal では常に `None` を返す＝`backend_client.is_logged_in()` が False になり、プロキシ・短命 JWT・warm ループ・利用権確認が単一点で no-op（Mac の `Keychain.authSession()` と同じ） |
+| `src/ui/settings_window.py` | personal はナビの「アカウント」ページを出さない |
+| `src/ui/onboarding_window.py` | personal は「次へ / 戻る」でログインステップを飛ばす |
+| `src/app.py` | 起動時に `ビルド種別: personal` を行動ログへ 1 行出す（exe の種別をログだけで判別するため） |
+
+文字起こしの選択肢名は Windows では特徴名（即時入力 / 高速 …）のまま（Mac の `developerLabel` 相当は未実装）。
+
+### きっかけ（なぜ Windows にも必要になったか）
+
+旧 release（DIST）ビルドでログインした認証セッションが Credential Manager（`voicekey.Auth`）に残ったまま
+開発ビルドを動かすと、失効していても `is_logged_in()` が True になり、Groq/Deepgram が応答しない
+開発サーバー（`localhost:3000`）経由へ送られて文字起こしが全滅、Deepgram は短命トークン取得の再試行で
+毎回約 4 秒待たされた（2026-09-02 実機）。personal ならセッションの有無に関係なく直叩きになる。
+
+### ビルドと差し替え（Windows・PowerShell）
+
+```powershell
+cd C:\Users\Tomato\voicekey
+.\venv\Scripts\Activate.ps1
+python scripts\build\generate_embedded_keys.py --personal      # IS_PERSONAL=True を生成
+pyinstaller voicekey.spec --clean --noconfirm                    # dist\voicekey\ に onedir 出力
+Remove-Item src\config\embedded_keys.py                          # マーカーはビルド後に消す（下記）
+
+# 常用先へ差し替え（settings.yaml / history.json / stats.json は exe と同じ場所にあり保持される）
+Stop-Process -Name voicekey -ErrorAction SilentlyContinue
+robocopy dist\voicekey "$env:LOCALAPPDATA\Programs\voicekey" /E
+Start-Process "$env:LOCALAPPDATA\Programs\voicekey\voicekey.exe"
+```
+
+> マーカーを残したまま `python -m unittest` を回すと `is_personal_build()` が True になり、
+> ログイン系テストの前提（keyring のセッションが読める）が崩れる。ビルドが終わったら必ず削除する。
+> C: の空きが少ない機では `--distpath` / `--workpath` で別ドライブに出力できる。
