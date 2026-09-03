@@ -34,6 +34,7 @@ final class MainWindowModel: ObservableObject {
 struct MainWindowView: View {
     @ObservedObject var config: ConfigStore
     @ObservedObject var history: HistoryStore
+    @ObservedObject var historySync: HistorySync
     @ObservedObject var stats: StatsStore
     @ObservedObject var updater: UpdaterController
     @ObservedObject var model: MainWindowModel
@@ -317,7 +318,7 @@ struct MainWindowView: View {
     /// 選択中の設定ページ（タグは旧 SettingsView と同じ値を踏襲・既存タブ View を使い回す）
     @ViewBuilder private func settingsContent(tab: Int) -> some View {
         switch tab {
-        case 0: GeneralSettingsTab(config: config)
+        case 0: GeneralSettingsTab(config: config, historySync: historySync)
         case 1: SlotSettingsTab(title: "録音キー 1（メイン）", slot: $config.slot1)
         case 2: SlotSettingsTab(title: "録音キー 2（サブ）", slot: $config.slot2)
         case 8: DictionaryTab(config: config)
@@ -325,18 +326,18 @@ struct MainWindowView: View {
             if #available(macOS 26.0, *) {
                 CaptionSettingsTab(config: config, controller: controller)
             } else {
-                GeneralSettingsTab(config: config)
+                GeneralSettingsTab(config: config, historySync: historySync)
             }
         case 10:
             if #available(macOS 26.0, *) {
                 TranslateInputTab(config: config)
             } else {
-                GeneralSettingsTab(config: config)
+                GeneralSettingsTab(config: config, historySync: historySync)
             }
         case 6: AccountTab()
         case 7: AboutTab()
         case 5: ApiKeysTab()
-        default: GeneralSettingsTab(config: config)
+        default: GeneralSettingsTab(config: config, historySync: historySync)
         }
     }
 }
@@ -345,6 +346,7 @@ struct MainWindowView: View {
 
 private struct GeneralSettingsTab: View {
     @ObservedObject var config: ConfigStore
+    @ObservedObject var historySync: HistorySync
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     /// 入力デバイス一覧（開いたタイミングと更新ボタンで読み直す）
     @State private var inputDevices: [AudioInputDevice] = AudioDevices.inputDevices()
@@ -354,6 +356,9 @@ private struct GeneralSettingsTab: View {
     @State private var micDetectStatus: String?
     /// 「変換しない語」の追加入力欄（保護リスト編集用）
     @State private var newProtectWord = ""
+    /// 共有トークンは既存値を画面へ戻さず、保存後も即座に消す。
+    @State private var syncTokenInput = ""
+    @State private var syncTokenSaveMessage: String?
 
     var body: some View {
         Form {
@@ -497,6 +502,61 @@ private struct GeneralSettingsTab: View {
 
             Section("履歴") {
                 Toggle("履歴を保存", isOn: $config.historyEnabled)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Windows と履歴を共有", isOn: $config.historySyncEnabled)
+
+                    LabeledContent("同期サーバー URL") {
+                        TextField(
+                            "https://voicekey-history-sync.<subdomain>.workers.dev",
+                            text: $config.historySyncURL
+                        )
+                        .textFieldStyle(.roundedBorder)
+                    }
+                    if !config.historySyncURL.isEmpty,
+                       !HistorySync.isAllowedServerURL(config.historySyncURL) {
+                        Text("https URL を入力してください（開発用は localhost / 127.0.0.1 の http も可）。")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+
+                    LabeledContent("共有トークン") {
+                        HStack(spacing: 8) {
+                            SecureField("Windows から貼り付け", text: $syncTokenInput)
+                                .textFieldStyle(.roundedBorder)
+                            Button("保存") { saveSyncToken() }
+                                .disabled(syncTokenInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            if historySync.tokenConfigured {
+                                Button("削除") {
+                                    syncTokenSaveMessage = historySync.deleteToken()
+                                        ? "共有トークンを削除しました" : "共有トークンを削除できませんでした"
+                                }
+                            }
+                        }
+                    }
+
+                    Text(historySync.tokenConfigured ? "共有トークン: 登録済み" : "共有トークン: 未登録")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let syncTokenSaveMessage {
+                        Text(syncTokenSaveMessage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    HStack(spacing: 12) {
+                        Text("送信待ち \(historySync.pendingCount) 件")
+                        Text("最終同期 \(lastSyncText)")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    if let error = historySync.errorMessage {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+                .padding(.top, 4)
             }
 
             Section("数字入力") {
@@ -538,6 +598,18 @@ private struct GeneralSettingsTab: View {
         .glassFormRows()                   // 行フィルを半透明化して島の中で「ガラスの棚」に見せる
         .formStyle(.grouped)
         .padding(.vertical, 8)
+        .onAppear { historySync.requestFetch() }
+    }
+
+    private var lastSyncText: String {
+        guard let date = historySync.lastSyncAt else { return "--:--" }
+        return date.formatted(date: .omitted, time: .shortened)
+    }
+
+    private func saveSyncToken() {
+        let ok = historySync.saveToken(syncTokenInput)
+        syncTokenSaveMessage = ok ? "共有トークンを保存しました" : "共有トークンを保存できませんでした"
+        if ok { syncTokenInput = "" }
     }
 
     /// マイク自動検出を開始する。検出中はユーザーに喋るよう促し、結果を 2 秒表示する

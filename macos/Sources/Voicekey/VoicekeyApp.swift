@@ -24,6 +24,47 @@ private enum OnboardingKeys {
     static let savedStep = "onboardingStep"
 }
 
+/// WindowServer を使えない CI / sandbox でも、実 URLSession で POST→GET→マージを通す検証経路。
+/// トークンと URL は環境変数から読むだけで、値は出力しない。
+@MainActor
+private enum HistorySyncCLITestMode {
+    static func runIfRequested() -> Bool {
+        guard CommandLine.arguments.contains("--history-sync-cli-test") else { return false }
+        guard let url = ProcessInfo.processInfo.environment["VOICEKEY_HISTORY_SYNC_TEST_URL"],
+              let token = ProcessInfo.processInfo.environment["VOICEKEY_SYNC_TOKEN"],
+              let directoryPath = ProcessInfo.processInfo.environment["VOICEKEY_HISTORY_SYNC_TEST_DIR"] else {
+            print("[HISTORY-SYNC-TEST] status=error reason=missing_environment")
+            return true
+        }
+
+        let directory = URL(fileURLWithPath: directoryPath, isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let history = HistoryStore(directory: directory)
+        let sync = HistorySync(
+            history: history,
+            configuration: { .init(enabled: true, url: url) },
+            directory: directory,
+            tokenProvider: { token },
+            tokenWriter: { _ in true },
+            tokenDeleter: { true },
+            automaticScheduling: false
+        )
+        history.onAdd = { [weak sync] in sync?.enqueue($0) }
+        sync.applyConfig()
+        sync.waitForIdleForTesting()
+        history.add("Mac から同期した履歴", appName: "History Sync Test")
+        sync.waitForIdleForTesting()
+        sync.runCycleForTesting()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+        let windows = history.allItems.filter { $0.device == "windows" }
+        let label = windows.first.map { "[Windows] \($0.text)" } ?? "missing"
+        print("[HISTORY-SYNC-TEST] status=\(windows.isEmpty ? "error" : "ok") received=\(windows.count) display=\(label)")
+        sync.shutdown()
+        return true
+    }
+}
+
 @main
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -32,6 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static var sharedDelegate: AppDelegate?
 
     static func main() {
+        if HistorySyncCLITestMode.runIfRequested() { return }
         // ライブ字幕の検証ハーネス（GUI を出さずに計測して終了する）。
         // 通常起動には一切影響しない（引数が無ければ素通り）。
         if CaptionTestMode.runIfRequested() { return }
@@ -398,7 +440,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         sideNotch = SideNotchController(
             history: controller.history,
             config: controller.config,
-            onOpenHome: { [weak self] in self?.showHome() }
+            onOpenHome: { [weak self] in self?.showHome() },
+            onRequestFetch: { [weak controller] in controller?.historySync.requestFetch() }
         )
     }
 
@@ -596,6 +639,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             rootView: MainWindowView(
                 config: controller.config,
                 history: controller.history,
+                historySync: controller.historySync,
                 stats: controller.stats,
                 updater: UpdaterController.shared,
                 model: model,

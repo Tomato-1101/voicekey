@@ -9,6 +9,7 @@
 //
 
 import AppKit
+import Combine
 import Foundation
 import os.log
 
@@ -44,6 +45,8 @@ final class AppController: ObservableObject {
     let hud = HudController()
     /// 音声入力履歴（貼り付けたテキストを最大 200 件保持。設定の「履歴」タブで再コピー可）
     let history = HistoryStore()
+    /// Mac ⇄ Windows 履歴同期（認証層とは独立し、通信は専用直列キューで行う）
+    let historySync: HistorySync
     /// 使用実績（節約時間・レベル・連続日数。設定の「実績」タブで表示。貼り付け後に集計する）
     let stats = StatsStore()
     /// 前面アプリ（貼り付け先）の追跡。HUD アイコン表示とアプリ別実績の記録に使う
@@ -129,6 +132,7 @@ final class AppController: ObservableObject {
     private var audioQueueStalled = false
 
     private var configObservation: Any?
+    private var historySyncObservations: Set<AnyCancellable> = []
 
     /// オンボーディングの整形体験ステップ中だけ整形を強制 ON にする一時フラグ（保存しない）。
     /// true の間の録音は、スロットの formatEnabled 設定に関わらず整形を実行する
@@ -157,6 +161,11 @@ final class AppController: ObservableObject {
     private var antiNapActivity: NSObjectProtocol?
 
     init() {
+        let sync = HistorySync(history: history, config: config)
+        historySync = sync
+        history.onAdd = { [weak sync] item in sync?.enqueue(item) }
+        sync.applyConfig()
+
         rebuildTranscribers()
 
         // 設定変更でトランスクライバを作り直し、HUD 表示設定を反映
@@ -176,6 +185,13 @@ final class AppController: ObservableObject {
                 }
             }
         }
+        // URL 欄は 1 文字ごとに保存されるので、打鍵のたびに再接続・ログ出力しないよう少し待つ
+        Publishers.CombineLatest(config.$historySyncEnabled, config.$historySyncURL)
+            .dropFirst()
+            .removeDuplicates { $0.0 == $1.0 && $0.1 == $1.1 }
+            .debounce(for: .milliseconds(800), scheduler: RunLoop.main)
+            .sink { [weak sync] _ in sync?.applyConfig() }
+            .store(in: &historySyncObservations)
         hud.enabled = config.hudEnabled
         hud.alwaysVisible = config.hudAlwaysVisible
         // 音声入力中（録音・変換中・通知）はライブ字幕を隠す。字幕を一度も使っていなければ何もしない。
@@ -460,6 +476,7 @@ final class AppController: ObservableObject {
     }
 
     func shutdown() {
+        historySync.shutdown()
         // 字幕を動かしていたらタップと Aggregate Device を確実に片付ける
         // （残すと HAL 側にゴーストデバイスが溜まる）
         if #available(macOS 26.0, *), let caption = captionStorage as? CaptionService {

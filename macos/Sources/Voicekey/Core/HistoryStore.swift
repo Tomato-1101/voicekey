@@ -15,11 +15,13 @@ private let log = Logger(subsystem: "com.voicekey.app", category: "history")
 
 /// 音声入力 1 回分の履歴エントリ。
 /// appBundleID / appName は貼り付け先アプリ（旧データには無いので Optional）、
+/// device は作成元（旧データの nil は自端末扱い）、
 /// characters は出力文字数（旧データには無いので読み込み時に text から補完する）。
 struct HistoryItem: Codable, Identifiable, Equatable {
     let id: UUID
     let text: String
     let date: Date
+    let device: String?
     let appBundleID: String?
     let appName: String?
     let characters: Int
@@ -33,6 +35,7 @@ extension HistoryItem {
         id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         text = try c.decodeIfPresent(String.self, forKey: .text) ?? ""
         date = try c.decodeIfPresent(Date.self, forKey: .date) ?? Date()
+        device = try c.decodeIfPresent(String.self, forKey: .device)
         appBundleID = try c.decodeIfPresent(String.self, forKey: .appBundleID)
         appName = try c.decodeIfPresent(String.self, forKey: .appName)
         // 旧データは文字数を持たないので text の文字数で補完する
@@ -51,6 +54,18 @@ final class HistoryStore: ObservableObject {
 
     /// 履歴（新しい順）
     @Published private(set) var items: [HistoryItem] = []
+    /// 同期サーバーから受信した他端末由来の履歴
+    @Published private(set) var cloudItems: [HistoryItem] = []
+
+    /// ローカルを優先してクラウド履歴を重ねた表示用一覧（日時降順・最大 200 件）。
+    var allItems: [HistoryItem] {
+        let localIDs = Set(items.map(\.id))
+        let remote = cloudItems.filter { !localIDs.contains($0.id) && $0.device != "mac" }
+        return Array((items + remote).sorted { $0.date > $1.date }.prefix(Self.maxItems))
+    }
+
+    /// 追加完了通知。同期クライアントはここから非同期キューへ積むだけにする。
+    var onAdd: ((HistoryItem) -> Void)?
 
     private let fileURL: URL
 
@@ -79,7 +94,7 @@ final class HistoryStore: ObservableObject {
         if let strings = try? decoder.decode([String].self, from: data) {
             let items = strings.prefix(maxItems).map {
                 HistoryItem(id: UUID(), text: $0, date: Date(),
-                            appBundleID: nil, appName: nil, characters: $0.count)
+                            device: nil, appBundleID: nil, appName: nil, characters: $0.count)
             }
             return Array(items)
         }
@@ -91,13 +106,19 @@ final class HistoryStore: ObservableObject {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let item = HistoryItem(
             id: UUID(), text: text, date: Date(),
-            appBundleID: appBundleID, appName: appName, characters: text.count
+            device: "mac", appBundleID: appBundleID, appName: appName, characters: text.count
         )
         items.insert(item, at: 0)
         if items.count > Self.maxItems {
             items.removeLast(items.count - Self.maxItems)
         }
         save()
+        onAdd?(item)
+    }
+
+    /// 同期クライアントが受信キャッシュを差し替える。
+    func setCloudItems(_ newItems: [HistoryItem]) {
+        cloudItems = newItems
     }
 
     private func save() {

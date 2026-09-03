@@ -189,8 +189,8 @@ struct SideNotchHistoryView: View {
     /// クエリで絞り込んだ履歴（空クエリなら全件）。テキストとアプリ名の両方を大文字小文字無視で部分一致。
     private var filteredItems: [HistoryItem] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty else { return history.items }
-        return history.items.filter { item in
+        guard !q.isEmpty else { return history.allItems }
+        return history.allItems.filter { item in
             item.text.localizedCaseInsensitiveContains(q)
                 || (item.appName?.localizedCaseInsensitiveContains(q) ?? false)
         }
@@ -300,7 +300,7 @@ struct SideNotchHistoryView: View {
             HStack(alignment: .top, spacing: 10) {
                 Self.appIconView(bundleID: entry.appBundleID, size: 22)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(entry.text)
+                    Text(displayText(entry))
                         .font(.system(size: 12))
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
@@ -324,6 +324,10 @@ struct SideNotchHistoryView: View {
             .contentShape(Rectangle())  // 行全体をクリック領域にする
         }
         .buttonStyle(.plain)
+    }
+
+    private func displayText(_ entry: HistoryItem) -> String {
+        entry.device != nil && entry.device != "mac" ? "[Windows] \(entry.text)" : entry.text
     }
 
     // MARK: フッタ
@@ -433,6 +437,7 @@ final class SideNotchController {
     private let config: ConfigStore
     /// 「ホームを開く」で呼ぶ（StatusItemController.showHome）
     private let onOpenHome: () -> Void
+    private let onRequestFetch: () -> Void
 
     /// 常駐スリットのパネル（幅は狭いが、ホバー / クリックを受けるため mouse は透過しない）
     private var slitPanel: NSPanel?
@@ -448,10 +453,16 @@ final class SideNotchController {
     private static let slitPanelWidth: CGFloat = 12
     private static let slitPanelHeight: CGFloat = SideNotchSlitView.slitHeight + 16
 
-    init(history: HistoryStore, config: ConfigStore, onOpenHome: @escaping () -> Void) {
+    init(
+        history: HistoryStore,
+        config: ConfigStore,
+        onOpenHome: @escaping () -> Void,
+        onRequestFetch: @escaping () -> Void = {}
+    ) {
         self.history = history
         self.config = config
         self.onOpenHome = onOpenHome
+        self.onRequestFetch = onRequestFetch
 
         // 表示トグルの購読。@Published は購読時に現在値を即時に流すため、初期表示もここで決まる。
         config.$sideNotchEnabled
@@ -542,6 +553,7 @@ final class SideNotchController {
     /// 履歴パネルを開く（デバッグ用にも公開）。makeKey せず前面のフォーカスを奪わない。
     func openHistory() {
         guard config.sideNotchEnabled else { return }
+        onRequestFetch()
         if historyPanel == nil { makeHistoryPanel() }
         positionHistory()
         historyPanel?.orderFrontRegardless()

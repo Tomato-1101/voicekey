@@ -5,6 +5,21 @@
 
 ## Mac 側で必要な実装: 履歴同期（2026-09-03・Windows 側完了）
 
+**2026-09-03 Mac 側実装済み**。実装は `macos/Sources/Voicekey/Core/HistorySync.swift`、
+`Core/HistoryStore.swift`、`Core/Keychain.swift`、`Config/AppConfig.swift`、`AppController.swift`、
+`VoicekeyApp.swift`、`UI/SettingsView.swift`、`UI/SideNotch.swift`、`UI/HomeView.swift`。
+自動テストは `macos/Tests/VoicekeyTests/HistorySyncTests.swift` と既存の HistoryStore / ConfigStore テストへ追加した。
+検証は `swift build` 成功、`swift test` **223 件実行・1 件 skip・失敗 0**、`build_app.sh` 成功。
+`URLProtocol` モックで POST 形式、200 件バッチ、冪等性、カーソル、401 停止、バックオフ、永続化、
+Windows 形式の受信と `[Windows]` マージ表示を確認した。さらにローカルのモック Worker（Python 標準ライブラリ）に対し
+ヘッドレス検証モード `--history-sync-cli-test`（env: `VOICEKEY_HISTORY_SYNC_TEST_URL` / `VOICEKEY_HISTORY_SYNC_TEST_DIR` /
+`VOICEKEY_SYNC_TOKEN`。実 URLSession・隔離ディレクトリ・実 Keychain 不使用）で POST 1 件 → GET 1 件 → `[Windows]` マージまで
+実 HTTP で通し、トークン不一致時は `履歴同期失敗 (トークンが無効です)` で停止することも確認。新ビルドを起動して
+行動ログに `履歴同期: 無効` が出ること、設定 → 一般 → 履歴に「Windows と履歴を共有」ブロックが出ることを実機で確認。
+**実 Worker との往復は未実施**（共有トークンが Windows 側にしか無い。Mac の設定画面に貼ってもらった時点で確認する）。
+
+以下は実装時に使った仕様・参照情報として残す。
+
 Mac と Windows で音声入力履歴を共有する機能。**Worker・D1・Windows クライアントは実装済み・稼働確認済み**。
 **Mac クライアントが未実装**なので、このセッションで着手するときはここを読めば全体が分かるようにしてある。
 API 仕様・障害時の見方など詳細は `docs/HISTORY_SYNC.md` が正本（本節はそこからの実装ポインタ）。

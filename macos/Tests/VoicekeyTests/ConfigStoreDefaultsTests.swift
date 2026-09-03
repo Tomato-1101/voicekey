@@ -33,6 +33,8 @@ final class ConfigStoreDefaultsTests: XCTestCase {
         XCTAssertTrue(store.dockIconAlwaysVisible)
         XCTAssertTrue(store.sideNotchEnabled)
         XCTAssertTrue(store.historyEnabled)
+        XCTAssertFalse(store.historySyncEnabled)
+        XCTAssertEqual(store.historySyncURL, "")
     }
 
     // ライブ字幕のミラーが CaptionSettings（正本）と一致して初期化される
@@ -100,6 +102,8 @@ final class ConfigStoreDefaultsTests: XCTestCase {
             store.dockIconAlwaysVisible = true
             store.sideNotchEnabled = false
             store.historyEnabled = false
+            store.historySyncEnabled = true
+            store.historySyncURL = "https://sync.example.com"
             store.repasteKey = ["f5"]
         }
 
@@ -110,6 +114,8 @@ final class ConfigStoreDefaultsTests: XCTestCase {
         XCTAssertTrue(reloaded.dockIconAlwaysVisible)
         XCTAssertFalse(reloaded.sideNotchEnabled)
         XCTAssertFalse(reloaded.historyEnabled)
+        XCTAssertTrue(reloaded.historySyncEnabled)
+        XCTAssertEqual(reloaded.historySyncURL, "https://sync.example.com")
         XCTAssertEqual(reloaded.repasteKey, ["f5"])
     }
 

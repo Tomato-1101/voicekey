@@ -36,6 +36,7 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertEqual(store.items[0].text, "こんにちは")
         XCTAssertNil(store.items[0].appBundleID)   // 旧データはアプリ情報を持たない
         XCTAssertNil(store.items[0].appName)
+        XCTAssertNil(store.items[0].device)  // device 無しの旧 JSON は自端末扱い
         XCTAssertEqual(store.items[0].characters, 5)  // text の文字数で補完される
     }
 
@@ -116,6 +117,7 @@ final class HistoryStoreTests: XCTestCase {
         store.add("hello", appBundleID: "com.apple.dt.Xcode", appName: "Xcode")
         XCTAssertEqual(store.items.first?.appBundleID, "com.apple.dt.Xcode")
         XCTAssertEqual(store.items.first?.appName, "Xcode")
+        XCTAssertEqual(store.items.first?.device, "mac")
         XCTAssertEqual(store.items.first?.characters, 5)
     }
 

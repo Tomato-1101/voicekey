@@ -37,6 +37,8 @@ enum Keychain {
     private static let deviceIdService = "voicekey.DeviceId"
     /// 認証セッション（Supabase JWT）用サービス
     private static let authService = "voicekey.Auth"
+    /// Mac ⇄ Windows 履歴同期の共有トークン用サービス
+    private static let syncTokenService = "voicekey.SyncToken"
 
     /// バックエンドごとのサービス識別子（Python 版と同一）
     static func service(for backend: Backend) -> String {
@@ -167,6 +169,48 @@ enum Keychain {
     /// キーが設定済みかどうか
     static func hasApiKey(for backend: Backend) -> Bool {
         apiKey(for: backend) != nil
+    }
+
+    // MARK: - 履歴同期トークン
+
+    /// 履歴同期トークンを取得する（アプリ Keychain → 中央 Keychain → 環境変数）。
+    static func syncToken() -> String? {
+        lock.lock()
+        if let cached = cache[syncTokenService] {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+
+        let value = read(service: syncTokenService)
+            ?? readCentral(service: "VOICEKEY_SYNC_TOKEN")
+            ?? ProcessInfo.processInfo.environment["VOICEKEY_SYNC_TOKEN"]
+        guard let value, !value.isEmpty else { return nil }
+        lock.lock(); cache[syncTokenService] = value; lock.unlock()
+        return value
+    }
+
+    /// 履歴同期トークンをアプリ Keychain へ保存する。
+    @discardableResult
+    static func setSyncToken(_ token: String) -> Bool {
+        let ok = write(service: syncTokenService, value: token)
+        if ok {
+            lock.lock(); cache[syncTokenService] = token; lock.unlock()
+        }
+        return ok
+    }
+
+    /// 履歴同期トークンをアプリ Keychain から削除する。
+    @discardableResult
+    static func deleteSyncToken() -> Bool {
+        lock.lock(); cache.removeValue(forKey: syncTokenService); lock.unlock()
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: syncTokenService,
+            kSecAttrAccount as String: account,
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        return status == errSecSuccess || status == errSecItemNotFound
     }
 
     // MARK: - 製品版バックエンド接続・認証（device_id / Supabase セッション）

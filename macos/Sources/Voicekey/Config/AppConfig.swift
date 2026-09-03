@@ -257,6 +257,10 @@ final class ConfigStore: ObservableObject {
     @Published var sideNotchEnabled: Bool
     /// 音声入力の履歴を保存するか（既定オン。オフなら履歴に残さない）
     @Published var historyEnabled: Bool
+    /// Mac ⇄ Windows の履歴共有を有効にするか（既定オフ）
+    @Published var historySyncEnabled: Bool
+    /// 履歴共有 Worker のベース URL（末尾スラッシュなしを推奨）
+    @Published var historySyncURL: String
     /// 数字入力の正規化を行うか（マスター。false なら完全パススルー）
     @Published var numeralNormalizeEnabled: Bool
     /// 単独漢数字＋助数詞（三時→3時）も変換するか（位取り≥2 はマスターのみで常時変換）
@@ -333,6 +337,8 @@ final class ConfigStore: ObservableObject {
         static let dockIconAlwaysVisible = "dockIconAlwaysVisible"
         static let sideNotchEnabled = "sideNotchEnabled"
         static let historyEnabled = "historyEnabled"
+        static let historySyncEnabled = "historySyncEnabled"
+        static let historySyncURL = "historySyncURL"
         static let numeralNormalizeEnabled = "numeralNormalizeEnabled"
         static let numeralConvertCounter = "numeralConvertCounter"
         static let numeralProtectWords = "numeralProtectWords"
@@ -402,6 +408,8 @@ final class ConfigStore: ObservableObject {
         translateInputEngine = DictationTranslation.engine
         sideNotchEnabled = defaults.object(forKey: Keys.sideNotchEnabled) as? Bool ?? true
         historyEnabled = defaults.object(forKey: Keys.historyEnabled) as? Bool ?? true
+        historySyncEnabled = defaults.object(forKey: Keys.historySyncEnabled) as? Bool ?? false
+        historySyncURL = defaults.string(forKey: Keys.historySyncURL) ?? ""
         // 数字入力: マスター・助数詞は既定 ON。保護リストは未保存ならシード、
         // 保存済みなら空配列も含めそのまま尊重する（repasteKey と同じ「未保存判定」方式）
         numeralNormalizeEnabled = defaults.object(forKey: Keys.numeralNormalizeEnabled) as? Bool ?? true
@@ -450,6 +458,8 @@ final class ConfigStore: ObservableObject {
         $dockIconAlwaysVisible.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.dockIconAlwaysVisible) }.store(in: &cancellables)
         $sideNotchEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.sideNotchEnabled) }.store(in: &cancellables)
         $historyEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.historyEnabled) }.store(in: &cancellables)
+        $historySyncEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.historySyncEnabled) }.store(in: &cancellables)
+        $historySyncURL.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.historySyncURL) }.store(in: &cancellables)
         $numeralNormalizeEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.numeralNormalizeEnabled) }.store(in: &cancellables)
         $numeralConvertCounter.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.numeralConvertCounter) }.store(in: &cancellables)
         $numeralProtectWords.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.numeralProtectWords) }.store(in: &cancellables)

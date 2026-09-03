@@ -2,7 +2,7 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
-## [Unreleased] - 2026-08-02
+## [Unreleased] - 2026-09-03
 
 ### Fixed
 - **Windows の行動ログの実ファイル名を `app.log` に揃えた（2026-09-02）**。README・OVERVIEW は
@@ -55,7 +55,12 @@ voicekeyの変更履歴を記録するファイルです。
     （最大 200 件・他端末の行は `[Mac]` 接頭辞）。設定 → 履歴ページのカード「Mac と履歴を共有」でトグル・
     URL・トークンを設定。
   - 動作確認スクリプト `scripts/sync/check_sync.py` を追加（トークンは keyring から読むだけで画面に出さない）。
-  - **Mac 側は未実装**。実装スペックは `HANDOFF.md` 冒頭「Mac 側で必要な実装: 履歴同期」を参照。
+  - **Mac クライアント**（`macos/Sources/Voicekey/Core/HistorySync.swift`）も実装。`HistoryStore.onAdd` から
+    専用直列キューへ即時 enqueue し、200 件バッチ送信・`received_at` カーソル受信・永続アウトボックス／
+    キャッシュ・10 秒→5 分の指数バックオフ・401 停止を Windows と同じ契約で動かす。
+    設定 → 一般 → 履歴に「Windows と履歴を共有」（URL・Keychain の共有トークン・状態表示）を追加し、
+    ホームとサイドノッチでは他端末の行へ `[Windows]` を付けて最大 200 件をマージ表示する。
+    回帰用にヘッドレス検証モード `--history-sync-cli-test`（実 HTTP で POST→GET→マージを通す）を追加。
 - **Windows にも personal エディション（個人用最速版）を追加（2026-09-02）**。
   `python scripts/build/generate_embedded_keys.py --personal` で生成したマーカー（`IS_PERSONAL=True`）
   を含めてビルドすると、Mac の `EmbeddedKeys.isPersonal` と同じく認証セッションを常に無視し

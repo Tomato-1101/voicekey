@@ -3,8 +3,8 @@
 Mac と Windows で音声入力の履歴を共有する機能。**Cloudflare Workers + D1** の 1 Worker・1 テーブル構成で、
 開発者本人専用（トークン 1 本を両端末で共有するだけ・ユーザー管理やログインは無い）。
 
-**現在地（2026-09-03）**: Worker・Windows クライアントは実装済み・稼働確認済み。**Mac クライアントは未実装**
-（Mac 側で必要な実装は `HANDOFF.md` 冒頭の「Mac 側で必要な実装: 履歴同期」を参照）。
+**現在地（2026-09-03）**: Worker・Windows クライアント・Mac クライアントを実装済み。
+Mac は `URLProtocol` モックで POST / GET、Windows 形式の受信、統合表示を自動テストしている。
 
 ---
 
@@ -21,7 +21,7 @@ Windows から見る手段が無かった。本機能は両端末の履歴を 1 
 ```
 ┌────────────┐         HTTPS/Bearer          ┌──────────────────┐
 │  Mac 版      │ ─────────────────────────▶  │                    │
-│ (未実装)     │ ◀─────────────────────────  │  Cloudflare Worker │
+│ (実装済み)   │ ◀─────────────────────────  │  Cloudflare Worker │
 └────────────┘                               │  (sync-worker/)    │
                                               │  GET  /health      │
 ┌────────────┐         HTTPS/Bearer          │  POST /history     │──▶ D1: history テーブル
@@ -138,8 +138,9 @@ CREATE TABLE history (
 
 - **Windows**: 資格情報マネージャーに `voicekey.SyncToken` として保存（設定 → 履歴 → カードから登録）。
   Mac への持ち出し用に `%LOCALAPPDATA%\voicekey\sync_token.txt`（リポジトリの外・git 管理外）にも平文コピーを置く。
-- **Mac**（未実装分）: 同じ値を Keychain の `voicekey.SyncToken` へ保存する想定（`sync_token.txt` の中身を
-  手動でコピー＆ペースト）。
+- **Mac**: Keychain の `voicekey.SyncToken` へ保存（設定 → 一般 → 履歴の「共有トークン」）。読み取りは
+  アプリ Keychain → 中央 Keychain `VOICEKEY_SYNC_TOKEN` → 同名の環境変数の順。値は UI・ログへ出さない。
+  Windows の `sync_token.txt` の中身を手動でコピー＆ペーストする。
 
 トークンは Python の `secrets.token_urlsafe(32)` で生成した。**git へは絶対にコミットしない**
 （`sync-worker/.dev.vars` は gitignore 対象）。
@@ -175,7 +176,20 @@ npx wrangler deploy
 5. ローテーション直後は両端末とも `401 トークンが無効です` の警告が一度出るのが正常
    （更新前の状態で最後にリトライしたぶん）。設定保存後は自動的に再開する。
 
-## 7. Windows での設定手順
+## 7. Mac / Windows での設定手順
+
+### Mac
+
+1. メニューバーアイコン → 設定 → 一般 → 履歴。
+2. 「Windows と履歴を共有」をオンにする。
+3. 「同期サーバー URL」に `https://voicekey-history-sync.<subdomain>.workers.dev` を入力する。
+4. Windows の `%LOCALAPPDATA%\voicekey\sync_token.txt` の中身を「共有トークン」へ貼り付けて保存する。
+5. 「送信待ち n 件」「最終同期 hh:mm」を確認する。401 の案内が出た場合はトークンを保存し直す。
+
+URL は https 必須（ローカル開発時だけ `http://127.0.0.1` / `http://localhost` を許可）。
+ホームとサイドノッチでは Windows 由来の履歴に `[Windows]` が付く。
+
+### Windows
 
 1. トレイアイコン → 設定ウィンドウ → 「履歴」ページ。
 2. 上部のカード「Mac と履歴を共有」を開く。

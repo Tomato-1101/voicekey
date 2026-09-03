@@ -397,11 +397,11 @@ struct HomeView: View {
     private var historySection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("最近の履歴").font(.headline)
-            if history.items.isEmpty {
+            if history.allItems.isEmpty {
                 emptyState("音声入力すると、ここに最近の履歴が残ります（クリックでコピーできます）。")
             } else {
                 VStack(spacing: 0) {
-                    let recent = Array(history.items.prefix(8))
+                    let recent = Array(history.allItems.prefix(8))
                     ForEach(Array(recent.enumerated()), id: \.element.id) { index, entry in
                         historyRow(entry)
                         if index < recent.count - 1 {
@@ -423,7 +423,7 @@ struct HomeView: View {
             HStack(alignment: .top, spacing: 8) {
                 appIconView(bundleID: entry.appBundleID, size: 20)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(entry.text)
+                    Text(entry.device != nil && entry.device != "mac" ? "[Windows] \(entry.text)" : entry.text)
                         .font(.system(size: 12))
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
