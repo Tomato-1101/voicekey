@@ -16,7 +16,11 @@ Windows 形式の受信と `[Windows]` マージ表示を確認した。さら�
 `VOICEKEY_SYNC_TOKEN`。実 URLSession・隔離ディレクトリ・実 Keychain 不使用）で POST 1 件 → GET 1 件 → `[Windows]` マージまで
 実 HTTP で通し、トークン不一致時は `履歴同期失敗 (トークンが無効です)` で停止することも確認。新ビルドを起動して
 行動ログに `履歴同期: 無効` が出ること、設定 → 一般 → 履歴に「Windows と履歴を共有」ブロックが出ることを実機で確認。
-**実 Worker との往復は未実施**（共有トークンが Windows 側にしか無い。Mac の設定画面に貼ってもらった時点で確認する）。
+**実 Worker との往復も 2026-09-04 に確認済み**: 共有トークンを Mac で発行し直して Worker の `SYNC_TOKEN` を
+`wrangler secret put` でローテーション、Mac 側は中央 Keychain（service=`VOICEKEY_SYNC_TOKEN` / account=`shared`。
+`Keychain.syncToken()` のフォールバック経路）に保存。新ビルド起動で `履歴同期完了 (送信 8 件, 受信 20 件)`。
+Windows 側はユーザーが新トークンを貼り直す（プロンプト 1 個を渡した。Windows の資格情報 `voicekey.SyncToken` と
+`sync_token.txt` を更新して `check_sync.py` で 5 ステップ確認）。
 
 以下は実装時に使った仕様・参照情報として残す。
 

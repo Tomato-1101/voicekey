@@ -138,7 +138,8 @@ CREATE TABLE history (
 
 - **Windows**: 資格情報マネージャーに `voicekey.SyncToken` として保存（設定 → 履歴 → カードから登録）。
   Mac への持ち出し用に `%LOCALAPPDATA%\voicekey\sync_token.txt`（リポジトリの外・git 管理外）にも平文コピーを置く。
-- **Mac**: Keychain の `voicekey.SyncToken` へ保存（設定 → 一般 → 履歴の「共有トークン」）。読み取りは
+- **Mac**: Keychain の `voicekey.SyncToken` へ保存（設定 → 一般 → 履歴の「共有トークン」）、または中央 Keychain
+  （service=`VOICEKEY_SYNC_TOKEN` / account=`shared`。2026-09-04 からの現運用。`security add-generic-password -U -s VOICEKEY_SYNC_TOKEN -a shared -w`）。読み取りは
   アプリ Keychain → 中央 Keychain `VOICEKEY_SYNC_TOKEN` → 同名の環境変数の順。値は UI・ログへ出さない。
   Windows の `sync_token.txt` の中身を手動でコピー＆ペーストする。
 
