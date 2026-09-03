@@ -19,8 +19,8 @@ Windows 形式の受信と `[Windows]` マージ表示を確認した。さら�
 **実 Worker との往復も 2026-09-04 に確認済み**: 共有トークンを Mac で発行し直して Worker の `SYNC_TOKEN` を
 `wrangler secret put` でローテーション、Mac 側は中央 Keychain（service=`VOICEKEY_SYNC_TOKEN` / account=`shared`。
 `Keychain.syncToken()` のフォールバック経路）に保存。新ビルド起動で `履歴同期完了 (送信 8 件, 受信 20 件)`。
-Windows 側はユーザーが新トークンを貼り直す（プロンプト 1 個を渡した。Windows の資格情報 `voicekey.SyncToken` と
-`sync_token.txt` を更新して `check_sync.py` で 5 ステップ確認）。
+Windows 側もユーザーが新トークンを貼り直して同期再開済み（Mac の履歴 10 件を Windows で受信）。Mac のサイドノッチに
+`[Windows]` 付きの行が Mac の行と時刻順に並ぶことを実機スクショで確認（`defaults write com.voicekey.app VOICEKEY_OPEN_NOTCH 1` → 起動）。
 
 以下は実装時に使った仕様・参照情報として残す。
 
