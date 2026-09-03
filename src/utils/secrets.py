@@ -31,6 +31,9 @@ SERVICE_DEEPGRAM: str = "voicekey.Deepgram"
 SERVICE_DEVICE_ID: str = "voicekey.DeviceId"
 SERVICE_AUTH: str = "voicekey.Auth"
 
+# 履歴同期 Worker の共有トークン。Mac の Keychain と同じサービス名
+SERVICE_SYNC_TOKEN: str = "voicekey.SyncToken"
+
 # ユーザー名は固定。アプリ単一ユーザー前提のため、エントリ識別はサービス名のみで足りる。
 _USERNAME: str = "default"
 

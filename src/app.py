@@ -59,6 +59,7 @@ from .core import sound_fx
 from .core.audio_preprocess import preprocess as preprocess_audio
 from .core.text_utils import join_segments
 from .core.history import HistoryStore
+from .core.history_sync import HistorySync
 from .core.stats import StatsStore
 from .platform import get_platform_adapter
 from .ui import Hud, SettingsWindow, SideNotch, SystemTray
@@ -197,6 +198,8 @@ class VoicekeyApp(QObject):
     # 録音完了後に利用権の残量を取り直したら発火（設定画面の「残り回数」を即更新するため。
     # ワーカースレッド → メインスレッドへ Qt のキュー接続でホップする）
     account_refreshed = Signal()
+    # 履歴同期の受信キャッシュが変わった（同期スレッドから emit → UI スレッドで履歴表示を更新）
+    history_sync_changed = Signal()
 
     def __init__(self) -> None:
         """アプリケーションを初期化する。"""
@@ -276,7 +279,10 @@ class VoicekeyApp(QObject):
         media_ducker.restore()
 
         # --- 音声入力履歴（貼り付けたテキストを最大 10 件保持。設定の「履歴」タブで再コピー可） ---
-        self._history = HistoryStore()
+        # Mac と履歴を共有。貼り付け経路は enqueue だけ＝ファイル追記のみでブロックしない。
+        # on_changed は同期スレッドから呼ばれるため Signal 経由で UI スレッドへ渡す
+        self._history_sync = HistorySync(self._config, on_changed=self.history_sync_changed.emit)
+        self._history = HistoryStore(on_add=self._history_sync.enqueue)
 
         # --- 使用実績（節約時間・レベル・連続日数。設定の「実績」タブで表示。貼り付け後に集計する） ---
         self._stats = StatsStore()
@@ -294,11 +300,14 @@ class VoicekeyApp(QObject):
         self._settings_window = SettingsWindow(
             platform_adapter=self._platform,
             history=self._history,
+            history_sync=self._history_sync,
             stats=self._stats,
             config_manager=self._config,
             updater=self._updater,
         )
         self._settings_window.settings_saved.connect(self._apply_config_changes)
+        # Mac 側の履歴が届いたら開いている履歴表示を作り直す（キュー接続で UI スレッド上で実行される）
+        self.history_sync_changed.connect(self._settings_window.refresh_history_views)
         # 設定「一般」の「セットアップガイドを開く」からもう一度オンボーディングを表示する
         self._settings_window.open_onboarding_requested.connect(self.show_onboarding)
         # 録音完了後の残量更新（別スレッド）→ 設定画面のアカウント表示をメインスレッドで描き直す
@@ -370,6 +379,14 @@ class VoicekeyApp(QObject):
         # モーダルを出すと初期化が止まるため）。参照を保持してウィンドウが GC されないようにする。
         self._onboarding_window = None
         QTimer.singleShot(0, self._maybe_show_onboarding)
+
+        # 履歴同期ワーカーを起動（設定で無効なら内部で待機するだけ）
+        self._history_sync.enable()
+        sync_status = self._history_sync.status()
+        if sync_status["enabled"]:
+            logger.info(f"履歴同期: 有効 ({self._config.get('history_sync', {}).get('url', '')})")
+        else:
+            logger.info("履歴同期: 無効")
 
         logger.info("アプリケーション準備完了")
         self._emit_state()
@@ -1342,6 +1359,9 @@ class VoicekeyApp(QObject):
         # 待機ピルのオン/オフを即座に画面へ反映する（次の状態変化を待たない）
         self._emit_state()
 
+        # 履歴同期の設定変更（有効/無効・URL）を反映し、401 停止も解除する
+        self._history_sync.apply_config()
+
         logger.info("設定を再読み込みして適用しました")
 
     def _watchdog_check(self) -> None:
@@ -1554,6 +1574,7 @@ class VoicekeyApp(QObject):
                 logger.warning(f"キーボードリスナー停止失敗: {e}")
 
         self._task_q.put(None)  # ワーカー停止
+        self._history_sync.stop()
         # ストリームを閉じてマイクを OS に返す（ハング時も 1 秒で諦める。
         # プロセス終了時に OS がハンドルを回収するため実害はない）
         self._recorder.shutdown(timeout=1.0)

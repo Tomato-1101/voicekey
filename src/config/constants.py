@@ -177,6 +177,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # False かつ「起動時に settings.yaml が存在しなかった（＝完全な初回起動）」ときだけ
     # セットアップウィンドウを出す。既存ユーザー（ファイルが既にあった）は補完して出さない。
     "did_complete_onboarding": False,
+
+    # Mac と履歴を共有する Cloudflare Worker（sync-worker/）。トークンは keyring（voicekey.SyncToken）に置き、設定ファイルには書かない
+    "history_sync": {
+        "enabled": False,
+        "url": "",
+    },
 }
 
 # ============================================

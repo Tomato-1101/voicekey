@@ -96,6 +96,12 @@ dev_timing.log
 # ユーザーの設定ファイル（.env.exampleを参照）
 settings.yaml
 
+# 履歴同期の送信待ち・受信キャッシュ。開発実行時にリポジトリ直下へ出る
+sync_outbox.json
+sync_cloud_cache.json
+# wrangler をリポジトリ直下で実行したときの状態ディレクトリ（sync-worker/ 側は自前の .gitignore で除外）
+.wrangler/
+
 # ------------------------------------------
 # AI/開発ツール
 # ------------------------------------------

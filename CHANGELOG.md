@@ -44,6 +44,18 @@ voicekeyの変更履歴を記録するファイルです。
     実オーディオ・実タイマーの長待ちなし）。
 
 ### Added
+- **Mac と文字入力履歴を共有する同期機能（Cloudflare Workers + D1）を追加（2026-09-03、Windows 側）**。
+  - Worker を新設（`sync-worker/`・プレーン JS・依存無し）。1 Worker・1 D1 テーブル・共有 Bearer トークン 1 本。
+    `GET /health`（無認証）、`POST /history`（1〜200 件・`id` で `INSERT OR IGNORE`＝再送安全）、
+    `GET /history?since=&limit=`（サーバー受信時刻をカーソルにする）を実装。
+  - **Windows クライアント**（`src/core/history_sync.py`）: 単一デーモンスレッドがアウトボックス
+    `sync_outbox.json` を 200 件ずつ送信し `sync_cloud_cache.json` へ受信。貼り付けパスは絶対にブロックせず、
+    オフライン時はキューに溜めて 10 秒→5 分の指数バックオフで再送、401 は設定保存し直すまで再試行しない。
+  - **履歴ページのマージ表示と設定カード**: 履歴ページ・ホームの直近履歴が自端末とクラウド経由をマージ表示
+    （最大 200 件・他端末の行は `[Mac]` 接頭辞）。設定 → 履歴ページのカード「Mac と履歴を共有」でトグル・
+    URL・トークンを設定。
+  - 動作確認スクリプト `scripts/sync/check_sync.py` を追加（トークンは keyring から読むだけで画面に出さない）。
+  - **Mac 側は未実装**。実装スペックは `HANDOFF.md` 冒頭「Mac 側で必要な実装: 履歴同期」を参照。
 - **Windows にも personal エディション（個人用最速版）を追加（2026-09-02）**。
   `python scripts/build/generate_embedded_keys.py --personal` で生成したマーカー（`IS_PERSONAL=True`）
   を含めてビルドすると、Mac の `EmbeddedKeys.isPersonal` と同じく認証セッションを常に無視し

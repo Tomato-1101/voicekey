@@ -1,0 +1,12 @@
+# SYNC_TOKEN はシークレットとして `npx wrangler secret put SYNC_TOKEN` で登録する。
+# このファイルに平文で書き込まない（リポジトリにコミットされるため）。
+
+name = "voicekey-history-sync"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "voicekey-history"
+database_id = "2dfcb545-21e3-450d-a1cb-0c5883261e0a"

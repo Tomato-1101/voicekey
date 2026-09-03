@@ -72,6 +72,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | Google Meet 議事録ボット（personal のみ・macOS 26+・要 Chrome） | 会議 URL を渡すと専用プロファイルの Chrome を裏で起動して参加し、文字起こしを議事録へ保存。**取得元は 2 択**（既定＝Meet の内蔵字幕・話者名つき / 端末内の Apple 認識・外に出さない）。マイク・カメラは切って参加 | ✅ | ❌ |
 | ローカル文字起こし「ローカル（Apple）」（personal のみ・macOS 26+） | 文字起こしを Apple のオンデバイス音声認識（SpeechAnalyzer）で Mac の中だけで行う。通信・API キーなし＝オフライン可。録音中から並行認識し離した瞬間に確定（実測 92〜155ms）。認識言語は「言語」設定に従い、初回だけモデル DL（進捗は録音 HUD） | ✅ | ❌ |
 | 翻訳して入力（personal のみ・macOS 26+） | 文字起こしの最終テキストを訳してから貼り付ける（本命は「日本語で話す→英語が入力される」）。**全体で 1 トグル**・出力言語は 英/中/韓/西/日 から選択・エンジンは Apple オンデバイス（既定）/ Groq の 2 択（Gemini は出さない）。貼り付け直前に 1 回だけ適用し、失敗時は原文フォールバック | ✅ | ❌ |
+| 履歴同期（Mac ⇄ Windows） | Cloudflare Workers + D1 経由で音声入力履歴を共有（自分専用・共有トークン 1 本・既定オフ）。詳細は `docs/HISTORY_SYNC.md` | ❌ 未実装 | ✅ |
 
 ## 5. アーキ地図（責務 → ファイル）
 
@@ -89,6 +90,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | テキスト整形（Groq）/ 後処理 | `Core/TextFormatter.swift` | `core/text_formatter.py` / `text_processor.py` / `text_utils.py` |
 | 文字入力（貼り付け） | `Core/Paster.swift` | `core/input_handler.py` |
 | VAD / マイク自動検出 / 履歴 | `Core/VoiceActivity.swift` / `MicAutoDetector.swift` / `HistoryStore.swift` | `core/vad.py` / `mic_auto_detect.py` / `history.py` |
+| 履歴同期（Mac ⇄ Windows） | `Core/HistorySync.swift`（未実装） | `core/history_sync.py`（実装済み） |
 | 使用実績（統計・レベル） | `Core/StatsStore.swift` | `core/stats.py` |
 | 設定画面 UI | `UI/SettingsView.swift` / `HotkeyRecorderView.swift` / `Glass.swift`（ガラス様式の共通部品） | `ui/settings_window.py` / `styles.py` |
 | ホーム画面 / ダッシュボード | `UI/HomeView.swift` / `MainWindowView.swift`（ホーム＋設定を 1 ウィンドウで切替・Mac） | `ui/settings_window.py`（先頭「ホーム」ページ） |
@@ -105,6 +107,11 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | OS 権限 | `AppController.swift`（マイク/入力監視/アクセシビリティ） | — （Windows は OS ゲートなし） |
 | OS 抽象化 / ログイン起動 / ログ | ネイティブ API 直 | `platform/` / `utils/autostart.py` / `utils/logger.py` |
 | 行動ログ（操作と状態遷移の記録・14 日で自動削除） | `Core/ActionLog.swift`（`~/Library/Logs/voicekey/voicekey-YYYY-MM-DD.log`） | `utils/logger.py`（日付ローテート・`%LOCALAPPDATA%\voicekey\logs\app.log`） |
+
+**履歴同期**: Mac と Windows の音声入力履歴を共有する機能。両 OS 共通のバックエンドとして `sync-worker/`
+（Cloudflare Workers + D1、1 Worker・共有トークン 1 本）を新設した。**Windows は実装済み**
+（`core/history_sync.py`）、**Mac は未実装**（`HistorySync.swift` は上表のとおり未着手）。
+詳細・API 仕様・Mac 側の実装スペックは `docs/HISTORY_SYNC.md` と `HANDOFF.md` 冒頭を参照。
 
 ## 6. 配布構成（要点のみ・詳細は HANDOFF.md）
 
@@ -125,6 +132,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | `AGENTS.md` | 他 AI エージェント向けの同趣旨ルール（簡約版） | 同上 |
 | `CONTRIBUTING.md` | コミット規約・バージョニング | コミット時 |
 | `docs/BUILD_WINDOWS.md` | Windows ビルド/実機チェックリスト | Windows 配布時 |
+| `docs/HISTORY_SYNC.md` | 履歴同期の API 仕様・構築手順・障害対応 | 履歴同期に触るとき |
 
 ## 8. 更新ルール（重要・README 更新ルールと同じ精神）
 

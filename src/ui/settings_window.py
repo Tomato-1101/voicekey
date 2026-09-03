@@ -68,6 +68,12 @@ from ..platform import PlatformAdapter, get_platform_adapter
 from ..utils import autostart, secrets
 from .styles import MacTheme
 
+try:
+    from ..core.history_sync import HistorySync, parse_iso_date
+except Exception:  # pragma: no cover - 同期モジュール未配置時でも設定画面は開けるようにする
+    HistorySync = None  # type: ignore
+    parse_iso_date = None  # type: ignore
+
 
 # 設定ウィンドウ上の backend 選択値と Keychain サービス識別子のマッピング。
 # Hotkey1 / Hotkey2 で同じ backend を使う場合は同じ Keychain エントリを共有する。
@@ -139,6 +145,20 @@ def _backend_caption_text(backend: str) -> str:
             "ハンズフリー録音のときは、長い録音に強いエンジンへ自動で切り替わります。"
         )
     return ""
+
+
+def _format_history_date(date_str: str) -> str:
+    """履歴一覧の日時表示を作る（ISO 8601 → 端末のローカル時刻 "YYYY-MM-DD HH:MM"）。
+
+    parse_iso_date が未配置、または変換に失敗した場合は素朴な文字列整形にフォールバックする
+    （history_sync 未配置でも履歴タブ自体は動く必要があるため）。
+    """
+    if parse_iso_date is not None:
+        try:
+            return parse_iso_date(date_str).astimezone().strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            pass
+    return date_str.replace("T", " ")[:16]
 
 
 # ----------------------------------------------------------------------
@@ -787,6 +807,7 @@ class SettingsWindow(QWidget):
         stats: Optional[StatsStore] = None,
         config_manager: Optional[ConfigManager] = None,
         updater=None,
+        history_sync: Optional["HistorySync"] = None,
     ) -> None:
         """
         設定ウィンドウを初期化する。
@@ -797,12 +818,14 @@ class SettingsWindow(QWidget):
             stats: 使用実績ストア（「実績」タブで表示する）
             config_manager: アプリ本体と共有する設定マネージャ（None なら単体生成）
             updater: 自動アップデータ（「バージョン情報」タブで更新確認/実行に使う。None なら無効表示）
+            history_sync: Mac との履歴同期（「履歴」タブに設定 UI を出す。None なら同期 UI は非表示相当）
         """
         super().__init__()
         self._platform = platform_adapter or get_platform_adapter()
         self._history = history
         self._stats = stats
         self._updater = updater
+        self._history_sync = history_sync
 
         # DIST ビルドでは API キーページを作らないため、ページ生成前に空で初期化しておく
         # （_load_current_settings が無条件に _refresh_api_key_status を呼ぶ）
@@ -1619,7 +1642,7 @@ class SettingsWindow(QWidget):
     def _refresh_home_history(self) -> None:
         """最近の履歴（直近 8 件）を更新する。行クリックでコピー。"""
         self._home_history_list.clear()
-        items = self._history.items() if self._history is not None else []
+        items = self._history_entries()
         if not items:
             placeholder = QListWidgetItem(
                 "音声入力すると、ここに最近の履歴が残ります（クリックでコピーできます）。"
@@ -1628,13 +1651,27 @@ class SettingsWindow(QWidget):
             self._home_history_list.addItem(placeholder)
             return
         for entry in items[:8]:
-            text = entry["text"]
-            preview = text if len(text) <= 80 else text[:80] + "…"
-            date = entry["date"].replace("T", " ")[:16]
-            item = QListWidgetItem(f"{preview}\n{date}")
-            item.setData(Qt.ItemDataRole.UserRole, text)
-            item.setToolTip(text)
-            self._home_history_list.addItem(item)
+            self._home_history_list.addItem(self._make_history_item(entry))
+
+    def _history_entries(self) -> list:
+        """ローカル履歴に、同期がオンなら Mac 側の履歴もマージして返す（新しい順）。"""
+        local = self._history.items() if self._history is not None else []
+        if self._history_sync is not None and self._history_sync.enabled:
+            return self._history_sync.merged_items(local)
+        return local
+
+    def _make_history_item(self, entry: dict) -> QListWidgetItem:
+        """履歴 1 件ぶんの QListWidgetItem を作る（windows 以外の device は "[Mac] " 等のラベルを付ける）。"""
+        text = entry["text"]
+        preview = text if len(text) <= 80 else text[:80] + "…"
+        device = entry.get("device", "windows")
+        if device != "windows":
+            preview = ("[Mac] " if device == "mac" else f"[{device}] ") + preview
+        date = _format_history_date(entry["date"])
+        item = QListWidgetItem(f"{preview}\n{date}")
+        item.setData(Qt.ItemDataRole.UserRole, text)
+        item.setToolTip(text)
+        return item
 
     # ------------------------------------------------------------------
     # 履歴ページ（Mac 版 HistoryTab と同構成。クリックでクリップボードにコピー）
@@ -1885,6 +1922,8 @@ class SettingsWindow(QWidget):
         layout.setSpacing(10)
         layout.setContentsMargins(24, 8, 24, 24)
 
+        layout.addWidget(self._create_history_sync_card())
+
         # QListWidget 自体がスクロールするため _wrap_scroll は不要
         self._history_list = QListWidget()
         self._history_list.setWordWrap(True)
@@ -1907,12 +1946,162 @@ class SettingsWindow(QWidget):
         layout.addLayout(footer)
 
         layout.addWidget(_make_caption(
-            f"音声入力の直近 {HISTORY_MAX_ITEMS} 件です。行をクリックすると"
-            "クリップボードにコピーします。履歴はこの PC の中だけに保存されます。"
+            f"音声入力の直近 {HISTORY_MAX_ITEMS} 件（同期がオンのときは Mac の履歴も含めて"
+            "最大 200 件）です。行をクリックするとクリップボードにコピーします。"
         ))
 
         self._refresh_history()
         return page
+
+    def _create_history_sync_card(self) -> QFrame:
+        """「Mac と履歴を共有」カードを作る（トグル・同期先 URL・共有トークン・同期状況）。"""
+        card, cl = _make_card()
+
+        self._history_sync_enabled_toggle = self._make_toggle()
+        _add_row(
+            cl, "Mac と履歴を共有", self._history_sync_enabled_toggle,
+            caption=(
+                "Cloudflare 上の自分専用 Worker に履歴を送り、"
+                "Mac で入力した履歴もここに表示します。"
+            ),
+        )
+
+        self._history_sync_url_input = QLineEdit()
+        self._history_sync_url_input.setPlaceholderText(
+            "https://voicekey-history-sync.<subdomain>.workers.dev"
+        )
+        _add_row(cl, "同期サーバー URL", self._history_sync_url_input)
+
+        # 共有トークン欄（API キー欄と同じパターン: 入力中は伏字、保存時のみ資格情報ストアへ書き込む）
+        token_block = QWidget()
+        token_layout = QVBoxLayout(token_block)
+        token_layout.setContentsMargins(0, 0, 0, 0)
+        token_layout.setSpacing(6)
+
+        token_head = QHBoxLayout()
+        token_head.setSpacing(8)
+        token_name = QLabel("共有トークン")
+        token_name.setStyleSheet("font-weight: 600;")
+        self._history_sync_token_status = QLabel("未設定")
+        self._history_sync_token_status.setStyleSheet(MacTheme.status_muted_style())
+        token_head.addWidget(token_name)
+        token_head.addWidget(self._history_sync_token_status)
+        token_head.addStretch()
+
+        self._history_sync_token_input = QLineEdit()
+        self._history_sync_token_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._history_sync_token_input.setPlaceholderText("トークンを入力")
+
+        token_save_btn = QPushButton("保存")
+        token_save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        token_save_btn.clicked.connect(self._save_history_sync_token)
+
+        token_delete_btn = QPushButton("削除")
+        token_delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        token_delete_btn.clicked.connect(self._delete_history_sync_token)
+
+        token_body = QHBoxLayout()
+        token_body.setSpacing(8)
+        token_body.addWidget(self._history_sync_token_input, 1)
+        token_body.addWidget(token_save_btn)
+        token_body.addWidget(token_delete_btn)
+
+        token_layout.addLayout(token_head)
+        token_layout.addLayout(token_body)
+        _add_block(cl, token_block)
+
+        self._history_sync_status_label = QLabel("")
+        self._history_sync_status_label.setWordWrap(True)
+        self._history_sync_status_label.setStyleSheet(MacTheme.status_muted_style())
+        _add_block(cl, self._history_sync_status_label)
+
+        return card
+
+    def _refresh_history_sync_token_status(self) -> None:
+        """共有トークンの保存状況ラベルを更新する（_refresh_api_key_status と同じ規則）。"""
+        if not secrets.is_keyring_available():
+            # 同期トークンは API キーと違って環境変数のフォールバックが無いので、代替手段は案内しない
+            self._history_sync_token_status.setText("資格情報ストア利用不可")
+            self._history_sync_token_status.setStyleSheet(
+                MacTheme.status_warn_style(self._is_dark_mode)
+            )
+            return
+        if secrets.get_api_key(secrets.SERVICE_SYNC_TOKEN):
+            self._history_sync_token_status.setText("保存済み")
+            self._history_sync_token_status.setStyleSheet(
+                MacTheme.status_ok_style(self._is_dark_mode)
+            )
+        else:
+            self._history_sync_token_status.setText("未設定")
+            self._history_sync_token_status.setStyleSheet(MacTheme.status_muted_style())
+
+    def _save_history_sync_token(self) -> None:
+        """入力欄の共有トークンを資格情報ストアに保存する（保存後は再表示しないため入力欄をクリア）。"""
+        new_token = self._history_sync_token_input.text().strip()
+        if not new_token:
+            QMessageBox.warning(self, "共有トークン", "トークンを入力してください。")
+            return
+
+        if not secrets.set_api_key(secrets.SERVICE_SYNC_TOKEN, new_token):
+            QMessageBox.critical(
+                self,
+                "共有トークン",
+                "資格情報ストアへの保存に失敗しました。"
+            )
+            return
+
+        self._history_sync_token_input.clear()
+        self._refresh_history_sync_token_status()
+        if self._history_sync is not None:
+            self._history_sync.apply_config()
+
+    def _delete_history_sync_token(self) -> None:
+        """資格情報ストアに保存された共有トークンを削除する。"""
+        secrets.delete_api_key(secrets.SERVICE_SYNC_TOKEN)
+        self._history_sync_token_input.clear()
+        self._refresh_history_sync_token_status()
+
+    def _refresh_history_sync_status(self) -> None:
+        """Mac との同期状況ラベルを history_sync.status() の内容で更新する。"""
+        if self._history_sync is None:
+            self._history_sync_status_label.setText("")
+            return
+
+        status = self._history_sync.status()
+        if not status.get("enabled"):
+            self._history_sync_status_label.setText("同期はオフです")
+            self._history_sync_status_label.setStyleSheet(MacTheme.status_muted_style())
+            return
+        if not status.get("configured"):
+            self._history_sync_status_label.setText(
+                "URL とトークンを設定すると同期が始まります"
+            )
+            self._history_sync_status_label.setStyleSheet(MacTheme.status_muted_style())
+            return
+        if status.get("token_invalid"):
+            self._history_sync_status_label.setText(
+                "トークンが無効です（保存し直してください）"
+            )
+            self._history_sync_status_label.setStyleSheet(
+                MacTheme.status_warn_style(self._is_dark_mode)
+            )
+            return
+
+        last_sync = status.get("last_sync")
+        last_sync_text = None
+        if last_sync and parse_iso_date is not None:
+            try:
+                last_sync_text = parse_iso_date(last_sync).astimezone().strftime("%H:%M")
+            except Exception:
+                last_sync_text = None
+        if last_sync_text is None:
+            self._history_sync_status_label.setText("まだ同期していません")
+        else:
+            pending = status.get("pending", 0)
+            self._history_sync_status_label.setText(
+                f"送信待ち {pending} 件・最終同期 {last_sync_text}"
+            )
+        self._history_sync_status_label.setStyleSheet(MacTheme.status_muted_style())
 
     def _on_nav_changed(self, row: int) -> None:
         """サイドバー選択でページを切り替え、タイトルを更新する。"""
@@ -1925,6 +2114,9 @@ class SettingsWindow(QWidget):
             self._refresh_home()
         elif row == self._history_page_index:
             self._refresh_history()
+            if self._history_sync is not None:
+                self._history_sync.request_fetch()
+            self._refresh_history_sync_status()
         elif row == self._stats_page_index:
             self._refresh_stats()
 
@@ -1933,9 +2125,9 @@ class SettingsWindow(QWidget):
         self._nav.setCurrentRow(self._home_page_index)
 
     def _refresh_history(self) -> None:
-        """履歴一覧をストアの現在の内容で作り直す。"""
+        """履歴一覧をストアの現在の内容で作り直す（同期がオンなら Mac の履歴も含む）。"""
         self._history_list.clear()
-        items = self._history.items() if self._history is not None else []
+        items = self._history_entries()
 
         if not items:
             placeholder = QListWidgetItem(
@@ -1946,15 +2138,9 @@ class SettingsWindow(QWidget):
             self._history_list.addItem(placeholder)
             return
 
+        # 一覧は 2 行プレビュー + 日時。全文はクリック時のコピーとツールチップで確認できる
         for entry in items:
-            text = entry["text"]
-            # 一覧は 2 行プレビュー + 日時。全文はクリック時のコピーとツールチップで確認できる
-            preview = text if len(text) <= 80 else text[:80] + "…"
-            date = entry["date"].replace("T", " ")[:16]  # 例: 2026-06-12 00:15
-            item = QListWidgetItem(f"{preview}\n{date}")
-            item.setData(Qt.ItemDataRole.UserRole, text)
-            item.setToolTip(text)
-            self._history_list.addItem(item)
+            self._history_list.addItem(self._make_history_item(entry))
 
     def _copy_history_item(self, item: QListWidgetItem) -> None:
         """クリックされた履歴の全文をクリップボードにコピーする。"""
@@ -1970,6 +2156,16 @@ class SettingsWindow(QWidget):
         if self._history is not None:
             self._history.clear()
         self._refresh_history()
+
+    def refresh_history_views(self) -> None:
+        """同期状態の変化（history_sync.on_changed 等）を受けて履歴表示一式を更新する。
+
+        本体側から QTimer.singleShot(0, ...) 経由で呼ばれる想定（別スレッドの通知を
+        Qt イベントループ上で安全に UI へ反映するため）。
+        """
+        self._refresh_history()
+        self._refresh_home_history()
+        self._refresh_history_sync_status()
 
     def showEvent(self, event) -> None:
         """ウィンドウを開くたびに永続設定から UI を再ロードし、履歴・実績を最新化する。
@@ -2853,6 +3049,13 @@ class SettingsWindow(QWidget):
         for service in _BACKEND_TO_SERVICE.values():
             self._refresh_api_key_status(service)
 
+        # Mac との履歴共有
+        hs = config.get("history_sync", {}) or {}
+        self._history_sync_enabled_toggle.setChecked(bool(hs.get("enabled", False)))
+        self._history_sync_url_input.setText(str(hs.get("url", "")))
+        self._refresh_history_sync_token_status()
+        self._refresh_history_sync_status()
+
     def _toggle_theme(self) -> None:
         """ダーク/ライトモードを切り替える。"""
         self._is_dark_mode = not self._is_dark_mode
@@ -2929,6 +3132,12 @@ class SettingsWindow(QWidget):
                 "elevenlabs": "scribe_v1",
                 "deepgram": "nova-3",
             }),
+
+            # Mac との履歴共有
+            "history_sync": {
+                "enabled": self._history_sync_enabled_toggle.isChecked(),
+                "url": self._history_sync_url_input.text().strip().rstrip("/"),
+            },
 
             # その他の設定
             "dark_mode": self._is_dark_mode,

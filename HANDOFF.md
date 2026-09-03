@@ -3,6 +3,63 @@
 セッションをまたぐ作業の現在地。再開時はまずこれを読む。
 承認済み計画の全文: `/Users/tomato/.claude/plans/api-api-api-mac-abstract-hare.md`
 
+## Mac 側で必要な実装: 履歴同期（2026-09-03・Windows 側完了）
+
+Mac と Windows で音声入力履歴を共有する機能。**Worker・D1・Windows クライアントは実装済み・稼働確認済み**。
+**Mac クライアントが未実装**なので、このセッションで着手するときはここを読めば全体が分かるようにしてある。
+API 仕様・障害時の見方など詳細は `docs/HISTORY_SYNC.md` が正本（本節はそこからの実装ポインタ）。
+
+**アーキテクチャ**: Cloudflare Workers（`sync-worker/`・プレーン JS・依存無し）+ D1、1 Worker・1 テーブル・
+共有 Bearer トークン 1 本。実際の Worker URL・アカウントのサブドメイン・トークンは
+**このリポジトリが public なので、どのドキュメントにも書かない**（プレースホルダー
+`https://voicekey-history-sync.<subdomain>.workers.dev` を使う。実値は Windows の設定画面と
+`%LOCALAPPDATA%\voicekey\sync_token.txt` にのみ存在する）。
+
+**API**（詳細は `docs/HISTORY_SYNC.md` §3）:
+- `GET /health` → 認証不要、200 `{"ok":true}`
+- `POST /history`（要 `Authorization: Bearer <SYNC_TOKEN>`）: body `{"items":[{id,text,date,device,app_name,characters}]}`
+  （1〜200 件）→ 200 `{"accepted":n,"received_at":"..."}`。`id` で `INSERT OR IGNORE`（冪等・再送安全）
+- `GET /history?since=<received_at>&limit=<1..500>`（要認証）→ 200 `{"items":[{id,text,date,device,app_name,characters,received_at}]}`（`received_at` 降順）
+- 401 `{"error":"unauthorized"}` / 503 `{"error":"token_not_configured"}`
+
+**Windows 側の実装（参考・同じ設計を Mac でも踏襲する）**:
+- `src/core/history_sync.py` の `HistorySync`: 認証層（`backend_client`/ログイン）から独立。
+  アウトボックス `sync_outbox.json`（未送信キュー）とクラウドキャッシュ `sync_cloud_cache.json`
+  （受信済みエントリ＋カーソル）を `settings.yaml` と同じ場所に持つ。単一デーモンスレッドが
+  5 分ごと・新規エントリ追加時・履歴ページを開いたときに「アウトボックスを 200 件ずつ送信 →
+  `since=cursor` で GET」を行う。貼り付けパスは絶対にブロックしない（enqueue は小さい JSON への
+  追記のみ）。ネットワーク失敗時はキューを保持し 10 秒→5 分の指数バックオフ。401 が来たら
+  WARNING を 1 回ログに出して以後は設定が保存し直されるまで再試行しない。
+- `src/core/history.py`: 履歴エントリに `id`（uuid4 hex）と `device`（`"windows"`）を追加済み。
+  `HistoryStore(on_add=...)` フックあり。
+- 設定: `settings.yaml` の `history_sync: {enabled: bool, url: str}`、トークンは keyring のみ
+  （service 名 `voicekey.SyncToken`）。UI は 設定 → 履歴ページ上部のカード「Mac と履歴を共有」。
+- 検証スクリプト: `scripts/sync/check_sync.py`。
+
+**Mac 側で新規に作る/変更するファイル**:
+1. `Core/HistorySync.swift`（新規）: Windows の `HistorySync` と同じ挙動をミラーする
+   （アウトボックスファイル＋クラウドキャッシュ＋単一のバックグラウンドタスク/actor、200 件ずつのバッチ、
+   `received_at` をカーソルにする、指数バックオフ、401 で設定変更まで停止、貼り付けパスを絶対にブロックしない）。
+   送信時は `device:"mac"`、`app_name: appName`、`date` は末尾 `Z` 付き ISO 8601 にする。
+   既存の `Core/HistoryStore.swift` の `HistoryItem{id: UUID, text, date: Date, appBundleID?, appName?, characters}`
+   （最大 200 件・`~/Library/Application Support/voicekey/history.json`）を送信元として使う。
+2. Keychain: サービス名 `voicekey.SyncToken` で保存する。既存の `macos/Sources/Voicekey/Core/Keychain.swift`
+   の `apiKey(for:)` / `setApiKey(_:for:)` パターンを踏襲（`write(service:value:)` は delete→add）。
+3. 設定 UI: `UI/SettingsView.swift` の `GeneralSettingsTab`、`Section("履歴")`（現状 `historyEnabled`
+   トグルのみ・~498 行目付近）に URL 欄・トークン欄・同期トグルを追加。
+4. マージ表示: `UI/SideNotch.swift` の `SideNotchHistoryView` で `device != "mac"` の行に `[Windows]` の接頭辞を付ける。
+5. `ConfigStore` / `AppConfig` に `historySyncEnabled` / `historySyncURL` キーを追加。
+6. ルート選択はログイン状態に依存させない（Mac は personal 専用で認証層を通らない）。
+
+**トークンの受け渡し**: Windows 機の `%LOCALAPPDATA%\voicekey\sync_token.txt` の中身を、ユーザーが
+Mac の設定画面へ手で貼り付ける（自動配布はしない）。
+
+**Mac 側の検証手順**: `swift build` → `swift test` → 実際に一度ディクテーションして、Windows の履歴ページに
+その項目が現れる（逆方向も同様）ことを確認 → `curl -H "Authorization: Bearer $TOKEN" "$URL/history?limit=5"` で
+サーバー側にも入っていることを確認。
+
+---
+
 ## 最新の現在地（2026-08-10 更新）
 
 - **ライブ字幕を voicekey に統合（統合フェーズ 1・personal ブランチ・Mac・macOS 26 以降）**。
