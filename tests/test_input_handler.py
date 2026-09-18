@@ -2,7 +2,7 @@
 
 検証する性質は 2 つ:
 1. クリップボード復元が「呼び出し元（Enter 自動送信・録音中 UI の非表示）を塞がない」こと。
-   復元待ち（RESTORE_DELAY=0.3s）が insert_text の同期パスに残ると、ユーザー体感の
+   復元待ち（RESTORE_DELAY）が insert_text の同期パスに残ると、ユーザー体感の
    「文字は入っているのに Enter / UI が 0.5 秒遅れる」を引き起こす。
 2. 復元がユーザーのクリップボードを壊さないこと（#13/#24）。
    - 復元待ちの間にユーザーが新しくコピーしたら、その内容を上書きしない。
@@ -12,7 +12,13 @@
 import unittest
 from unittest import mock
 
-from src.core.input_handler import InputHandler, PASTE_DELAY, RESTORE_DELAY
+from src.core.input_handler import (
+    InputHandler,
+    PASTE_DELAY,
+    RESTORE_DELAY,
+    RestoreDecision,
+    decide_restore,
+)
 
 
 class _FakeClipboard:
@@ -137,15 +143,54 @@ class TestClipboardRestoreGuard(_ClipboardTestBase):
         self._fire(_FakeTimer.created[1], clip)
         self.assertEqual(clip.value, "USER")
 
-    def test_empty_clipboard_keeps_injection(self):
-        """退避対象が無ければ、復元時に空で上書きせず自分の挿入テキストを残す。"""
+    def test_empty_clipboard_clears_injection(self):
+        """退避対象が無くても、文字起こし結果をクリップボードに残さない。
+
+        旧実装はここで何もせず挿入テキストを残しており、ユーザーの
+        「クリップボードに保存しないはずなのに、たまに保存される」の主因だった。
+        """
         ih = InputHandler()
         clip = _FakeClipboard("")
         self._insert(ih, clip, "X")
         self.assertEqual(clip.value, "X")
 
         self._fire(_FakeTimer.created[0], clip)
-        self.assertEqual(clip.value, "X")  # 空文字で潰さない
+        self.assertEqual(clip.value, "")  # 自分のテキストは消す
+
+
+class TestDecideRestore(unittest.TestCase):
+    """復元判定（純ロジック）の境界。Mac 版 ClipboardRestorePolicyTests と対の内容。"""
+
+    def test_skips_when_newer_paste_exists(self):
+        self.assertIs(
+            decide_restore(current_generation=5, task_generation=4,
+                           clipboard_is_still_ours=True, original="USER"),
+            RestoreDecision.SKIP,
+        )
+
+    def test_restores_original(self):
+        self.assertIs(
+            decide_restore(current_generation=3, task_generation=3,
+                           clipboard_is_still_ours=True, original="USER"),
+            RestoreDecision.RESTORE,
+        )
+
+    def test_leaves_user_content_when_clipboard_changed(self):
+        self.assertIs(
+            decide_restore(current_generation=3, task_generation=3,
+                           clipboard_is_still_ours=False, original="USER"),
+            RestoreDecision.LEAVE_USER_CONTENT,
+        )
+
+    def test_clears_when_original_missing(self):
+        """原本が None（非テキスト）でも空文字でも、自分のテキストは残さない。"""
+        for original in (None, ""):
+            with self.subTest(original=original):
+                self.assertIs(
+                    decide_restore(current_generation=1, task_generation=1,
+                                   clipboard_is_still_ours=True, original=original),
+                    RestoreDecision.CLEAR,
+                )
 
 
 if __name__ == "__main__":

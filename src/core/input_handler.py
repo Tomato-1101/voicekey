@@ -8,6 +8,7 @@
 
 import threading
 import time
+from enum import Enum
 from typing import Optional
 
 import pyperclip
@@ -21,9 +22,53 @@ logger = get_logger(__name__)
 # クリップボード貼り付け前の待機時間（秒）。Mac 版（Paster.swift）と揃えて短く保つ
 PASTE_DELAY: float = 0.05
 # 貼り付け後、クリップボードを元に戻すまでの待機時間（秒）。
-# 貼り付け先アプリがクリップボードを読み終える前に復元すると
-# 古い内容が貼られてしまうため、十分なマージンを取る
-RESTORE_DELAY: float = 0.3
+# 貼り付け先アプリが Ctrl+V を処理してクリップボードを読み終える前に復元すると、
+# 復元後の内容＝ユーザーが前にコピーしていたものが貼られる。0.3 秒では
+# ブラウザや Electron 製アプリが読み終わらないことがあり、実際に
+# 「音声の内容が入らず前のコピーが貼られた」不具合が出たため広げた。
+# 復元が遅れる害は「貼り付け直後 1 秒以内の手動 Ctrl+V で文字起こし結果が貼られる」だけで、
+# 取り違えより軽い（Mac 版 Paster.swift の restoreDelay と揃える）
+RESTORE_DELAY: float = 1.0
+
+
+class RestoreDecision(Enum):
+    """貼り付け後にクリップボードをどう戻すかの判定結果。"""
+
+    #: より新しい貼り付けが復元を担当する → 何もしない（世代分離）
+    SKIP = "skip"
+    #: 待っている間にユーザー・他アプリが新しくコピーした → 触らない
+    LEAVE_USER_CONTENT = "leave_user_content"
+    #: 退避した原本を書き戻す
+    RESTORE = "restore"
+    #: 戻せる原本が無い（空 or 非テキスト）→ 自分が入れたテキストを消す
+    CLEAR = "clear"
+
+
+def decide_restore(
+    current_generation: int,
+    task_generation: int,
+    clipboard_is_still_ours: bool,
+    original: Optional[str],
+) -> RestoreDecision:
+    """クリップボード復元の行動を決める（副作用なし＝テスト対象）。
+
+    Args:
+        current_generation: 現在の貼り付け世代
+        task_generation: この復元タスクが担当する世代
+        clipboard_is_still_ours: クリップボードが自分の挿入テキストのままか
+        original: 退避したユーザーの原本（無ければ None / 空文字）
+
+    Returns:
+        取るべき行動
+    """
+    if current_generation != task_generation:
+        return RestoreDecision.SKIP
+    if not clipboard_is_still_ours:
+        return RestoreDecision.LEAVE_USER_CONTENT
+    if original:
+        return RestoreDecision.RESTORE
+    # 原本が無いときに何もしないと文字起こし結果が残り続ける（ユーザー指摘の主因）
+    return RestoreDecision.CLEAR
 
 
 class InputHandler:
@@ -137,24 +182,31 @@ class InputHandler:
         """
         try:
             with self._clip_lock:
-                # より新しい貼り付けが復元を担当する → 何もしない（世代分離）
                 if gen != self._paste_gen:
-                    return
+                    return  # 世代分離（判定関数に渡すまでもない早期 return）
                 try:
                     current = pyperclip.paste() or ""
                 except Exception:
                     return
-                # ユーザー/他アプリが新規コピーした → ユーザーの内容を上書きしない
-                if current != self._injected_text:
-                    self._injected_text = None
-                    self._saved_original = None
-                    return
+                decision = decide_restore(
+                    current_generation=self._paste_gen,
+                    task_generation=gen,
+                    clipboard_is_still_ours=(current == self._injected_text),
+                    original=self._saved_original,
+                )
                 original = self._saved_original
                 self._injected_text = None
                 self._saved_original = None
-            # クリップボードが空（退避対象なし）なら、自分の挿入テキストをそのまま残す
-            if original:
+
+            if decision is RestoreDecision.RESTORE:
                 pyperclip.copy(original)
+            elif decision is RestoreDecision.CLEAR:
+                # 戻せる原本が無い（空 or 画像などの非テキスト）。ここで何もしないと
+                # 文字起こし結果がクリップボードに残ってしまうため明示的に空にする
+                pyperclip.copy("")
+                logger.debug("クリップボード復元: 原本なしのため消去")
+            elif decision is RestoreDecision.LEAVE_USER_CONTENT:
+                logger.debug("クリップボード復元: スキップ（ユーザーが新しくコピー）")
         except Exception as e:
             logger.warning(f"クリップボード復元に失敗: {e}")
 

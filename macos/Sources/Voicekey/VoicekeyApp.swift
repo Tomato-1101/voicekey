@@ -79,6 +79,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CaptionTestMode.runIfRequested() { return }
         // 音声入力側（ローカル文字起こし・翻訳して入力）の検証ハーネス。同じく素通り。
         if DictationTestMode.runIfRequested() { return }
+        // 貼り付け後のクリップボード復元の検証ハーネス。同じく素通り。
+        if PasteRestoreTestMode.runIfRequested() { return }
 
         let app = NSApplication.shared
         let delegate = AppDelegate()

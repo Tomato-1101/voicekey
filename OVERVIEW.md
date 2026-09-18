@@ -88,7 +88,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | 文字起こし（REST） | `Core/Transcriber.swift` | `core/api_transcriber.py` |
 | 文字起こし（ストリーミング） | `Core/StreamingTranscriber.swift` | `core/streaming_transcriber.py` |
 | テキスト整形（Groq）/ 後処理 | `Core/TextFormatter.swift` | `core/text_formatter.py` / `text_processor.py` / `text_utils.py` |
-| 文字入力（貼り付け） | `Core/Paster.swift` | `core/input_handler.py` |
+| 文字入力（貼り付け） | `Core/Paster.swift`（復元判定は `ClipboardRestorePolicy` / `CLI/PasteRestoreTestMode.swift` が `--paste-restore-test` で実動検証） | `core/input_handler.py`（判定は `decide_restore`） |
 | VAD / マイク自動検出 / 履歴 | `Core/VoiceActivity.swift` / `MicAutoDetector.swift` / `HistoryStore.swift` | `core/vad.py` / `mic_auto_detect.py` / `history.py` |
 | 履歴同期（Mac ⇄ Windows） | `Core/HistorySync.swift` | `core/history_sync.py` |
 | 使用実績（統計・レベル） | `Core/StatsStore.swift` | `core/stats.py` |

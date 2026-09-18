@@ -2,6 +2,36 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
+## [Unreleased] - 2026-09-19
+
+### Fixed
+- **音声入力の代わりに「前にコピーしていた内容」が貼られることがあるのを修正（Mac / Windows）**。
+  貼り付け後のクリップボード復元が 0.3 秒後に走っており、貼り付け先アプリが ⌘V / Ctrl+V を
+  処理してクリップボードを読み終える前に元の内容へ戻ってしまうことがあった（ブラウザ・Electron 製アプリ・
+  ターミナルで発生）。復元待ちを 1.0 秒に広げた。行動ログにも、同じテキストを数秒後に履歴から
+  貼り直している記録が残っていた（`voicekey-2026-09-16.log` 23:18:08 → 23:18:10）。
+- **文字起こし結果がクリップボードに残ることがあるのを修正（Mac / Windows）**。
+  退避できる原本が無い場合（クリップボードが空、または画像などの非テキスト）に復元処理を丸ごと
+  諦めており、自分が入れたテキストが残り続けていた。原本が無いときはクリップボードを明示的に
+  空にするようにした（文字起こし結果を残さないことを優先する）。
+- **復元判定を changeCount ではなく中身で行うようにした（Mac）**。`changeCount` はユーザーが
+  コピーしていなくても増えることがあり、そのたびに復元を諦めて文字起こし結果が残っていた。
+  Windows 側と同じ「クリップボードが自分の挿入テキストのままか」で判定する。
+
+### Technical Details
+- **macos/Sources/Voicekey/Core/Paster.swift**: 復元判定を純ロジック `ClipboardRestorePolicy.decide`
+  （`skip` / `leaveUserContent` / `restore` / `clear`）へ切り出し。`restoreDelay` 0.3 → 1.0 秒。
+  復元結果を行動ログに記録。
+- **src/core/input_handler.py**: 同じ判定を `decide_restore` / `RestoreDecision` として実装（両 OS で対称）。
+  `RESTORE_DELAY` 0.3 → 1.0 秒。原本なしの場合は `pyperclip.copy("")`。
+- **macos/Sources/Voicekey/CLI/PasteRestoreTestMode.swift**: 実動の回帰ハーネス `--paste-restore-test` を追加。
+  専用ペーストボードを使い ⌘V も送らないので、ユーザーのクリップボードと前面アプリに影響しない。
+  4 ケース（通常復元 / 原本なし / 復元待ち中のユーザーコピー / 連続貼り付け）を `[VERDICT] status=ok` で判定。
+  旧挙動に一時的に戻すと CASE2 が失敗することを確認済み（素通しでないことの確認）。
+- **テスト**: `macos/Tests/VoicekeyTests/ClipboardRestorePolicyTests.swift`（7 件）と
+  `tests/test_input_handler.py` の `TestDecideRestore`（4 件）を追加。旧仕様を固定していた
+  `test_empty_clipboard_keeps_injection` は `test_empty_clipboard_clears_injection` に差し替え。
+
 ## [Unreleased] - 2026-09-08
 
 ### Fixed
