@@ -43,6 +43,52 @@ final class StallPolicyTests: XCTestCase {
         XCTAssertLessThan(StallPolicy.recordStartTimeout, StallPolicy.localTranscribeTimeout)
     }
 
+    // MARK: - 詰まった制御キューからの復帰（作り直しの上限）
+
+    // まだ一度も作り直していなければ作り直してよい
+    func testRebuildAllowedWhenNeverRebuilt() {
+        XCTAssertTrue(StallPolicy.shouldRebuildRecorder(rebuildTimes: [], now: 1000))
+    }
+
+    // 窓内 2 回までなら次の 1 回を許す
+    func testRebuildAllowedBelowLimit() {
+        XCTAssertTrue(
+            StallPolicy.shouldRebuildRecorder(rebuildTimes: [995, 998], now: 1000)
+        )
+    }
+
+    // 窓内 3 回に達したら作り直さない（HAL をループで叩かないための頭打ち）
+    func testRebuildBlockedAtLimit() {
+        XCTAssertFalse(
+            StallPolicy.shouldRebuildRecorder(rebuildTimes: [990, 995, 998], now: 1000)
+        )
+    }
+
+    // 窓（10 分）より古い記録は数えない＝時間が経てばまた復帰できる
+    func testOldRebuildsFallOutOfWindow() {
+        let now: TimeInterval = 10_000
+        let old = now - StallPolicy.recorderRebuildWindow - 1
+        XCTAssertTrue(
+            StallPolicy.shouldRebuildRecorder(rebuildTimes: [old, old, old], now: now)
+        )
+    }
+
+    // MARK: - 構成変更後のタップ黙死判定
+
+    // 通知のあとにバッファが届いていれば何もしない（通知は 1 日 100 回来る誤発火が大半）
+    func testTapAliveWhenBufferArrivedAfterNotice() {
+        XCTAssertFalse(
+            TapStallPolicy.needsRestart(lastBufferUptime: 100.5, notifiedAt: 100.0)
+        )
+    }
+
+    // 通知以降に 1 つも届いていなければ再構成する（19.8 秒押して 6.9 秒しか録れない事故）
+    func testTapDeadWhenNoBufferSinceNotice() {
+        XCTAssertTrue(
+            TapStallPolicy.needsRestart(lastBufferUptime: 99.9, notifiedAt: 100.0)
+        )
+    }
+
     // MARK: - 世代ガード
 
     // 打ち切った世代の結果だけを捨てる（他の世代は素通し）

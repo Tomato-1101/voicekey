@@ -123,6 +123,9 @@ final class AudioRecorder {
     private var _chunkGen = 0        // _chunkHandler が属する録音世代
     private var _activeChunkGen = 0  // 現在の物理録音が受理する世代（start で確定）
     private var _inputDeviceUID = ""
+    /// 最後にタップからバッファを受け取った時刻（systemUptime 基準・未受信は 0）。
+    /// 「エンジンは動いていると報告されるのに音が来ない」を見分けるために使う
+    private var _lastBufferUptime: TimeInterval = 0
     private var _recording = false
     private var recording: Bool {
         get { stateLock.lock(); defer { stateLock.unlock() }; return _recording }
@@ -151,6 +154,9 @@ final class AudioRecorder {
     /// 録音 buffer の「未取得」状態（#20）。queue 上からのみ触る。
     /// デバイス切断で recording=false になっても、確定済み音声を一度だけ取り出すために使う
     private let bufferAvailability = BufferAvailability()
+    /// 構成変更通知の観察者。インスタンスを作り直す（詰まりからの復帰）運用になったため、
+    /// 古いインスタンスの観察者を deinit で必ず外す（[weak self] で害は無いが漏らさない）
+    private var configChangeObserver: NSObjectProtocol?
 
     init() {
         // 録音中のマイク切断・サンプルレート変更等ではエンジンが静かに止まり、
@@ -159,12 +165,21 @@ final class AudioRecorder {
         // （デバイスは何も変わっていない）。そのまま録音を止めると「開始した瞬間に
         // 『マイク構成が変わった』で止まる」誤動作になるため、ハンドラ側で実際に
         // 復帰が必要かを判断する（handleConfigurationChange）。
-        NotificationCenter.default.addObserver(
+        configChangeObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
         ) { [weak self] _ in
             // 通知は任意スレッドで届く。エンジン操作を直列化する queue 上で処理する
             ActionLog.shared.write("audio", "オーディオ構成変更通知を受信")
-            self?.queue.async { self?.handleConfigurationChange() }
+            // 「通知を受けた時刻」を通知スレッドで確定させる。queue が混んでいると
+            // handleConfigurationChange の実行はずれるので、判定基準はここで固定する
+            let notifiedAt = ProcessInfo.processInfo.systemUptime
+            self?.queue.async { self?.handleConfigurationChange(notifiedAt: notifiedAt) }
+        }
+    }
+
+    deinit {
+        if let configChangeObserver {
+            NotificationCenter.default.removeObserver(configChangeObserver)
         }
     }
 
@@ -172,17 +187,49 @@ final class AudioRecorder {
     /// この通知は誤発火が多いため、録音中でもデバイスが生きていれば中断しない。
     /// エンジンが本当に停止していたら同じデバイスで作り直して録音を継続し、
     /// 復帰不能なときだけ呼び出し側へ確定通知する。
-    private func handleConfigurationChange() {
+    private func handleConfigurationChange(notifiedAt: TimeInterval) {
         // 構成が変わった可能性 → 次回 start() ではデバイスを解決し直す
         appliedDeviceUID = nil
         guard recording else { return }
 
-        // エンジンがまだ動いている＝音声は途切れていない（最も多い誤発火パターン）。
-        // ここで止めると「デバイス未変更なのに録音が止まる」になるため何もしない。
-        if engine.isRunning { return }
+        // エンジンがまだ動いていると報告される（最も多い誤発火パターン）。ここで止めると
+        // 「デバイス未変更なのに録音が止まる」になるため、その場では何もしない。
+        // ただし isRunning が true のままタップにバッファが届かなくなる実事故があり
+        // （2026-09-15 01:57 / 09-16 20:41。19.8 秒押して 6.9 秒しか録れていない）、
+        // isRunning だけでは見分けられない。少し待ってからバッファの到着で判定する。
+        if engine.isRunning {
+            queue.asyncAfter(deadline: .now() + TapStallPolicy.bufferSilenceGrace) { [weak self] in
+                self?.verifyTapAlive(notifiedAt: notifiedAt)
+            }
+            return
+        }
 
-        // エンジンが停止＝音声が途切れた。短時間の再起動回数を数えてループを防ぎつつ、
-        // 現在のフォーマットでタップ・変換器を作り直して録音を継続する（samples は保持）。
+        // エンジンが停止＝音声が途切れた。現在のフォーマットで作り直して録音を継続する
+        restartAfterConfigurationChange(reason: "構成変更でエンジンが停止したため再構成します")
+    }
+
+    /// 構成変更の直後にタップが黙っていないか確かめる（queue 上・通知の 1 秒後）。
+    /// 届いていれば何もしない（通知は 1 日 100 回来るのでログも書かない）。
+    private func verifyTapAlive(notifiedAt: TimeInterval) {
+        // 再確認までに離鍵で録音が終わっていれば何もしない（誤発火防止）
+        guard recording else { return }
+        stateLock.lock()
+        let lastBuffer = _lastBufferUptime
+        stateLock.unlock()
+        guard TapStallPolicy.needsRestart(
+            lastBufferUptime: lastBuffer, notifiedAt: notifiedAt
+        ) else { return }
+
+        // 「動いている」と報告されるエンジンを明示的に畳んでから作り直し経路へ合流する
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        restartAfterConfigurationChange(reason: "構成変更後に音声が届かないため再構成します")
+    }
+
+    /// タップ・変換器を作り直して録音を継続する（queue 上・エンジン停止中に呼ぶ）。
+    /// 短時間の再起動回数を数えてループを防ぐ。samples は保持するので録音は途切れない。
+    /// - Parameter reason: 行動ログに残す理由（呼び出し経路ごとに違う）
+    private func restartAfterConfigurationChange(reason: String) {
         let now = ProcessInfo.processInfo.systemUptime
         if now - restartWindowStart > 2.0 {
             restartWindowStart = now
@@ -196,7 +243,7 @@ final class AudioRecorder {
             return
         }
         recentRestarts += 1
-        ActionLog.shared.write("audio", "構成変更でエンジンが停止したため再構成します (\(recentRestarts) 回目)")
+        ActionLog.shared.write("audio", "\(reason) (\(recentRestarts) 回目)")
 
         if installTapAndStart() == nil {
             log.info("構成変更で停止したエンジンを再開しました（録音継続）")
@@ -469,6 +516,12 @@ final class AudioRecorder {
         converter: AVAudioConverter,
         outFormat: AVAudioFormat
     ) {
+        // タップが生きている証拠として到着時刻を残す（構成変更後の「黙死」判定に使う）。
+        // 無音でも ~43ms ごとに届くので、これが更新されない＝タップが死んでいる
+        stateLock.lock()
+        _lastBufferUptime = ProcessInfo.processInfo.systemUptime
+        stateLock.unlock()
+
         // 録音中はサンプル蓄積＋チャンク送信＋レベル、モニタ中はレベルのみ。どちらでもないなら無視。
         let isRecording = recording
         let isMonitoring = monitoring

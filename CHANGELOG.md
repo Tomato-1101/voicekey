@@ -5,6 +5,16 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased] - 2026-09-19
 
 ### Fixed
+- **Bluetooth イヤホンの接続・切断後に「オーディオシステムの復帰を待っています」から戻らなくなるのを修正（Mac）**。
+  録音開始が 5 秒返らないと「復帰待ち」に入るが、復帰の確認は詰まっている当のキューへ ping を
+  積むだけだったため、詰まりが解けない限り一生返らずアプリ再起動しかなかった
+  （行動ログ 14 日分に「オーディオキュー復帰」が **0 回**）。ping が 3 秒返らなければ
+  音声エンジンを作り直して自動復帰するようにした（暴走防止に 10 分で 3 回まで）。
+- **録音開始直後の構成変更でマイクの音が届かなくなり、録音が途中で切れるのを修正（Mac）**。
+  開始完了の約 40ms 後に構成変更通知が来ると、`engine.isRunning` が true のため何もせず素通りし、
+  以降タップにバッファが届かなくなっていた（2026-09-15 01:57 は 19.8 秒押して 6.9 秒、
+  2026-09-16 20:41 も同様に 8.4 秒しか録れておらず、どちらも「再構成」ログが無い）。
+  通知の 1 秒後にバッファの到着を確かめ、1 つも届いていなければ再構成するようにした。
 - **音声入力の代わりに「前にコピーしていた内容」が貼られることがあるのを修正（Mac / Windows）**。
   貼り付け後のクリップボード復元が 0.3 秒後に走っており、貼り付け先アプリが ⌘V / Ctrl+V を
   処理してクリップボードを読み終える前に元の内容へ戻ってしまうことがあった（ブラウザ・Electron 製アプリ・
@@ -19,6 +29,18 @@ voicekeyの変更履歴を記録するファイルです。
   Windows 側と同じ「クリップボードが自分の挿入テキストのままか」で判定する。
 
 ### Technical Details
+- **macos/Sources/Voicekey/Core/StallPolicy.swift**: `audioQueueRecoveryTimeout`（3 秒）/
+  `maxRecorderRebuilds`（3）/ `recorderRebuildWindow`（600 秒）と純ロジック `shouldRebuildRecorder` を追加。
+  構成変更後のタップ黙死判定 `TapStallPolicy.needsRestart` も追加。
+- **macos/Sources/Voicekey/AppController.swift**: `recorder` を var 化し、ハンドラ結線を
+  `wireRecorder(_:)` へ切り出して init と作り直しの両方から呼ぶ。`waitForAudioQueueRecovery` に
+  ping の返事を待つ見張りを追加し、時間切れで `rebuildStalledRecorder()`（旧インスタンスの
+  ハンドラを外して手放し、新しい `AudioRecorder` を結線・prewarm）を実行する。
+- **macos/Sources/Voicekey/Core/AudioRecorder.swift**: `handleBuffer` でバッファ到着時刻を記録。
+  `handleConfigurationChange` は `engine.isRunning` が true でも 1 秒後に `verifyTapAlive` で再確認する。
+  再構成処理を `restartAfterConfigurationChange(reason:)` へ切り出して 2 経路から共用。
+  構成変更通知の観察者を保持して `deinit` で解除（作り直し運用で漏らさないため）。
+- **テスト**: `StallPolicyTests` に `shouldRebuildRecorder`（4 件）と `TapStallPolicy.needsRestart`（2 件）を追加。
 - **macos/Sources/Voicekey/Core/Paster.swift**: 復元判定を純ロジック `ClipboardRestorePolicy.decide`
   （`skip` / `leaveUserContent` / `restore` / `clear`）へ切り出し。`restoreDelay` 0.3 → 1.0 秒。
   復元結果を行動ログに記録。
