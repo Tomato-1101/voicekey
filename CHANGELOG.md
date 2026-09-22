@@ -5,11 +5,22 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased] - 2026-09-19
 
 ### Fixed
-- **Bluetooth イヤホンの接続・切断後に「オーディオシステムの復帰を待っています」から戻らなくなるのを修正（Mac）**。
+- **Bluetooth イヤホンの接続・切断後に「オーディオシステムの復帰を待っています」から戻らなくなる／
+  メモリを数十 GB 食い潰すのを修正（Mac）**。
   録音開始が 5 秒返らないと「復帰待ち」に入るが、復帰の確認は詰まっている当のキューへ ping を
   積むだけだったため、詰まりが解けない限り一生返らずアプリ再起動しかなかった
-  （行動ログ 14 日分に「オーディオキュー復帰」が **0 回**）。ping が 3 秒返らなければ
-  音声エンジンを作り直して自動復帰するようにした（暴走防止に 10 分で 3 回まで）。
+  （行動ログ 14 日分に「オーディオキュー復帰」が **0 回**）。
+  2026-09-22 に詰まった実プロセスを計測して正体が判明した: AVFAudio の IOUnit プロパティリスナーが
+  暴走し、HAL（coreaudiod）へ同期問い合わせを撃ち続ける状態になる。voicekey 側の
+  `inputFormat(forBus:)` はその裏で永久に順番待ちになり、**暴走スレッドは毎時数 GB のメモリを
+  確保し続ける**（実測 11 時間で phys_footprint **107GB** / 12.8 億回のアロケーション、
+  voicekey 37% + coreaudiod 66% の CPU）。`AudioRecorder` を作り直しても、ブロック中の呼び出しが
+  古い `AVAudioEngine` を掴んだままなので解放できず、暴走は生き残る。
+  そのため復帰手段を**アプリ自身の再起動**に変更した（暴走を止める API が他に無い）。
+  暴走ループ防止に 30 分で 3 回まで、上限に達したら通知だけ出して止まる。
+- **オーディオの詰まりを、ユーザーがホットキーを押す前に見つけるようにした（Mac）**。
+  詰まりは待機中（実測では最後の操作から 30 分後）に自力で始まるため、待機中は 60 秒ごとに
+  制御キューへ ping を打つ。2 回連続で返らなければ詰まりと判断して上記の再起動を行う。
 - **録音開始直後の構成変更でマイクの音が届かなくなり、録音が途中で切れるのを修正（Mac）**。
   開始完了の約 40ms 後に構成変更通知が来ると、`engine.isRunning` が true のため何もせず素通りし、
   以降タップにバッファが届かなくなっていた（2026-09-15 01:57 は 19.8 秒押して 6.9 秒、
@@ -30,17 +41,19 @@ voicekeyの変更履歴を記録するファイルです。
 
 ### Technical Details
 - **macos/Sources/Voicekey/Core/StallPolicy.swift**: `audioQueueRecoveryTimeout`（3 秒）/
-  `maxRecorderRebuilds`（3）/ `recorderRebuildWindow`（600 秒）と純ロジック `shouldRebuildRecorder` を追加。
+  `audioQueueHeartbeatInterval`（60 秒）/ `maxStallRelaunches`（3）/ `stallRelaunchWindow`（1800 秒）と
+  純ロジック `shouldRelaunchForStall` / `prunedRelaunchTimes` を追加。
   構成変更後のタップ黙死判定 `TapStallPolicy.needsRestart` も追加。
-- **macos/Sources/Voicekey/AppController.swift**: `recorder` を var 化し、ハンドラ結線を
-  `wireRecorder(_:)` へ切り出して init と作り直しの両方から呼ぶ。`waitForAudioQueueRecovery` に
-  ping の返事を待つ見張りを追加し、時間切れで `rebuildStalledRecorder()`（旧インスタンスの
-  ハンドラを外して手放し、新しい `AudioRecorder` を結線・prewarm）を実行する。
+- **macos/Sources/Voicekey/AppController.swift**: `waitForAudioQueueRecovery` に ping の返事を待つ
+  見張りを追加し、時間切れで `relaunchForStalledAudio()` を実行する（`/usr/bin/open -n` で新しい
+  インスタンスを起動して自分は終了。既存のオンボーディング再起動と同じ経路）。
+  再起動回数は UserDefaults の台帳に残してプロセスをまたいで数える。待機中の見張りは
+  `startAudioQueueHeartbeat()`、再起動後の復帰通知は `announceStallRelaunchIfNeeded()`。
 - **macos/Sources/Voicekey/Core/AudioRecorder.swift**: `handleBuffer` でバッファ到着時刻を記録。
   `handleConfigurationChange` は `engine.isRunning` が true でも 1 秒後に `verifyTapAlive` で再確認する。
   再構成処理を `restartAfterConfigurationChange(reason:)` へ切り出して 2 経路から共用。
   構成変更通知の観察者を保持して `deinit` で解除（作り直し運用で漏らさないため）。
-- **テスト**: `StallPolicyTests` に `shouldRebuildRecorder`（4 件）と `TapStallPolicy.needsRestart`（2 件）を追加。
+- **テスト**: `StallPolicyTests` に `shouldRelaunchForStall`（5 件）と `TapStallPolicy.needsRestart`（2 件）を追加。
 - **macos/Sources/Voicekey/Core/Paster.swift**: 復元判定を純ロジック `ClipboardRestorePolicy.decide`
   （`skip` / `leaveUserContent` / `restore` / `clear`）へ切り出し。`restoreDelay` 0.3 → 1.0 秒。
   復元結果を行動ログに記録。

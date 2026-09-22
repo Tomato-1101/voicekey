@@ -43,34 +43,40 @@ final class StallPolicyTests: XCTestCase {
         XCTAssertLessThan(StallPolicy.recordStartTimeout, StallPolicy.localTranscribeTimeout)
     }
 
-    // MARK: - 詰まった制御キューからの復帰（作り直しの上限）
+    // MARK: - 詰まった制御キューからの復帰（自動再起動の上限）
 
-    // まだ一度も作り直していなければ作り直してよい
-    func testRebuildAllowedWhenNeverRebuilt() {
-        XCTAssertTrue(StallPolicy.shouldRebuildRecorder(rebuildTimes: [], now: 1000))
+    // まだ一度も再起動していなければ再起動してよい
+    func testRelaunchAllowedWhenNeverRelaunched() {
+        XCTAssertTrue(StallPolicy.shouldRelaunchForStall(relaunchTimes: [], now: 10_000))
     }
 
     // 窓内 2 回までなら次の 1 回を許す
-    func testRebuildAllowedBelowLimit() {
+    func testRelaunchAllowedBelowLimit() {
         XCTAssertTrue(
-            StallPolicy.shouldRebuildRecorder(rebuildTimes: [995, 998], now: 1000)
+            StallPolicy.shouldRelaunchForStall(relaunchTimes: [9_500, 9_800], now: 10_000)
         )
     }
 
-    // 窓内 3 回に達したら作り直さない（HAL をループで叩かないための頭打ち）
-    func testRebuildBlockedAtLimit() {
+    // 窓内 3 回に達したら再起動しない（再起動ループを作らないための頭打ち）
+    func testRelaunchBlockedAtLimit() {
         XCTAssertFalse(
-            StallPolicy.shouldRebuildRecorder(rebuildTimes: [990, 995, 998], now: 1000)
+            StallPolicy.shouldRelaunchForStall(relaunchTimes: [9_000, 9_500, 9_800], now: 10_000)
         )
     }
 
-    // 窓（10 分）より古い記録は数えない＝時間が経てばまた復帰できる
-    func testOldRebuildsFallOutOfWindow() {
-        let now: TimeInterval = 10_000
-        let old = now - StallPolicy.recorderRebuildWindow - 1
+    // 窓（30 分）より古い記録は数えない＝時間が経てばまた自動復帰できる
+    func testOldRelaunchesFallOutOfWindow() {
+        let now: TimeInterval = 100_000
+        let old = now - StallPolicy.stallRelaunchWindow - 1
         XCTAssertTrue(
-            StallPolicy.shouldRebuildRecorder(rebuildTimes: [old, old, old], now: now)
+            StallPolicy.shouldRelaunchForStall(relaunchTimes: [old, old, old], now: now)
         )
+        XCTAssertEqual(StallPolicy.prunedRelaunchTimes([old, old, old], now: now), [])
+    }
+
+    // 時計が巻き戻ったときの未来の記録は捨てる（上限に永久に張り付かせない）
+    func testFutureRelaunchTimesAreDropped() {
+        XCTAssertEqual(StallPolicy.prunedRelaunchTimes([20_000], now: 10_000), [])
     }
 
     // MARK: - 構成変更後のタップ黙死判定

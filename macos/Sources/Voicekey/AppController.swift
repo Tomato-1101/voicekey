@@ -67,8 +67,7 @@ final class AppController: ObservableObject {
     /// 保持中の翻訳器の構成（エンジン/出力言語）。変わったら作り直す。
     private var translatorKey = ""
 
-    /// 録音器。制御キューが詰まって復帰しないときだけ作り直すので var（通常は生涯 1 つ）
-    private var recorder = AudioRecorder()
+    private let recorder = AudioRecorder()
     private let hotkeys = HotkeyMonitor()
     /// 貼り付け前の LLM テキスト整形（失敗時は原文を返すため全スロットで共用できる）
     private let formatter = TextFormatter()
@@ -131,10 +130,12 @@ final class AppController: ObservableObject {
     /// audio-control キューが詰まっていると判断している間 true。
     /// 死んだキューに録音要求を積み増さないためのゲート（ping の実行で解除する）
     private var audioQueueStalled = false
-    /// ping の返事を待つ見張り（時間内に返らなければ録音器を作り直す）
+    /// ping の返事を待つ見張り（時間内に返らなければアプリを再起動する）
     private var audioQueueRecoveryWatchdog: DispatchWorkItem?
-    /// 録音器を作り直した時刻（systemUptime）。窓内の回数で上限を判断する
-    private var recorderRebuildTimes: [TimeInterval] = []
+    /// 待機中に制御キューの生死を確かめるタイマー（暴走をユーザーより先に見つける）
+    private var audioQueueHeartbeat: Timer?
+    /// ping が返らなかった連続回数。1 回の取りこぼしで再起動しないための保険
+    private var audioQueueHeartbeatMisses = 0
 
     private var configObservation: Any?
     private var historySyncObservations: Set<AnyCancellable> = []
@@ -210,7 +211,7 @@ final class AppController: ObservableObject {
         // 指定時は update(for:) が無視され、その状態を出しっぱなしにして見え方を計測できる）
         hud.applyDebugStateIfNeeded()
 
-        wireRecorder(recorder)
+        wireRecorder()
 
         // ホットキーイベント（タップスレッドから来るためメインへホップ）
         hotkeys.onPress = { [weak self] token in
@@ -227,9 +228,8 @@ final class AppController: ObservableObject {
         }
     }
 
-    /// 録音器のコールバックを結線する。init と「詰まりからの作り直し」の両方から呼ぶ。
-    /// - Parameter recorder: 結線する録音器（作り直した直後は新しいインスタンス）
-    private func wireRecorder(_ recorder: AudioRecorder) {
+    /// 録音器のコールバックを結線する。
+    private func wireRecorder() {
         // 音声レベル → HUD（audio スレッドから来るためメインへホップ）。
         // マイクテスト（モニタ）中はオンボーディング／ホームのメーターへ流し、HUD には出さない。
         recorder.levelHandler = { [weak self] level in
@@ -296,6 +296,8 @@ final class AppController: ObservableObject {
                 micSubsystemStarted = true
                 // 初回録音の開始遅延を減らすため入力ユニットを温めておく
                 recorder.prewarm()
+                startAudioQueueHeartbeat()
+                announceStallRelaunchIfNeeded()
                 log.notice("マイクサブシステムを起動しました（プリウォーム）")
             }
         } else {
@@ -511,6 +513,10 @@ final class AppController: ObservableObject {
         transcribeWatchdogs.removeAll()
         warmTimer?.invalidate()
         warmTimer = nil
+        audioQueueHeartbeat?.invalidate()
+        audioQueueHeartbeat = nil
+        audioQueueRecoveryWatchdog?.cancel()
+        audioQueueRecoveryWatchdog = nil
         if let activity = antiNapActivity {
             ProcessInfo.processInfo.endActivity(activity)
             antiNapActivity = nil
@@ -1017,8 +1023,8 @@ final class AppController: ObservableObject {
     /// ここでやるのは通知と状態復帰、そしてキューが生き返るのを待つこと
     /// （`waitForAudioQueueRecovery`）。**デバイスの再列挙はしないし、エンジンの作り直しも
     /// ループでは絶対にしない**（HAL をループで叩くと coreaudiod ごと巻き込んで Mac 全体の
-    /// オーディオが死ぬ）。ただし ping が 3 秒返らなければ、上限付き（10 分に 3 回）で
-    /// 録音器を 1 回だけ作り直す＝ユーザーがアプリ再起動でやっていたことの自動化。
+    /// オーディオが死ぬ）。ただし ping が 3 秒返らなければ、上限付き（30 分に 3 回）で
+    /// アプリを再起動する＝ユーザーが手でやっていたことの自動化。
     private func abortStalledRecordStart(slotId: Int, generation: Int) {
         // 開始完了を受け取っていれば見張りは役目を終えている（＝何もしない）
         guard pendingStartGeneration == generation else { return }
@@ -1070,7 +1076,7 @@ final class AppController: ObservableObject {
     ///
     /// ただし ping を積むだけでは**詰まりが解けないと一生返らない**。実際 14 日分のログで
     /// 「オーディオキュー復帰」は一度も出ておらず、ユーザーはアプリを再起動するしかなかった。
-    /// そこで返事を待つ見張りを張り、時間内に返らなければ録音器ごと作り直す。
+    /// そこで返事を待つ見張りを張り、時間内に返らなければアプリを再起動する。
     private func waitForAudioQueueRecovery() {
         recorder.ping { [weak self] in
             DispatchQueue.main.async {
@@ -1085,7 +1091,7 @@ final class AppController: ObservableObject {
         audioQueueRecoveryWatchdog?.cancel()
         let watchdog = DispatchWorkItem { [weak self] in
             guard let self, self.audioQueueStalled else { return }
-            self.rebuildStalledRecorder()
+            self.relaunchForStalledAudio()
         }
         audioQueueRecoveryWatchdog = watchdog
         DispatchQueue.main.asyncAfter(
@@ -1093,44 +1099,103 @@ final class AppController: ObservableObject {
         )
     }
 
-    /// ping が返らない＝制御キューが詰まったままなので、録音器を作り直して復帰する（メイン）。
+    /// ping が返らない＝制御キューが詰まったまま。アプリを再起動して復帰する（メイン）。
     ///
-    /// 上限に達していたら作り直さず ping 待ちのまま据え置く（HAL をループで叩かないため。
-    /// 見張りも張り直さない＝ここで打ち止め）。
-    private func rebuildStalledRecorder() {
+    /// 作り直しではなく**プロセスの再起動**なのは、詰まっている AVAudioEngine を
+    /// プロセス内で始末する手段が無いため（2026-09-22 の実測。詳細は StallPolicy 冒頭）。
+    /// 上限に達していたら再起動せず、ユーザーに伝えて待機へ戻る（再起動ループを作らない）。
+    private func relaunchForStalledAudio() {
         audioQueueRecoveryWatchdog = nil
-        let now = ProcessInfo.processInfo.systemUptime
-        guard StallPolicy.shouldRebuildRecorder(rebuildTimes: recorderRebuildTimes, now: now) else {
-            log.warning("オーディオキューの作り直し上限に達しました（復帰待ちを継続します）")
-            ActionLog.shared.write("audio", "オーディオキューの作り直し上限に達したため復帰待ちを継続")
+        let now = Date.timeIntervalSinceReferenceDate
+        var ledger = StallPolicy.prunedRelaunchTimes(Self.stallRelaunchLedger, now: now)
+        guard StallPolicy.shouldRelaunchForStall(relaunchTimes: ledger, now: now) else {
+            log.warning("オーディオ停止からの自動再起動が上限に達しました")
+            ActionLog.shared.write("audio", "自動再起動の上限に達したため再起動しません")
+            hud.notice("オーディオが復帰しません。Mac の再起動が必要です")
             return
         }
 
-        // 旧録音器のコールバックを全部外す。詰まっていたスレッドが後から動き出しても、
-        // 本体（HUD・録音状態・ストリーミング）へ触らせない
-        let stalled = recorder
-        stalled.levelHandler = nil
-        stalled.deviceChangedHandler = nil
-        stalled.chunkHandler = nil
-        // 旧インスタンスは参照を手放すだけ。詰まっているのは AVAudioEngine の HAL 呼び出しで、
-        // それを外から中断する手段は無い。解ければ自然に終わり、解けなければスレッド 1 本と
-        // エンジン 1 つを漏らす。Mac 全体のオーディオを巻き込むより漏らす方がましで、
-        // これが唯一の選択肢（だからこそ上限 10 分 3 回で頭打ちにしてある）。
-        // 窓から外れた古い記録は落とす（際限なく溜めない・回数表示も窓内の値に揃える）
-        recorderRebuildTimes = recorderRebuildTimes.filter {
-            now - $0 < StallPolicy.recorderRebuildWindow
-        }
-        recorderRebuildTimes.append(now)
-        recorder = AudioRecorder()
-        wireRecorder(recorder)
-        recorder.inputDeviceUID = config.inputDeviceUID
-        recorder.prewarm()
-        audioQueueStalled = false
+        ledger.append(now)
+        Self.stallRelaunchLedger = ledger
+        UserDefaults.standard.set(true, forKey: Self.stallRelaunchNoticeKey)
+        log.notice("オーディオが応答しないためアプリを再起動します (\(ledger.count) 回目)")
+        ActionLog.shared.write("audio", "オーディオが応答しないためアプリを再起動します (\(ledger.count) 回目)")
+        ActionLog.shared.flush()
+        Self.relaunchProcess()
+    }
 
-        let count = recorderRebuildTimes.count
-        log.notice("オーディオキューが復帰しないため録音器を作り直しました (\(count) 回目)")
-        ActionLog.shared.write("audio", "オーディオキューを作り直して復帰 (\(count) 回目)")
-        hud.notice("オーディオシステムを再起動しました")
+    /// 自分の代わりを起動してから終了する。
+    ///
+    /// `NSApp.terminate` は `applicationWillTerminate` を通すので字幕タップ等の後片付けが走るが、
+    /// オーディオが詰まっている状況では戻ってこない可能性がある。1 秒で戻らなければ強制終了する
+    /// （後片付けより「必ず新しいプロセスに入れ替わる」ことを優先する）。
+    private static func relaunchProcess() {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        // 既存の再起動経路（オンボーディングの入力監視）と同じ渡し方に揃える
+        proc.arguments = ["-n", Bundle.main.bundlePath]
+        try? proc.run()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { exit(0) }
+        NSApp.terminate(nil)
+    }
+
+    /// 自動再起動の台帳（プロセスをまたいで数えるので UserDefaults に置く）
+    private static let stallRelaunchLedgerKey = "audioStallRelaunchTimes"
+    /// 再起動直後に「自動復帰した」と伝えるためのフラグ
+    private static let stallRelaunchNoticeKey = "audioStallRelaunchNotice"
+
+    private static var stallRelaunchLedger: [TimeInterval] {
+        get { UserDefaults.standard.array(forKey: stallRelaunchLedgerKey) as? [TimeInterval] ?? [] }
+        set { UserDefaults.standard.set(newValue, forKey: stallRelaunchLedgerKey) }
+    }
+
+    /// 自動再起動で立ち上がったならユーザーに伝える（起動時に 1 度だけ）。
+    private func announceStallRelaunchIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: Self.stallRelaunchNoticeKey) else { return }
+        defaults.removeObject(forKey: Self.stallRelaunchNoticeKey)
+        ActionLog.shared.write("audio", "オーディオ停止からの自動再起動で復帰しました")
+        hud.notice("オーディオの不調から自動復帰しました")
+    }
+
+    /// 待機中に制御キューの生死を確かめ続ける。
+    ///
+    /// 暴走はホットキーを押す前から始まっている（実例では 30 分前）。気づくのが遅れるほど
+    /// CPU 1 コアとメモリを食われ続けるので、待機中も 60 秒ごとに ping を打って早く見つける。
+    /// ping は dispatch のブロックを 1 つ積むだけで HAL には触らない（叩き続けない不変条件を守る）。
+    private func startAudioQueueHeartbeat() {
+        guard audioQueueHeartbeat == nil else { return }
+        audioQueueHeartbeat = Timer.scheduledTimer(
+            withTimeInterval: StallPolicy.audioQueueHeartbeatInterval, repeats: true
+        ) { [weak self] _ in
+            DispatchQueue.main.async { self?.pingAudioQueue() }
+        }
+    }
+
+    /// 待機中の ping。返事が来なければ詰まり扱いにして再起動経路へ入る。
+    private func pingAudioQueue() {
+        // 録音中・変換中は触らない（正常に使えている＝詰まっていない）
+        guard recordingSlot == nil, !audioQueueStalled else { return }
+        var answered = false
+        recorder.ping {
+            DispatchQueue.main.async { answered = true }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + StallPolicy.audioQueueRecoveryTimeout) {
+            [weak self] in
+            guard let self, self.recordingSlot == nil, !self.audioQueueStalled else { return }
+            guard !answered else {
+                self.audioQueueHeartbeatMisses = 0
+                return
+            }
+            // 再起動はユーザーに見えるので、1 回の取りこぼしでは踏み切らない（2 回連続＝約 2 分）
+            self.audioQueueHeartbeatMisses += 1
+            ActionLog.shared.write(
+                "audio", "待機中の ping が返らない (\(self.audioQueueHeartbeatMisses) 回連続)")
+            guard self.audioQueueHeartbeatMisses >= 2 else { return }
+            log.notice("待機中の ping が連続で返らないためオーディオの詰まりと判断しました")
+            self.audioQueueStalled = true
+            self.relaunchForStalledAudio()
+        }
     }
 
     /// 文字起こしが返ってこないことを見張り始める（録音停止＝変換中に入った時点で呼ぶ）

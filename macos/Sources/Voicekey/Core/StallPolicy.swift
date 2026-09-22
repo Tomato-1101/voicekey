@@ -8,11 +8,13 @@
 //  待機へ戻す**ための判断だけをここに置く。時間の値と世代の突き合わせは副作用を持たない
 //  純ロジックなので、実オーディオ・実タイマーなしでテストできる。
 //
-//  エンジンの作り直しは**ループでは絶対に指示しない**（HAL をループで叩くと coreaudiod ごと
-//  巻き込んで Mac 全体のオーディオを殺す）。ただし詰まりからの復帰としては、上限付き
-//  （10 分に 3 回）で 1 回だけ作り直すことを許す。ping が返るのを待つだけの旧方式では
-//  14 日分のログで一度も復帰しておらず、ユーザーが「アプリ再起動＝エンジン作り直し」を
-//  人手でやらされていたため（2026-09-19）。
+//  HAL を**ループで叩かない**のは不変（叩くと coreaudiod ごと巻き込んで Mac 全体のオーディオが
+//  死ぬ）。詰まりからの復帰手段は 2026-09-22 の実測で「プロセスの再起動」に確定した:
+//  詰まりの正体は AVFAudio の IOUnit プロパティリスナーが暴走して HAL へ同期問い合わせを
+//  撃ち続ける状態で、こちらの inputFormat(forBus:) はその裏で永久に順番待ちになる。
+//  AudioRecorder を作り直しても**古い AVAudioEngine は解放できない**（ブロック中の呼び出しが
+//  参照を握ったままになる）ため暴走は生き残り、実測で voicekey 37% + coreaudiod 66% の CPU と
+//  毎時数 GB のメモリを食い続けた（11 時間で 107GB）。プロセスを落とす以外に止める API が無い。
 //
 
 import Foundation
@@ -43,27 +45,36 @@ enum StallPolicy {
     // MARK: - 詰まった制御キューからの復帰
 
     /// 詰まりを検知したあと、ping（キューが動いた証拠）を待つ上限（秒）。
-    /// これを過ぎても返事が無ければ、キューは詰まったまま＝ping を積んでも一生走らないので、
-    /// 録音器そのものを作り直す。
+    /// これを過ぎても返事が無ければ、キューは詰まったまま＝ping を積んでも一生走らない。
     static let audioQueueRecoveryTimeout: TimeInterval = 3
 
-    /// 録音器の作り直しを許す回数（下の窓あたり）。
-    static let maxRecorderRebuilds = 3
+    /// 待機中に制御キューの生死を確かめる間隔（秒）。
+    /// 暴走はユーザーがホットキーを押す前から始まっている（2026-09-22 の実例では 30 分前）。
+    /// 押されるまで気づかないと、その間ずっと CPU 1 コアとメモリを食われるので待機中も見る。
+    static let audioQueueHeartbeatInterval: TimeInterval = 60
 
-    /// 作り直し回数を数える時間窓（秒）。
-    static let recorderRebuildWindow: TimeInterval = 600
+    /// オーディオ停止からの自動再起動を許す回数（下の窓あたり）。
+    static let maxStallRelaunches = 3
 
-    /// いま録音器を作り直してよいか（純ロジック・テスト対象）。
+    /// 再起動回数を数える時間窓（秒）。プロセスをまたいで数えるので実時刻で持つ。
+    static let stallRelaunchWindow: TimeInterval = 1800
+
+    /// いまオーディオ停止からの自動再起動をしてよいか（純ロジック・テスト対象）。
     ///
-    /// HAL を叩き続ける暴走を防ぐため、窓内の作り直し回数だけで判断する。
-    /// 上限に達したら作り直さず、ping の復帰待ちに留める（＝ループしない）。
+    /// 「起動直後にまた詰まって再起動」のループだけは避けたいので、窓内の回数で頭打ちにする。
+    /// 上限に達したら再起動せず、ユーザーに伝えて待機へ戻る。
     /// - Parameters:
-    ///   - rebuildTimes: これまでに作り直した時刻（`systemUptime` 基準）
-    ///   - now: 現在時刻（同じく `systemUptime` 基準）
+    ///   - relaunchTimes: これまでに自動再起動した時刻（`Date.timeIntervalSinceReferenceDate` 基準）
+    ///   - now: 現在時刻（同上）
     /// - Returns: 窓内の回数が上限未満なら true
-    static func shouldRebuildRecorder(rebuildTimes: [TimeInterval], now: TimeInterval) -> Bool {
-        let recent = rebuildTimes.filter { now - $0 < recorderRebuildWindow }
-        return recent.count < maxRecorderRebuilds
+    static func shouldRelaunchForStall(relaunchTimes: [TimeInterval], now: TimeInterval) -> Bool {
+        prunedRelaunchTimes(relaunchTimes, now: now).count < maxStallRelaunches
+    }
+
+    /// 台帳から窓外の記録を落とす（際限なく伸びないように・回数表示も窓内に揃える）。
+    /// 時計が巻き戻った場合に備えて未来の記録も捨てる。
+    static func prunedRelaunchTimes(_ times: [TimeInterval], now: TimeInterval) -> [TimeInterval] {
+        times.filter { now - $0 < stallRelaunchWindow && $0 <= now }
     }
 }
 
