@@ -152,4 +152,25 @@ final class StallPolicyTests: XCTestCase {
             sessions.contains(AbandonedSessions.capacity + 5), "直近の世代が落とされている"
         )
     }
+
+    // MARK: - 待機中のエンジン入れ替え
+
+    func testIdleEngineRefreshWaitsForInterval() {
+        XCTAssertFalse(StallPolicy.shouldRefreshIdleEngine(preparedAt: 1000, now: 1000))
+        XCTAssertFalse(
+            StallPolicy.shouldRefreshIdleEngine(
+                preparedAt: 1000, now: 1000 + StallPolicy.engineRefreshInterval - 1))
+    }
+
+    func testIdleEngineRefreshAtInterval() {
+        XCTAssertTrue(
+            StallPolicy.shouldRefreshIdleEngine(
+                preparedAt: 1000, now: 1000 + StallPolicy.engineRefreshInterval))
+        XCTAssertTrue(StallPolicy.shouldRefreshIdleEngine(preparedAt: 1000, now: 99999))
+    }
+
+    /// 実測した詰まりの最短（6 分ほったらかし）より必ず手前で入れ替わること
+    func testIdleEngineRefreshIsShorterThanObservedStallGap() {
+        XCTAssertLessThan(StallPolicy.engineRefreshInterval, 6 * 60)
+    }
 }

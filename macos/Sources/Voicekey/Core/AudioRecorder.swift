@@ -262,13 +262,15 @@ final class AudioRecorder {
     /// なることがあり、録音時に払うと押し始めの声が欠けるため起動時に前払いする）。
     /// タップは何も記録しないダミーのため音声はどこにも残らない
     /// （アプリ起動直後にマイクインジケータが一瞬点灯するのはこのウォームアップ）
-    func prewarm() {
+    /// - Parameter warmIO: 実 IO の起動・停止まで行うか。false だとマイクインジケータが点かない
+    ///   （待機中の定期入れ替えで毎回点灯させないため）
+    func prewarm(warmIO: Bool = true) {
         queue.async { [self] in
             guard !recording else { return }
             applyInputDevice()
             let input = engine.inputNode
             let hwFormat = input.inputFormat(forBus: 0)
-            if !ioWarmed, hwFormat.sampleRate > 0, hwFormat.channelCount > 0 {
+            if warmIO, !ioWarmed, hwFormat.sampleRate > 0, hwFormat.channelCount > 0 {
                 ioWarmed = true
                 input.installTap(onBus: 0, bufferSize: 2048, format: hwFormat) { _, _ in }
                 do {

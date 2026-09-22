@@ -18,6 +18,14 @@ voicekeyの変更履歴を記録するファイルです。
   古い `AVAudioEngine` を掴んだままなので解放できず、暴走は生き残る。
   そのため復帰手段を**アプリ自身の再起動**に変更した（暴走を止める API が他に無い）。
   暴走ループ防止に 30 分で 3 回まで、上限に達したら通知だけ出して止まる。
+- **そもそも詰まらないよう、待機中のオーディオエンジンを 4 分ごとに新品へ入れ替えるようにした（Mac）**。
+  13 日分のログにある詰まり 5 件はすべて「**6 分以上ほったらかした後の最初の録音**」で起きており
+  （無操作 6 分 / 7 分 / 20 分 / 30 分 / 12 時間 54 分）、録音中や連続使用中には一度も起きていない。
+  腐るのは待機中に置きっぱなしのインスタンスなので、腐る前に健康なうちに捨てて作り直せば
+  詰まる個体が存在しなくなる（健康なうちなら解放も素直に通るので暴走も漏れも起きない）。
+  入れ替えは実 IO を起こさないため**マイクインジケータは点かない**。
+  押下から録音開始までの実測は、準備済みの新品 **58ms** に対し従来の使い回しが **90ms** で、
+  待ち時間はむしろ縮んだ（`--audio-engine-cost-test` で計測）。
 - **オーディオの詰まりを、ユーザーがホットキーを押す前に見つけるようにした（Mac）**。
   詰まりは待機中（実測では最後の操作から 30 分後）に自力で始まるため、待機中は 60 秒ごとに
   制御キューへ ping を打つ。2 回連続で返らなければ詰まりと判断して上記の再起動を行う。
@@ -41,8 +49,9 @@ voicekeyの変更履歴を記録するファイルです。
 
 ### Technical Details
 - **macos/Sources/Voicekey/Core/StallPolicy.swift**: `audioQueueRecoveryTimeout`（3 秒）/
-  `audioQueueHeartbeatInterval`（60 秒）/ `maxStallRelaunches`（3）/ `stallRelaunchWindow`（1800 秒）と
-  純ロジック `shouldRelaunchForStall` / `prunedRelaunchTimes` を追加。
+  `audioQueueHeartbeatInterval`（60 秒）/ `engineRefreshInterval`（240 秒）/
+  `maxStallRelaunches`（3）/ `stallRelaunchWindow`（1800 秒）と
+  純ロジック `shouldRelaunchForStall` / `prunedRelaunchTimes` / `shouldRefreshIdleEngine` を追加。
   構成変更後のタップ黙死判定 `TapStallPolicy.needsRestart` も追加。
 - **macos/Sources/Voicekey/AppController.swift**: `waitForAudioQueueRecovery` に ping の返事を待つ
   見張りを追加し、時間切れで `relaunchForStalledAudio()` を実行する（`/usr/bin/open -n` で新しい
@@ -53,7 +62,13 @@ voicekeyの変更履歴を記録するファイルです。
   `handleConfigurationChange` は `engine.isRunning` が true でも 1 秒後に `verifyTapAlive` で再確認する。
   再構成処理を `restartAfterConfigurationChange(reason:)` へ切り出して 2 経路から共用。
   構成変更通知の観察者を保持して `deinit` で解除（作り直し運用で漏らさないため）。
-- **テスト**: `StallPolicyTests` に `shouldRelaunchForStall`（5 件）と `TapStallPolicy.needsRestart`（2 件）を追加。
+- **macos/Sources/Voicekey/CLI/AudioEngineCostTestMode.swift**: エンジンの作り方 4 通り
+  （新品＋実 IO ウォーム / 新品を即開始 / 新品を IO 抜きで準備 / 従来の使い回し）の
+  録音開始コストを実測するハーネスを追加。`--audio-engine-cost-test` で実行する。
+- **macos/Sources/Voicekey/Core/AudioRecorder.swift**: `prewarm(warmIO:)` を追加。
+  `warmIO: false` は実 IO を起こさないのでマイクインジケータが点かない（定期入れ替え用）。
+- **テスト**: `StallPolicyTests` に `shouldRelaunchForStall`（5 件）、
+  `shouldRefreshIdleEngine`（3 件）と `TapStallPolicy.needsRestart`（2 件）を追加。
 - **macos/Sources/Voicekey/Core/Paster.swift**: 復元判定を純ロジック `ClipboardRestorePolicy.decide`
   （`skip` / `leaveUserContent` / `restore` / `clear`）へ切り出し。`restoreDelay` 0.3 → 1.0 秒。
   復元結果を行動ログに記録。

@@ -53,6 +53,20 @@ enum StallPolicy {
     /// 押されるまで気づかないと、その間ずっと CPU 1 コアとメモリを食われるので待機中も見る。
     static let audioQueueHeartbeatInterval: TimeInterval = 60
 
+    /// 待機中のエンジンを新品へ入れ替える間隔。
+    /// 実測した詰まり 5 件はすべて「6 分以上ほったらかした後の最初の録音」で起きており、
+    /// 録音中や連続使用中には一度も起きていない（2026-09-22 に 13 日分のログで確認）。
+    /// 腐る前に健康なうちに捨てれば、詰まりも漏れも起きない（詰まってから捨てると
+    /// ブロック中の呼び出しが掴んだままで解放できず、暴走が生き残る）。
+    /// 最短の 6 分に対して余裕を取り 4 分。入れ替えは実 IO を起こさないので
+    /// マイクインジケータは点かず、押下の待ち時間も増えない（実測 58ms < 温存 90ms）。
+    static let engineRefreshInterval: TimeInterval = 240
+
+    /// 待機中のエンジンを入れ替えるべきか（純ロジック）
+    static func shouldRefreshIdleEngine(preparedAt: TimeInterval, now: TimeInterval) -> Bool {
+        now - preparedAt >= engineRefreshInterval
+    }
+
     /// オーディオ停止からの自動再起動を許す回数（下の窓あたり）。
     static let maxStallRelaunches = 3
 

@@ -67,7 +67,10 @@ final class AppController: ObservableObject {
     /// 保持中の翻訳器の構成（エンジン/出力言語）。変わったら作り直す。
     private var translatorKey = ""
 
-    private let recorder = AudioRecorder()
+    /// 待機中に新品へ入れ替えるため var（詰まる前に健康なうちに捨てる）
+    private var recorder = AudioRecorder()
+    /// いま使っているエンジンを用意した時刻（入れ替え判断の基準）
+    private var recorderPreparedAt = Date.timeIntervalSinceReferenceDate
     private let hotkeys = HotkeyMonitor()
     /// 貼り付け前の LLM テキスト整形（失敗時は原文を返すため全スロットで共用できる）
     private let formatter = TextFormatter()
@@ -943,6 +946,7 @@ final class AppController: ObservableObject {
 
         // マイク起動を最優先で仕掛ける（プリウォーム類は後ろに置き、
         // メインスレッドの Keychain 読みなどで録音開始を遅らせない）
+        recorderPreparedAt = Date.timeIntervalSinceReferenceDate
         recorder.start { [weak self] failure in
             // 成功・失敗どちらでもメインへ返す。ウォッチドッグを止めるために
             // 「返ってきた」こと自体を知る必要がある（成功時の遅延は増やさない＝
@@ -1173,6 +1177,32 @@ final class AppController: ObservableObject {
     }
 
     /// 待機中の ping。返事が来なければ詰まり扱いにして再起動経路へ入る。
+    /// 待機中のエンジンが古くなっていたら新品へ入れ替える。
+    /// 詰まりは「ほったらかした後の最初の録音」でしか起きていないので、
+    /// ほったらかしのあいだに健康なまま捨てて作り直せば、詰まる個体が存在しなくなる。
+    /// 実 IO は起こさないためマイクインジケータは点かず、次の押下はむしろ速くなる。
+    private func refreshIdleRecorderIfStale() {
+        // 録音中・マイクテスト中・詰まり検知後は触らない
+        guard recordingSlot == nil, micMonitorHandler == nil, !audioQueueStalled else { return }
+        let now = Date.timeIntervalSinceReferenceDate
+        guard StallPolicy.shouldRefreshIdleEngine(preparedAt: recorderPreparedAt, now: now) else { return }
+
+        let old = recorder
+        let fresh = AudioRecorder()
+        fresh.inputDeviceUID = config.inputDeviceUID
+        recorder = fresh
+        wireRecorder()
+        // 旧インスタンスからは参照を外して静かに手放す（停止中なので解放は素直に通る）
+        old.levelHandler = nil
+        old.deviceChangedHandler = nil
+        old.chunkHandler = nil
+        fresh.prewarm(warmIO: false)
+        recorderPreparedAt = now
+        // 行動ログには書かない（4 分ごとに出るとユーザーのログが埋まる）。
+        // 追跡は os_log 側（/usr/bin/log show）で足りる
+        log.notice("待機中のオーディオエンジンを新品へ入れ替えました")
+    }
+
     private func pingAudioQueue() {
         // 録音中・変換中は触らない（正常に使えている＝詰まっていない）
         guard recordingSlot == nil, !audioQueueStalled else { return }
@@ -1185,6 +1215,8 @@ final class AppController: ObservableObject {
             guard let self, self.recordingSlot == nil, !self.audioQueueStalled else { return }
             guard !answered else {
                 self.audioQueueHeartbeatMisses = 0
+                // 返事が来た＝このエンジンはまだ健康。腐る前にここで新品と入れ替える
+                self.refreshIdleRecorderIfStale()
                 return
             }
             // 再起動はユーザーに見えるので、1 回の取りこぼしでは踏み切らない（2 回連続＝約 2 分）
