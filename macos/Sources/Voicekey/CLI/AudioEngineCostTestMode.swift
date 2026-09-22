@@ -62,11 +62,13 @@ enum AudioEngineCostTestMode {
         // COLD-PREPARE: 実 IO は起動せず（マイクインジケータを点けず）準備だけした新品
         for i in 1...rounds {
             let recorder = AudioRecorder()
+            let tp = Date()
             recorder.prewarm(warmIO: false)
             await drain(recorder)
+            let prepareMs = ms(since: tp)
             let t0 = Date()
             await startRecording(recorder)
-            print("[COLD-PREPARE] round=\(i) start=\(ms(since: t0))ms")
+            print("[COLD-PREPARE] round=\(i) prepare=\(prepareMs)ms start=\(ms(since: t0))ms")
             try? await Task.sleep(nanoseconds: UInt64(holdSeconds * 1_000_000_000))
             await stopRecording(recorder)
         }

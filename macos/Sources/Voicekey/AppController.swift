@@ -1181,11 +1181,14 @@ final class AppController: ObservableObject {
     /// 詰まりは「ほったらかした後の最初の録音」でしか起きていないので、
     /// ほったらかしのあいだに健康なまま捨てて作り直せば、詰まる個体が存在しなくなる。
     /// 実 IO は起こさないためマイクインジケータは点かず、次の押下はむしろ速くなる。
-    private func refreshIdleRecorderIfStale() {
+    /// - Parameter force: 経過時間を見ずに入れ替える（入力直後に呼ぶとき）
+    private func refreshIdleRecorderIfStale(force: Bool = false) {
         // 録音中・マイクテスト中・詰まり検知後は触らない
         guard recordingSlot == nil, micMonitorHandler == nil, !audioQueueStalled else { return }
         let now = Date.timeIntervalSinceReferenceDate
-        guard StallPolicy.shouldRefreshIdleEngine(preparedAt: recorderPreparedAt, now: now) else { return }
+        guard force
+            || StallPolicy.shouldRefreshIdleEngine(preparedAt: recorderPreparedAt, now: now)
+        else { return }
 
         let old = recorder
         let fresh = AudioRecorder()
@@ -1200,7 +1203,12 @@ final class AppController: ObservableObject {
         recorderPreparedAt = now
         // 行動ログには書かない（4 分ごとに出るとユーザーのログが埋まる）。
         // 追跡は os_log 側（/usr/bin/log show）で足りる
-        log.notice("待機中のオーディオエンジンを新品へ入れ替えました")
+        // os_log は文字列の補間を伏せる（<private>）ので、契機ごとに別の固定文言で書く
+        if force {
+            log.notice("入力後にオーディオエンジンを新品へ入れ替えました")
+        } else {
+            log.notice("待機中にオーディオエンジンを新品へ入れ替えました")
+        }
     }
 
     private func pingAudioQueue() {
@@ -1381,6 +1389,10 @@ final class AppController: ObservableObject {
                 self?.processAudio(kept, context: context, generation: generation,
                                    autoEnter: useAutoEnter, streamer: activeStreamer,
                                    quietIfNoSpeech: quietIfNoSpeech)
+                // 使い終わった直後に新品へ入れ替える。入れ替え自体は 100ms 前後かかるが、
+                // ここは文字起こし〜貼り付け（実測 500ms 超）の裏なので押下の待ちにはならない。
+                // 待機タイマー任せだと、たまたま入れ替え中に押した人だけが待たされる
+                self?.refreshIdleRecorderIfStale(force: true)
             }
         }
     }
