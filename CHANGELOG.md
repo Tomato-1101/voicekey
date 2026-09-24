@@ -5,6 +5,37 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased] - 2026-09-19
 
 ### Fixed
+- **待機中にアプリが固まる（ハング）／coreaudiod が肥大化するのを修正。録音部品を AVAudioEngine から
+  入力専用の AUHAL に置き換えた（Mac）**。
+  `AVAudioEngine` は生成のたびに coreaudiod へ集約デバイス（`CADefaultDeviceAggregate-<pid>-<n>`）を作る。
+  下記「オーディオエンジンを入力のたびに新品へ入れ替える」対策（4 分ごと＋入力のたび）はこれを作っては
+  壊し続けることになり、coreaudiod が 1.1GB まで膨らんだ。さらに hang レポートでは、捨てた旧エンジンの
+  `-[AVAudioEngine dealloc]` がメインスレッドで dispatch_sync したまま永久に返らなかった
+  （裏で AVAudioIOUnit のプロパティリスナーが暴走）。構成変更通知のたびに適用済みデバイスを
+  忘れていたため、押すたびにデバイス設定をやり直すループにもなっていた。
+  新しい `AudioRecorder` は `kAudioUnitSubType_HALOutput` を入力専用（入力 bus1 だけ有効）で 1 個だけ作り、
+  デバイスを明示指定して使い回す。集約デバイスは作らず、待機中の入れ替えもしない。
+  待機中は Initialize 済み・停止状態のまま置くのでマイクインジケータは点かない。
+  デバイスの監視（既定入力・生存・フォーマット）は自前のリスナーで行い、待機中は「次の押下で
+  見直す」印を付けるだけで HAL に触らない。録音中の構成変更だけ、2 秒で 3 回・1 録音で累計 5 回までの
+  上限付きで張り直す。IO 開始から 1 秒以内のフォーマット通知（Bluetooth の A2DP→HFP 切替を自分で起こした
+  可能性が高い）は即張り直さず、落ち着いてから音声の到着で判定する（切替→張り直し→また切替の連鎖で
+  話し中に録音が確定するのを防ぐ）。録音開始・張り直しの後は 2 秒後に 1 回だけ音声の到着を確認し、
+  届いていなければ AU を作り直す。取得失敗で捨てたバッファは録音ごとに件数をログに出す。
+  変換器は録音ごとにリセットし、前の録音の残りが次の頭に混ざらないようにした。
+  マイクテスト中に録音して止めるとメーターが戻らなくなる既存の不整合も直した。
+  実測（`--audio-engine-cost-test`）: 押下→録音開始 中央値 70ms（20 回・35〜114ms）、
+  集約デバイスの増加 **0**（対照の AVAudioEngine は 1 個増える）、0.3 秒の押下で 16kHz 約 4,800 サンプル到達。
+- **動作を全体的に軽くした（Mac）**。
+  - 履歴同期のキャッシュ並べ替えが比較のたびに日付フォーマッタを 2 個作っており、1 回の音声入力で
+    約 1.1 秒 CPU を使っていた（ベンチ 1137ms → 7.7ms）。フォーマッタを使い回し、日付は 1 回だけ解釈する。
+  - OpenAI / Deepgram のストリーミングが録音のたびに URLSession を作って捨てており、通信部品のオブジェクトが
+    少しずつ残っていた。共有セッション 1 本にした。OpenAI の途中結果の連結も二乗コストから線形にした。
+  - 操作音（ON 時）の再生エンジンが一度鳴らすと止まらず出力を回し続けていた。鳴らし終えたら止める。
+  - 実績の集計（ファイル書き出し）を貼り付け・Enter の後へ回した（履歴は貼り付け失敗時の救出用に従来どおり前）。
+  - 待機ピルをアプリ切替のたびに出し直していたのを Space 切替時だけにした（ガラス背景の再評価は維持）。
+  - サイドノッチの履歴一覧を遅延描画にし、アプリアイコンをキャッシュ。履歴の表示用一覧は変更時だけ作り直す。
+  - 死活監視のタイマーに誤差許容を付け、CPU を起こす回数を減らした。
 - **Bluetooth イヤホンの接続・切断後に「オーディオシステムの復帰を待っています」から戻らなくなる／
   メモリを数十 GB 食い潰すのを修正（Mac）**。
   録音開始が 5 秒返らないと「復帰待ち」に入るが、復帰の確認は詰まっている当のキューへ ping を
@@ -19,6 +50,8 @@ voicekeyの変更履歴を記録するファイルです。
   そのため復帰手段を**アプリ自身の再起動**に変更した（暴走を止める API が他に無い）。
   暴走ループ防止に 30 分で 3 回まで、上限に達したら通知だけ出して止まる。
 - **そもそも詰まらないよう、オーディオエンジンを入力のたびに新品へ入れ替えるようにした（Mac）**。
+  **（2026-09-25 撤回: 入れ替えそのものが集約デバイスを作り続けて hang を招いたため、上記の AUHAL 化で置き換えた。
+  以下は経緯として残す）**
   13 日分のログにある詰まり 5 件はすべて「**6 分以上ほったらかした後の最初の録音**」で起きており
   （無操作 6 分 / 7 分 / 20 分 / 30 分 / 12 時間 54 分）、録音中や連続使用中には一度も起きていない。
   腐るのは待機中に置きっぱなしのインスタンスなので、腐る前に健康なうちに捨てて作り直せば
@@ -51,6 +84,26 @@ voicekeyの変更履歴を記録するファイルです。
   Windows 側と同じ「クリップボードが自分の挿入テキストのままか」で判定する。
 
 ### Technical Details
+- **macos/Sources/Voicekey/Core/AudioRecorder.swift**（AUHAL 化・公開 API は不変）:
+  入力専用 AUHAL（EnableIO 入力 bus1=1 / 出力 bus0=0）。Initialize 前に `CurrentDevice` を明示設定
+  （「システム既定」は既定入力の ID を解決して渡す）。デバイス形式は bus1 入力スコープから読み、
+  クライアント形式を bus1 出力スコープに Float32 非インターリーブ（デバイスのレート・ch 数）で設定。
+  IO スレッドのコールバックは確保済みの AudioBufferList へ `AudioUnitRender` し、os_unfair_lock で
+  memcpy の間だけ守るリング（2 秒）へ積む（メモリ確保なし）。処理キュー（`com.voicekey.audio-process`）が
+  約 43ms 単位で取り出して `AVAudioConverter` で 16kHz mono にし、既存の `handleBuffer`
+  （`_chunkGen/_activeChunkGen` 世代判定・`BufferAvailability`）へ渡す。停止時は残りを flush。
+  リスナーは `AudioObjectAddPropertyListenerBlock` で制御キューに配送し、`deinit` で解除する
+  （後始末は制御キューで非同期に行いメインスレッドを塞がない）。`prewarm(warmIO:)` の IO ウォームは維持。
+- **macos/Sources/Voicekey/Core/AudioDevices.swift**: `isAlive(_:)` / `nominalSampleRate(_:)` を追加。
+  `inputChannelCount` / `stringProperty` を internal に。
+- **macos/Sources/Voicekey/AppController.swift**: `refreshIdleRecorderIfStale` と呼び出し
+  （入力直後・`pingAudioQueue` 内）、`recorderPreparedAt` を削除。ping と `relaunchForStalledAudio` は安全網として維持。
+- **macos/Sources/Voicekey/Core/StallPolicy.swift**: `engineRefreshInterval` / `shouldRefreshIdleEngine` を削除
+  （対応テスト 3 件も削除）。
+- **macos/Sources/Voicekey/CLI/AudioEngineCostTestMode.swift**: `--log-file` 対応、`[CYCLE]`（同一インスタンスで
+  20 回押下）・`[IDLE]`（待機中に既定入力が動いていないか）・`[AGGREGATE]`（集約デバイスの増減）・
+  `[CONTROL]`（AVAudioEngine で検出が効くことの確認）・`[SAMPLES]`（音が届いたか）を追加。
+  集約デバイス増加 0・失敗なし・サンプル到達のときだけ `[VERDICT] status=ok`。
 - **macos/Sources/Voicekey/Core/StallPolicy.swift**: `audioQueueRecoveryTimeout`（3 秒）/
   `audioQueueHeartbeatInterval`（60 秒）/ `engineRefreshInterval`（240 秒）/
   `maxStallRelaunches`（3）/ `stallRelaunchWindow`（1800 秒）と

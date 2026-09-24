@@ -34,6 +34,8 @@ final class SoundFX {
     /// 合成に使うフォーマット（モノラル 44.1kHz float）
     private let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1)!
     private var isConfigured = false
+    /// 予約中〜再生中のブリップ数(queue 上でのみ触る)。0 に戻った時だけ engine を止める。
+    private var pendingPlays = 0
 
     private init() {}
 
@@ -47,7 +49,18 @@ final class SoundFX {
                 try? engine.start()
             }
             guard engine.isRunning else { return }
-            player.scheduleBuffer(buffer, at: nil, options: [], completionHandler: nil)
+            pendingPlays += 1
+            // 完了ごとに毎回止めると次のブリップの予約と競合するため、
+            // 予約数がここで 0 に戻った時(＝後続の予約が無い時)だけ pause する。
+            player.scheduleBuffer(buffer, at: nil, options: []) { [weak self] in
+                guard let self else { return }
+                self.queue.async {
+                    self.pendingPlays -= 1
+                    if self.pendingPlays <= 0, self.engine.isRunning {
+                        self.engine.pause()
+                    }
+                }
+            }
             if !player.isPlaying { player.play() }
         }
     }

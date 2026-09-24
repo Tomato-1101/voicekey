@@ -2,7 +2,7 @@
 //  AudioDevices.swift
 //  Core Audio による入力デバイスの列挙と UID 解決
 //
-//  AVAudioEngine の inputNode は既定でシステム標準デバイスを使うため、
+//  入力 AUHAL（AudioRecorder）は設定したデバイスだけを使うため、
 //  ユーザーが任意のマイクを選べるよう Core Audio (HAL) でデバイスを列挙し、
 //  UID から AudioDeviceID を解決して AudioRecorder で切り替える。
 //  AudioDeviceID は再接続のたびに変わり得るので、永続化には安定した UID を使う。
@@ -80,10 +80,40 @@ enum AudioDevices {
         return deviceID
     }
 
+    /// デバイスが生きているか（切断済み・取得失敗なら false）
+    static func isAlive(_ id: AudioDeviceID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceIsAlive,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var alive: UInt32 = 0
+        var dataSize = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(id, &address, 0, nil, &dataSize, &alive) == noErr else {
+            return false
+        }
+        return alive != 0
+    }
+
+    /// デバイスの公称サンプルレート（取得できなければ nil）
+    static func nominalSampleRate(_ id: AudioDeviceID) -> Double? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var rate: Float64 = 0
+        var dataSize = UInt32(MemoryLayout<Float64>.size)
+        guard AudioObjectGetPropertyData(id, &address, 0, nil, &dataSize, &rate) == noErr, rate > 0 else {
+            return nil
+        }
+        return rate
+    }
+
     // MARK: - 内部ヘルパー
 
     /// 指定デバイスの入力チャンネル総数（0 なら出力専用デバイス）
-    private static func inputChannelCount(_ id: AudioDeviceID) -> Int {
+    static func inputChannelCount(_ id: AudioDeviceID) -> Int {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyStreamConfiguration,
             mScope: kAudioObjectPropertyScopeInput,
@@ -114,7 +144,7 @@ enum AudioDevices {
     }
 
     /// CFString 型のプロパティを取得して Swift String で返す
-    private static func stringProperty(
+    static func stringProperty(
         _ id: AudioDeviceID, _ selector: AudioObjectPropertySelector
     ) -> String? {
         var address = AudioObjectPropertyAddress(

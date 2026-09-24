@@ -279,7 +279,9 @@ struct SideNotchHistoryView: View {
 
     private var list: some View {
         ScrollView {
-            VStack(spacing: 0) {
+            // 履歴は最大 200 行あるため VStack だと全行を即描画してしまう。
+            // LazyVStack にして画面に入った分だけ描画・アイコン解決するようにする。
+            LazyVStack(spacing: 0) {
                 let items = filteredItems
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, entry in
                     row(entry)
@@ -409,12 +411,18 @@ struct SideNotchHistoryView: View {
         }
     }
 
+    /// bundleID → アイコンの解決結果キャッシュ（未解決も含めて保持し、同じ bundleID を
+    /// 何度も LaunchServices / ディスクへ問い合わせない）。SwiftUI の描画はメインスレッドのみなのでロック不要。
+    private static var appIconCache: [String: NSImage?] = [:]
+
     /// bundleID から実行ファイルのアイコンを解決する（未インストール等で見つからなければ nil）
     private static func appIcon(bundleID: String?) -> NSImage? {
-        guard let bundleID, !bundleID.isEmpty,
-              let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
-        else { return nil }
-        return NSWorkspace.shared.icon(forFile: url.path)
+        guard let bundleID, !bundleID.isEmpty else { return nil }
+        if let cached = appIconCache[bundleID] { return cached }
+        let icon = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
+            .map { NSWorkspace.shared.icon(forFile: $0.path) }
+        appIconCache[bundleID] = icon
+        return icon
     }
 
     /// 相対時刻フォーマッタ（「3 分前」等・日本語短縮表記）

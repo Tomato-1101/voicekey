@@ -16,6 +16,12 @@
 //  参照を握ったままになる）ため暴走は生き残り、実測で voicekey 37% + coreaudiod 66% の CPU と
 //  毎時数 GB のメモリを食い続けた（11 時間で 107GB）。プロセスを落とす以外に止める API が無い。
 //
+//  2026-09-25: 待機中にエンジンを新品へ入れ替える対策（4 分ごと＋入力のたび）は撤回した。
+//  AVAudioEngine は生成のたびに coreaudiod へ集約デバイス（CADefaultDeviceAggregate）を作るので、
+//  入れ替えそのものが HAL を揺らし続け、旧インスタンスの dealloc がメインスレッドで永久に
+//  ブロックした（2026-09-23 の hang）。AudioRecorder は AVAudioEngine をやめて入力専用 AUHAL に
+//  置き換えたので、ここに残るのは待機中の ping と上限付きの自己再起動（安全網）だけ。
+//
 
 import Foundation
 
@@ -52,22 +58,6 @@ enum StallPolicy {
     /// 暴走はユーザーがホットキーを押す前から始まっている（2026-09-22 の実例では 30 分前）。
     /// 押されるまで気づかないと、その間ずっと CPU 1 コアとメモリを食われるので待機中も見る。
     static let audioQueueHeartbeatInterval: TimeInterval = 60
-
-    /// 待機中のエンジンを新品へ入れ替える間隔。
-    /// 実測した詰まり 5 件はすべて「6 分以上ほったらかした後の最初の録音」で起きており、
-    /// 録音中や連続使用中には一度も起きていない（2026-09-22 に 13 日分のログで確認）。
-    /// 腐る前に健康なうちに捨てれば、詰まりも漏れも起きない（詰まってから捨てると
-    /// ブロック中の呼び出しが掴んだままで解放できず、暴走が生き残る）。
-    /// 最短の 6 分に対して余裕を取り 4 分。入れ替えは実 IO を起こさないので
-    /// マイクインジケータは点かず、押下の待ち時間も増えない（実測 58ms < 温存 90ms）。
-    /// なお通常は**入力のたび**に入れ替わる（文字起こしの裏で終わるので待ちゼロ）。
-    /// このタイマーは、何時間も触らない日のための保険。
-    static let engineRefreshInterval: TimeInterval = 240
-
-    /// 待機中のエンジンを入れ替えるべきか（純ロジック）
-    static func shouldRefreshIdleEngine(preparedAt: TimeInterval, now: TimeInterval) -> Bool {
-        now - preparedAt >= engineRefreshInterval
-    }
 
     /// オーディオ停止からの自動再起動を許す回数（下の窓あたり）。
     static let maxStallRelaunches = 3

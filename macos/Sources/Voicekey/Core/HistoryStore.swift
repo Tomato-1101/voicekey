@@ -53,15 +53,22 @@ final class HistoryStore: ObservableObject {
     static let maxItems = 200
 
     /// 履歴（新しい順）
-    @Published private(set) var items: [HistoryItem] = []
+    @Published private(set) var items: [HistoryItem] = [] {
+        didSet { recomputeAllItems() }
+    }
     /// 同期サーバーから受信した他端末由来の履歴
-    @Published private(set) var cloudItems: [HistoryItem] = []
+    @Published private(set) var cloudItems: [HistoryItem] = [] {
+        didSet { recomputeAllItems() }
+    }
 
     /// ローカルを優先してクラウド履歴を重ねた表示用一覧（日時降順・最大 200 件）。
-    var allItems: [HistoryItem] {
+    /// アクセスのたびに sort/filter するのは重いので、items/cloudItems の didSet でだけ再計算する。
+    @Published private(set) var allItems: [HistoryItem] = []
+
+    private func recomputeAllItems() {
         let localIDs = Set(items.map(\.id))
         let remote = cloudItems.filter { !localIDs.contains($0.id) && $0.device != "mac" }
-        return Array((items + remote).sorted { $0.date > $1.date }.prefix(Self.maxItems))
+        allItems = Array((items + remote).sorted { $0.date > $1.date }.prefix(Self.maxItems))
     }
 
     /// 追加完了通知。同期クライアントはここから非同期キューへ積むだけにする。
@@ -78,6 +85,8 @@ final class HistoryStore: ObservableObject {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         fileURL = dir.appendingPathComponent("history.json")
         items = Self.load(from: fileURL)
+        // 自身の init 内の代入では didSet が走らないため、表示用一覧をここで一度作る
+        recomputeAllItems()
     }
 
     /// 保存済み JSON を読み込む。新形式（構造体配列）を第一に試し、読めなければ

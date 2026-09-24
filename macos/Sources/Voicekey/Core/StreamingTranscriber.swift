@@ -27,7 +27,13 @@ final class StreamingTranscriber: LiveTranscribing, @unchecked Sendable {
 
     private let model: String
     private let language: String
-    private let session: URLSession
+    /// 録音のたびに URLSession を作って invalidate すると CFNetwork 側のオブジェクトが
+    /// 録音回数分残り続けるため、delegate を使わないこのクラスでは static 共有にして invalidate 自体をやめる。
+    private static let sharedSession: URLSession = {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = 30
+        return URLSession(configuration: cfg)
+    }()
     private var task: URLSessionWebSocketTask?
 
     private let lock = NSLock()
@@ -58,9 +64,6 @@ final class StreamingTranscriber: LiveTranscribing, @unchecked Sendable {
     init(model: String, language: String) {
         self.model = model
         self.language = language
-        let cfg = URLSessionConfiguration.ephemeral
-        cfg.timeoutIntervalForRequest = 30
-        self.session = URLSession(configuration: cfg)
     }
 
     /// Deepgram の言語パラメータ（REST 側 Transcriber と同じ規則）。
@@ -152,7 +155,7 @@ final class StreamingTranscriber: LiveTranscribing, @unchecked Sendable {
         var request = URLRequest(url: comps.url!)
         request.setValue(auth, forHTTPHeaderField: "Authorization")
 
-        let task = session.webSocketTask(with: request)
+        let task = Self.sharedSession.webSocketTask(with: request)
 
         // 退避済み PCM を順序保証のためロック下で取り出してから task を公開する
         lock.lock()
@@ -242,8 +245,6 @@ final class StreamingTranscriber: LiveTranscribing, @unchecked Sendable {
         }
         // 接続が JWT 取得中などで未確立でも、後から connect が走らないよう cancelled を立てる
         markCancelled()?.cancel(with: .normalClosure, reason: nil)
-        // 録音のたびに生成するセッションは明示的に破棄する（放置すると漸増リーク）
-        session.finishTasksAndInvalidate()
         let text = TextNormalize.stripCJKSpaces(currentText())
         // 文字起こしが成立したら無料体験の消費を確定する（ベストエフォート・非ブロッキング）。
         // 空文字（無音/接続失敗で REST フォールバック）のときは確定しない＝保留は TTL で戻る。
@@ -291,7 +292,6 @@ final class StreamingTranscriber: LiveTranscribing, @unchecked Sendable {
         let t = task
         lock.unlock()
         t?.cancel(with: .normalClosure, reason: nil)
-        session.finishTasksAndInvalidate()
         resolveFinish(reason: "cancelled")
     }
 

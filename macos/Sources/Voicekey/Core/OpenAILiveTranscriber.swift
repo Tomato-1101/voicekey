@@ -51,12 +51,19 @@ final class OpenAILiveTranscriber: LiveTranscribing, @unchecked Sendable {
 
     private let model: String
     private let language: String
-    private let session: URLSession
+    /// 録音のたびに URLSession を作って invalidate すると CFNetwork 側のオブジェクトが
+    /// 録音回数分残り続けるため、delegate を使わないこのクラスでは static 共有にして invalidate 自体をやめる。
+    private static let sharedSession: URLSession = {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = 30
+        return URLSession(configuration: cfg)
+    }()
     private var task: URLSessionWebSocketTask?
 
     private let lock = NSLock()
-    /// delta の累積（確定が来たら completed の全文で置き換える）
-    private var deltas: [String] = []
+    /// delta の累積（確定が来たら completed の全文で置き換える）。
+    /// 配列で持って毎回 joined() すると delta 数の2乗コストになるため、文字列へ直接 append する。
+    private var deltas: String = ""
     /// 確定テキスト（completed の transcript）
     private var finalText: String = ""
     /// 接続確立前に届いた PCM の退避（接続時に順序を保ってフラッシュする）
@@ -80,9 +87,6 @@ final class OpenAILiveTranscriber: LiveTranscribing, @unchecked Sendable {
     init(model: String, language: String) {
         self.model = model
         self.language = language
-        let cfg = URLSessionConfiguration.ephemeral
-        cfg.timeoutIntervalForRequest = 30
-        self.session = URLSession(configuration: cfg)
     }
 
     /// 文字起こしの言語ヒント（REST 側 Transcriber と同じ規則で既定 ja）
@@ -120,7 +124,7 @@ final class OpenAILiveTranscriber: LiveTranscribing, @unchecked Sendable {
         var request = URLRequest(url: URL(string: "wss://api.openai.com/v1/realtime?intent=transcription")!)
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
 
-        let task = session.webSocketTask(with: request)
+        let task = Self.sharedSession.webSocketTask(with: request)
 
         lock.lock()
         if cancelled || done {
@@ -269,7 +273,6 @@ final class OpenAILiveTranscriber: LiveTranscribing, @unchecked Sendable {
             }
         }
         markCancelled()?.cancel(with: .normalClosure, reason: nil)
-        session.finishTasksAndInvalidate()
         return TextNormalize.stripCJKSpaces(currentText())
     }
 
@@ -295,14 +298,13 @@ final class OpenAILiveTranscriber: LiveTranscribing, @unchecked Sendable {
         let t = task
         lock.unlock()
         t?.cancel(with: .normalClosure, reason: nil)
-        session.finishTasksAndInvalidate()
         resolveFinish(reason: "cancelled")
     }
 
     /// 現在の全文（確定があればそれ、無ければ delta の累積）
     private func currentText() -> String {
         lock.lock(); defer { lock.unlock() }
-        return finalText.isEmpty ? deltas.joined() : finalText
+        return finalText.isEmpty ? deltas : finalText
     }
 
     // MARK: - 受信
@@ -351,8 +353,8 @@ final class OpenAILiveTranscriber: LiveTranscribing, @unchecked Sendable {
             guard let delta = msg.delta, !delta.isEmpty else { return }
             logFirstResultOnce()
             lock.lock()
-            deltas.append(delta)
-            let snapshot = deltas.joined()
+            deltas += delta
+            let snapshot = deltas
             lock.unlock()
             onInterim?(TextNormalize.stripCJKSpaces(snapshot))
             return

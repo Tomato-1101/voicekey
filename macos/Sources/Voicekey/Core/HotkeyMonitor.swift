@@ -82,6 +82,9 @@ final class HotkeyMonitor {
                     ActionLog.shared.write("hotkey", "ウォッチドッグ発火: イベントタップを再有効化")
                 }
             }
+            // 5 秒ごとの健全性チェックはホットキー入力の判定には関与しない
+            // （判定は keyDown/keyUp イベント駆動）ため、tolerance を許容して起こされ方を緩める
+            CFRunLoopTimerSetTolerance(timer, 0.5)
             CFRunLoopAddTimer(CFRunLoopGetCurrent(), timer, .commonModes)
             CFRunLoopRun()
         }

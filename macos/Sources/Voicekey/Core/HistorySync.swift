@@ -377,11 +377,15 @@ final class HistorySync: ObservableObject, @unchecked Sendable {
                 since = receivedAt
             }
         }
+        // sort の比較のたびに parseDate を呼ぶと ISO8601DateFormatter 生成コストが
+        // 要素数の2乗回かかる（1回の音声入力で約1.1秒）。日付は先に1回だけパースしておく。
         cache = CacheFile(
             since: since,
-            items: Array(byID.values.sorted {
-                Self.parseDate($0.date) > Self.parseDate($1.date)
-            }.prefix(Self.maxCacheItems))
+            items: byID.values
+                .map { ($0, Self.parseDate($0.date)) }
+                .sorted { $0.1 > $1.1 }
+                .prefix(Self.maxCacheItems)
+                .map(\.0)
         )
         saveCache()
         publishCloudItems()
@@ -523,13 +527,22 @@ final class HistorySync: ObservableObject, @unchecked Sendable {
         )
     }
 
+    // ISO8601DateFormatter はスレッドセーフなので static 共有でよい。
+    // 比較のたびに生成すると重いため、fractional秒あり/なしの2種を使い回す。
+    private static let fractionalDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    private static let secondsDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
     static func parseDate(_ value: String) -> Date {
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractional.date(from: value) { return date }
-        let seconds = ISO8601DateFormatter()
-        seconds.formatOptions = [.withInternetDateTime]
-        return seconds.date(from: value) ?? .distantPast
+        if let date = fractionalDateFormatter.date(from: value) { return date }
+        return secondsDateFormatter.date(from: value) ?? .distantPast
     }
 
     static func normalizedUUID(_ value: String) -> UUID {
@@ -550,11 +563,15 @@ final class HistorySync: ObservableObject, @unchecked Sendable {
         return UUID(uuid: tuple)
     }
 
-    private static func postDate(_ date: Date) -> String {
+    private static let postDateFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        return formatter.string(from: date)
+        return formatter
+    }()
+
+    private static func postDate(_ date: Date) -> String {
+        postDateFormatter.string(from: date)
     }
 
     // MARK: - JSON 型

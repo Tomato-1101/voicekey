@@ -127,19 +127,26 @@ final class HudController {
         // 固まり、次の録音（mode 変化＝再レイアウト）まで映り込みが古いまま、という事象がある。
         // タイマーの常時ポーリングはアイドル時の電池を食うので張らず、Space 切替・アプリ切替の
         // イベントで、表示中パネルの再評価（refreshBackdrop）だけをその都度蹴る。
+        // 重要: ここは同期の assumeIsolated で refreshBackdrop を即実行する（背景・App Nap 下でも
+        // Task/asyncAfter に頼らず確実に走らせるため）。フルスクリーン時の待機ピル非表示は OS の
+        // collectionBehavior に委ねたので、ここはガラス背景の再サンプルだけを担う。
         let nc = NSWorkspace.shared.notificationCenter
-        for name in [
-            NSWorkspace.activeSpaceDidChangeNotification,
-            NSWorkspace.didActivateApplicationNotification,
-        ] {
-            // 重要: ここは同期の assumeIsolated で refreshBackdrop を即実行する（背景・App Nap 下でも
-            // Task/asyncAfter に頼らず確実に走らせるため）。フルスクリーン時の待機ピル非表示は OS の
-            // collectionBehavior に委ねたので、ここはガラス背景の再サンプルだけを担う。
-            let token = nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.refreshBackdrop() }
-            }
-            spaceObservers.append(token)
+        let spaceToken = nc.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshBackdrop() }
         }
+        spaceObservers.append(spaceToken)
+        // アプリ切替はガラス背景の再サンプル（recording/transcribing/notice の canJoinAllSpaces
+        // パネル向け・背後アプリが変わると映り込みが古いまま固まる対策）だけが目的で、待機ピルの
+        // Space 追従は Space 自体が変わったときにしか要らない。アプリ切替は Space 切替よりずっと
+        // 高頻度に起きるので、ここでは待機ピルの出し直し（show()）だけは行わない。
+        let appToken = nc.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshBackdrop(reorderIdlePill: false) }
+        }
+        spaceObservers.append(appToken)
 
         // Dock（タスクバー相当）の自動非表示 ON/OFF・解像度変更・外部ディスプレイ着脱で
         // visibleFrame が変わる＝ピルの正しい縦位置がずれる。表示中なら位置を再計算して
@@ -416,13 +423,16 @@ final class HudController {
     /// Space / フルスクリーン切替の通知を受けて、表示中のバックドロップを再評価する。
     /// パネルが全 Space に居座る都合で、切替後に旧 Space の映り込みで固まることがあるため、
     /// mode 変化と同じ再評価パス（frame 再適用 + 再レイアウト/再描画）をイベント駆動で強制する。
-    private func refreshBackdrop() {
+    /// - Parameter reorderIdlePill: 待機ピルを show() で出し直すか。Space 切替（呼び出し元）では
+    ///   true、アプリ切替（呼び出し元）では false にして、Space が変わっていない高頻度なアプリ切替
+    ///   のたびにピルを出し直すコストを避ける。
+    private func refreshBackdrop(reorderIdlePill: Bool = true) {
         guard let panel, model.mode != .hidden else { return }
         // 待機ピルは canJoinAllSpaces を外している（現在の Space にのみ出る）ため、Space 切替時は
         // 現在の Space へ order し直して追従させる。通常デスクトップなら出て、フルスクリーン Space
         // では OS が出さない（検出・タイマー不要で確実・App Nap でも通知callbackは同期で走る）。
         if model.mode == .idlePill {
-            show()
+            if reorderIdlePill { show() }
             return
         }
         // フルスクリーン時の待機ピル非表示は OS に委ねているため、録音/変換/通知はガラス背景の

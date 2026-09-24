@@ -324,6 +324,36 @@ final class HistorySyncTests: XCTestCase {
         XCTAssertEqual(history.allItems.map(\.text), ["windows", "local"])
     }
 
+    /// mergeCache の並び替えを ISO8601DateFormatter の static 共有化で高速化したが
+    /// (fractional秒あり/なし混在でも) 並び順は従来どおり日時降順であることを確認する。
+    func testFetchMergeSortsNewestFirstWithMixedDateFormats() throws {
+        let dir = makeTempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let history = HistoryStore(directory: dir)
+        HistorySyncURLProtocol.setHandler { request in
+            guard request.httpMethod != "POST" else {
+                return (200, Data(#"{"accepted":1,"received_at":"x"}"#.utf8))
+            }
+            // b はフラクショナル秒なし、a/c はフラクショナル秒ありで、b > a > c の順になるはず
+            let json = """
+            {"items":[
+                {"id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","text":"a","date":"2026-01-01T00:00:00.500Z","device":"windows","app_name":null,"characters":1,"received_at":"2026-01-01T00:00:00.500Z"},
+                {"id":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb","text":"b","date":"2026-01-01T00:00:01Z","device":"windows","app_name":null,"characters":1,"received_at":"2026-01-01T00:00:01.000Z"},
+                {"id":"cccccccc-cccc-cccc-cccc-cccccccccccc","text":"c","date":"2026-01-01T00:00:00.100Z","device":"windows","app_name":null,"characters":1,"received_at":"2026-01-01T00:00:00.500Z"}
+            ]}
+            """
+            return (200, Data(json.utf8))
+        }
+        let sync = makeSync(directory: dir, history: history); defer { sync.shutdown() }
+        apply(sync)
+
+        sync.runCycleForTesting()
+        // cloudItems への反映は publishCloudItems() が DispatchQueue.main.async で行うため、
+        // メインの RunLoop を少し回して反映を待つ（他の apply() ヘルパーと同じ待ち方）。
+        RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+
+        XCTAssertEqual(history.cloudItems.map(\.text), ["b", "a", "c"])
+    }
+
     func testLegacyHistoryJSONWithoutDeviceRemainsCompatible() throws {
         let dir = makeTempDir(); defer { try? FileManager.default.removeItem(at: dir) }
         let json = #"[{"id":"11111111-1111-1111-1111-111111111111","text":"legacy","date":"2026-07-01T00:00:00Z"}]"#

@@ -81,7 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if DictationTestMode.runIfRequested() { return }
         // 貼り付け後のクリップボード復元の検証ハーネス。同じく素通り。
         if PasteRestoreTestMode.runIfRequested() { return }
-        // 「押すたびにエンジンを作り直す」案のコスト計測ハーネス。同じく素通り。
+        // 録音開始の待ち時間と集約デバイスの増減を測るハーネス（AUHAL 化の回帰判定）。同じく素通り。
         if AudioEngineCostTestMode.runIfRequested() { return }
 
         let app = NSApplication.shared
