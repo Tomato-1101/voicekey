@@ -1,29 +1,29 @@
-# HANDOFF — voicekey（2026-09-25 更新）
+# HANDOFF — voicekey（2026-10-01 更新）
 
 旧版（ベータ配布計画・履歴同期の実装メモ、537 行）は git 履歴 `c0819b6` の HANDOFF.md を参照。
 履歴同期の仕様の正本は `docs/HISTORY_SYNC.md`。
 
 ## 目的
-Mac 版の「メモリが積み上がる・ファンが回る・遅い・固まる」を根本から止め、全体を軽くする。
+(1) Mac 版の重さ・ハングを根本から止める（完了）。(2) 最新 STT モデルから「速さと精度のバランス」最良を選ぶ（調査済み・実測は承認待ち）。
 
-## 現状（7498144 で反映・常用アプリ入れ替え済み）
-- 真因: AVAudioEngine が生成のたびに coreaudiod に集約デバイス（CADefaultDeviceAggregate）を作り、
-  dealloc の dispatch_sync でメインが永久ハング。09-24 の「4 分ごと／入力ごとにエンジン入れ替え」が増幅していた。
-- 対策: 録音部を入力専用 AUHAL 1 個の使い回しに置き換え、入れ替えは撤回。集約デバイス 0、押下→開始 中央値 約 70ms、
-  常駐メモリ 23MB。
-- 軽量化: 履歴同期の日付パース（1 入力あたり約 1.1 秒 CPU）ほか、CHANGELOG の Unreleased を参照。
-- coreaudiod は 6 日分の肥大（RSS 約 1.1GB、CPU 約 20%）が残っている。voicekey を止めても CPU は変わらない
-  ＝ voicekey 由来ではない。解消には本人が `sudo killall coreaudiod` を実行する必要がある（音が一瞬切れる）。
-- 遅延の体感は 09-21 に本人が選んだ OpenAI ライブ（離鍵→貼付 約 750ms）が主因。Groq / Apple は約 200ms。
-  バックエンドの切替は本人の判断（Claude は変えない）。
+## 現状
+- 録音部は入力専用 AUHAL 1 個の使い回し（7498144）。6 日稼働で footprint 約 120MB・leaks 32 バイト・異常 0。
+  coreaudiod は 10-01 時点 60MB・CPU 2%（再起動不要）。
+- STT 調査（10-01・API 課金なし）: 第三者ベンチ（Artificial Analysis・Pipecat）は英語データのみで日本語の選定に使えない。
+  自前実測（benchmark/results の 08-27・`say` 合成音・アプリ同等の数字正規化後 CER）では
+  REST は Groq whisper-large-v3-turbo が数字・日付で最良（hard2 0.0%／雑音 1.2%）、ストリーミングは
+  gpt-live-transcribe が最良精度（3.6／4.1%・確定 0.68s）、Deepgram nova-3 が最速（確定ほぼ 0s だが雑音 21%）。
+- 現在の常用は openai_live（離鍵→貼付 約 750ms）。Groq は約 200ms。バックエンド切替は本人の判断（Claude は変えない）。
 
 ## 次にやること
-- Bluetooth 入力（AirPods 等）で録音し、行動ログに「サンプルレート」通知と「再構成します」が押下のたびに
-  出ていないか確認（IO 開始 1 秒以内の通知を見送る処理が実機で未検証）。
-- 数日使って footprint と coreaudiod の推移を確認。MicAutoDetector（設定のマイク自動検出）はまだ
-  AVAudioEngine を使う（ユーザー操作時のみ・低優先）。
+- 承認が出たら STT 再計測: 鍵ありモデル（gpt-transcribe 追加、gpt-live、groq turbo、nova-3、scribe v2、gemini-3.5）
+  を short/long/hard2/hard2_fast_noisy で 3 回ずつ（概算 $0.5 未満）。本人の実声録音があれば同時に測る。
+- 新規候補（Soniox stt-rt-v5・MAI-Transcribe-2・Meta Muse・Grok Voice Transcribe 2.0）は鍵の発行が本人待ち。
+- Bluetooth 入力（AirPods 等）で押下ごとに「サンプルレート」通知→「再構成します」が出ないか実機確認（本人）。
+- MicAutoDetector はまだ AVAudioEngine（ユーザー操作時のみ・低優先）。
 
 ## 恒久要件
 - 録音部に AVAudioEngine を戻さない。待機中にエンジン／AU を作り直さない。HAL をループで叩かない（再試行は必ず上限付き）。
 - 音声入力の経路に待ち時間を足さない。ダブルタップで録音を作り直さない（CLAUDE.md 参照）。
+- 課金 API を叩くベンチは件数と概算額を示して承認を取ってから。`say` 合成音では英日混在（hard1）は測れない。
 - 両 OS に存在する変更は Mac / Windows 同時実装。README・OVERVIEW・CHANGELOG はコードと同じコミットで更新。
