@@ -51,8 +51,8 @@
   Sparkle 実 e2e（裏 DL・DL 中に押す・録音中待ち・自前再起動の肩代わり）は scratchpad で通過。2.1.0 の人は旧ピルから 1 回だけ従来手順。
 - 次の版: `cd macos && ./scripts/build_release.sh --version X.Y.Z` → Info.plist・CHANGELOG・README 表をコミット → 表示される `gh release create`
   → 表示される version / sha256 で tap を更新 → 常用版は `./scripts/build_app.sh` で作り直す（build_release が dist を配布版で上書きするため）。
-- 残り: 旧配布リポ voicekey-releases の削除（gh に delete_repo 権限が要る。ローカルは削除済み・保険は `_archive/voicekey-releases-2026-10-02.bundle`）。
-  Windows 側の voicekey-releases 参照（src/utils/updater.py・build_windows_dist.ps1・windows-build.yml）は開発停止中のため未修正。
+- 旧配布リポ voicekey-releases は 10-02 に GitHub・ローカルとも削除済み（保険は `_archive/voicekey-releases-2026-10-02.bundle`）。
+  残り: Windows 側の voicekey-releases 参照（src/utils/updater.py・build_windows_dist.ps1・windows-build.yml）は開発停止中のため未修正。
 
 ## ロゴ・配色の刷新「17 LEGEND」（10-01 19:15 更新）
 - 目的: 確定ロゴ 17 LEGEND（ライト=Bone／ダーク=Carbon を外観で自動切替）と配色（灯り #FF5A1F）を全面採用。原本・生成手順は design/brand/。
