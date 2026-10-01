@@ -25,7 +25,7 @@
   GroqTranslator のストリーミング usage は実応答で未確認（来なければ記録されないだけ）。
   bf953a4: ドルのみ（円は出さない・本人指示）＋「定価／実際に払った分」切替（有料＝OpenAI・Soniox・Azure、ApiPricing.paidProviders）＋
   10/2 以前の推定取り込み（ログの文字起こし要求行／ログの無い 7/3〜9/17 は stats.json を Groq と仮定）を本番反映済み。backfillVersion=1。
-  Google Cloud に毎月の請求書あり（金額は PDF・Gemini 分か未確認）。Gemini は無料枠扱いのまま。
+  5907d38: Google（Gemini）も有料側へ（本人「Google Cloud は Google 系モデルにお金がかかっている」）。有料＝OpenAI・Soniox・Azure・Google。
 - 課金先の一本化は本人が不要と判断（10-02）。新モデル MAI-Transcribe-2-Streaming（$0.54/時・日本語可・リージョンは北米/欧州/印のみ）は未実装。
 - 次にやること: ActionLog の `[計測]`／「Soniox 再送」の実測で再送待ち上限 15s を詰める。
   Azure（MAI）は本人が後で作る（10-02「作らないのではなく後で」）。作ったらサブスク→southeastasia に Speech→ENDPOINT/KEY 登録→MAI 3 回（承認済み）。
