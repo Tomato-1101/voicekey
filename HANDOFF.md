@@ -15,7 +15,8 @@
 - 現状: 3f207c9 で push・dist 入替済み。追加＝Soniox stt-rt-v5（ライブ・新規の既定）／gpt-transcribe／MAI-Transcribe-2／scribe_v2。
   削除＝Deepgram・nova-2・gpt-realtime-whisper・whisper-large-v3・gpt-4o 系・scribe_v1_experimental（廃止モデルは V19 の一回限り移行）。
   疎通済み: gpt-transcribe 1.7〜1.8s 誤りゼロ／scribe_v2 0.6〜1.0s（漢数字は数字入力の正規化で 3時）。Codex は上限のため Opus 2 体で代行レビュー→12 件修正。
-- 次にやること: 本人が SONIOX_API_KEY を Terminal で登録し直す（前回は空で保存された）→ Soniox 3 回疎通（承認済み）。
+- 次にやること: 本人が SONIOX_API_KEY を登録し直す（2 回目は Soniox 以外の文字列が入り 401。正しい値は `snx_proj_` で始まる）→ Soniox 3 回疎通（承認済み・1 回消化）。
+  Azure はログイン済みだがサブスクリプションが 0 件＝本人が作成（カード登録）するまで Speech リソースを作れない。
   Soniox JP リージョンの有効化を support@soniox.com へ本人の Gmail から依頼済み（10-01）。返信が来たら JP プロジェクトでキーを作り、
   `SonioxLiveTranscriber.defaultEndpoint` を `wss://stt-rt.jp.soniox.com/transcribe-websocket` に替えて再疎通。
   Azure は本人の Chrome ログイン後に southeastasia でリソース作成 → ENDPOINT 登録・本人が KEY 登録 → MAI 3 回疎通（承認済み）。
