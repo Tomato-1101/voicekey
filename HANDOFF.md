@@ -10,13 +10,16 @@
 - 両 OS に存在する変更は Mac / Windows 同時実装。README・OVERVIEW・CHANGELOG はコードと同じコミットで更新。
 - 文字起こしエンジン（スロットの backend）の切替は本人の判断。Claude は変えない（10-01 時点は右⌥・右⌘とも apple_local）。
 
-## STT エンジン入れ替え（10-01 15:10 更新）
+## STT エンジン入れ替え（10-01 21:00 更新）
 - 目的: 本人決定（10-01）の追加・削除を Mac に実装（Windows は開発停止中）。本人は主に日本語（混在は重視しない）。
 - 現状: 3f207c9 で push・dist 入替済み。追加＝Soniox stt-rt-v5（ライブ・新規の既定）／gpt-transcribe／MAI-Transcribe-2／scribe_v2。
   削除＝Deepgram・nova-2・gpt-realtime-whisper・whisper-large-v3・gpt-4o 系・scribe_v1_experimental（廃止モデルは V19 の一回限り移行）。
   疎通済み: gpt-transcribe 1.7〜1.8s 誤りゼロ／scribe_v2 0.6〜1.0s（漢数字は数字入力の正規化で 3時）。Codex は上限のため Opus 2 体で代行レビュー→12 件修正。
-- 次にやること: 本人が SONIOX_API_KEY・AZURE_SPEECH_KEY・AZURE_SPEECH_ENDPOINT を中央 Keychain へ登録（Azure は対応リージョン・東南アジアが最寄り）→
-  Soniox・MAI を各 3 回疎通（承認済みの範囲）→ ActionLog「Soniox 再送」の実測で再送の待ち上限 15s を詰める。
+- 次にやること: 本人が SONIOX_API_KEY を Terminal で登録し直す（前回は空で保存された）→ Soniox 3 回疎通（承認済み）。
+  Soniox JP リージョンの有効化を support@soniox.com へ本人の Gmail から依頼済み（10-01）。返信が来たら JP プロジェクトでキーを作り、
+  `SonioxLiveTranscriber.defaultEndpoint` を `wss://stt-rt.jp.soniox.com/transcribe-websocket` に替えて再疎通。
+  Azure は本人の Chrome ログイン後に southeastasia でリソース作成 → ENDPOINT 登録・本人が KEY 登録 → MAI 3 回疎通（承認済み）。
+  その後 ActionLog「Soniox 再送」の実測で再送の待ち上限 15s を詰める。
   見送った指摘: 終端送信を前の発話の処理待ちより先に出す（待ちの直列化）／鍵未設定のネガティブキャッシュ。新モデル監視は本人が ChatGPT で回す。
 
 ## 録音部の既知問題（10-01 15:10 更新）
@@ -24,6 +27,13 @@
 - 範囲外: `LocalSpeechTranscriber.attach` が unlock 後に退避チャンクを feed（順序入替の可能性）／
   abortStalledRecordStart 後にキューが復帰すると誰も stop しない録音が残りうる。
 - Bluetooth 入力（AirPods 等）で押下ごとに「再構成します」が出ないか実機確認（本人）。MicAutoDetector はまだ AVAudioEngine（低優先）。
+
+## 設定画面の作り直し・画面記憶（10-01 21:00 更新）
+- 目的: 本人指示「最小化して戻したら同じ画面のまま」「設定が押しにくいのでデザインし直して」。
+- 現状: 68d4673 で push。サイドバーは見出し付きの常時一覧、grouped Form・行全体トグル・大きめの操作部品、最後の画面と窓の位置を復元。
+  見た目確認は `dist/voicekey.app/Contents/MacOS/voicekey --ui-snapshot <dir> --appearance light|dark`（`[VERDICT] status=ok files=18`）。
+- 次にやること: 本人の使用感待ち。参考収集（Superwhisper・MacWhisper・Wispr Flow 等）から残る改善候補は、ホットキーのチップ化・
+  エンジン＋モデルの検索付き 1 リスト化・辞書の常時入力欄。ライトのスナップショットで一部 SF Symbol が薄いのは作り直し前からある画面外描画の癖。
 
 ## ロゴ・配色の刷新「17 LEGEND」（10-01 19:15 更新）
 - 目的: 確定ロゴ 17 LEGEND（ライト=Bone／ダーク=Carbon を外観で自動切替）と配色（灯り #FF5A1F）を全面採用。原本・生成手順は design/brand/。
