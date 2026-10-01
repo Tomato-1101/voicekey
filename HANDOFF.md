@@ -10,18 +10,15 @@
 - 両 OS に存在する変更は Mac / Windows 同時実装。README・OVERVIEW・CHANGELOG はコードと同じコミットで更新。
 - 文字起こしエンジン（スロットの backend）の切替は本人の判断。Claude は変えない（10-01 時点は右⌥・右⌘とも apple_local）。
 
-## STT エンジン入れ替え（10-01 20:05 更新）
+## STT エンジン入れ替え（10-02 01:50 更新）
 - 目的: 本人決定（10-01）の追加・削除を Mac に実装（Windows は開発停止中）。本人は主に日本語（混在は重視しない）。
 - 現状: 3f207c9 で push・dist 入替済み。追加＝Soniox stt-rt-v5（ライブ・新規の既定）／gpt-transcribe／MAI-Transcribe-2／scribe_v2。
-  削除＝Deepgram・nova-2・gpt-realtime-whisper・whisper-large-v3・gpt-4o 系・scribe_v1_experimental（廃止モデルは V19 の一回限り移行）。
-  疎通済み: gpt-transcribe 1.7〜1.8s 誤りゼロ／scribe_v2 0.6〜1.0s（漢数字は数字入力の正規化で 3時）。Codex は上限のため Opus 2 体で代行レビュー→12 件修正。
-- Soniox 疎通済み（10-01・米国窓口・承認済み 3 回を消化）: 7 秒の日本語で離鍵→確定 0.28〜0.30s・誤りゼロ。キーは米国窓口のみ有効（JP 窓口は 401）。
-- 次にやること: Azure はログイン済みだがサブスクリプションが 0 件＝本人が作成（カード登録）するまで Speech リソースを作れない。
-  Soniox JP リージョンの有効化を support@soniox.com へ本人の Gmail から依頼済み（10-01）。返信が来たら JP プロジェクトでキーを作り、
-  `SonioxLiveTranscriber.defaultEndpoint` を `wss://stt-rt.jp.soniox.com/transcribe-websocket` に替えて再疎通。
-  Azure は本人の Chrome ログイン後に southeastasia でリソース作成 → ENDPOINT 登録・本人が KEY 登録 → MAI 3 回疎通（承認済み）。
-  その後 ActionLog「Soniox 再送」の実測で再送の待ち上限 15s を詰める。
-  見送った指摘: 終端送信を前の発話の処理待ちより先に出す（待ちの直列化）／鍵未設定のネガティブキャッシュ。新モデル監視は本人が ChatGPT で回す。
+  疎通済み: Soniox（米国窓口）離鍵→確定 0.28〜0.30s 誤りゼロ／gpt-transcribe 1.7〜1.8s／scribe_v2 0.6〜1.0s。
+- Soniox JP リージョンは 10-01 にサポートが有効化（返信メール確認済み）。733d7f4 で接続先をキーから自動判定（無料の /v1/models を
+  jp・us 並列で叩き 200 の方。キーの指紋ごとに UserDefaults へ記憶）。いまの米国キーは jp=401 / us=200 で us 判定になることを確認。
+- 次にやること: 本人が Soniox コンソールで region=JP のプロジェクトとキーを作り `SONIOX_API_KEY` を差し替え →
+  無料の /v1/models で jp=200 を確認 → JP 窓口で疎通（要承認・数回）→ ActionLog「Soniox 再送」の実測で再送待ち上限 15s を詰める。
+  Azure（MAI）は本人がまだ作らない方針（10-02）。作る時はサブスク作成→southeastasia に Speech→ENDPOINT/KEY 登録→MAI 3 回（承認済み）。
 
 ## 録音部の既知問題（10-01 15:10 更新）
 - 目的: 重さ・ハング（7498144/91ded40）と末尾欠け（1ea7e59）は完了済み。残りの既知問題だけを置く。
