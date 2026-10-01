@@ -22,7 +22,11 @@ import Foundation
 final class ActionLog {
 
     /// アプリ全体で共有するインスタンス
-    static let shared = ActionLog()
+    /// テスト実行中は一時ディレクトリへ逃がす（`swift test` の模擬接続・模擬通知が
+    /// 本番ログに混ざり、実在しない 401 や計測行に見えていたため）
+    static let shared = ActionLog(directory: NSClassFromString("XCTestCase") != nil
+        ? FileManager.default.temporaryDirectory.appendingPathComponent("voicekey-test-logs", isDirectory: true)
+        : ActionLog.defaultDirectory)
 
     /// ログを保持する日数（これより古い日付のファイルは起動時と日付切替時に削除する）
     static let retentionDays = 14

@@ -4,6 +4,9 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased]
 
+### Fixed
+- `swift test` の模擬接続・模擬通知が本番の行動ログ（~/Library/Logs/voicekey）に書き込まれ、実在しない Soniox の 401 や `[HUD]` 行に見えていた問題を修正。テスト実行中はログを一時ディレクトリへ出す（Mac のみ）
+
 ## [2.2.0] - 2026-10-02
 
 ### Added
