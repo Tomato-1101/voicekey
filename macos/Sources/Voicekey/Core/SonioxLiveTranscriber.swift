@@ -100,8 +100,6 @@ final class SonioxLiveTranscriber: LiveTranscribing, @unchecked Sendable {
 
     var onInterim: ((String) -> Void)?
 
-    /// 本番の接続先（テストはローカルの WebSocket サーバーへ差し替える）
-    static let defaultEndpoint = URL(string: "wss://stt-rt.soniox.com/transcribe-websocket")!
     /// 録音側のサンプルレート（そのまま送る＝リサンプル不要）
     private static let sampleRate = 16000
     /// finalize の直前に送る 200ms の無音（16kHz・Int16 で 6,400 バイト）。
@@ -120,7 +118,8 @@ final class SonioxLiveTranscriber: LiveTranscribing, @unchecked Sendable {
     private let model: String
     private let language: String
     private let prompt: String
-    private let endpoint: URL
+    /// 明示された接続先（テストのローカルサーバー）。nil なら API キーからリージョンを判定して決める
+    private let endpoint: URL?
     /// 録音のたびに URLSession を作って invalidate すると CFNetwork 側のオブジェクトが
     /// 録音回数分残り続けるため、OpenAI ライブと同じく static 共有にして invalidate 自体をやめる。
     private static let sharedSession: URLSession = {
@@ -144,7 +143,7 @@ final class SonioxLiveTranscriber: LiveTranscribing, @unchecked Sendable {
     private let createdAt = Date()
     private var firstResultLogged = false
 
-    init(model: String, language: String, prompt: String, endpoint: URL = SonioxLiveTranscriber.defaultEndpoint) {
+    init(model: String, language: String, prompt: String, endpoint: URL? = nil) {
         self.model = model
         self.language = language
         self.prompt = prompt
@@ -210,12 +209,31 @@ final class SonioxLiveTranscriber: LiveTranscribing, @unchecked Sendable {
     @discardableResult
     func start(apiKey: String) -> Bool {
         guard !apiKey.isEmpty else { return false }
-        connect(key: apiKey)
+        if let endpoint {
+            connect(key: apiKey, endpoint: endpoint)
+        } else if let region = SonioxRegion.cached(for: apiKey) {
+            log.notice("Soniox リージョン region=\(region.rawValue, privacy: .public) cache=hit 0ms")
+            connect(key: apiKey, endpoint: region.websocketURL)
+        } else {
+            // キーを入れて最初の録音だけ、どちらの窓口で通るかを問い合わせてからつなぐ。
+            // 判定中に届いた音声は send() が pending に退避し、connect() が順序どおり流すので落ちない。
+            // 判定中に cancel / finish が来ても、connect() の cancelled / done 判定と closeRequested で
+            // 既存の「接続前に終わった」場合と同じ扱いになる
+            Task { [self] in
+                let started = Date()
+                let detected = await SonioxRegion.detect(apiKey: apiKey)
+                let ms = Int(Date().timeIntervalSince(started) * 1000)
+                // 判定できなければ従来どおり米国へ（キーが無効なら接続側で 401 が返り、既存の文言で知らせる）
+                let region = detected ?? .us
+                log.notice("Soniox リージョン region=\(region.rawValue, privacy: .public) cache=miss detected=\(detected != nil, privacy: .public) \(ms, privacy: .public)ms")
+                connect(key: apiKey, endpoint: region.websocketURL)
+            }
+        }
         return true
     }
 
     /// WebSocket を開き、設定 JSON → 退避 PCM のフラッシュ → 受信開始まで行う。
-    private func connect(key: String) {
+    private func connect(key: String, endpoint: URL) {
         let task = Self.sharedSession.webSocketTask(with: endpoint)
 
         lock.lock()
