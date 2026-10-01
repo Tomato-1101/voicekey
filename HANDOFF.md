@@ -10,7 +10,7 @@
 - 両 OS に存在する変更は Mac / Windows 同時実装。README・OVERVIEW・CHANGELOG はコードと同じコミットで更新。
 - 文字起こしエンジン（スロットの backend）の切替は本人の判断。Claude は変えない（10-01 時点は右⌥・右⌘とも apple_local）。
 
-## STT エンジン入れ替え（10-02 02:50 更新）
+## STT エンジン入れ替え・API 料金表示（10-02 03:30 更新）
 - 目的: 本人決定（10-01）の追加・削除を Mac に実装（Windows は開発停止中）。本人は主に日本語（混在は重視しない）。
 - 現状: 3f207c9 で push・dist 入替済み。追加＝Soniox stt-rt-v5（ライブ・新規の既定）／gpt-transcribe／MAI-Transcribe-2／scribe_v2。
   疎通済み: gpt-transcribe 1.7〜1.8s／scribe_v2 0.6〜1.0s。Soniox は 733d7f4 で接続先をキーから自動判定（/v1/models を jp・us 並列、
@@ -19,6 +19,11 @@
   （米国窓口の 280〜300ms から短縮）。初回判定 554ms、2 回目以降はキャッシュ命中 0ms。
 - 診断ログ（056bb13）: 1 回の入力ごとに `[計測]` 1 行（離鍵→確定→整形→翻訳→貼付の ms・経路・結果）、ほか [ホットキー][録音][デバイス]
   [貼付][整形][HUD][アイコン][ウィンドウ][設定][環境] を ~/Library/Logs/voicekey/ に出す（発話本文・キーは出さない）。
+- 不具合 3 件（離鍵取りこぼし・貼付失敗の結果消失・API エラー本文の通知混入）は ae34aa7＋3a5f9b9 で修正済み。
+- API 料金表示（8f079cb＋89bb0d3）: ホームに今日/今月/累計・内訳・30 日推移、メニューに今日の API 代。単価表は ApiPricing.swift（出典付き）。
+  Groq の llama-3.1-8b-instant / llama-3.3-70b は公式が「Enterprise・Contact Sales」表記で単価未確認（整形・字幕の既定なので常に「未確認を含む」）。
+  GroqTranslator のストリーミング usage は実応答で未確認（来なければ記録されないだけ）。
+- 課金先の一本化は本人が不要と判断（10-02）。新モデル MAI-Transcribe-2-Streaming（$0.54/時・日本語可・リージョンは北米/欧州/印のみ）は未実装。
 - 次にやること: ActionLog の `[計測]`／「Soniox 再送」の実測で再送待ち上限 15s を詰める。
   Azure（MAI）は本人が後で作る（10-02「作らないのではなく後で」）。作ったらサブスク→southeastasia に Speech→ENDPOINT/KEY 登録→MAI 3 回（承認済み）。
 
