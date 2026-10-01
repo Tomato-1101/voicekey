@@ -10,14 +10,16 @@
 - 両 OS に存在する変更は Mac / Windows 同時実装。README・OVERVIEW・CHANGELOG はコードと同じコミットで更新。
 - 文字起こしエンジン（スロットの backend）の切替は本人の判断。Claude は変えない（10-01 時点は右⌥・右⌘とも apple_local）。
 
-## STT エンジン入れ替え（10-02 01:58 更新）
+## STT エンジン入れ替え（10-02 02:50 更新）
 - 目的: 本人決定（10-01）の追加・削除を Mac に実装（Windows は開発停止中）。本人は主に日本語（混在は重視しない）。
 - 現状: 3f207c9 で push・dist 入替済み。追加＝Soniox stt-rt-v5（ライブ・新規の既定）／gpt-transcribe／MAI-Transcribe-2／scribe_v2。
   疎通済み: gpt-transcribe 1.7〜1.8s／scribe_v2 0.6〜1.0s。Soniox は 733d7f4 で接続先をキーから自動判定（/v1/models を jp・us 並列、
   200 の方。キー指紋ごとに UserDefaults へ記憶）。
 - Soniox JP（10-02）: 本人が JP プロジェクトのキーに差し替え済み（jp=200 / us=401）。承認済み 3 回で離鍵→確定 120〜128ms・誤りゼロ
   （米国窓口の 280〜300ms から短縮）。初回判定 554ms、2 回目以降はキャッシュ命中 0ms。
-- 次にやること: ActionLog「Soniox 再送」の実測で再送待ち上限 15s を詰める。
+- 診断ログ（056bb13）: 1 回の入力ごとに `[計測]` 1 行（離鍵→確定→整形→翻訳→貼付の ms・経路・結果）、ほか [ホットキー][録音][デバイス]
+  [貼付][整形][HUD][アイコン][ウィンドウ][設定][環境] を ~/Library/Logs/voicekey/ に出す（発話本文・キーは出さない）。
+- 次にやること: ActionLog の `[計測]`／「Soniox 再送」の実測で再送待ち上限 15s を詰める。
   Azure（MAI）は本人が後で作る（10-02「作らないのではなく後で」）。作ったらサブスク→southeastasia に Speech→ENDPOINT/KEY 登録→MAI 3 回（承認済み）。
 
 ## 録音部の既知問題（10-01 15:10 更新）
