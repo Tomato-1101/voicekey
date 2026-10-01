@@ -11,8 +11,9 @@ voicekey は **`personal` ブランチ 1 本だけ**で運用する。旧 `main`
 `voice-agent` は **2026-08-23 に personal へ統合してアーカイブ済み**（GitHub からも削除）。
 バックアップは `~/Project/_archive/voicekey-all-branches-2026-08-23.bundle` にある。
 
-- **`personal` = 開発者本人が毎日使う唯一の版**。4 プロバイダーすべてを**実プロバイダー名で表示**
-  （OpenAI / Groq / ElevenLabs / Deepgram）＋**モデル名も表示・選択可**。テキスト整形（Groq）は
+- **`personal` = 開発者本人が毎日使う唯一の版**。全プロバイダーを**実プロバイダー名で表示**
+  （Mac: Soniox / Apple ローカル / OpenAI ライブ / OpenAI / Microsoft MAI / ElevenLabs / Groq。
+  Deepgram は 2026-10-01 に選択肢から外した・Windows は停止中のため旧構成）＋**モデル名も表示・選択可**。テキスト整形（Groq）は
   モデル・プロンプトともフル設定可。API キーは中央 Keychain から直読み（サーバー往復ゼロ＝最速）。
   ライブ字幕・ローカル（Apple）文字起こし・翻訳して入力も personal 限定機能としてここにある。
 - 製品版（顧客配布・ログイン・課金・アクティベーションキー）の運用は**終了**した。販売まわりのリポジトリ
@@ -196,7 +197,7 @@ Mac（`macos/` Swift）と Windows（`src/` Python）の両方を同じ作業で
 ## Project Overview
 
 voicekey は、ホットキーを押している間だけ音声を録音し、文字起こし結果を**今使っているアプリのカーソル位置へ自動入力**する常駐型の音声入力ツール（Mac=メニューバー / Windows=タスクトレイ）。
-**文字起こしはすべてクラウド API**（Deepgram / ElevenLabs / OpenAI / Groq）、**発話区間検出（VAD）だけローカル CPU 実行**（Python=Silero ONNX を onnxruntime、Mac=エネルギー RMS）。ローカル GPU 文字起こし（faster-whisper）は廃止済み＝**CUDA / GPU は不要**。
+**文字起こしはクラウド API**（Mac: Soniox / OpenAI / Microsoft MAI / ElevenLabs / Groq、Windows: Deepgram / ElevenLabs / OpenAI / Groq）**＋ Mac のみ Apple オンデバイス認識**、**発話区間検出（VAD）だけローカル CPU 実行**（Python=Silero ONNX を onnxruntime、Mac=エネルギー RMS）。ローカル GPU 文字起こし（faster-whisper）は廃止済み＝**CUDA / GPU は不要**。
 
 > 機能一覧・アーキ地図（責務 → ファイル）・配布構成は **`OVERVIEW.md`** に集約してある。ここでは重複させない（ドリフト防止）。Windows は `src/`（Python / PySide6）、Mac は `macos/Sources/Voicekey/`（Swift）の二本立て。
 
