@@ -93,6 +93,8 @@ enum UISnapshotTestMode {
         if arguments.contains("--api-usage-sample") {
             ApiUsageStore.shared = makeSampleApiUsage()
             sizes.append(NSSize(width: 760, height: 1500))
+            // 表示モードは本人の設定（UserDefaults の実体）に触れず、メモリ上の引数ドメインだけで上書きする
+            setApiCostMode("list")
         }
 
         var screens: [(name: String, showingSettings: Bool, tab: Int)] = [("home", false, 0)]
@@ -101,43 +103,60 @@ enum UISnapshotTestMode {
         }
         emit("[INFO] ui-snapshot 開始 appearance=\(appearanceName) screens=\(screens.map(\.name).joined(separator: ",")) personal=\(EmbeddedKeys.isPersonal)")
 
+        // 「実際に払った分」モードの見た目は、料金欄のある縦長のホームだけを追加で 1 枚撮る
+        var jobs: [(screen: (name: String, showingSettings: Bool, tab: Int), size: NSSize, paidMode: Bool)] = []
+        for size in sizes {
+            for screen in screens { jobs.append((screen, size, false)) }
+        }
+        if arguments.contains("--api-usage-sample") {
+            jobs.append((("home-paid", false, 0), NSSize(width: 760, height: 1500), true))
+        }
+
         var written = 0
         var failed = 0
-        for size in sizes {
-            for screen in screens {
-                // 保存先なしのモデル＝タブを切り替えてもユーザーの「前回の画面」を書き換えない
-                let model = MainWindowModel(showingSettings: screen.showingSettings, settingsTab: screen.tab)
-                let view = MainWindowView(
-                    config: config,
-                    history: history,
-                    historySync: historySync,
-                    stats: stats,
-                    updater: UpdaterController.shared,
-                    model: model,
-                    controller: nil
-                )
-                .tint(Brand.signal)
-                let fileName = "\(screen.name)-\(Int(size.width))x\(Int(size.height))-\(appearanceName).png"
-                let fileURL = outputDir.appendingPathComponent(fileName)
-                guard let png = render(view, size: size, appearance: appearance) else {
-                    emit("[FAIL] 描画できませんでした: \(fileName)")
-                    failed += 1
-                    continue
-                }
-                do {
-                    try png.write(to: fileURL, options: .atomic)
-                    emit("[FILE] \(fileURL.path)")
-                    written += 1
-                } catch {
-                    emit("[FAIL] 書き込めませんでした: \(fileName) \(error.localizedDescription)")
-                    failed += 1
-                }
+        for job in jobs {
+            let screen = job.screen
+            let size = job.size
+            if job.paidMode { setApiCostMode("paid") }
+            // 保存先なしのモデル＝タブを切り替えてもユーザーの「前回の画面」を書き換えない
+            let model = MainWindowModel(showingSettings: screen.showingSettings, settingsTab: screen.tab)
+            let view = MainWindowView(
+                config: config,
+                history: history,
+                historySync: historySync,
+                stats: stats,
+                updater: UpdaterController.shared,
+                model: model,
+                controller: nil
+            )
+            .tint(Brand.signal)
+            let fileName = "\(screen.name)-\(Int(size.width))x\(Int(size.height))-\(appearanceName).png"
+            let fileURL = outputDir.appendingPathComponent(fileName)
+            guard let png = render(view, size: size, appearance: appearance) else {
+                emit("[FAIL] 描画できませんでした: \(fileName)")
+                failed += 1
+                continue
+            }
+            do {
+                try png.write(to: fileURL, options: .atomic)
+                emit("[FILE] \(fileURL.path)")
+                written += 1
+            } catch {
+                emit("[FAIL] 書き込めませんでした: \(fileName) \(error.localizedDescription)")
+                failed += 1
             }
         }
         finish(written: written, failed: failed)
     }
 
-    /// API 料金の欄の見本データ（直近 30 日に数種類の API を散らす。単価未確認のモデルも 1 つ混ぜる）
+    /// 料金の表示モードを、本人の UserDefaults を書き換えずにこのプロセスだけで上書きする（引数ドメイン）
+    private static func setApiCostMode(_ raw: String) {
+        UserDefaults.standard.setVolatileDomain(
+            [ApiCostMode.defaultsKey: raw], forName: UserDefaults.argumentDomain)
+    }
+
+    /// API 料金の欄の見本データ（直近 30 日に数種類の API を散らす。単価未確認のモデル・Groq の推定行・
+    /// 無料枠の行（実払いモードで「無料枠」になる Groq / ElevenLabs）・有料の推定行も混ぜる）
     private static func makeSampleApiUsage() -> ApiUsageStore {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("voicekey-ui-snapshot-api-usage-\(UUID().uuidString)", isDirectory: true)
@@ -155,8 +174,38 @@ enum UISnapshotTestMode {
             store.recordTokens(provider: .groq, model: "llama-3.1-8b-instant", purpose: .formatting,
                                inputTokens: 2_400, outputTokens: 900, date: date)
         }
+        // 無料枠の見え方（実払いモードで「無料枠」になる）を撮るため ElevenLabs の実測も 1 行
+        store.recordAudio(provider: .elevenlabs, model: "scribe_v2", seconds: 240)
         store.flush()
-        return store
+
+        // 計測開始前の推定行（estimated）。保存ファイルを作り直して読み込ませる＝本番と同じ読み込み経路
+        var data = store.snapshot
+        func estimatedRow(_ provider: ApiProvider, _ model: String, requests: Int, seconds: Double) -> ApiUsageEntry {
+            var e = ApiUsageEntry(provider: provider.rawValue, model: model, purpose: ApiUsagePurpose.transcription.rawValue)
+            e.requests = requests
+            e.audioSeconds = seconds
+            e.billedAudioSeconds = max(seconds, Double(requests) * (provider == .groq ? 10 : 0))
+            e.estimated = true
+            return e
+        }
+        for offset in 1...12 {
+            guard let date = cal.date(byAdding: .day, value: -offset, to: Date()) else { continue }
+            let key = ApiUsageStore.dayString(date)
+            data.days[key, default: []].append(estimatedRow(.soniox, "stt-rt-v5", requests: 14, seconds: Double(500 + offset * 37)))
+            if offset % 3 == 0 {
+                data.days[key, default: []].append(estimatedRow(.openai, "gpt-live-transcribe", requests: 6, seconds: Double(200 + offset * 11)))
+            }
+        }
+        for offset in 20...30 {
+            guard let date = cal.date(byAdding: .day, value: -offset, to: Date()) else { continue }
+            data.days[ApiUsageStore.dayString(date), default: []]
+                .append(estimatedRow(.groq, "whisper-large-v3-turbo", requests: 18, seconds: Double(150 + offset * 5)))
+        }
+        data.backfillVersion = ApiUsageBackfill.version
+        if let raw = try? JSONEncoder().encode(data) {
+            try? raw.write(to: dir.appendingPathComponent("api-usage.json"), options: .atomic)
+        }
+        return ApiUsageStore(directory: dir)
     }
 
     /// View を画面外のウィンドウで描き、PNG データにする

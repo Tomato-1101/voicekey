@@ -32,12 +32,15 @@ struct ApiUsageEntry: Codable, Equatable {
     var billedAudioSeconds: Double = 0
     var inputTokens: Int = 0
     var outputTokens: Int = 0
+    /// 計測開始前の使用量をログ・統計から推定した行（実測の行とは別行として持つ＝推定分だけ後から作り直せる）
+    var estimated: Bool = false
 
     var providerKind: ApiProvider? { ApiProvider(rawValue: provider) }
     var purposeKind: ApiUsagePurpose? { ApiUsagePurpose(rawValue: purpose) }
 
-    /// 推定料金（USD）。nil = 単価未確認
-    var costUSD: Double? {
+    /// 料金（USD）。nil = 単価未確認。「実際に払った分」モードで無料枠のプロバイダーは 0 円
+    func costUSD(mode: ApiCostMode) -> Double? {
+        if mode.isFreeTier(providerKind) { return 0 }
         guard let p = providerKind else { return nil }
         return ApiPricing.cost(
             provider: p, model: model, billedAudioSeconds: billedAudioSeconds,
@@ -55,6 +58,7 @@ struct ApiUsageEntry: Codable, Equatable {
 
     func sameKey(_ other: ApiUsageEntry) -> Bool {
         provider == other.provider && model == other.model && purpose == other.purpose
+            && estimated == other.estimated
     }
 }
 
@@ -70,18 +74,25 @@ extension ApiUsageEntry {
         billedAudioSeconds = try c.decodeIfPresent(Double.self, forKey: .billedAudioSeconds) ?? 0
         inputTokens = try c.decodeIfPresent(Int.self, forKey: .inputTokens) ?? 0
         outputTokens = try c.decodeIfPresent(Int.self, forKey: .outputTokens) ?? 0
+        estimated = try c.decodeIfPresent(Bool.self, forKey: .estimated) ?? false
     }
 }
 
 /// 永続化する全体（キー = ローカル yyyy-MM-dd）
 struct ApiUsageData: Codable, Equatable {
     var days: [String: [ApiUsageEntry]] = [:]
+    /// 過去分の推定取り込み（ApiUsageBackfill）を済ませた版。0 = 未実施
+    var backfillVersion: Int = 0
 
-    init(days: [String: [ApiUsageEntry]] = [:]) { self.days = days }
+    init(days: [String: [ApiUsageEntry]] = [:], backfillVersion: Int = 0) {
+        self.days = days
+        self.backfillVersion = backfillVersion
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         days = try c.decodeIfPresent([String: [ApiUsageEntry]].self, forKey: .days) ?? [:]
+        backfillVersion = try c.decodeIfPresent(Int.self, forKey: .backfillVersion) ?? 0
     }
 }
 
@@ -90,6 +101,8 @@ struct ApiCostSummary: Equatable {
     var usd: Double = 0
     var hasUnpriced: Bool = false
     var requests: Int = 0
+    /// usd のうち推定行（計測開始前をログ・統計から推定した分）の合計
+    var estimatedUSD: Double = 0
 }
 
 /// 日次の推移 1 本ぶん
@@ -230,6 +243,41 @@ final class ApiUsageStore: ObservableObject, @unchecked Sendable {
         let x_groq: XGroq?
     }
 
+    // MARK: - 過去分の推定取り込み（1 回だけ）
+
+    /// 計測開始前の使用量をログ・統計から推定して取り込む。取り込み済み（backfillVersion）なら何もしない。
+    /// ファイル読み込みはロックの外で行い、呼び出し側（起動時のバックグラウンド）以外では呼ばない。
+    /// 推定行は毎回すべて作り直す＝版を上げて再実行しても重複しない。ログ・統計が無ければ空のまま版だけ立てる。
+    func backfillIfNeeded(
+        logsDirectory: URL = ActionLog.defaultDirectory,
+        statsFile: URL? = nil
+    ) {
+        lock.lock()
+        let done = data.backfillVersion >= ApiUsageBackfill.version
+        lock.unlock()
+        if done { return }
+
+        let stats = statsFile ?? FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("voicekey/stats.json")
+        let sources = ApiUsageBackfill.readSources(logsDirectory: logsDirectory, statsFile: stats)
+
+        lock.lock()
+        // 実測との突き合わせと書き込みは同じロックの中で（読んでいる間に増えた実測も差し引くため）
+        let plan = ApiUsageBackfill.plan(sources: sources, measuredDays: data.days)
+        for day in Array(data.days.keys) {
+            let kept = (data.days[day] ?? []).filter { !$0.estimated }
+            data.days[day] = kept.isEmpty ? nil : kept
+        }
+        for (day, rows) in plan {
+            data.days[day, default: []].append(contentsOf: rows)
+        }
+        data.backfillVersion = ApiUsageBackfill.version
+        lock.unlock()
+        scheduleSave()
+        DispatchQueue.main.async { [weak self] in self?.objectWillChange.send() }
+    }
+
     /// 保存は書き込む時点の最新内容を使う（記録が前後しても古い内容で上書きしない）
     private func scheduleSave() {
         saveQueue.async { [weak self] in
@@ -257,28 +305,28 @@ final class ApiUsageStore: ObservableObject, @unchecked Sendable {
     }
 
     /// 指定した日付キーの行をまとめた合計
-    func summary(where include: (String) -> Bool) -> ApiCostSummary {
+    func summary(mode: ApiCostMode, where include: (String) -> Bool) -> ApiCostSummary {
         var s = ApiCostSummary()
         for (day, rows) in snapshot.days where include(day) {
-            for r in rows { Self.accumulate(&s, r) }
+            for r in rows { Self.accumulate(&s, r, mode: mode) }
         }
         return s
     }
 
-    func todaySummary(now: Date = Date()) -> ApiCostSummary {
+    func todaySummary(mode: ApiCostMode, now: Date = Date()) -> ApiCostSummary {
         let today = Self.dayString(now)
-        return summary { $0 == today }
+        return summary(mode: mode) { $0 == today }
     }
 
-    func monthSummary(now: Date = Date()) -> ApiCostSummary {
+    func monthSummary(mode: ApiCostMode, now: Date = Date()) -> ApiCostSummary {
         let month = String(Self.dayString(now).prefix(7))
-        return summary { $0.hasPrefix(month) }
+        return summary(mode: mode) { $0.hasPrefix(month) }
     }
 
-    func allTimeSummary() -> ApiCostSummary { summary { _ in true } }
+    func allTimeSummary(mode: ApiCostMode) -> ApiCostSummary { summary(mode: mode) { _ in true } }
 
-    /// プロバイダー × モデル × 用途 の内訳（料金の高い順。未確認は末尾）
-    func breakdown(where include: (String) -> Bool) -> [ApiUsageEntry] {
+    /// プロバイダー × モデル × 用途（× 実測/推定）の内訳（料金の高い順。未確認は末尾）
+    func breakdown(mode: ApiCostMode, where include: (String) -> Bool) -> [ApiUsageEntry] {
         var merged: [ApiUsageEntry] = []
         for (day, rows) in snapshot.days where include(day) {
             for r in rows {
@@ -289,25 +337,30 @@ final class ApiUsageStore: ObservableObject, @unchecked Sendable {
                 }
             }
         }
-        return merged.sorted { ($0.costUSD ?? -1) > ($1.costUSD ?? -1) }
+        return merged.sorted { ($0.costUSD(mode: mode) ?? -1) > ($1.costUSD(mode: mode) ?? -1) }
     }
 
     /// 直近 numDays 日（今日を末尾・古い順）。記録の無い日は 0
-    func dailySeries(_ numDays: Int, endingAt end: Date = Date()) -> [ApiCostDay] {
+    func dailySeries(_ numDays: Int, mode: ApiCostMode, endingAt end: Date = Date()) -> [ApiCostDay] {
         let cal = Calendar.current
         let all = snapshot.days
         return (0..<numDays).reversed().compactMap { offset in
             guard let d = cal.date(byAdding: .day, value: -offset, to: end) else { return nil }
             let key = Self.dayString(d)
             var s = ApiCostSummary()
-            for r in all[key] ?? [] { Self.accumulate(&s, r) }
+            for r in all[key] ?? [] { Self.accumulate(&s, r, mode: mode) }
             return ApiCostDay(day: key, summary: s)
         }
     }
 
-    private static func accumulate(_ s: inout ApiCostSummary, _ r: ApiUsageEntry) {
+    private static func accumulate(_ s: inout ApiCostSummary, _ r: ApiUsageEntry, mode: ApiCostMode) {
         s.requests += r.requests
-        if let c = r.costUSD { s.usd += c } else { s.hasUnpriced = true }
+        if let c = r.costUSD(mode: mode) {
+            s.usd += c
+            if r.estimated { s.estimatedUSD += c }
+        } else {
+            s.hasUnpriced = true
+        }
     }
 
     /// ローカルタイムゾーンでの yyyy-MM-dd（StatsStore と同じ書式）

@@ -192,8 +192,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installMainMenu()
 
         // API 使用量のファイル読み込みを起動時に裏で済ませる（初回の音声入力の確定直後に
-        // 遅延初期化のディスク読みが走らないように。日数ぶん JSON が育つため）
-        DispatchQueue.global(qos: .utility).async { _ = ApiUsageStore.shared }
+        // 遅延初期化のディスク読みが走らないように。日数ぶん JSON が育つため）。
+        // 続けて、計測開始前の分をログ・統計から推定して取り込む（未実施のときだけ・1 回きり）。
+        // どちらも利用者の操作や音声入力の経路とは無関係の裏スレッドで、待ちは足さない
+        DispatchQueue.global(qos: .utility).async { ApiUsageStore.shared.backfillIfNeeded() }
 
         // NSAlert・Dock などに出るアプリアイコンを外観に合わせる（ライト=ボーン／ダーク=カーボン）。
         // KVO の通知はメインスレッドで届く（effectiveAppearance は AppKit がメインで更新する）
@@ -829,10 +831,10 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         NSApp.terminate(nil)
     }
 
-    /// 「今日の API 代 $x.xx（¥y）」。単価未確認の利用があればそれも添える
+    /// 「今日の API 代 $x.xx」（ホームで選んだ定価／実払いのモードに従う）。単価未確認の利用があればそれも添える
     static func apiCostTitle() -> String {
-        let today = ApiUsageStore.shared.todaySummary()
-        return "今日の API 代 \(ApiPricing.formatted(today.usd))" + (today.hasUnpriced ? "＋単価未確認分" : "")
+        let today = ApiUsageStore.shared.todaySummary(mode: ApiCostMode.current)
+        return "今日の API 代 \(ApiPricing.formattedUSD(today.usd))" + (today.hasUnpriced ? "＋単価未確認分" : "")
     }
 }
 

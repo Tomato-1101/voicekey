@@ -68,6 +68,10 @@ struct HomeView: View {
     @AppStorage("home.periodDays") private var periodDays: Int = 1
     /// API 料金の内訳の期間（today / month / all）。次回起動でも維持する。
     @AppStorage("home.apiCostPeriod") private var apiCostPeriod: String = "month"
+    /// API 料金の表示モード（定価／実際に払った分）。メニューの「今日の API 代」も同じ値に従う。
+    @AppStorage(ApiCostMode.defaultsKey) private var apiCostModeRaw: String = ApiCostMode.list.rawValue
+
+    private var apiCostMode: ApiCostMode { ApiCostMode(rawValue: apiCostModeRaw) ?? .list }
 
     var body: some View {
         // レイアウト v2.1: 島で全面を包まない。MainWindowView の frosted backdrop の上に
@@ -336,34 +340,50 @@ struct HomeView: View {
     // MARK: - API の利用料金
 
     /// API の利用料金。上段に今日 / 今月 / 累計の合計、下に内訳（プロバイダー × モデル × 用途）と
-    /// 直近 30 日の推移を置く。料金は使用量 × 公開単価の推定なので、その旨と換算レートを小さく添える。
+    /// 直近 30 日の推移を置く。右上で「定価（無料枠も含む）」と「実際に払った分」を切り替える。
+    /// 料金は使用量 × 公開単価の推定なので、その旨を小さく添える。
     private var apiCostSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("API の利用料金").font(.headline)
-            HStack(alignment: .top, spacing: 12) {
-                apiCostTotalCard("今日", apiUsage.todaySummary())
-                apiCostTotalCard("今月", apiUsage.monthSummary())
-                apiCostTotalCard("累計", apiUsage.allTimeSummary())
+        let mode = apiCostMode
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("API の利用料金").font(.headline)
+                Spacer()
+                Picker("表示", selection: $apiCostModeRaw) {
+                    Text("定価（無料枠も含む）").tag(ApiCostMode.list.rawValue)
+                    Text("実際に払った分").tag(ApiCostMode.paid.rawValue)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
             }
-            apiCostBreakdownCard
-            apiCostTrendCard
+            HStack(alignment: .top, spacing: 12) {
+                apiCostTotalCard("今日", apiUsage.todaySummary(mode: mode))
+                apiCostTotalCard("今月", apiUsage.monthSummary(mode: mode))
+                apiCostTotalCard("累計", apiUsage.allTimeSummary(mode: mode), showsEstimate: true)
+            }
+            apiCostBreakdownCard(mode)
+            apiCostTrendCard(mode)
             Text("使用量 × 各社の公開単価から計算した推定で、実際の請求額とは異なることがあります。"
-                 + "記録はこの機能を入れた後の分だけです。単価は \(ApiPricing.checkedOn) 時点"
-                 + "（Gemini は有料枠の単価で計算）、円換算は 1 ドル = \(String(format: "%.1f", ApiPricing.usdToJpy)) 円"
-                 + "（\(ApiPricing.rateDate)）。")
+                 + "10/2 以前の分は、ログに残る要求（残っていない古い日は統計から Groq と仮定）を元にした推定で、「推定」と表示しています。"
+                 + "単価は \(ApiPricing.checkedOn) 時点（Gemini は有料枠の単価で計算）。"
+                 + (mode == .paid ? "「実際に払った分」は OpenAI・Soniox・Microsoft だけを計上し、ほかは無料枠として 0 ドルにしています。" : ""))
                 .font(.caption2).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    /// 合計カード 1 枚（ドルを主役に、円と「単価未確認を含む」を小さく添える）
-    private func apiCostTotalCard(_ title: String, _ summary: ApiCostSummary) -> some View {
+    /// 合計カード 1 枚（ドルを主役に、「うち推定」と「単価未確認を含む」を小さく添える）
+    private func apiCostTotalCard(_ title: String, _ summary: ApiCostSummary, showsEstimate: Bool = false) -> some View {
         dashCard {
             VStack(alignment: .leading, spacing: 6) {
                 Text(title).font(.caption).foregroundStyle(.secondary)
                 bigNumberText(ApiPricing.formattedUSD(summary.usd), size: 26)
-                Text(ApiPricing.formattedJPY(ApiPricing.jpy(summary.usd)))
-                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                if showsEstimate && summary.estimatedUSD > 0 {
+                    // 実測ではない分を、合計に紛れさせず見せる
+                    Text("うち推定 \(ApiPricing.formattedUSD(summary.estimatedUSD))")
+                        .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                        .help("10/2 以前はログから推定（ログの無い古い日は統計から Groq と仮定）")
+                }
                 if summary.hasUnpriced {
                     // 単価が分からない分を 0 円に見せて隠さない
                     Label("単価未確認を含む", systemImage: "questionmark.circle")
@@ -384,8 +404,8 @@ struct HomeView: View {
     }
 
     /// 内訳カード（プロバイダー × モデル × 用途ごとの数量と料金）
-    private var apiCostBreakdownCard: some View {
-        let rows = apiUsage.breakdown(where: apiCostIncludes)
+    private func apiCostBreakdownCard(_ mode: ApiCostMode) -> some View {
+        let rows = apiUsage.breakdown(mode: mode, where: apiCostIncludes)
         return dashCard {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
@@ -407,7 +427,7 @@ struct HomeView: View {
                 } else {
                     VStack(spacing: 0) {
                         ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
-                            apiCostRow(row)
+                            apiCostRow(row, mode: mode)
                             if index < rows.count - 1 { Divider() }
                         }
                     }
@@ -417,27 +437,39 @@ struct HomeView: View {
     }
 
     /// 内訳 1 行（左＝プロバイダー・モデル・用途と数量、右＝料金）
-    private func apiCostRow(_ row: ApiUsageEntry) -> some View {
+    private func apiCostRow(_ row: ApiUsageEntry, mode: ApiCostMode) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(row.providerKind?.label ?? row.provider) · \(row.model)")
+                Text("\(row.providerKind?.label ?? row.provider) · \(row.model)"
+                     + (row.estimated ? " · 推定" : ""))
                     .font(.system(size: 13)).lineLimit(1)
-                Text("\(row.purposeKind?.label ?? row.purpose) · \(apiQuantityText(row)) · \(grouped(row.requests)) 回")
+                Text("\(row.purposeKind?.label ?? row.purpose) · \(apiQuantityText(row)) · \(grouped(row.requests)) 回"
+                     + Self.estimateNote(row))
                     .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 2) {
-                if let usd = row.costUSD {
+                if mode.isFreeTier(row.providerKind) {
+                    // 「実際に払った分」では無料枠の行も残し、0 円に見せるだけにする
+                    Text("無料枠").font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
+                } else if let usd = row.costUSD(mode: mode) {
                     Text(ApiPricing.formattedUSD(usd))
                         .font(.system(size: 13, weight: .semibold)).monospacedDigit()
-                    Text(ApiPricing.formattedJPY(ApiPricing.jpy(usd)))
-                        .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
                 } else {
                     Text("単価未確認").font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
         .padding(.vertical, 6)
+    }
+
+    /// 推定行の補足。Groq の文字起こしは、ログの無い古い日をエンジン不明のまま Groq と仮定して含むので、そう添える
+    private static func estimateNote(_ row: ApiUsageEntry) -> String {
+        guard row.estimated else { return "" }
+        let assumed = row.provider == ApiUsageBackfill.statsAssumedProvider.rawValue
+            && row.model == ApiUsageBackfill.statsAssumedModel
+            && row.purpose == ApiUsagePurpose.transcription.rawValue
+        return assumed ? " · ログから推定（古い日は Groq と仮定）" : " · ログから推定"
     }
 
     /// 数量の表示（音声は時間、LLM は入出力トークン）。最低課金秒数で課金時間が延びた分も見せる
@@ -453,8 +485,8 @@ struct HomeView: View {
     }
 
     /// 直近 30 日の推移（1 日 1 本の縦バー。最も高い日を 1.0 とした相対の高さ）
-    private var apiCostTrendCard: some View {
-        let days = apiUsage.dailySeries(30)
+    private func apiCostTrendCard(_ mode: ApiCostMode) -> some View {
+        let days = apiUsage.dailySeries(30, mode: mode)
         let maxUSD = days.map(\.summary.usd).max() ?? 0
         let total = days.reduce(0) { $0 + $1.summary.usd }
         return dashCard {
@@ -462,7 +494,7 @@ struct HomeView: View {
                 HStack {
                     Text("直近 30 日").font(.caption).foregroundStyle(.secondary)
                     Spacer()
-                    Text("合計 \(ApiPricing.formatted(total))")
+                    Text("合計 \(ApiPricing.formattedUSD(total))")
                         .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
                 }
                 HStack(alignment: .bottom, spacing: 3) {
@@ -472,7 +504,7 @@ struct HomeView: View {
                             .fill(day.summary.usd > 0 ? Brand.signal.opacity(0.75) : Color.primary.opacity(0.08))
                             .frame(height: max(4, 56 * ratio))
                             .frame(maxWidth: .infinity)
-                            .help("\(day.day)  \(ApiPricing.formatted(day.summary.usd))"
+                            .help("\(day.day)  \(ApiPricing.formattedUSD(day.summary.usd))"
                                   + (day.summary.hasUnpriced ? "（単価未確認を含む）" : ""))
                     }
                 }

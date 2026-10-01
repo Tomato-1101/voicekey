@@ -11,22 +11,33 @@ voicekeyの変更履歴を記録するファイルです。
   cask は導入後に quarantine を外すので、どちらも警告なしで開ける（AeroSpace などの無料配布アプリと同じ方式）。
   `build_dmg.sh` の最後に tap の更新手順（版と zip の sha256）を出すようにした。
 - **ホームに「API の利用料金」を追加（Mac のみ）**。API を呼ぶたびに数量（音声の秒数・入出力トークン数・回数）を
-  日付 × プロバイダー × モデル × 用途で積み上げ、今日 / 今月 / 累計の推定料金（ドルと円）、内訳（どの API をどのモデルで
-  どれだけ使っていくらか）、直近 30 日の推移を常に表示する。メニューバーのメニューにも「今日の API 代 $x.xx（¥y）」を出す。
+  日付 × プロバイダー × モデル × 用途で積み上げ、今日 / 今月 / 累計の推定料金（ドル）、内訳（どの API をどのモデルで
+  どれだけ使っていくらか）、直近 30 日の推移を常に表示する。メニューバーのメニューにも「今日の API 代 $x.xx」を出す。
   料金は使用量 × 各社の公開単価からの推定で、実際の請求額とは異なることがある（画面にも明記）。単価を公式ページで確認できなかった
   モデル（Groq の llama 系・ElevenLabs scribe_v1・Deepgram）は 0 円にせず「単価未確認」と出す。Apple のオンデバイス認識・翻訳は無料。
   記録は数量だけで、発話本文や API キーは保存しない。過去の使用量は履歴にモデル・秒数が無いため遡って集計しない（入れた後の分から）。
   記録は API の応答が返った後にメモリ上で加算するだけで、保存は裏で行う（音声入力の待ち時間は増えない）。
+- **API の利用料金を「ドルだけ」に整理し、表示モードと過去分の推定取り込みを追加（Mac のみ）**。
+  円表示と換算レートを UI・メニュー・脚注から削除。ホームの料金欄の右上に「定価（無料枠も含む）」/「実際に払った分」の切替を置き
+  （既定は定価・`apiCostMode` で保存）、ホームの全数値（今日/今月/累計/内訳/30 日推移）とメニューの「今日の API 代」が同じモードに従う。
+  「実際に払った分」は有料契約の OpenAI・Soniox・Microsoft（MAI）だけを計上し、Groq・ElevenLabs・Deepgram・Gemini は
+  「無料枠」として 0 ドル（内訳の行は残す）。計測開始（10/2）より前の分は、起動時に 1 回だけ裏で推定して取り込む:
+  行動ログの「文字起こし要求」行（バックエンド・モデル・音声秒数）から、実測済みの秒数を引いた正の差分だけを入れ（二重計上なし）、
+  ログが残っていない古い日は統計（stats.json）の録音秒数を Groq whisper-large-v3-turbo と仮定して入れる。
+  推定行は内訳に「推定」と出し、累計の下に「うち推定 $x」を出す。整形・翻訳のトークン分は記録が無いので取り込まない。
 
 ### Technical Details
 - **ApiPricing.swift**（新規）: 単価表を 1 ファイルに集約（各行に出典 URL と確認日 2026-10-02）。Groq の音声は 1 リクエスト最低 10 秒課金。
-  円換算は 1 USD = 158.3 円（2026-10-01）固定
+  有料契約のプロバイダーの定義（`paidProviders`）と表示モード（`ApiCostMode`）もここ。円換算は撤去
+- **ApiUsageBackfill.swift**（新規）: ログ行の解析・差分計算・統計の日付範囲判定を純関数にした過去分の推定取り込み。
+  `ApiUsageEntry.estimated`（古い JSON は未実施＝false で読める）と api-usage.json の `backfillVersion` で 1 回だけ実行。
+  テストは `ApiUsageBackfillTests`・`ApiUsageTests`
 - **ApiUsageStore.swift**（新規）: `~/Library/Application Support/voicekey/api-usage.json` に日次集計を保存。料金は表示時に単価表から計算する
   （単価を直せば過去分にも反映）。記録はロックで守りどのスレッドからでも同期で呼べ、保存は直列キューで後回し
 - 記録箇所: `Transcriber`（REST の直叩き）、`SonioxLiveTranscriber` / `OpenAILiveTranscriber`（実際に送った音声のバイト数から秒数）、
   `TextFormatter`（Groq の usage）、`GroqTranslator`（SSE 最終チャンクの usage。`stream_options.include_usage` を付けて要求）、
   `GeminiTranslator`（usageMetadata。思考トークンは出力に含める）
-- **UISnapshotTestMode.swift**: `--api-usage-sample` で見本データの料金欄と縦長 760x1500 を撮れるようにした。回帰テスト `ApiUsageTests`
+- **UISnapshotTestMode.swift**: `--api-usage-sample` で見本データ（推定行・無料枠行を含む）の料金欄と縦長 760x1500 を撮れるようにした（実払いモードは `home-paid-…png`）。回帰テスト `ApiUsageTests`
 
 ### Fixed
 - **イベントタップが OS に一時停止されている間にホットキーを離すと、録音が止まらないのを修正（Mac のみ）**。

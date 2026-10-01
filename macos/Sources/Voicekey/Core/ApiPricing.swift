@@ -79,10 +79,12 @@ enum ApiPricing {
 
     /// 単価を公式ページで確認した日（画面の注記に出す）
     static let checkedOn = "2026-10-02"
-    /// 円換算に使うレート（1 USD あたりの円）と、その取得日。
-    /// 2026-10-01 の USD/JPY 終値帯（158.20〜158.33）の中央付近。自動取得はしない（通信を増やさないため）
-    static let usdToJpy: Double = 158.3
-    static let rateDate = "2026-10-01"
+
+    /// 本人が実際にお金を払っている契約のあるプロバイダー（「実際に払った分」表示の対象）。
+    /// 2026-10-02 本人申告＋メール確認: OpenAI はカードチャージの領収あり、Soniox・Azure（MAI）は有料契約。
+    /// Groq / ElevenLabs / Deepgram は請求メールが無い（無料枠）、Gemini も無料枠運用のため含めない。
+    /// 契約が変わったらここ 1 か所だけ直す。
+    static let paidProviders: Set<ApiProvider> = [.openai, .soniox, .microsoft]
 
     /// 単価表。キーは「プロバイダー/モデル ID（小文字）」。ここに無いモデルは単価未確認（nil）。
     /// 各行のコメントに出典 URL と確認日を書く。値を推測で足さないこと。
@@ -149,26 +151,31 @@ enum ApiPricing {
         }
     }
 
-    /// USD を円に換算する（表示用の概算）
-    static func jpy(_ usd: Double) -> Double { usd * usdToJpy }
-
-    /// 「$0.12（¥19）」形式の表示文字列。1 セント未満は桁を増やして 0 に潰さない
-    static func formatted(_ usd: Double) -> String {
-        "\(formattedUSD(usd))（\(formattedJPY(jpy(usd)))）"
-    }
-
+    /// 「$0.12」形式の表示文字列。1 セント未満は桁を増やして 0 に潰さない
     static func formattedUSD(_ usd: Double) -> String {
         if usd > 0 && usd < 0.01 { return String(format: "$%.4f", usd) }
         return String(format: "$%.2f", usd)
     }
+}
 
-    static func formattedJPY(_ yen: Double) -> String {
-        // 0.05 円未満を「¥0.0」と出すと 0 円に見えるので、未満表記にする
-        if yen > 0 && yen < 0.05 { return "¥0.1 未満" }
-        if yen > 0 && yen < 10 { return String(format: "¥%.1f", yen) }
-        let f = NumberFormatter()
-        f.numberStyle = .decimal
-        f.maximumFractionDigits = 0
-        return "¥" + (f.string(from: NSNumber(value: yen.rounded())) ?? "\(Int(yen.rounded()))")
+/// 料金の表示モード。ホームの全数値とメニューの「今日の API 代」が同じモードに従う。
+enum ApiCostMode: String, CaseIterable {
+    /// 定価（無料枠で使った分も単価どおりに計上）
+    case list
+    /// 実際に払った分（有料契約のプロバイダーだけ計上。それ以外は無料枠として 0 円）
+    case paid
+
+    /// UserDefaults のキー（ホームの @AppStorage と共有）
+    static let defaultsKey = "apiCostMode"
+
+    /// 保存されているモード（無い・壊れた値は定価）
+    static var current: ApiCostMode {
+        ApiCostMode(rawValue: UserDefaults.standard.string(forKey: defaultsKey) ?? "") ?? .list
+    }
+
+    /// このモードで無料枠として扱う（0 円に落とす）プロバイダーか
+    func isFreeTier(_ provider: ApiProvider?) -> Bool {
+        guard self == .paid, let provider else { return false }
+        return !ApiPricing.paidProviders.contains(provider)
     }
 }
