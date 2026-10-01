@@ -1,22 +1,21 @@
 #!/bin/bash
-# 配布用 DMG / Sparkle 更新 zip / appcast.xml を作る（GitHub Releases 配布パイプライン）
+# 配布用の Sparkle 更新 zip と appcast.xml を作る（GitHub Releases 配布パイプライン）
 #
 # 2026-10-01〜: 一般配布するのは personal 版（isPersonal=true・利用者が設定 › API キー で
 # 自分のキーを入れて使う）。どのエディションにもプロバイダーキーは埋め込まない。
 # 配布先は Tomato-1101/voicekey の GitHub Releases（タグ v<version>）。
 #
 # 使い方:
-#   ./scripts/build_dmg.sh --version 2.1.0
-#   ./scripts/build_dmg.sh --version 2.1.0 --identity "Developer ID Application: ..." --notarize
+#   ./scripts/build_release.sh --version 2.2.0
+#   ./scripts/build_release.sh --version 2.2.0 --identity "Developer ID Application: ..." --notarize
 #
 # 前提:
 #   - Sparkle EdDSA 秘密鍵が ~/.voicekey/sparkle_eddsa_key にエクスポート済み
 #   - --notarize は Apple Developer Program 加入後、
 #     `xcrun notarytool store-credentials voicekey-notary` を済ませてから使う
 #
-# 出力（3 つとも GitHub Releases の v<version> に添付する）:
-#   dist/voicekey-<version>.dmg                   … 新規インストール用
-#   dist/releases/v<version>/voicekey-<version>.zip … Sparkle 更新用
+# 出力（2 つとも GitHub Releases の v<version> に添付する）:
+#   dist/releases/v<version>/voicekey-<version>.zip … 新規インストール（brew / install.sh）と Sparkle 更新の両方に使う
 #   dist/releases/v<version>/appcast.xml           … Sparkle フィード（今回の版だけを載せる）
 set -euo pipefail
 
@@ -146,11 +145,12 @@ echo "==> codesign verify OK"
 
 # プロバイダーキー漏洩チェック（生成マーカー＋ .app バンドル全体）。
 # personal 版は利用者が自分のキーを入れて使う。作者のキーが 1 バイトでも混ざる回帰をここで止める。
-# 本体バイナリだけでなく Resources・Frameworks も含め、zip / DMG に入るものと同じ署名後の .app を走査する。
+# 本体バイナリだけでなく Resources・Frameworks も含め、zip に入るものと同じ署名後の .app を走査する。
 # このスクリプトは macos/ を cwd にしているため、検証スクリプトはリポジトリ直下を参照する。
 python3 ../scripts/build/verify_no_embedded_keys.py "$GEN" "$APP"
 
-# Sparkle 更新用 zip（DMG より zip 配信が確実・高速）。
+# 配布 zip（brew の cask・install.sh・Sparkle が同じものを取る）。
+# DMG は 2026-10-02 に廃止した（公証なしの DMG はブラウザで落とすと初回に警告が出るため、入口を brew と install.sh に絞った）。
 # 版ごとの作業フォルダを毎回作り直し、appcast に古い zip・delta が混ざらないようにする
 REL_DIR="dist/releases/v$VERSION"
 rm -rf "$REL_DIR"
@@ -167,10 +167,6 @@ if [[ "$NOTARIZE" -eq 1 ]]; then
     ditto -c -k --keepParent "$APP" "$ZIP"
 fi
 
-# DMG 作成（レイアウト付き: 左にアプリ・右に Applications・背景にドラッグ誘導矢印）
-DMG="dist/voicekey-$VERSION.dmg"
-./scripts/package_dmg.sh --version "$VERSION" --identity "$IDENTITY"
-
 # appcast 生成（今回の版の zip だけを EdDSA 署名して appcast.xml を作る）。
 # zip の URL は GitHub Releases のタグ v<version> の添付ファイルを指す
 .build/artifacts/sparkle/Sparkle/bin/generate_appcast \
@@ -185,8 +181,8 @@ SUCCEEDED=1
 echo ""
 echo "==> 完了。GitHub Releases への公開手順:"
 echo "    1. Resources/Info.plist のバージョン更新をコミットして push"
-echo "    2. gh release create v$VERSION \"$DMG\" \"$ZIP\" \"$REL_DIR/appcast.xml\" \\"
-echo "         --repo Tomato-1101/voicekey --title \"voicekey $VERSION\" --notes \"<変更点>\""
+echo "    2. gh release create v$VERSION \"$ZIP\" \"$REL_DIR/appcast.xml\" \\"
+echo "         --repo Tomato-1101/voicekey --title \"voicekey $VERSION\" --notes \"<変更点>\" --latest"
 echo "       ※ pre-release / draft にしない（アプリは releases/latest/download/appcast.xml を見る）"
 echo "    3. Homebrew の tap（~/Project/homebrew-tap/Casks/voicekey.rb）を新しい版に合わせてコミットして push:"
 echo "         version \"$VERSION\""

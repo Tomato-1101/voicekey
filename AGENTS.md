@@ -23,7 +23,7 @@
 - Create env (Windows): `python -m venv venv` then `.\venv\Scripts\Activate.ps1`; install deps with `pip install -r requirements.txt`. No GPU/CUDA needed — transcription is cloud API and VAD runs on CPU (onnxruntime); `torch`/`torchaudio` are only transitive deps of `silero-vad`.
 - Run dev app (Windows): `python run.py` (reads `settings.yaml` and `.env`, opens system tray + recording HUD).
 - Package (Windows): `pyinstaller voicekey.spec --clean --noconfirm` → `dist/voicekey/voicekey.exe`.
-- Mac: build with `cd macos && ./scripts/build_app.sh` (distribution DMG via `build_dmg.sh`).
+- Mac: build with `cd macos && ./scripts/build_app.sh` (GitHub Releases zip/appcast via `build_release.sh`).
 
 ## Coding Style & Naming Conventions
 - Python 3.8+ with 4-space indentation; keep type hints and concise docstrings (existing ones are Japanese—match that tone).

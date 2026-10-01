@@ -23,7 +23,6 @@ Mac アプリのコード側は `macos/Sources/Voicekey/UI/Brand.swift` に同�
 | `icon-bone.svg`（16/32px は `icon-bone-small.svg`） | `macos/Resources/AppIcon.icns`（旧形式・ボーン）、`macos/Resources/AppIconLight.png`（512）、`macos/scripts/assets/app_icon_1024.png` |
 | `icon-carbon.svg` | `macos/Resources/AppIconDark.png`（512） |
 | `icon-bone-bleed.svg` / `icon-carbon-bleed.svg` | `macos/Resources/AppIcon.icon/Assets/*-bleed-1024.png`（macOS 26 以降の外観追従アイコン。build_app.sh が actool で Assets.car にする） |
-| `wordmark-carbon.svg` | `macos/scripts/assets/wordmark.svg`（DMG 背景） |
 | `icon-bone.svg`（16/24/32px は small） | リポジトリ直下 `icon.ico`（Windows） |
 | `icon-auto-small.svg` / `lockup-*.svg` / `og-light.svg` / `social-dark.svg` | voicekey-site（別リポジトリ）の favicon・ロゴ・OG 画像、GitHub の README・ソーシャルプレビュー |
 

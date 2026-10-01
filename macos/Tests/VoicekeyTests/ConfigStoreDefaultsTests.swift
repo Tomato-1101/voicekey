@@ -14,7 +14,7 @@ final class ConfigStoreDefaultsTests: XCTestCase {
 
     /// テスト用の隔離された UserDefaults を作る
     private func makeDefaults() -> (UserDefaults, String) {
-        let suite = "voicekey.test.\(UUID().uuidString)"
+        let suite = testDefaultsSuite()
         return (UserDefaults(suiteName: suite)!, suite)
     }
 
@@ -23,7 +23,7 @@ final class ConfigStoreDefaultsTests: XCTestCase {
     // Dock 常時表示は personal でライブ字幕を統合した際に既定 ON へ変更した（2026-08-10 ユーザー要望）
     func testNewFieldDefaults() {
         let (defaults, suite) = makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaults(defaults, suite) }
 
         let store = ConfigStore(defaults: defaults)
         XCTAssertTrue(store.soundEffectsEnabled)
@@ -43,7 +43,7 @@ final class ConfigStoreDefaultsTests: XCTestCase {
     // **書かずに読むだけ**にする（テストが実ユーザーの字幕設定を書き換えないため）。
     func testCaptionMirrorsReflectCaptionSettings() {
         let (defaults, suite) = makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaults(defaults, suite) }
 
         let store = ConfigStore(defaults: defaults)
         XCTAssertEqual(store.captionAutoStart, CaptionSettings.startsOnLaunch)
@@ -64,7 +64,7 @@ final class ConfigStoreDefaultsTests: XCTestCase {
     // （テストがユーザーの字幕設定を書き換えたままにしないため）。
     func testCaptionMirrorWritesThroughToCaptionSettings() {
         let (defaults, suite) = makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaults(defaults, suite) }
 
         let savedSpeak = CaptionSettings.speakTranslation
         let savedShowSource = CaptionSettings.showSourceText
@@ -92,7 +92,7 @@ final class ConfigStoreDefaultsTests: XCTestCase {
     // 変更した値が保存され、作り直したストアで復元される
     func testNewFieldsPersist() {
         let (defaults, suite) = makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaults(defaults, suite) }
 
         do {
             let store = ConfigStore(defaults: defaults)
@@ -122,7 +122,7 @@ final class ConfigStoreDefaultsTests: XCTestCase {
     // 再貼り付けキーを空にしたら「無効」として保存され、既定（⌃⌘V）に戻らない
     func testRepasteKeyEmptyIsDistinctFromDefault() {
         let (defaults, suite) = makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaults(defaults, suite) }
 
         do {
             let store = ConfigStore(defaults: defaults)

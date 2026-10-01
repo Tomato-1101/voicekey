@@ -1341,6 +1341,13 @@ final class AppController: ObservableObject {
     /// オーディオが詰まっている状況では戻ってこない可能性がある。1 秒で戻らなければ強制終了する
     /// （後片付けより「必ず新しいプロセスに入れ替わる」ことを優先する）。
     private static func relaunchProcess() {
+        // 準備済みの更新を抱えたまま `open -n` すると、Sparkle が新しいインスタンスの起動中に .app を
+        // 差し替えてしまう。その場合は Sparkle に新版で再起動させる（終了要求も Sparkle が出す）。
+        // 終了が戻らないときの強制終了は従来どおり残す（Sparkle の入れ替えはプロセスが消えれば進む）
+        if UpdaterController.shared.relaunchIntoPreparedUpdate() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { exit(0) }
+            return
+        }
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         // 既存の再起動経路（オンボーディングの入力監視）と同じ渡し方に揃える

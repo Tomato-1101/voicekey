@@ -61,7 +61,8 @@
 	<string>https://github.com/Tomato-1101/voicekey/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>4Zq9NoD6Fbu1qWnrhozjoRIGWCLR/mhV3ZUTxS9J9eo=</string>
+	<!-- 6 時間ごとに確認し、新版は裏でダウンロードしておく（UpdaterController が自動 DL を ON にする） -->
 	<key>SUScheduledCheckInterval</key>
-	<integer>86400</integer>
+	<integer>21600</integer>
 </dict>
 </plist>

@@ -107,9 +107,9 @@ final class SlotConfigMigrationTests: XCTestCase {
     // 初回起動: 廃止したモデルは、バックエンドを維持したまま推奨へ戻し、両スロットを保存する
     @MainActor
     func testRetiredModelsMigratedOnceToDefault() throws {
-        let suite = "voicekey.test.\(UUID().uuidString)"
+        let suite = testDefaultsSuite()
         let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaults(defaults, suite) }
 
         try storeSlot(defaults, "slot1", backend: .openai, model: "gpt-4o-mini-transcribe")
         try storeSlot(defaults, "slot2", backend: .groq, model: "whisper-large-v3")
@@ -127,9 +127,9 @@ final class SlotConfigMigrationTests: XCTestCase {
         XCTAssertEqual(try savedSlot(defaults, "slot2").model, "whisper-large-v3-turbo")
 
         // ライブ型・ElevenLabs の廃止モデルも同じ
-        let suite2 = "voicekey.test.\(UUID().uuidString)"
+        let suite2 = testDefaultsSuite()
         let defaults2 = UserDefaults(suiteName: suite2)!
-        defer { defaults2.removePersistentDomain(forName: suite2) }
+        defer { removeTestDefaults(defaults2, suite2) }
         try storeSlot(defaults2, "slot1", backend: .openaiLive, model: "gpt-realtime-whisper")
         try storeSlot(defaults2, "slot2", backend: .elevenlabs, model: "scribe_v1_experimental")
         let store2 = ConfigStore(defaults: defaults2)
@@ -140,9 +140,9 @@ final class SlotConfigMigrationTests: XCTestCase {
     // 二度目は置換しない＝移行後にユーザーが自由入力で旧モデル名を選び直したら尊重する
     @MainActor
     func testRetiredModelsMigrationRunsOnlyOnce() throws {
-        let suite = "voicekey.test.\(UUID().uuidString)"
+        let suite = testDefaultsSuite()
         let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaults(defaults, suite) }
 
         defaults.set(true, forKey: "didMigrateRetiredModelsV19")
         try storeSlot(defaults, "slot1", backend: .groq, model: "whisper-large-v3")
@@ -154,9 +154,9 @@ final class SlotConfigMigrationTests: XCTestCase {
     // 初回の移行でも、廃止モデルでない自由入力は保持する
     @MainActor
     func testRetiredModelsMigrationKeepsCustomModel() throws {
-        let suite = "voicekey.test.\(UUID().uuidString)"
+        let suite = testDefaultsSuite()
         let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaults(defaults, suite) }
 
         try storeSlot(defaults, "slot1", backend: .openai, model: "gpt-transcribe-preview-x")
         try storeSlot(defaults, "slot2", backend: .groq, model: "distil-whisper-x")
@@ -245,9 +245,9 @@ final class SlotConfigMigrationTests: XCTestCase {
     // キー不要の Apple ローカル（整形 OFF）。使えなければ従来どおりスロット1=Soniox（整形 OFF）、スロット2=Groq
     @MainActor
     func testFreshInstallDefaults() {
-        let suite = "voicekey.test.\(UUID().uuidString)"
+        let suite = testDefaultsSuite()
         let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaults(defaults, suite) }
 
         let store = ConfigStore(defaults: defaults)
         if Backend.selectableCases.contains(.appleLocal) {
@@ -282,9 +282,9 @@ final class SlotConfigMigrationTests: XCTestCase {
     // 既存ユーザー（保存値あり）のスロットは、Apple ローカルが使える環境でも一切変えない
     @MainActor
     func testSavedSlotsAreNotReplacedByFreshInstallDefault() throws {
-        let suite = "voicekey.test.\(UUID().uuidString)"
+        let suite = testDefaultsSuite()
         let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaults(defaults, suite) }
 
         let slot1 = SlotConfig(hotkey: ["cmd_r"], mode: .hold, backend: .soniox,
                                model: "stt-rt-v5", prompt: "", formatEnabled: false)
@@ -316,9 +316,9 @@ final class SlotConfigMigrationTests: XCTestCase {
     // deepgram は decode で soniox へ移行して届くので、移行後の soniox が OFF になる
     @MainActor
     func testModeDefaultsMigrationForcesDeepgramFormatOff() throws {
-        let suite = "voicekey.test.\(UUID().uuidString)"
+        let suite = testDefaultsSuite()
         let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaults(defaults, suite) }
 
         let slot = SlotConfig(hotkey: ["cmd_r"], mode: .hold, backend: .deepgram,
                               model: "nova-3", prompt: "", formatEnabled: true)
@@ -333,9 +333,9 @@ final class SlotConfigMigrationTests: XCTestCase {
     // 二度目は矯正しない＝ユーザーが deepgram で整形 ON に戻したら尊重する
     @MainActor
     func testModeDefaultsMigrationRunsOnlyOnce() throws {
-        let suite = "voicekey.test.\(UUID().uuidString)"
+        let suite = testDefaultsSuite()
         let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaults(defaults, suite) }
 
         // すでにマイグレーション済み。ユーザーは deepgram の整形を ON に戻している
         defaults.set(true, forKey: "didMigrateModeDefaultsV18")

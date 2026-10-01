@@ -20,9 +20,10 @@ voicekey は **`personal` ブランチ 1 本だけ**で運用する。旧 `main`
 - 製品版（顧客配布・ログイン・課金・アクティベーションキー）の運用は**終了**した。
 - **2026-10-01〜 Mac の personal 版そのものを本リポジトリの GitHub Releases で一般配布する**（ユーザー指示
   「最新バージョンを GitHub からダウンロードできるように。API キーは自分で入力してもらう」）。
-  利用者は設定 › API キー で自分のキーを入れる。**作者のキーを配布物に絶対に入れない**（`build_dmg.sh` の漏洩チェックを外さない）。
-  リリースは `macos/scripts/build_dmg.sh --version X.Y.Z` → 表示される `gh release create`（draft / pre-release にしない）。
-  Windows は配布しない（ソースから）。サイト（`voicekey-site`）は GitHub への導線だけ・`voicekey-releases` はアーカイブ。
+  利用者は設定 › API キー で自分のキーを入れる。**作者のキーを配布物に絶対に入れない**（`build_release.sh` の漏洩チェックを外さない）。
+  リリースは `macos/scripts/build_release.sh --version X.Y.Z` → 表示される `gh release create`（draft / pre-release にしない）→
+  表示される version / sha256 で `~/Project/homebrew-tap` の cask を更新。入口は brew と `install.sh` だけ（DMG は 2026-10-02 に廃止）。
+  Windows は配布しない（ソースから）。サイト（`voicekey-site`）は GitHub への導線とインストールの 1 行だけ・旧配布リポ `voicekey-releases` は廃止。
 - 本リポジトリは **PUBLIC**（2026-10-01 ユーザー確認「公開していい」）。鍵・個人データ・第三者の実データはコミットしない。
   GitHub の About 欄（Website）と README 冒頭からサイト（https://voicekey.vercel.app）へ辿れるようにしてある。
   **voicekey.app は他社（Android の AI キーボード「VoiceKey AI」）のドメイン**。自分のサイトとしてリンクしない。
@@ -223,7 +224,7 @@ pyinstaller voicekey.spec --clean --noconfirm
 ### Mac（`macos/`・Swift）
 
 ```bash
-cd macos && ./scripts/build_app.sh   # アプリをビルド（配布 DMG は build_dmg.sh）
+cd macos && ./scripts/build_app.sh   # アプリをビルド（配布は build_release.sh）
 swift test --package-path macos       # Swift ユニットテスト
 ```
 

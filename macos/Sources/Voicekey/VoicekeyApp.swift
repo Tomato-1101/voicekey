@@ -389,6 +389,9 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private let stateMenuItem: NSMenuItem
     /// 「今日の API 代」の行（メニューを開くたびに数え直す）
     private let apiCostMenuItem: NSMenuItem
+    /// 「vX に更新して再起動」（更新の準備ができたときだけ先頭に出す。メニューを開くたびに更新）
+    private let updateMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let updateSeparator = NSMenuItem.separator()
     private weak var controller: AppController?
     private var stateObservation: AnyCancellable?
     /// 直近にログへ出したアイコン状態（同じ状態の再通知でログを重ねないため）
@@ -424,6 +427,13 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         }
 
         let menu = NSMenu()
+        // 窓をめったに開かない人にも見えるよう、更新はメニューの先頭に出す（準備できるまでは隠す）
+        updateMenuItem.action = #selector(installUpdate)
+        updateMenuItem.target = self
+        updateMenuItem.isHidden = true
+        updateSeparator.isHidden = true
+        menu.addItem(updateMenuItem)
+        menu.addItem(updateSeparator)
         menu.addItem(stateMenuItem)  // 状態表示（action なし = 自動で無効表示）
         menu.addItem(apiCostMenuItem)  // 今日の API 代（同じく情報行）
         menu.delegate = self
@@ -445,7 +455,10 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         }
 
         // アップデートの手動確認は設定「バージョン情報」タブのボタンに集約した（Phase B）。
-        // 新バージョン検知はサイレントに行い、ホーム左上の更新ピルだけで通知する。
+        // 確認・ダウンロードは裏で行い、準備できたらホームの更新ピルとメニュー先頭で知らせる。
+        // ここで shared に触れて起動時に Sparkle を始動させる（以前はメインウィンドウを開くまで
+        // 生成されず、窓を開かない人には更新が届かなかった）。録音中・変換中は再起動しないよう状態を渡す。
+        UpdaterController.shared.observeBusy(controller.$state.map { $0 != .idle })
 
         // ライブ字幕（personal・macOS 26 以降）。中身はサブメニューを開くたびに作り直す
         if #available(macOS 26.0, *), !CaptionSettings.isDisabledByEnvironment {
@@ -562,6 +575,11 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         showHome()
     }
 
+    /// メニューの「vX に更新して再起動」。確認なしで入れ替え＋再起動する（録音中なら終わってから）
+    @objc private func installUpdate() {
+        UpdaterController.shared.installUpdate()
+    }
+
     /// 前回選んでいた設定タブで開く（初回は一般タブ）。毎回「一般」に戻されると、
     /// 同じタブを何度も触るときに選び直しが要るため。
     @objc private func openSettings() {
@@ -662,6 +680,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
 
     /// アプリを再起動する（新インスタンスを起動して自分は終了）。
     private func relaunchApp() {
+        // 準備済みの更新があれば Sparkle に新版で再起動させる（自前の `open -n` と入れ替えが競合するため）
+        if UpdaterController.shared.relaunchIntoPreparedUpdate() { return }
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         proc.arguments = ["-n", Bundle.main.bundlePath]
@@ -839,9 +859,17 @@ final class StatusItemController: NSObject, NSWindowDelegate {
 }
 
 extension StatusItemController: NSMenuDelegate {
-    /// メニューを開くたびに今日の API 代を数え直す（常時購読して再描画するより軽い）
+    /// メニューを開くたびに今日の API 代を数え直し、更新項目を出し入れする（常時購読して再描画するより軽い）
     func menuWillOpen(_ menu: NSMenu) {
         apiCostMenuItem.title = Self.apiCostTitle()
+        let updater = UpdaterController.shared
+        let ready = updater.readyVersion
+        // 押した後（録音終わり待ち・再起動中）は文言を置き換え、action を外して押せなくする
+        let pending = updater.pendingInstallMessage
+        updateMenuItem.title = pending ?? ready.map { "v\($0) に更新して再起動" } ?? ""
+        updateMenuItem.action = pending == nil ? #selector(installUpdate) : nil
+        updateMenuItem.isHidden = ready == nil
+        updateSeparator.isHidden = ready == nil
     }
 }
 

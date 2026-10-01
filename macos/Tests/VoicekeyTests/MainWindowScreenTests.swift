@@ -14,14 +14,14 @@ final class MainWindowScreenTests: XCTestCase {
 
     /// テスト用の隔離された UserDefaults を作る
     private func makeDefaults() -> (UserDefaults, String) {
-        let suite = "voicekey.test.\(UUID().uuidString)"
+        let suite = testDefaultsSuite()
         return (UserDefaults(suiteName: suite)!, suite)
     }
 
     // 未保存ならホーム（設定タブは一般）
     func testLoadDefaultsToHomeWhenNothingSaved() {
         let (defaults, suite) = makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaults(defaults, suite) }
 
         let screen = MainWindowScreen.load(from: defaults, validTabs: [0, 1, 2, 7])
         XCTAssertEqual(screen, MainWindowScreen(showingSettings: false, settingsTab: 0))
@@ -30,7 +30,7 @@ final class MainWindowScreenTests: XCTestCase {
     // 保存した画面がそのまま読める
     func testSaveAndLoadRoundTrip() {
         let (defaults, suite) = makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaults(defaults, suite) }
 
         MainWindowScreen(showingSettings: true, settingsTab: 8).save(to: defaults)
         let screen = MainWindowScreen.load(from: defaults, validTabs: [0, 1, 2, 8, 7])
@@ -40,7 +40,7 @@ final class MainWindowScreenTests: XCTestCase {
     // 保存したタブがいまのサイドバーに無い（表示条件で消えた）なら一般タブ（0）に落ちる
     func testLoadFallsBackToGeneralWhenSavedTabIsGone() {
         let (defaults, suite) = makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaults(defaults, suite) }
 
         MainWindowScreen(showingSettings: true, settingsTab: 9).save(to: defaults)
         let screen = MainWindowScreen.load(from: defaults, validTabs: [0, 1, 2, 8, 7])
@@ -56,7 +56,7 @@ final class MainWindowScreenTests: XCTestCase {
     // 保存先付きのモデルは画面を切り替えるたびに書き戻し、次に復元すると同じ画面になる
     func testRestoredModelPersistsScreenChanges() {
         let (defaults, suite) = makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaults(defaults, suite) }
 
         let model = MainWindowModel.restored(from: defaults)
         XCTAssertFalse(model.showingSettings)

@@ -40,9 +40,9 @@ final class OnboardingPracticeTests: XCTestCase {
 
     /// 副作用を記録するテスト用モデルを作る。ConfigStore は実 UserDefaults を汚さないよう隔離 suite を注入。
     private func makeModel(startStep: OnboardingStep = .login) -> (OnboardingModel, Spy) {
-        let suite = "voicekey.test.\(UUID().uuidString)"
+        let suite = testDefaultsSuite()
         let defaults = UserDefaults(suiteName: suite)!
-        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        addTeardownBlock { removeTestDefaults(defaults, suite) }
         let spy = Spy()
         let model = OnboardingModel(
             startStep: startStep,

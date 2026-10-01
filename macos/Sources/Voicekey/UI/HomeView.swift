@@ -194,10 +194,10 @@ struct HomeView: View {
     }
 
     /// 新バージョン検知時だけ出す更新ピル。ブランドの灯りの色・小さめの横長角丸ピル。
-    /// クリックで Sparkle の対話フロー（DL→インストール）を開始する。
+    /// 裏 DL が済んでいればクリック 1 回で入れ替え＋再起動、未準備なら Sparkle の対話フローへ。
     private var updatePill: some View {
         Button {
-            updater.checkForUpdates()
+            updater.installUpdate()
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: "arrow.up.circle.fill")
@@ -217,11 +217,19 @@ struct HomeView: View {
             )
         }
         .buttonStyle(.plain)
-        .help("新しいバージョンに更新します")
+        // 押した後（ダウンロード待ち・録音終わり待ち・再起動中）は連打できないようにする
+        .disabled(updater.pendingInstallMessage != nil)
+        .help(updater.readyVersion != nil ? "新しいバージョンに入れ替えて再起動します" : "新しいバージョンに更新します")
     }
 
-    /// 更新ピルの文言（バージョンが分かれば添える）
+    /// 更新ピルの文言（押した後はその手応え、それ以外はバージョンが分かれば添える）
     private var updatePillLabel: String {
+        if let pending = updater.pendingInstallMessage {
+            return pending
+        }
+        if let v = updater.readyVersion {
+            return "v\(v) に更新して再起動"
+        }
         if let v = updater.availableVersion {
             return "v\(v) に更新する"
         }

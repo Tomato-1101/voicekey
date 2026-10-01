@@ -21,7 +21,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | 言語/UI | Swift（AppKit メニューバー + SwiftUI 設定画面） | Python（PySide6 / Qt） |
 | 置き場所 | `macos/Sources/Voicekey/` | `src/` |
 | 設定の保存先 | `UserDefaults`（`ConfigStore`） | `settings.yaml`（`ConfigManager`）+ `QSettings`（フラグ） |
-| ビルド | `macos/scripts/build_app.sh` / 配布は `build_dmg.sh`（personal 版を GitHub Releases へ） | `scripts/build/generate_embedded_keys.py --personal` → `pyinstaller voicekey.spec`（配布は停止中・ソースから） |
+| ビルド | `macos/scripts/build_app.sh` / 配布は `build_release.sh`（personal 版を GitHub Releases へ） | `scripts/build/generate_embedded_keys.py --personal` → `pyinstaller voicekey.spec`（配布は停止中・ソースから） |
 | エディション判定 | `EmbeddedKeys.isPersonal` / `isDist`（生成物） | `utils/secrets.py` の `is_personal_build()` / `is_dist_build()`（生成物 `config/embedded_keys.py`）。personal は認証セッションを常に無視して Credential Manager のキーで直叩き |
 
 同じ機能でも別コードベース。**UI 文言・表示名・設定項目・機能挙動など両 OS に同等に存在する要素を変えるときは、両方を同じコミットで直す**（OS 固有 API でしか存在しないものだけ片方で完結）。詳細は `CLAUDE.md` / `AGENTS.md`。
@@ -43,7 +43,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 共通: **VAD・長文分割・ストリーミング・録音 HUD は常時 ON 固定**（設定 UI から撤去済み。Mac は `ConfigStore` で true 固定、Windows は `config_manager._force_always_on` が読込・保存時に矯正）。
 
 製品版（顧客配布・課金）の運用は終了した。2026-10-01 から personal 版そのものを本リポジトリの GitHub Releases で
-一般配布している（§6）。サイト（`voicekey-site`）は GitHub への導線だけを持ち、`voicekey-releases` はアーカイブ。
+一般配布している（§6）。サイト（`voicekey-site`）は GitHub への導線とインストールの 1 行だけを持つ。旧配布リポ `voicekey-releases` は廃止。
 
 ## 4. 機能一覧（両 OS 対応）
 
@@ -66,7 +66,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | 操作音 / メディアダッキング | 録音開始/停止のブリップ音（同一周波数で合成）・録音中はメディア音量を自動で下げる（既定 ON。Win ダッキングは Core Audio/pycaw・非対応時は無害スキップ） | ✅ | ✅ |
 | 最後の入力を再貼り付け | グローバルキー（既定 ⌃⌘V）で直前の入力を再貼り付け | ✅ | ❌ |
 | 使用実績（統計＋チャート＋レベル） | レベル/経験値・推定節約時間・連続利用日数に加え、今日/今週/累計の入力量と期間切替（週/月/年）の棒グラフを表示（**Mac はホーム画面**／Win は「実績」タブ・カウントアップ／棒伸びアニメ・集計は貼付後の処理＝遅延ゼロ）。Mac はアプリ別使用状況も集計。実績はこの端末のローカル集計（personal はログイン・アカウント連携なし） | ✅ | ✅ |
-| 自動更新 | Mac=Sparkle（本リポジトリの GitHub Releases の appcast。`build_dmg.sh` 製の配布版＝`EmbeddedKeys.isRelease` だけ。自前ビルドは更新しない）/ Win=version.json フィード（Windows は配布停止中。バックグラウンドでサイレント自動確認・手動確認は「バージョン情報」タブのみ。**Mac は新版検知時にホーム左上へ「更新する」ピル**） | ✅ | ✅ |
+| 自動更新 | Mac=Sparkle（本リポジトリの GitHub Releases の appcast。`build_release.sh` 製の配布版＝`EmbeddedKeys.isRelease` だけ。自前ビルドは更新しない）/ Win=version.json フィード（Windows は配布停止中）。**Mac は 6 時間おきに確認して裏でダウンロード → メニュー最上段・ホーム左上・バージョン情報の「vX に更新して再起動」1 回で入れ替え、押さなくても終了時に入る。録音・変換中は終わってから** | ✅ | ✅ |
 | ログイン起動 | OS のログイン時に自動起動 | ✅ | ✅ |
 | ライブ字幕（personal のみ・macOS 26+） | 再生中のシステム音声を認識 → **翻訳（英→日）／文字起こし（日本語・英語）の 2 モード** → 録音ピルの真上に固定したガラス字幕（ピルが上へ育つ見た目・音声入力中は自動で隠れる）。最前面アプリの音だけが既定・翻訳は Apple/Gemini/Groq・⌥⌘S で開始停止・起動時の自動開始は既定 OFF（統合元は旧 subglass。詳細は CHANGELOG） | ✅ | ❌ |
 | 議事録（文字起こしの自動保存・personal のみ・macOS 26+） | 字幕が確定した文字起こしを `~/Documents/voicekey/transcripts/*.md` へ時刻つきで追記（訳文は保存しない・5 分以上あくと別ファイル） | ✅ | ❌ |
@@ -118,8 +118,8 @@ Windows（`core/history_sync.py`）の両クライアントを実装済み。詳
 
 - **Mac**: personal 版（キーなし・利用者が設定 › API キー で入力）を本リポジトリの GitHub Releases（タグ `v<版>`）で配布。
   入口は Homebrew の tap（`Tomato-1101/homebrew-tap`）と `install.sh`（curl 1 行）。公証なしでも quarantine が付かない／外すので警告なしで開ける。
-  添付は DMG・Sparkle 更新用 zip・`appcast.xml` の 3 つで、アプリは `releases/latest/download/appcast.xml` を見る（draft / pre-release にしない）。
-  作り方は `macos/scripts/build_dmg.sh --version X.Y.Z`（終了時に公開コマンドを表示）。公証なし＝初回は「このまま開く」が要る。
+  添付は zip（brew・install.sh・Sparkle 共通）と `appcast.xml` の 2 つで、アプリは `releases/latest/download/appcast.xml` を見る（draft / pre-release にしない）。
+  作り方は `macos/scripts/build_release.sh --version X.Y.Z`（終了時に公開コマンドと tap の version / sha256 を表示）。DMG は 2026-10-02 に廃止。
   旧版が見ていた `voicekey.vercel.app/mac/appcast.xml` はサイト側で GitHub の appcast へリダイレクトしている。
 - **Windows**: 開発停止中のため配布物なし（ソースから動かす。README「Windows で使う」）。
 - サイト `voicekey.vercel.app`（`/Users/tomato/Project/voicekey-site/`）は紹介と GitHub への導線だけ。直接ダウンロードの仕組みは撤去済み。

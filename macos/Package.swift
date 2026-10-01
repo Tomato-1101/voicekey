@@ -8,7 +8,7 @@ let package = Package(
         .macOS(.v14)
     ],
     dependencies: [
-        // 自動アップデート（ベータ配布用）。appcast は voicekey-releases リポジトリで配信
+        // 自動アップデート。appcast は本リポジトリの GitHub Releases で配信
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0")
     ],
     targets: [

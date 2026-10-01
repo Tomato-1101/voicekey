@@ -70,7 +70,7 @@ class TestVerifyNoEmbeddedKeys(unittest.TestCase):
     def test_key_inside_app_bundle_resources_detected(self):
         """.app バンドル全体を渡したとき、本体バイナリ以外（Resources 等）に混ざった鍵も検出して 1。
 
-        build_dmg.sh は zip と同じ中身（署名後の .app 全体）を走査する。本体だけを見ていると
+        build_release.sh は zip と同じ中身（署名後の .app 全体）を走査する。本体だけを見ていると
         Resources に同梱した設定ファイル等からの漏洩を素通しするため、その回帰を固定する。
         """
         with tempfile.TemporaryDirectory() as tmp:

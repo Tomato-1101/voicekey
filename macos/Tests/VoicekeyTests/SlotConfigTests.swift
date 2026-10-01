@@ -75,9 +75,9 @@ final class SlotConfigTests: XCTestCase {
     // 未割り当てにしたスロットは保存され、作り直したストアでも空のまま（既定に戻らない）。
     // もう片方のスロットは影響を受けない。
     func testUnassignedSlotPersistsAndDoesNotRevertToDefault() {
-        let suite = "voicekey.test.\(UUID().uuidString)"
+        let suite = testDefaultsSuite()
         let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaults(defaults, suite) }
 
         do {
             let store = ConfigStore(defaults: defaults)

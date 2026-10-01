@@ -1270,8 +1270,9 @@ private struct AccountTab: View {
 
 // MARK: - バージョン情報（自動アップデート）
 
-/// バージョン情報タブ。現在版を表示し、Sparkle の更新確認・更新検知時の「今すぐ更新する」を出す。
-/// 自動アップデート（起動時＋1 日ごと）は配布ビルドのみ有効。Sparkle 既定のダイアログはそのまま使う。
+/// バージョン情報タブ。現在版を表示し、Sparkle の更新確認・更新検知時の更新ボタンを出す。
+/// 自動アップデート（6 時間ごとに確認・裏でダウンロード）は配布ビルドのみ有効。
+/// 準備済みなら確認なしで入れ替え＋再起動し、未準備なら Sparkle 既定のダイアログへ進む。
 private struct AboutTab: View {
     @ObservedObject private var updater = UpdaterController.shared
 
@@ -1288,15 +1289,25 @@ private struct AboutTab: View {
             } header: {
                 Text("バージョン情報")
             } footer: {
-                Text("新しいバージョンが見つかると「今すぐ更新する」ボタンが表示されます。更新は起動時と 1 日ごとに自動で確認されます。")
+                Text("新しいバージョンは 6 時間ごとに確認し、裏でダウンロードしておきます。準備ができたら「更新して再起動」を押すとすぐ入れ替わります。押さなくても、次に voicekey を終了したときに自動で入ります。")
             }
 
             Section {
                 if updater.isAvailable {
-                    Button("アップデートを確認") { updater.checkForUpdates() }
-                    // 新バージョン検知時のみ「今すぐ更新する」を出す（押すと Sparkle の DL→インストールへ）
-                    if updater.availableVersionString != nil {
-                        Button("今すぐ更新する") { updater.checkForUpdates() }
+                    // 準備済み・押した後は Sparkle が確認を受け付けない（押しても無反応）ので出さない
+                    if updater.readyVersion == nil, updater.pendingInstallMessage == nil {
+                        Button("アップデートを確認") { updater.checkForUpdates() }
+                    }
+                    // 押した後は手応えだけ出して連打させない
+                    if let pending = updater.pendingInstallMessage {
+                        Text(pending)
+                            .foregroundStyle(.secondary)
+                    // 準備済みなら押すだけで入れ替え＋再起動。検知だけなら Sparkle の DL→インストールへ
+                    } else if let ready = updater.readyVersion {
+                        Button("v\(ready) に更新して再起動") { updater.installUpdate() }
+                            .glassProminentButton()  // 主要アクション（accent 色ガラス）
+                    } else if updater.availableVersionString != nil {
+                        Button("今すぐ更新する") { updater.installUpdate() }
                             .glassProminentButton()  // 主要アクション（accent 色ガラス）
                     }
                 } else {
@@ -1314,7 +1325,10 @@ private struct AboutTab: View {
 
     /// 更新状態の表示行（新版あり / 最新です）
     @ViewBuilder private var statusRow: some View {
-        if let version = updater.availableVersionString {
+        if let version = updater.readyVersion {
+            Label("新しいバージョン \(version) の準備ができました", systemImage: "arrow.down.circle.fill")
+                .foregroundStyle(.green)
+        } else if let version = updater.availableVersionString {
             Label("新しいバージョン \(version) が利用可能です", systemImage: "arrow.down.circle.fill")
                 .foregroundStyle(.green)
         } else if updater.isAvailable {
