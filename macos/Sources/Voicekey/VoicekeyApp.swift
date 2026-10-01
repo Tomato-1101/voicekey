@@ -191,6 +191,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // メニューは画面に出ないが、キーイベントのフォールバック先として機能する。
         installMainMenu()
 
+        // API 使用量のファイル読み込みを起動時に裏で済ませる（初回の音声入力の確定直後に
+        // 遅延初期化のディスク読みが走らないように。日数ぶん JSON が育つため）
+        DispatchQueue.global(qos: .utility).async { _ = ApiUsageStore.shared }
+
         // NSAlert・Dock などに出るアプリアイコンを外観に合わせる（ライト=ボーン／ダーク=カーボン）。
         // KVO の通知はメインスレッドで届く（effectiveAppearance は AppKit がメインで更新する）
         applyAppIcon()
