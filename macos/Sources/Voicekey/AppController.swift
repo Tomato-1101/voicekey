@@ -2061,6 +2061,7 @@ final class AppController: ObservableObject {
 
     private func checkPermissions(micGranted: Bool, tapCreated: Bool, showAlert: Bool = true) {
         let axTrusted = AXIsProcessTrusted()
+        Paster.axTrustedCache = axTrusted
 
         var problems: [String] = []
         if !tapCreated {

@@ -76,6 +76,9 @@ enum Paster {
     @MainActor private static var injected: String?
     /// 復元すべきユーザーの真のクリップボード内容
     @MainActor private static var savedOriginal: String?
+    /// アクセシビリティ許可の直近の結果（貼り付けのたびに裏で更新・起動時は許可ありとみなす）。
+    /// 許可を外された直後の 1 回は従来どおり送ってしまうが、2 回目以降は結果を消さずに残せる
+    @MainActor static var axTrustedCache = true
 
     /// アクティブウィンドウにテキストを貼り付ける。
     /// 待機を含むため async（スレッドはブロックしない）。
@@ -134,15 +137,28 @@ enum Paster {
         let frontName = front?.localizedName ?? "-"
         var sent = true
         if sendKeystroke {
-            // 1 回目は従来どおり同期で送る（成功時の経路に await＝スレッド切替を足さない）
-            sent = postKeystroke(keyV, flags: .maskCommand, what: "⌘V", generation: logGeneration)
-            if !sent { sent = await retryKeystroke(keyV, flags: .maskCommand, what: "⌘V", generation: logGeneration) }
+            if !axTrustedCache {
+                // アクセシビリティ許可が無いと合成キーは OS に黙って捨てられる（post は成否を返さない）。
+                // 送ったつもりで復元すると結果が消えるので、送信失敗として扱いクリップボードに残す
+                sent = false
+            } else {
+                // 1 回目は従来どおり同期で送る（成功時の経路に await＝スレッド切替を足さない）
+                sent = postKeystroke(keyV, flags: .maskCommand, what: "⌘V", generation: logGeneration)
+                if !sent {
+                    sent = await retryKeystroke(keyV, flags: .maskCommand, what: "⌘V", generation: logGeneration)
+                    // 作り直しを待つ間に次の貼り付けが来ていたら、クリップボードはもうその回のもの。
+                    // ここで ⌘V を送ると相手を二重に貼り、退避状態を消すと相手の復元を壊すので、何もせず手を引く
+                    if gen != generation { return false }
+                }
+            }
         }
         // 「貼ったのに入らない」の切り分け用（前面アプリ・アクセシビリティ許可・原本の種類）。
         // 許可の確認は TCC への問い合わせなので、貼り付けの後で別キューに投げて待たない
         let sendLabel = sendKeystroke ? (sent ? "ok" : "失敗") : "なし"
         DispatchQueue.global(qos: .utility).async {
             let axTrusted = AXIsProcessTrusted()
+            // 次回の貼り付けの判定用に控える（貼り付け経路で TCC に問い合わせないため、ここで更新する）
+            Task { @MainActor in axTrustedCache = axTrusted }
             ActionLog.shared.write(
                 "paster",
                 "[貼付] gen=\(genText) 前面=\(frontID)(\(DiagnosticText.clip(frontName, 40))) "

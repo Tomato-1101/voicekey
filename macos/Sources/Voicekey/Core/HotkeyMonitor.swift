@@ -11,6 +11,7 @@
 //    自動復旧する）
 //
 
+import Carbon
 import CoreGraphics
 import Foundation
 import os.log
@@ -205,6 +206,9 @@ final class HotkeyMonitor {
         guard !pressedTokens.isEmpty else { return }
         // 左右の区別はデバイス依存ビット頼み。そのビットが状態取得で欠けていても誤って離鍵扱いに
         // しない（握っている最中の録音を切らない）よう、修飾キーのキーコード単位の状態も合わせて見る
+        // Secure Input 中は通常キーの keyState が実際と違う値を返しうる（キーロガー対策）。その間は
+        // 修飾キー以外を押下中とみなし、握っている f2 / space 等のホットキーを誤って離鍵扱いにしない
+        let secureInput = IsSecureEventInputEnabled()
         var currentModifiers = KeyToken.modifierTokens(
             from: CGEventSource.flagsState(.combinedSessionState))
         for (code, token) in Self.modifierKeyCodes
@@ -215,8 +219,9 @@ final class HotkeyMonitor {
             pressed: pressedTokens,
             currentModifiers: currentModifiers,
             isKeyDown: { token in
+                if secureInput { return true }
                 // 同じトークンに複数のキーコードがある（enter=Return/テンキー Enter）ので、どれか押されていれば押下中
-                KeyToken.keyCodeTokens.contains { code, name in
+                return KeyToken.keyCodeTokens.contains { code, name in
                     name == token && CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(code))
                 }
             })
@@ -224,6 +229,9 @@ final class HotkeyMonitor {
         let list = released.sorted().joined(separator: ",")
         log.warning("タップ再有効化で押下状態を補正: \(list, privacy: .public)")
         ActionLog.shared.write("hotkey", "[ホットキー] タップ再有効化で押下状態を補正 離鍵扱い=\(list)")
+        // 離鍵時刻は onRelease 側が lastEventTimestamp から読む。ここに残っているのは無効化前の
+        // 古いイベント（多くは押下時）なので 0 にして、受信時刻（tapAt）を使わせる（[計測] の離鍵起点がずれるため）
+        lastEventTimestamp = 0
         for token in released.sorted() {
             pressedTokens.remove(token)
             onRelease?(token)
