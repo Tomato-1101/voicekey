@@ -27,6 +27,10 @@ final class HotkeyMonitor {
     /// 現在押下中のトークン集合（タップスレッドからのみ更新）
     private(set) var pressedTokens: Set<String> = []
 
+    /// 直近に処理したキーイベントの CGEvent タイムスタンプ（ログ専用・タップスレッドからのみ更新）。
+    /// onPress/onRelease は同じスレッドで同期に呼ばれるので、コールバック内で読めば当該イベントの値になる
+    private(set) var lastEventTimestamp: CGEventTimestamp = 0
+
     private var tap: CFMachPort?
     private var runLoop: CFRunLoop?
     private var thread: Thread?
@@ -149,6 +153,7 @@ final class HotkeyMonitor {
             }
 
         case .flagsChanged:
+            lastEventTimestamp = event.timestamp
             // 修飾キー: デバイス依存ビットから現在の押下集合を計算し、差分を通知
             let current = KeyToken.modifierTokens(from: event.flags)
             let previous = pressedTokens.filter { isModifierToken($0) }
@@ -162,6 +167,7 @@ final class HotkeyMonitor {
             }
 
         case .keyDown:
+            lastEventTimestamp = event.timestamp
             // OS のキーリピートは無視（エッジ検出）
             guard event.getIntegerValueField(.keyboardEventAutorepeat) == 0 else { return }
             let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
@@ -172,6 +178,7 @@ final class HotkeyMonitor {
             }
 
         case .keyUp:
+            lastEventTimestamp = event.timestamp
             let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
             guard let token = KeyToken.token(forKeyCode: keyCode) else { return }
             if pressedTokens.contains(token) {

@@ -39,11 +39,16 @@ protocol LiveTranscribing: AnyObject {
     /// 空の結果が「本当に無言だった」のか「接続が壊れて取れなかった」のかを呼び出し側が区別するために使う。
     /// extension の既定値だけだと適合型の実装が静的ディスパッチで無視されるので、要求として宣言している
     var ending: LiveEnding { get }
+    /// 行動ログ用の接続計測（ライブ WebSocket の実装だけが持つ。ローカル・テスト用モックは nil）。
+    /// ending と同じ理由で要求として宣言している
+    var sessionLog: LiveSessionLog? { get }
 }
 
 extension LiveTranscribing {
     /// 終わり方を区別しない実装（Deepgram / OpenAI ライブ / ローカル）は従来どおりの扱いにする
     var ending: LiveEnding { .unknown }
+    /// 接続計測を持たない実装（ローカル・テスト用モック）
+    var sessionLog: LiveSessionLog? { nil }
 }
 
 /// ライブ文字起こしの終わり方
@@ -115,6 +120,8 @@ final class OpenAILiveTranscriber: LiveTranscribing, @unchecked Sendable {
     private var done = false
     private let createdAt = Date()
     private var firstResultLogged = false
+    /// 行動ログ用の接続計測（接続確立・最初の送信/結果・終わり方を 1 行にまとめる）
+    let sessionLog: LiveSessionLog? = LiveSessionLog(provider: "openai-live")
 
     // MARK: - リサンプル状態（audio スレッドからのみ触る）
 
@@ -181,12 +188,22 @@ final class OpenAILiveTranscriber: LiveTranscribing, @unchecked Sendable {
 
         task.resume()
         // セッション設定は音声より先に届く必要がある（turn_detection=null＝確定は手動 commit のみ）
+        let sessionLog = self.sessionLog
         task.send(.string(sessionUpdateJSON())) { error in
-            if let error { log.error("OpenAI ライブ: session.update 送信エラー: \(error.localizedDescription)") }
+            if let error {
+                log.error("OpenAI ライブ: session.update 送信エラー: \(error.localizedDescription)")
+                sessionLog?.sendFailed(error, what: "session.update")
+            } else {
+                sessionLog?.markConnected()
+            }
         }
+        if !buffered.isEmpty { sessionLog?.markAudioSent() }
         for chunk in buffered {
             task.send(.string(appendJSON(chunk))) { error in
-                if let error { log.debug("退避 PCM 送信エラー: \(error.localizedDescription)") }
+                if let error {
+                    log.debug("退避 PCM 送信エラー: \(error.localizedDescription)")
+                    sessionLog?.sendFailed(error, what: "退避PCM")
+                }
             }
         }
         // finish-before-connect: 退避を送り切ってから commit＝残りを確定させる
@@ -255,8 +272,13 @@ final class OpenAILiveTranscriber: LiveTranscribing, @unchecked Sendable {
             return
         }
         lock.unlock()
+        sessionLog?.markAudioSent()
+        let sessionLog = self.sessionLog
         task.send(.string(appendJSON(pcm))) { error in
-            if let error { log.debug("送信エラー: \(error.localizedDescription)") }
+            if let error {
+                log.debug("送信エラー: \(error.localizedDescription)")
+                sessionLog?.sendFailed(error, what: "PCM")
+            }
         }
     }
 
@@ -290,6 +312,7 @@ final class OpenAILiveTranscriber: LiveTranscribing, @unchecked Sendable {
     /// 接続確立後に connect() が pending フラッシュ後 commit を送る。
     /// 未接続かつ音声ゼロなら確定は永遠に来ないので即空解決する。
     func finish() async -> String {
+        sessionLog?.markEndRequested()
         let (connectedTask, immediateEmpty) = requestClose()
         connectedTask?.send(.string("{\"type\":\"input_audio_buffer.commit\"}")) { _ in }
 
@@ -333,6 +356,8 @@ final class OpenAILiveTranscriber: LiveTranscribing, @unchecked Sendable {
     }
 
     func cancel() {
+        // 切った直後の受信失敗（-999）を切断としてログに残さないよう、切る前に印を付ける
+        sessionLog?.markCancelled()
         lock.lock()
         cancelled = true
         let t = task
@@ -353,7 +378,11 @@ final class OpenAILiveTranscriber: LiveTranscribing, @unchecked Sendable {
         task?.receive { [weak self] result in
             guard let self else { return }
             switch result {
-            case .failure:
+            case .failure(let error):
+                self.lock.lock()
+                let current = self.task
+                self.lock.unlock()
+                self.sessionLog?.receiveFailed(error, task: current)
                 self.resolveFinish(reason: "disconnect")
             case .success(let message):
                 switch message {
@@ -421,6 +450,7 @@ final class OpenAILiveTranscriber: LiveTranscribing, @unchecked Sendable {
         firstResultLogged = true
         lock.unlock()
         if !alreadyLogged {
+            sessionLog?.markFirstResult()
             log.notice("OpenAI ライブ 最初の文字まで \(Int(Date().timeIntervalSince(self.createdAt) * 1000), privacy: .public)ms（録音開始から）")
         }
     }
@@ -435,6 +465,7 @@ final class OpenAILiveTranscriber: LiveTranscribing, @unchecked Sendable {
         lock.unlock()
         if !wasDone {
             log.notice("OpenAI ライブ finish 解決: \(reason, privacy: .public)")
+            sessionLog?.resolve(LiveSessionLog.endingLabel(forReason: reason))
         }
         cont?.resume()
     }

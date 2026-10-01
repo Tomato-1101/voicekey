@@ -93,6 +93,10 @@ final class HudController {
 
     /// HUD を表示するか（設定で無効化可能）
     var enabled = true
+    /// 行動ログに添える録音世代を返す（AppController が差し込む。ログ専用で動作には使わない）
+    var logGeneration: () -> Int = { 0 }
+    /// HUD 無効で出さなかった表示の直近ラベル（同じ表示の連続でログを重ねないため）
+    private var lastSkippedShowLabel: String?
     /// 待機中も小型ピルを常時表示するか（config.hudAlwaysVisible）
     var alwaysVisible = false
 
@@ -291,9 +295,19 @@ final class HudController {
     }
 
     /// 一時通知を 2 秒間表示する
-    func notice(_ text: String) {
+    /// - Parameter logText: 行動ログに出す文言（省略時は text）。API エラーの通知文は HTTP 応答本文の
+    ///   先頭を含むので、呼び出し側が本文を含まない文言を渡す
+    func notice(_ text: String, logText: String? = nil) {
+        // 何を知らせたか（＝ユーザーに何が見えたか）を後から追えるようにする。
+        // 文字起こし・翻訳の本文は通知に載らないが、API エラーの通知は応答本文を含むため logText で差し替える
+        ActionLog.shared.write(
+            "hud",
+            "[HUD] gen=\(DiagnosticText.gen(logGeneration())) 通知「\(DiagnosticText.clip(logText ?? text, 120))」"
+                + (enabled ? "" : " 表示=なし(HUD 無効)"))
         noticeTask?.cancel()
         model.mode = .notice(text)
+        // HUD 無効なら上の 1 行で足りるので、show() の「表示スキップ」行を重ねて出さない
+        if !enabled { lastSkippedShowLabel = Self.modeKind(model.mode) }
         show()
         noticeTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(2))
@@ -335,7 +349,17 @@ final class HudController {
     // MARK: - パネル管理
 
     private func show() {
-        guard enabled else { return }
+        guard enabled else {
+            // HUD 無効で何も出なかったことを残す（「何も表示されない」の切り分け用）。同じ表示の連続は 1 行にまとめる
+            let label = Self.modeKind(model.mode)
+            if label != lastSkippedShowLabel {
+                lastSkippedShowLabel = label
+                ActionLog.shared.write(
+                    "hud", "[HUD] gen=\(DiagnosticText.gen(logGeneration())) 表示スキップ（HUD 無効） mode=\(label)")
+            }
+            return
+        }
+        lastSkippedShowLabel = nil
         if panel == nil {
             panel = makePanel()
         }
@@ -344,6 +368,17 @@ final class HudController {
         applyFullScreenPolicy()
         positionPanel()
         panel?.orderFrontRegardless()
+    }
+
+    /// ログ用の表示種別（通知文は含めない）
+    private static func modeKind(_ mode: HudModel.Mode) -> String {
+        switch mode {
+        case .hidden: return "非表示"
+        case .idlePill: return "待機ピル"
+        case .recording: return "録音中"
+        case .transcribing: return "変換中"
+        case .notice: return "通知"
+        }
     }
 
     /// パネルのフルスクリーン可否を collectionBehavior で切り替える（検出・タイマー不要で確実）。

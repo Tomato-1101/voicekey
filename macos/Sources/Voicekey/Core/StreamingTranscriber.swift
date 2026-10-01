@@ -56,6 +56,8 @@ final class StreamingTranscriber: LiveTranscribing, @unchecked Sendable {
     /// ログし、「始まりが遅い」の主因（サーバー往復か WS ハンドシェイクか）を裏取りする
     private let createdAt = Date()
     private var firstResultLogged = false
+    /// 行動ログ用の接続計測（接続確立・最初の送信/結果・終わり方を 1 行にまとめる）
+    let sessionLog: LiveSessionLog? = LiveSessionLog(provider: "deepgram")
     /// 無料体験の保留 ID（段階1 hold 経路のみ非null）。文字起こし成功後に消費を確定するのに使う。
     private var ephemeralJti: String?
     /// 段階3: 再利用トークン（free）＝録音成功ごとに jti なし confirm で 1 消費すべきか。
@@ -173,9 +175,17 @@ final class StreamingTranscriber: LiveTranscribing, @unchecked Sendable {
         lock.unlock()
 
         task.resume()
+        let sessionLog = self.sessionLog
+        if !buffered.isEmpty { sessionLog?.markAudioSent() }
         for chunk in buffered {
             task.send(.data(chunk)) { error in
-                if let error { log.debug("退避 PCM 送信エラー: \(error.localizedDescription)") }
+                if let error {
+                    log.debug("退避 PCM 送信エラー: \(error.localizedDescription)")
+                    sessionLog?.sendFailed(error, what: "退避PCM")
+                } else {
+                    // Deepgram は設定を URL に載せるので最初の送信が音声。その完了を接続確立とみなす
+                    sessionLog?.markConnected()
+                }
             }
         }
         // finish-before-connect: 退避 PCM を送り切ってから CloseStream＝Deepgram が残りを確定して
@@ -210,8 +220,15 @@ final class StreamingTranscriber: LiveTranscribing, @unchecked Sendable {
             return
         }
         lock.unlock()
+        sessionLog?.markAudioSent()
+        let sessionLog = self.sessionLog
         task.send(.data(pcm)) { error in
-            if let error { log.debug("送信エラー: \(error.localizedDescription)") }
+            if let error {
+                log.debug("送信エラー: \(error.localizedDescription)")
+                sessionLog?.sendFailed(error, what: "PCM")
+            } else {
+                sessionLog?.markConnected()
+            }
         }
     }
 
@@ -220,6 +237,7 @@ final class StreamingTranscriber: LiveTranscribing, @unchecked Sendable {
     /// 未接続なら close 要求を立て、接続確立後に connect() が pending フラッシュ後 CloseStream を送る。
     /// 未接続かつ音声ゼロ（1 バイトも送っていない）なら Metadata は永遠に来ないので即空解決する。
     func finish() async -> String {
+        sessionLog?.markEndRequested()
         let (connectedTask, immediateEmpty) = requestClose()
         // 接続済みなら即 CloseStream で残バッファの確定を促す（未接続なら connect() 側が送る）
         connectedTask?.send(.string("{\"type\":\"CloseStream\"}")) { _ in }
@@ -287,6 +305,8 @@ final class StreamingTranscriber: LiveTranscribing, @unchecked Sendable {
 
     /// 結果を使わずに接続を破棄する（録音破棄時など）
     func cancel() {
+        // 切った直後の受信失敗（-999）を切断としてログに残さないよう、切る前に印を付ける
+        sessionLog?.markCancelled()
         lock.lock()
         cancelled = true
         let t = task
@@ -307,8 +327,12 @@ final class StreamingTranscriber: LiveTranscribing, @unchecked Sendable {
         task?.receive { [weak self] result in
             guard let self else { return }
             switch result {
-            case .failure:
+            case .failure(let error):
                 // 切断・エラーは finish() を解決して REST 側の判断に委ねる
+                self.lock.lock()
+                let current = self.task
+                self.lock.unlock()
+                self.sessionLog?.receiveFailed(error, task: current)
                 self.resolveFinish(reason: "disconnect")
             case .success(let message):
                 switch message {
@@ -351,6 +375,7 @@ final class StreamingTranscriber: LiveTranscribing, @unchecked Sendable {
             firstResultLogged = true
             lock.unlock()
             if !alreadyLogged {
+                sessionLog?.markFirstResult()
                 log.info("Deepgram 最初の文字まで \(Int(Date().timeIntervalSince(self.createdAt) * 1000), privacy: .public)ms（録音開始から）")
             }
         }
@@ -380,6 +405,7 @@ final class StreamingTranscriber: LiveTranscribing, @unchecked Sendable {
         lock.unlock()
         if !wasDone {
             log.notice("Deepgram finish 解決: \(reason, privacy: .public)")
+            sessionLog?.resolve(LiveSessionLog.endingLabel(forReason: reason))
         }
         cont?.resume()
     }

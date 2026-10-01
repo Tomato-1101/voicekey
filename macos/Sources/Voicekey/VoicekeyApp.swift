@@ -383,6 +383,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private let stateMenuItem: NSMenuItem
     private weak var controller: AppController?
     private var stateObservation: AnyCancellable?
+    /// 直近にログへ出したアイコン状態（同じ状態の再通知でログを重ねないため）
+    private var lastLoggedIconState: AppState?
     /// ダッシュボード + 設定を統合したメインウィンドウ（v3.1・別ウィンドウの設定は廃止）
     private var mainWindow: NSWindow?
     /// メインウィンドウの表示モデル（メニュー等から dashboard / settings を差し込む）
@@ -469,6 +471,13 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         // 状態変化でアイコンと情報行を更新。
         // @Published はプロパティ更新「前」に新値を流すため、closure 引数の値を使う
         stateObservation = controller.$state.sink { [weak self] state in
+            // アイコンの遷移を残す（「アイコンが戻らない」の切り分け用。変化したときだけ）
+            if self?.lastLoggedIconState != state {
+                self?.lastLoggedIconState = state
+                ActionLog.shared.write(
+                    "ui",
+                    "[アイコン] gen=\(DiagnosticText.gen(self?.controller?.currentGeneration ?? 0)) 状態=\(state.label)")
+            }
             self?.statusItem.button?.image = StatusIcon.image(for: state)
             self?.stateMenuItem.title = state.label
             // サイドノッチの点灯を録音状態に連動（既存 emitState/HUD 連動に相乗り）
@@ -661,6 +670,10 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     /// - どのウィンドウであっても、閉じた後に可視ウィンドウが 1 つも残らなければ Dock アイコンを引っ込める。
     func windowWillClose(_ notification: Notification) {
         let closing = notification.object as? NSWindow
+        ActionLog.shared.write(
+            "ui",
+            "[ウィンドウ] gen=\(DiagnosticText.gen(controller?.currentGeneration ?? 0)) 閉じる "
+                + "対象=\(closing === mainWindow ? "メイン" : DiagnosticText.clip(closing?.title ?? "-", 40))")
 
         // メインウィンドウをオンボーディング中に × で閉じたらスキップ扱い（完了フラグ＋本体起動）
         if closing === mainWindow, mainWindowModel?.onboarding != nil, !onboardingFinished {
@@ -780,6 +793,10 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             model.showingSettings = false
         }
         log.info("メインウィンドウを表示します (settings=\(model.showingSettings), tab=\(model.settingsTab), 既存=\(self.mainWindow != nil))")
+        ActionLog.shared.write(
+            "ui",
+            "[ウィンドウ] gen=\(DiagnosticText.gen(controller?.currentGeneration ?? 0)) メインウィンドウ表示 "
+                + "設定=\(model.showingSettings) tab=\(model.settingsTab) 既存=\(mainWindow != nil)")
         presentMainWindow(onboarding: false)
     }
 

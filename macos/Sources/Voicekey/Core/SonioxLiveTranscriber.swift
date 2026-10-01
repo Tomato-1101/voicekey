@@ -142,6 +142,8 @@ final class SonioxLiveTranscriber: LiveTranscribing, @unchecked Sendable {
     private var endState: LiveEnding = .unknown
     private let createdAt = Date()
     private var firstResultLogged = false
+    /// 行動ログ用の接続計測（接続確立・最初の送信/結果・終わり方を 1 行にまとめる）
+    let sessionLog: LiveSessionLog? = LiveSessionLog(provider: "soniox")
 
     init(model: String, language: String, prompt: String, endpoint: URL? = nil) {
         self.model = model
@@ -226,6 +228,8 @@ final class SonioxLiveTranscriber: LiveTranscribing, @unchecked Sendable {
                 // 判定できなければ従来どおり米国へ（キーが無効なら接続側で 401 が返り、既存の文言で知らせる）
                 let region = detected ?? .us
                 log.notice("Soniox リージョン region=\(region.rawValue, privacy: .public) cache=miss detected=\(detected != nil, privacy: .public) \(ms, privacy: .public)ms")
+                // 初回だけ判定の往復が接続の前に挟まる＝「押下直後が遅い」の原因になりうるので永続ログにも残す
+                sessionLog?.note("リージョン region=\(region.rawValue) cache=miss detected=\(detected != nil) \(ms)ms")
                 connect(key: apiKey, endpoint: region.websocketURL)
             }
         }
@@ -247,12 +251,23 @@ final class SonioxLiveTranscriber: LiveTranscribing, @unchecked Sendable {
         // self.task を公開すると send() が直接送り始めるので、公開する前に lock 内で
         // 設定・退避 PCM（・終端）を送信キューへ積み切る。積むだけなので lock はすぐ外れる
         task.resume()
+        let sessionLog = self.sessionLog
         task.send(.string(Self.configJSON(apiKey: key, model: model, language: language, prompt: prompt))) { error in
-            if let error { log.error("Soniox: 設定送信エラー: \(error.localizedDescription)") }
+            if let error {
+                log.error("Soniox: 設定送信エラー: \(error.localizedDescription)")
+                sessionLog?.sendFailed(error, what: "設定")
+            } else {
+                // 最初のフレーム（設定）の送信完了＝ WebSocket のハンドシェイクが済んだ
+                sessionLog?.markConnected()
+            }
         }
+        if !pending.isEmpty { sessionLog?.markAudioSent() }
         for chunk in pending {
             task.send(.data(chunk)) { error in
-                if let error { log.debug("退避 PCM 送信エラー: \(error.localizedDescription)") }
+                if let error {
+                    log.debug("退避 PCM 送信エラー: \(error.localizedDescription)")
+                    sessionLog?.sendFailed(error, what: "退避PCM")
+                }
             }
         }
         pending = []
@@ -294,8 +309,13 @@ final class SonioxLiveTranscriber: LiveTranscribing, @unchecked Sendable {
             return
         }
         lock.unlock()
+        sessionLog?.markAudioSent()
+        let sessionLog = self.sessionLog
         task.send(.data(pcm)) { error in
-            if let error { log.debug("送信エラー: \(error.localizedDescription)") }
+            if let error {
+                log.debug("送信エラー: \(error.localizedDescription)")
+                sessionLog?.sendFailed(error, what: "PCM")
+            }
         }
     }
 
@@ -310,6 +330,7 @@ final class SonioxLiveTranscriber: LiveTranscribing, @unchecked Sendable {
     /// 未接続かつ音声ゼロなら完了は永遠に来ないので即空解決する。
     /// - Parameter timeout: 完了を待つ上限（録音全体の再送では音声長に応じて延ばす）
     func finish(timeout: TimeInterval) async -> String {
+        sessionLog?.markEndRequested()
         let (connectedTask, immediateEmpty) = requestClose()
         if let connectedTask { sendEndOfStream(connectedTask) }
 
@@ -355,6 +376,8 @@ final class SonioxLiveTranscriber: LiveTranscribing, @unchecked Sendable {
     }
 
     func cancel() {
+        // 切った直後の受信失敗（-999）を切断としてログに残さないよう、切る前に印を付ける
+        sessionLog?.markCancelled()
         lock.lock()
         cancelled = true
         let t = task
@@ -375,9 +398,13 @@ final class SonioxLiveTranscriber: LiveTranscribing, @unchecked Sendable {
         task?.receive { [weak self] result in
             guard let self else { return }
             switch result {
-            case .failure:
+            case .failure(let error):
                 // 接続の確立失敗も途中切断もここに来る。正常終了（<fin> / finished）が先に届いていれば
                 // resolveFinish は 2 回目以降を無視するので、後始末の切断で失敗扱いに上書きされない
+                self.lock.lock()
+                let current = self.task
+                self.lock.unlock()
+                self.sessionLog?.receiveFailed(error, task: current)
                 self.resolveFinish(.failed(.disconnect), reason: "disconnect")
             case .success(let message):
                 let data: Data?
@@ -430,6 +457,7 @@ final class SonioxLiveTranscriber: LiveTranscribing, @unchecked Sendable {
         firstResultLogged = true
         lock.unlock()
         if !alreadyLogged {
+            sessionLog?.markFirstResult()
             log.notice("Soniox 最初の文字まで \(Int(Date().timeIntervalSince(self.createdAt) * 1000), privacy: .public)ms（録音開始から）")
         }
     }
@@ -446,6 +474,8 @@ final class SonioxLiveTranscriber: LiveTranscribing, @unchecked Sendable {
         lock.unlock()
         if !wasDone {
             log.notice("Soniox finish 解決: \(reason, privacy: .public)")
+            // 区別しない終わり方（cancelled）は理由のほうが情報になる
+            sessionLog?.resolve(result == .unknown ? reason : "\(result.logLabel)(\(reason))")
         }
         cont?.resume()
     }

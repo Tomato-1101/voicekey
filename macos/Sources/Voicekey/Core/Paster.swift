@@ -86,16 +86,25 @@ enum Paster {
     ///   - pasteboard: 使うペーストボード。既定は実クリップボード。
     ///                 検証ハーネスが専用ボードを渡し、ユーザーのクリップボードを汚さずに復元を試す
     ///   - sendKeystroke: ⌘V を合成するか。ハーネスでは false にして前面アプリへ文字を入れない
+    ///   - logGeneration: 行動ログに添える録音世代（ログ専用。0 は録音に紐付かない再貼り付け等）
     @MainActor
     static func paste(_ text: String,
                       pasteboard: NSPasteboard = .general,
-                      sendKeystroke: Bool = true) async {
-        guard !text.isEmpty else { return }
+                      sendKeystroke: Bool = true,
+                      logGeneration: Int = 0) async {
+        let genText = DiagnosticText.gen(logGeneration)
+        guard !text.isEmpty else {
+            ActionLog.shared.write("paster", "[貼付] gen=\(genText) スキップ（空文字）")
+            return
+        }
         // 本文は残さない（文字数だけ）。貼り付けは「実行したのに入らない」の切り分けが要るので対で記録する
         ActionLog.shared.write("paster", "貼り付け実行 (\(text.count) 文字)")
 
         // ユーザーのクリップボード内容を退避（テキストのみ）
         let current = pasteboard.string(forType: .string)
+        // 原本の種類（ログ用）。空と非テキストを分けるには pasteboard への問い合わせが 1 回増えるが、
+        // 貼り付け経路に足さないため既に読んだ値だけで判定する（⌘V の後では原本が残っていないので後回しにもできない）
+        let clipboardKind = current != nil ? "text" : "empty-or-non-text"
 
         // 世代を採番し、復元すべき「真のオリジナル」を確定する。
         // 連続貼り付け（前回の復元がまだ終わっていない）でクリップボードが自分の挿入
@@ -116,9 +125,23 @@ enum Paster {
         pasteboard.setString(text, forType: .string)
 
         try? await Task.sleep(for: .seconds(pasteDelay))
-        if sendKeystroke { postKeystroke(keyV, flags: .maskCommand) }
+        // 貼り付け先（ログ用）。⌘V を受けるのは送る瞬間の前面アプリなので、送る直前に控える
+        let front = NSWorkspace.shared.frontmostApplication
+        let frontID = front?.bundleIdentifier ?? "-"
+        let frontName = front?.localizedName ?? "-"
+        if sendKeystroke { postKeystroke(keyV, flags: .maskCommand, what: "⌘V", generation: logGeneration) }
         log.debug("テキストを貼り付けました (\(text.count) 文字)")
         ActionLog.shared.write("paster", "貼り付け完了 (\(text.count) 文字)")
+        // 「貼ったのに入らない」の切り分け用（前面アプリ・アクセシビリティ許可・原本の種類）。
+        // 許可の確認は TCC への問い合わせなので、貼り付けの後で別キューに投げて待たない
+        DispatchQueue.global(qos: .utility).async {
+            let axTrusted = AXIsProcessTrusted()
+            ActionLog.shared.write(
+                "paster",
+                "[貼付] gen=\(genText) 前面=\(frontID)(\(DiagnosticText.clip(frontName, 40))) "
+                    + "AX=\(axTrusted) 原本=\(clipboardKind) ⌘V送信=\(sendKeystroke)"
+            )
+        }
 
         // クリップボード復元は呼び出し側を待たせない（Enter 自動送信・HUD 非表示を即時化する）。
         // 貼り付け先が読み終えてから復元したいので restoreDelay は別タスクで待つ。
@@ -133,6 +156,7 @@ enum Paster {
                                                          original: original)
             switch decision {
             case .skip:
+                ActionLog.shared.write("paster", "[貼付] gen=\(genText) クリップボード復元 スキップ（より新しい貼り付けが担当）")
                 return
             case .leaveUserContent:
                 ActionLog.shared.write("paster", "クリップボード復元 スキップ（ユーザーが新しくコピー）")
@@ -152,18 +176,27 @@ enum Paster {
     }
 
     /// Enter キーを 1 回送信する（ダブルタップ自動送信用）
-    static func pressEnter() {
-        postKeystroke(keyReturn, flags: [])
+    /// - Parameter logGeneration: 行動ログに添える録音世代（ログ専用）
+    static func pressEnter(logGeneration: Int = 0) {
+        postKeystroke(keyReturn, flags: [], what: "Enter", generation: logGeneration)
+        ActionLog.shared.write("paster", "[貼付] gen=\(DiagnosticText.gen(logGeneration)) auto_enter の Enter を送信")
     }
 
     /// 合成キーストロークを送出する（アクセシビリティ権限が必要）
-    private static func postKeystroke(_ keyCode: CGKeyCode, flags: CGEventFlags) {
+    private static func postKeystroke(_ keyCode: CGKeyCode, flags: CGEventFlags, what: String, generation: Int) {
         guard let source = CGEventSource(stateID: .combinedSessionState) else {
             log.error("CGEventSource の作成に失敗")
+            ActionLog.shared.write("paster", "[貼付] gen=\(DiagnosticText.gen(generation)) \(what) 送信失敗（CGEventSource を作れない）")
             return
         }
         let down = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true)
         let up = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
+        if down == nil || up == nil {
+            // 作れなかった側は post されない＝キーが届かない。黙って失敗していた経路なので残す
+            ActionLog.shared.write(
+                "paster",
+                "[貼付] gen=\(DiagnosticText.gen(generation)) \(what) の CGEvent 作成失敗 down=\(down != nil) up=\(up != nil)")
+        }
         down?.flags = flags
         up?.flags = flags
         down?.post(tap: .cghidEventTap)

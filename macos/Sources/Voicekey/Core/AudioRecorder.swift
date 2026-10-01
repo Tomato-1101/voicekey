@@ -398,6 +398,35 @@ final class AudioRecorder {
 
     private var samples: [Float] = []
     private let samplesLock = NSLock()
+
+    /// 録音 1 回分の入力統計（停止時に行動ログへ 1 行まとめる）。
+    /// 数えるのは処理キュー（IO スレッドではない）で、文字列は作らない。時刻は systemUptime
+    struct RecordingStats {
+        /// start() が呼ばれた時刻
+        var requestedAt: TimeInterval?
+        /// IO 開始が完了した時刻
+        var startedAt: TimeInterval?
+        /// 録音中に最初のバッファが処理キューへ届いた時刻（届かなければ nil）
+        var firstBufferAt: TimeInterval?
+        /// 録音中に処理キューへ届いたバッファ数
+        var bufferCount = 0
+        /// 上限（maxSamples）に達して捨てたバッファがあったか
+        var truncated = false
+        /// 16kHz 変換のエラー件数
+        var convertErrors = 0
+        /// 変換先バッファの確保失敗件数
+        var allocFailures = 0
+        /// 変換結果が 0 フレームだった件数
+        var zeroFrames = 0
+    }
+    /// 今の録音の入力統計（samplesLock で保護）
+    private var recordingStats = RecordingStats()
+    private var _logGeneration = 0
+    /// 行動ログに添える録音世代（AppController が start() の前に入れる。ログ専用で動作には使わない）
+    var logGeneration: Int {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _logGeneration }
+        set { stateLock.lock(); _logGeneration = newValue; stateLock.unlock() }
+    }
     /// メイン・制御キュー・処理キューをまたぐ可変状態の保護
     private let stateLock = NSLock()
     private var _chunkRouting = ChunkRouting<([Float]) -> Void>()
@@ -899,6 +928,9 @@ final class AudioRecorder {
         // ＝自分の操作で通知が出ても再構成ループにならない）
         let formatChanged = !deviceChanged && dirty && formatDiffers(target)
         if deviceChanged || formatChanged {
+            // 変更前の構成（ログ用）。ここでは HAL に問い合わせず、手元の値だけ控える
+            let previousID = configuredDeviceID
+            let previousRate = capture?.format.sampleRate
             if let failure = configureUnit(deviceID: target) {
                 discardUnit()
                 return failure
@@ -910,9 +942,31 @@ final class AudioRecorder {
             } else if let applied {
                 ActionLog.shared.write("audio", "入力デバイスを切り替え (uid=\(applied))")
             }
+            Self.logDeviceTransition(
+                generation: logGeneration,
+                from: previousID, fromRate: previousRate, to: target, toRate: capture?.format.sampleRate)
         }
         appliedDeviceUID = applied
         return nil
+    }
+
+    /// 入力デバイスの切り替え前後（名前・UID・サンプルレート）を行動ログへ残す。
+    /// 名前と UID の取得は HAL への問い合わせなので、詰まりうる制御キュー（＝録音開始の経路）では
+    /// やらず、別キューへ投げて待たない。構成し直したときだけ呼ばれる（録音ごとには走らない）
+    private static func logDeviceTransition(
+        generation: Int, from oldID: AudioDeviceID, fromRate: Double?, to newID: AudioDeviceID, toRate: Double?
+    ) {
+        DispatchQueue.global(qos: .utility).async {
+            func describe(_ id: AudioDeviceID, _ rate: Double?) -> String {
+                guard id != 0 else { return "なし" }
+                let name = AudioDevices.stringProperty(id, kAudioObjectPropertyName) ?? "?"
+                let uid = AudioDevices.stringProperty(id, kAudioDevicePropertyDeviceUID) ?? "?"
+                let hz = rate.map { "\(Int($0))Hz" } ?? "-"
+                return "\(DiagnosticText.clip(name, 60))(uid=\(DiagnosticText.clip(uid, 80)) id=\(id) \(hz))"
+            }
+            ActionLog.shared.write(
+                "audio", "[デバイス] gen=\(DiagnosticText.gen(generation)) 入力の構成を変更 前=\(describe(oldID, fromRate)) 後=\(describe(newID, toRate))")
+        }
     }
 
     /// AU の IO を開始する（構成済みであること）。成功で nil。
@@ -1047,6 +1101,7 @@ final class AudioRecorder {
         stateLock.lock()
         let chunkClaim = _chunkRouting.claim()
         stateLock.unlock()
+        let requestedAt = ProcessInfo.processInfo.systemUptime
         queue.async { [self] in
             guard !recording else {
                 completion(nil)
@@ -1054,6 +1109,7 @@ final class AudioRecorder {
             }
             samplesLock.lock()
             samples.removeAll(keepingCapacity: true)
+            recordingStats = RecordingStats(requestedAt: requestedAt)
             samplesLock.unlock()
             recordingEpoch += 1
             restartsThisRecording = 0
@@ -1066,6 +1122,9 @@ final class AudioRecorder {
                 // この録音の送り先を稼働にする（recording=true より前＝最初のチャンクから届く）。
                 // 前の録音の稼働は、制御キュー上で先に走ったその stop が既に外している
                 stateLock.lock(); _chunkRouting.activate(chunkClaim); stateLock.unlock()
+                samplesLock.lock()
+                recordingStats.startedAt = ProcessInfo.processInfo.systemUptime
+                samplesLock.unlock()
                 recording = true
                 bufferAvailability.markAvailable()  // この録音の buffer を取り出し可能にする（#20）
                 ActionLog.shared.write("audio", "録音開始完了")
@@ -1082,6 +1141,12 @@ final class AudioRecorder {
 
     /// 録音を停止し、確定した音声データを返す（即座に返る。結果はコールバック）
     func stop(completion: @escaping ([Float]) -> Void) {
+        stopWithStats { samples, _ in completion(samples) }
+    }
+
+    /// 録音を停止し、確定した音声データとこの録音の入力統計を返す（即座に返る。結果はコールバック）。
+    /// 統計は呼び出し側が行動ログへ 1 行出すためのもの（ここで文字列を作って制御キューを延ばさない）
+    func stopWithStats(completion: @escaping ([Float], RecordingStats) -> Void) {
         // 開始と同じ理由で queue へ投げる前に書く（キューが詰まると停止も完了しない）
         ActionLog.shared.write("audio", "録音停止要求")
         queue.async { [self] in
@@ -1089,7 +1154,10 @@ final class AudioRecorder {
             // それまでに録音済みの buffer を一度だけ取り出す（#20）。二度目以降は空を返す。
             guard bufferAvailability.consume(recording: recording) else {
                 stateLock.lock(); _chunkRouting.deactivate(); stateLock.unlock()
-                completion([])
+                samplesLock.lock()
+                let stats = recordingStats
+                samplesLock.unlock()
+                completion([], stats)
                 return
             }
             // 録音中のまま IO を止めて端数まで処理する（離鍵直前の声とストリーミング末尾を落とさない）。
@@ -1126,6 +1194,7 @@ final class AudioRecorder {
             samplesLock.lock()
             let result = samples
             samples = []
+            let stats = recordingStats
             samplesLock.unlock()
 
             log.info("録音停止 (samples=\(result.count), duration=\(String(format: "%.2f", Double(result.count) / Self.sampleRate))s)")
@@ -1133,7 +1202,7 @@ final class AudioRecorder {
                 "audio",
                 "録音停止 (\(String(format: "%.2f", Double(result.count) / Self.sampleRate))s)"
             )
-            completion(result)
+            completion(result, stats)
             // AU は Initialize 済みのまま残す（次の start は AudioOutputUnitStart だけで済む）
 
             // 末尾の取りこぼし調査用の診断（数値のみ）。録音全体の正規化ゲインを求めるので、
@@ -1224,8 +1293,9 @@ final class AudioRecorder {
     ) {
         // 入力が生きている証拠として到着時刻を残す（構成変更後の「黙死」判定に使う）。
         // 無音でも ~43ms ごとに届くので、これが更新されない＝入力が死んでいる
+        let arrivedAt = ProcessInfo.processInfo.systemUptime
         stateLock.lock()
-        _lastBufferUptime = ProcessInfo.processInfo.systemUptime
+        _lastBufferUptime = arrivedAt
         stateLock.unlock()
 
         // 録音中はサンプル蓄積＋チャンク送信＋レベル、モニタ中はレベルのみ。どちらでもないなら無視。
@@ -1237,6 +1307,7 @@ final class AudioRecorder {
         let ratio = outFormat.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 16
         guard let outBuffer = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: capacity) else {
+            if isRecording { countRecordingIssue(\.allocFailures, arrivedAt: arrivedAt) }
             return
         }
         var fed = false
@@ -1252,9 +1323,11 @@ final class AudioRecorder {
         }
         if let convError {
             log.warning("音声変換エラー: \(convError.localizedDescription)")
+            if isRecording { countRecordingIssue(\.convertErrors, arrivedAt: arrivedAt) }
             return
         }
         guard let channel = outBuffer.floatChannelData?[0], outBuffer.frameLength > 0 else {
+            if isRecording { countRecordingIssue(\.zeroFrames, arrivedAt: arrivedAt) }
             return
         }
         let chunk = Array(UnsafeBufferPointer(start: channel, count: Int(outBuffer.frameLength)))
@@ -1262,8 +1335,11 @@ final class AudioRecorder {
         // 録音時のみ: サンプル蓄積とストリーミングチャンク送信を行う（モニタ時はレベルだけ）。
         if isRecording {
             samplesLock.lock()
+            noteRecordingBufferLocked(arrivedAt)
             if samples.count < Self.maxSamples {
                 samples.append(contentsOf: chunk)
+            } else {
+                recordingStats.truncated = true
             }
             samplesLock.unlock()
 
@@ -1289,5 +1365,19 @@ final class AudioRecorder {
                 handler(min(1.0, rms / 0.15))
             }
         }
+    }
+
+    /// 録音中のバッファ到着を数える（samplesLock を持った状態で呼ぶ）
+    private func noteRecordingBufferLocked(_ arrivedAt: TimeInterval) {
+        recordingStats.bufferCount += 1
+        if recordingStats.firstBufferAt == nil { recordingStats.firstBufferAt = arrivedAt }
+    }
+
+    /// 録音中に捨てたバッファを種類別に数える（変換エラー等のまれな経路だけで呼ばれる）
+    private func countRecordingIssue(_ counter: WritableKeyPath<RecordingStats, Int>, arrivedAt: TimeInterval) {
+        samplesLock.lock()
+        noteRecordingBufferLocked(arrivedAt)
+        recordingStats[keyPath: counter] += 1
+        samplesLock.unlock()
     }
 }

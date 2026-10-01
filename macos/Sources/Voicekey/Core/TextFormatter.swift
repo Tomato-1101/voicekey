@@ -127,10 +127,17 @@ final class TextFormatter {
     ///   - model: 整形に使う Groq のモデル名
     ///   - presetId: 整形プリセット（standard/punctuation/clean/bullets）。サーバー整形へ渡す。
     ///     未ログイン時のクライアント直整形は常に既定（standard 相当の defaultPrompt）を使う。
+    ///   - generation: 行動ログに添える録音世代（ログ専用）
     /// - Returns: 整形後テキスト（失敗時は原文）
-    func format(_ text: String, prompt: String, model: String, presetId: String = "standard") async -> String {
+    func format(_ text: String, prompt: String, model: String, presetId: String = "standard",
+                generation: Int = 0) async -> String {
+        // 黙って原文を返していた経路が「整形が効かない」の切り分けを難しくしていたので、理由だけ残す
+        let genText = DiagnosticText.gen(generation)
         // 空白のみの入力は API を呼ばずそのまま返す
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return text }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            ActionLog.shared.write("formatter", "[整形] gen=\(genText) スキップ（空白のみ）")
+            return text
+        }
         ActionLog.shared.write("formatter", "整形開始 \(text.count) 文字 model=\(model) preset=\(presetId)")
 
         // 製品版（ログイン済み）はサーバープロキシ経由で整形する（モデル/プロンプトは
@@ -138,9 +145,13 @@ final class TextFormatter {
         // 非対応のためプロキシ）。失敗は原文フォールバック＝整形は「おまけ」であり発話を
         // 絶対に失わない（並存ガード）。
         if BackendClient.isLoggedIn {
+            let serverStart = ProcessInfo.processInfo.systemUptime
             do {
                 let formatted = try await BackendClient.formatText(text, presetId: presetId)
                 ActionLog.shared.write("formatter", "整形完了 (サーバー) \(formatted.count) 文字")
+                ActionLog.shared.write(
+                    "formatter",
+                    "[整形] gen=\(genText) サーバー整形 \(Int((ProcessInfo.processInfo.systemUptime - serverStart) * 1000))ms")
                 return formatted
             } catch {
                 log.warning("サーバー整形に失敗: \(error.localizedDescription, privacy: .public)（原文を使用）")
@@ -151,11 +162,15 @@ final class TextFormatter {
 
         // 製品版（release）は整形も含め直プロバイダー呼び出しを一切しない。未ログインなら
         // 整形せず原文を返す（配布バイナリにキーは無く、整形はサーバープロキシ専用のため）。
-        if EmbeddedKeys.isDist { return text }
+        if EmbeddedKeys.isDist {
+            ActionLog.shared.write("formatter", "[整形] gen=\(genText) スキップ（配布ビルドで未ログイン）")
+            return text
+        }
 
         // 整形は Groq 固定。キー未設定なら整形せず原文を返す
         guard let apiKey = Keychain.apiKey(for: .groq) else {
             log.warning("整形スキップ: Groq の API キーが未設定です（原文を使用）")
+            ActionLog.shared.write("formatter", "[整形] gen=\(genText) スキップ（Groq の API キー未設定）")
             return text
         }
 
@@ -177,6 +192,7 @@ final class TextFormatter {
         )
         guard let encoded = try? JSONEncoder().encode(body) else {
             log.warning("整形失敗: リクエストの JSON 生成に失敗しました（原文を使用）")
+            ActionLog.shared.write("formatter", "[整形] gen=\(genText) 失敗（リクエストの JSON 生成）")
             return text
         }
         request.httpBody = encoded
@@ -193,6 +209,9 @@ final class TextFormatter {
             guard let parsed = try? JSONDecoder().decode(ChatResponse.self, from: data),
                   let content = parsed.choices.first?.message.content else {
                 log.warning("整形失敗: 応答の解析に失敗しました（原文を使用）")
+                ActionLog.shared.write(
+                    "formatter",
+                    "[整形] gen=\(genText) 失敗（応答の解析） \(Int(Date().timeIntervalSince(start) * 1000))ms")
                 return text
             }
             var formatted = content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -205,6 +224,9 @@ final class TextFormatter {
             }
             guard !formatted.isEmpty else {
                 log.warning("整形失敗: 応答が空でした（原文を使用）")
+                ActionLog.shared.write(
+                    "formatter",
+                    "[整形] gen=\(genText) 失敗（応答が空） \(Int(Date().timeIntervalSince(start) * 1000))ms")
                 return text
             }
             let elapsed = Int(Date().timeIntervalSince(start) * 1000)

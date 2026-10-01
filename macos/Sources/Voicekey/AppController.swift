@@ -9,6 +9,7 @@
 //
 
 import AppKit
+import AVFoundation
 import Combine
 import Foundation
 import os.log
@@ -98,6 +99,25 @@ final class AppController: ObservableObject {
     /// 始めるとその取りこぼしが新しい録音のピルに書き込まれ、「前回の入力の文字が残って
     /// 波形が出ない」状態になる。コールバックに開始時の世代を持たせ、古いものは捨てる。
     private var recordingGeneration = 0
+    /// ログ用: 現在の録音世代（ウィンドウ・アイコンのログに添える。動作には使わない）
+    var currentGeneration: Int { recordingGeneration }
+
+    // --- 詳細ログ（動作には一切使わない）---
+    /// 録音 1 回分の計測（世代 → 計測）。`[計測]` 行を出したら消す
+    private var timelines: [Int: DictationTimeline] = [:]
+    /// 直近の設定スナップショット（変更差分のログ用。プロンプト・キーは長さ/件数だけ）
+    private var lastSettingsSnapshot: [String: String] = [:]
+    /// `[設定]` 行のまとめ待ち。打鍵・スライダー 1 目盛りごとに書かず、操作が 1 秒止まってから 1 行にする
+    private var settingsLogTask: Task<Void, Never>?
+    /// スリープ・画面構成変化の監視（ログ用）
+    private var environmentObservers: [NSObjectProtocol] = []
+
+    /// ホットキーイベントの時刻（ログ専用）。タップスレッドで取ってメインへ渡し、
+    /// 「イベント発生→タップ受信→メインで処理」のどこで待たされたかを分けて測る
+    private struct HotkeyEventTime {
+        let timestamp: UInt64
+        let tapAt: TimeInterval
+    }
 
     // --- ダブルタップ検出 ---
     /// 1 打目を離した後、2 打目を待っているあいだの状態。**録音は止めずに続いている**。
@@ -186,6 +206,20 @@ final class AppController: ObservableObject {
             DispatchQueue.main.async {
                 guard let self else { return }
                 ActionLog.shared.write("app", "設定変更を反映（トランスクライバ再構築）")
+                // 何が変わったかを残す（値はプロンプト・キー以外。プロンプト類は長さだけ）。
+                // 連続した変更は 1 秒止まるまでまとめ、変更前のスナップショットとの差分を 1 行だけ書く
+                // （変更ごとにスナップショットを取るとメインスレッドの負荷とログ行が打鍵数ぶん増える）
+                self.settingsLogTask?.cancel()
+                self.settingsLogTask = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(1))
+                    guard let self, !Task.isCancelled else { return }
+                    let snapshot = SettingsChangeLog.snapshot(self.config)
+                    if let diff = SettingsChangeLog.diff(old: self.lastSettingsSnapshot, new: snapshot) {
+                        ActionLog.shared.write(
+                            "app", "[設定] gen=\(DiagnosticText.gen(self.recordingGeneration)) 変更: \(diff)")
+                    }
+                    self.lastSettingsSnapshot = snapshot
+                }
                 self.rebuildTranscribers()
                 self.hud.enabled = self.config.hudEnabled
                 // ピル常時表示トグルの変更を即時反映（待機中なら idle 分岐を再評価する）
@@ -206,6 +240,8 @@ final class AppController: ObservableObject {
             .store(in: &historySyncObservations)
         hud.enabled = config.hudEnabled
         hud.alwaysVisible = config.hudAlwaysVisible
+        hud.logGeneration = { [weak self] in self?.recordingGeneration ?? 0 }
+        lastSettingsSnapshot = SettingsChangeLog.snapshot(config)
         // 音声入力中（録音・変換中・通知）はライブ字幕を隠す。字幕を一度も使っていなければ何もしない。
         hud.model.onModeChanged = { [weak self] mode in
             ActionLog.shared.write("app", "HUD 表示: \(Self.hudModeLabel(mode))")
@@ -222,14 +258,19 @@ final class AppController: ObservableObject {
         // ホットキーイベント（タップスレッドから来るためメインへホップ）
         hotkeys.onPress = { [weak self] token in
             let pressed = self?.hotkeys.pressedTokens ?? []
+            // ログ用: イベント時刻とタップでの受信時刻（読むだけ・タップスレッドを待たせない）
+            let event = HotkeyEventTime(
+                timestamp: self?.hotkeys.lastEventTimestamp ?? 0, tapAt: ProcessInfo.processInfo.systemUptime)
             DispatchQueue.main.async {
-                self?.handlePress(token: token, pressed: pressed)
+                self?.handlePress(token: token, pressed: pressed, event: event)
             }
         }
         hotkeys.onRelease = { [weak self] token in
             let pressed = self?.hotkeys.pressedTokens ?? []
+            let event = HotkeyEventTime(
+                timestamp: self?.hotkeys.lastEventTimestamp ?? 0, tapAt: ProcessInfo.processInfo.systemUptime)
             DispatchQueue.main.async {
-                self?.handleRelease(token: token, pressed: pressed)
+                self?.handleRelease(token: token, pressed: pressed, event: event)
             }
         }
     }
@@ -286,6 +327,8 @@ final class AppController: ObservableObject {
             // 入力監視・アクセシビリティ権限の確認と監視開始
             let tapOK = startHotkeySubsystem()
             checkPermissions(micGranted: micOK, tapCreated: tapOK, showAlert: showPermissionAlert)
+            logEnvironment(micGranted: micOK, tapCreated: tapOK)
+            startEnvironmentObservers()
         }
     }
 
@@ -585,7 +628,7 @@ final class AppController: ObservableObject {
 
     // MARK: - ホットキーイベント（メインスレッド）
 
-    private func handlePress(token: String, pressed: Set<String>) {
+    private func handlePress(token: String, pressed: Set<String>, event: HotkeyEventTime? = nil) {
         // ホットキーテスト中は録音を始めず、押された録音キーのスロットだけを点灯通知する
         // （録音→文字起こしで無料枠を消費させないため）。
         if hotkeyTestActive {
@@ -620,6 +663,7 @@ final class AppController: ObservableObject {
             }
             logDoubleTap(decision, pending: pending, pressedAt: now, window: window)
             if decision.isDoubleTap {
+                logHotkey("押下(2打目)", slot: pending.slotId, generation: recordingGeneration, event: event)
                 acceptDoubleTap()
                 return
             }
@@ -632,6 +676,9 @@ final class AppController: ObservableObject {
             // toggle 実効モード: 録音中の再押下で停止（ハンズフリー切替キー併用での起動も含む）
             if recordingEffectiveMode == .toggle, slotMatches(slot, pressed: pressed) {
                 ActionLog.shared.write("app", "ホットキー押下 slot=\(slotId) mode=toggle 録音停止")
+                // toggle は再押下が「離鍵」に当たる（離鍵→確定の起点）
+                timelines[recordingGeneration]?.releasedAt =
+                    logHotkey("押下(停止)", slot: slotId, generation: recordingGeneration, event: event)
                 finishRecording()
                 return
             }
@@ -658,12 +705,12 @@ final class AppController: ObservableObject {
             // 2 打目の押下で **同じ録音を auto_enter に切り替える**方式にしたため。
             // 録音を作り直さないので、1 打目に入った声が消えず、録音の開始タイミングも
             // auto_enter かどうかで変わらない（どちらも最初の押下が開始点）。
-            beginRecording(slotId: slotId, autoEnter: false, effectiveMode: effectiveMode)
+            beginRecording(slotId: slotId, autoEnter: false, effectiveMode: effectiveMode, event: event)
             break
         }
     }
 
-    private func handleRelease(token: String, pressed: Set<String>) {
+    private func handleRelease(token: String, pressed: Set<String>, event: HotkeyEventTime? = nil) {
         // ホットキーテスト中: どの録音キーも押されなくなったら消灯（録音はしない）。
         if hotkeyTestActive {
             let held = [1, 2].first { slotId in
@@ -685,6 +732,9 @@ final class AppController: ObservableObject {
         }
         if isHotkeyKey {
             ActionLog.shared.write("app", "ホットキー離鍵 slot=\(slotId) mode=hold auto_enter=\(autoEnter)")
+            // ダブルタップでは 2 回目の離鍵で上書きする（確定の起点は最後の離鍵）
+            timelines[recordingGeneration]?.releasedAt =
+                logHotkey("離鍵", slot: slotId, generation: recordingGeneration, event: event)
             // ダブルタップ確定後（autoEnter）の離鍵はもう待たない。この録音で確定する。
             if autoEnter {
                 finishRecording()
@@ -777,6 +827,105 @@ final class AppController: ObservableObject {
         )
     }
 
+    /// ホットキー由来のイベントの実時刻（CGEvent のタイムスタンプ。読めなければ nil）
+    private func hotkeyEventUptime(_ event: HotkeyEventTime?, handledAt: TimeInterval) -> TimeInterval? {
+        guard let event else { return nil }
+        let timebase = HotkeyEventClock.timebase
+        return HotkeyEventClock.uptime(
+            timestamp: event.timestamp, handledAt: handledAt, numer: timebase.numer, denom: timebase.denom)
+    }
+
+    /// ホットキーの押下・離鍵を `[ホットキー]` 行に残し、その操作の実時刻を返す
+    /// （イベント時刻が読めなければタップ受信時刻、それも無ければ今）。録音に関わる操作だけで呼ぶ
+    @discardableResult
+    private func logHotkey(
+        _ action: String, slot: Int, generation: Int, event: HotkeyEventTime?,
+        handledAt: TimeInterval = ProcessInfo.processInfo.systemUptime
+    ) -> TimeInterval {
+        guard let event else { return handledAt }
+        let eventAt = hotkeyEventUptime(event, handledAt: handledAt)
+        ActionLog.shared.write(
+            "hotkey",
+            "[ホットキー] gen=\(DiagnosticText.gen(generation)) \(action) slot=\(slot) "
+                + "イベント→処理=\(DiagnosticText.ms(from: eventAt, to: handledAt)) "
+                + "タップ→処理=\(DiagnosticText.ms(from: event.tapAt, to: handledAt))"
+        )
+        return eventAt ?? event.tapAt
+    }
+
+    /// 計測を `[計測]` 行として出して捨てる（まだ残っているときだけ＝同じ録音で 2 行出さない）。
+    /// 処理タスクの終了とウォッチドッグの打ち切りが両方ここを通るので、先に来た方の 1 行だけが出る
+    /// - Parameter outcome: 結果。nil なら処理タスクが書き込んだ結果のまま出す
+    private func emitTimeline(_ generation: Int, outcome: String?) {
+        guard var timeline = timelines.removeValue(forKey: generation) else { return }
+        if let outcome { timeline.outcome = outcome }
+        ActionLog.shared.write("metrics", timeline.summaryLine())
+    }
+
+    /// 録音 1 回分の入力統計を `[録音]` 行に残し、計測へ写す（ログ専用）
+    private func noteRecordingStats(_ stats: AudioRecorder.RecordingStats, keptSamples: Int, generation: Int) {
+        let pressedAt = timelines[generation]?.pressedAt ?? stats.requestedAt
+        var line = "[録音] gen=\(DiagnosticText.gen(generation)) "
+            + "押下→IO開始=\(DiagnosticText.ms(from: pressedAt, to: stats.startedAt)) "
+            + "押下→最初のバッファ=\(DiagnosticText.ms(from: pressedAt, to: stats.firstBufferAt)) "
+            + "バッファ数=\(stats.bufferCount) 打ち切り=\(stats.truncated) 変換エラー=\(stats.convertErrors) "
+            + "確保失敗=\(stats.allocFailures) 0フレーム=\(stats.zeroFrames) "
+            + "音声=\(secText(Double(keptSamples) / AudioRecorder.sampleRate))s"
+        // 「喋ったのに何も入らない」の最有力手掛かりなので、届かなかったことを明示する
+        if stats.firstBufferAt == nil { line += " 最初の音声バッファが届かなかった" }
+        ActionLog.shared.write("audio", line)
+        timelines[generation]?.recordStartedAt = stats.startedAt
+        timelines[generation]?.firstAudioAt = stats.firstBufferAt
+        timelines[generation]?.recordingSec = Double(keptSamples) / AudioRecorder.sampleRate
+    }
+
+    /// 起動時の環境（OS・版・権限・スロット設定）を残す。プロンプトは長さだけ
+    private func logEnvironment(micGranted: Bool, tapCreated: Bool) {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "-"
+        let build = info?["CFBundleVersion"] as? String ?? "-"
+        let gen = DiagnosticText.gen(recordingGeneration)
+        ActionLog.shared.write(
+            "app",
+            "[環境] gen=\(gen) OS=\(ProcessInfo.processInfo.operatingSystemVersionString) app=\(version)(\(build)) "
+                + "マイク=\(micGranted) AX=\(AXIsProcessTrusted()) 入力監視=\(CGPreflightListenEventAccess()) "
+                + "タップ作成=\(tapCreated)"
+        )
+        for id in [1, 2] {
+            ActionLog.shared.write("app", "[環境] gen=\(gen) \(SettingsChangeLog.slotSummary(id, config.slot(id)))")
+        }
+    }
+
+    /// スリープ／復帰・画面構成の変化を残す（録音やデバイスの異常がこれらの直後に起きていないかを追うため）
+    private func startEnvironmentObservers() {
+        guard environmentObservers.isEmpty else { return }
+        let workspace = NSWorkspace.shared.notificationCenter
+        for (name, label) in [(NSWorkspace.willSleepNotification, "スリープへ移行"),
+                              (NSWorkspace.didWakeNotification, "スリープから復帰")] {
+            environmentObservers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    ActionLog.shared.write(
+                        "app",
+                        "[環境] gen=\(DiagnosticText.gen(self?.recordingGeneration ?? 0)) \(label) "
+                            + "録音中=\(self?.recordingSlot != nil)")
+                }
+            })
+        }
+        environmentObservers.append(NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                let main = NSScreen.main.map {
+                    "\(Int($0.frame.width))x\(Int($0.frame.height))@\($0.backingScaleFactor)x"
+                } ?? "-"
+                ActionLog.shared.write(
+                    "app",
+                    "[環境] gen=\(DiagnosticText.gen(self?.recordingGeneration ?? 0)) 画面構成変更 "
+                        + "画面数=\(NSScreen.screens.count) メイン=\(main)")
+            }
+        })
+    }
+
     /// スロットの必要キーがすべて押されているか
     private func slotMatches(_ slot: SlotConfig, pressed: Set<String>) -> Bool {
         slot.hotkey.allSatisfy { required in
@@ -833,14 +982,25 @@ final class AppController: ObservableObject {
         let serverFormatEligible: Bool
     }
 
-    private func beginRecording(slotId: Int, autoEnter: Bool, effectiveMode: HotkeyMode = .hold) {
+    private func beginRecording(
+        slotId: Int, autoEnter: Bool, effectiveMode: HotkeyMode = .hold, event: HotkeyEventTime? = nil
+    ) {
         guard recordingSlot == nil else { return }
+        // ログ用: メインで押下を受け取った時刻（行の書き出しは録音を仕掛けた後に回す）
+        let handledAt = ProcessInfo.processInfo.systemUptime
         // 直前の録音開始がタイムアウトした（audio-control キューが詰まっている）間は、
         // 新しい録音要求を積まずにその場で断る。死んだキューにジョブを積み上げても
         // 全部まとめて刺さるだけで、復帰したときに古い要求が一斉に走って事故になる
         guard !audioQueueStalled else {
             log.notice("オーディオシステムの復帰待ちのため録音を開始しません")
             ActionLog.shared.write("audio", "録音開始を拒否（オーディオキューの復帰待ち）")
+            // 録音に入らなかった押下も [計測] に 1 行残す（世代は進めていないので gen=-）
+            let rejectedSlot = config.slot(slotId)
+            var rejected = DictationTimeline(
+                generation: 0, slot: slotId, backend: rejectedSlot.backend.rawValue, model: rejectedSlot.model,
+                pressedAt: hotkeyEventUptime(event, handledAt: handledAt) ?? handledAt)
+            rejected.outcome = DictationTimeline.Outcome.rejectedStalled
+            ActionLog.shared.write("metrics", rejected.summaryLine())
             hud.notice("オーディオシステムの復帰を待っています")
             return
         }
@@ -881,6 +1041,14 @@ final class AppController: ObservableObject {
             // まだ読んでいないだけかもしれないので裏で一度読み、あれば次の録音から差し替える
             Self.warmHandsfreeELKey()
         }
+        // この録音の計測を始める（押下の起点は CGEvent の実時刻。読めなければメインでの受信時刻）
+        timelines[generation] = DictationTimeline(
+            generation: generation, slot: slotId,
+            backend: activeTranscriber?.backend.rawValue ?? slot.backend.rawValue,
+            model: activeTranscriber?.model ?? slot.model,
+            pressedAt: hotkeyEventUptime(event, handledAt: handledAt) ?? handledAt)
+        // 出し損ねた計測（停止コールバックが返らなかった等）が溜まり続けないよう古いものから捨てる
+        if timelines.count > 20, let oldest = timelines.keys.min() { timelines.removeValue(forKey: oldest) }
 
         // オンボーディング体験（整形ステップ）中はスロット設定に関わらず整形を強制 ON にする。
         let effectiveFormatEnabled = practiceFormatOverride || slot.formatEnabled
@@ -949,6 +1117,7 @@ final class AppController: ObservableObject {
                     }
                 }
             }
+            stream.sessionLog?.generation = generation
             if stream.start() {
                 streamer = stream
                 recorder.chunkHandler = { [weak stream] chunk in stream?.send(chunk) }
@@ -957,13 +1126,24 @@ final class AppController: ObservableObject {
 
         // マイク起動を最優先で仕掛ける（プリウォーム類は後ろに置き、
         // メインスレッドの Keychain 読みなどで録音開始を遅らせない）
+        recorder.logGeneration = generation
+        let startRequestedAt = ProcessInfo.processInfo.systemUptime
         recorder.start { [weak self] failure in
             // 成功・失敗どちらでもメインへ返す。ウォッチドッグを止めるために
             // 「返ってきた」こと自体を知る必要がある（成功時の遅延は増やさない＝
             // 録音はこの時点で既に走っており、後片付けの通知にすぎない）
             DispatchQueue.main.async {
-                self?.handleRecordStartResult(failure, slotId: slotId, generation: generation)
+                self?.handleRecordStartResult(
+                    failure, slotId: slotId, generation: generation, requestedAt: startRequestedAt)
             }
+        }
+        // マイク許可が外れていると無音のまま録音が進む。TCC への問い合わせを録音経路に
+        // 載せないよう、録音を仕掛けた後に別キューで確かめる（許可済みなら何も書かない）
+        DispatchQueue.global(qos: .utility).async {
+            let status = AVCaptureDevice.authorizationStatus(for: .audio)
+            guard status != .authorized else { return }
+            ActionLog.shared.write(
+                "audio", "[録音] gen=\(DiagnosticText.gen(generation)) マイク許可が未付与 status=\(status.rawValue)")
         }
         // 録音開始が返ってこない（HAL のブロックで audio-control キューごと詰まる）ケースを
         // 見張る。ブロックそのものは防げないので、待たずに知らせて待機へ戻すのが役目
@@ -988,6 +1168,8 @@ final class AppController: ObservableObject {
             Task { await translator.prepare() }
         }
 
+        logHotkey("押下", slot: slotId, generation: generation, event: event, handledAt: handledAt)
+
         // 録音時間の上限（release 取りこぼし等での永久録音を防ぐ保険）
         failsafeTask?.cancel()
         failsafeTask = Task { [weak self] in
@@ -1006,7 +1188,7 @@ final class AppController: ObservableObject {
     /// ウォッチドッグを止め、詰まり判定を解除してから、失敗なら録音セッションを畳む。
     /// ウォッチドッグが先に発火して打ち切った世代の完了は**捨てる**（UI を触らない）。
     private func handleRecordStartResult(
-        _ failure: AudioRecorder.StartFailure?, slotId: Int, generation: Int
+        _ failure: AudioRecorder.StartFailure?, slotId: Int, generation: Int, requestedAt: TimeInterval
     ) {
         // 返ってきた＝キューは生きている。見張りを解く
         if pendingStartGeneration == generation { pendingStartGeneration = nil }
@@ -1021,6 +1203,12 @@ final class AppController: ObservableObject {
             return
         }
         guard let failure else { return }
+        ActionLog.shared.write(
+            "audio",
+            "[録音] gen=\(DiagnosticText.gen(generation)) 開始失敗 "
+                + "要求→失敗=\(DiagnosticText.ms(from: requestedAt, to: ProcessInfo.processInfo.systemUptime)) "
+                + "種別=\(failure)")
+        emitTimeline(generation, outcome: DictationTimeline.Outcome.recordStartFailed)
         // ストリーミングセッションも後始末する（残すと次の録音のチャンクが
         // 旧 WS に流れ、別バックエンドの録音に Deepgram の結果が混ざる）
         streamer?.cancel()
@@ -1067,6 +1255,7 @@ final class AppController: ObservableObject {
             return
         }
 
+        emitTimeline(generation, outcome: DictationTimeline.Outcome.recordStartTimeout)
         streamer?.cancel()
         streamer = nil
         recordContext = nil
@@ -1247,6 +1436,8 @@ final class AppController: ObservableObject {
             "transcriber", "文字起こしタイムアウト gen=\(generation) 上限=\(secText(timeout))s"
         )
 
+        // 処理タスクへ渡る前に打ち切ったときだけ出る（渡った後はタスク側が「打ち切り」で出す）
+        emitTimeline(generation, outcome: DictationTimeline.Outcome.abandonedTimeout)
         // この世代の結果は以後どこに届いても捨てる（貼り付けない・UI を触らない）
         abandonedSessions.abandon(generation)
         outstanding = max(0, outstanding - 1)
@@ -1271,10 +1462,10 @@ final class AppController: ObservableObject {
     /// 訳すのは貼り付け直前の 1 回だけ。失敗したら原文をそのまま返す（テキストを失わない）。
     ///
     /// - Parameter text: 整形・数字正規化・ユーザー辞書まで済んだ最終テキスト
-    /// - Returns: 貼り付けるテキスト
-    private func translateIfEnabled(_ text: String) async -> String {
-        guard DictationTranslation.isEnabled, !text.isEmpty else { return text }
-        guard #available(macOS 26.0, *) else { return text }
+    /// - Returns: 貼り付けるテキストと、翻訳にかかった時間（訳さなかったときは nil。計測ログ用）
+    private func translateIfEnabled(_ text: String, generation: Int) async -> (text: String, ms: Int?) {
+        guard DictationTranslation.isEnabled, !text.isEmpty else { return (text, nil) }
+        guard #available(macOS 26.0, *) else { return (text, nil) }
 
         let translator = dictationTranslator()
         let started = ProcessInfo.processInfo.systemUptime
@@ -1287,7 +1478,13 @@ final class AppController: ObservableObject {
             log.notice("翻訳して入力に失敗したため原文を入力します: \(result.failureReason ?? "不明", privacy: .public)")
             hud.notice("翻訳できなかったため原文を入力しました")
         }
-        return result.text
+        // 本文は出さない（エンジン・時間・成否だけ）
+        ActionLog.shared.write(
+            "app",
+            "[翻訳] gen=\(DiagnosticText.gen(generation)) engine=\(DictationTranslation.engine.rawValue) "
+                + "target=\(DictationTranslation.targetLanguage) \(elapsedMs)ms "
+                + "結果=\(result.didTranslate ? "ok" : "失敗(\(DiagnosticText.clip(result.failureReason ?? "不明", 80)))")")
+        return (result.text, elapsedMs)
     }
 
     /// 現在の設定に合う翻訳器を返す（構成が変わらない限り使い回す）
@@ -1360,11 +1557,19 @@ final class AppController: ObservableObject {
         // 文字起こしの確定が来ない（ローカル認識の finalization ハング）でも、ここが最後の砦
         let generation = recordingGeneration
         startTranscribeWatchdog(generation: generation, backend: context?.transcriber?.backend)
+        // 離鍵を経ない確定（保険タイマー・デバイス変化）は、ここを離鍵の代わりの起点にする
+        let stoppedAt = ProcessInfo.processInfo.systemUptime
+        if timelines[generation] != nil, timelines[generation]?.releasedAt == nil {
+            timelines[generation]?.releasedAt = stoppedAt
+        }
+        // 実際に録音を止めた時刻。短いタップは 2 打目待ちのぶん離鍵より遅れるので、待ちと処理を分けて見る
+        timelines[generation]?.stoppedAt = stoppedAt
 
-        recorder.stop { [weak self] samples in
+        recorder.stopWithStats { [weak self] samples, recordingStats in
             // audio キューから呼ばれる。メインへホップしてタスク起動
             let kept = trimTrailing(samples, seconds: trimTrailingSec)
             DispatchQueue.main.async {
+                self?.noteRecordingStats(recordingStats, keptSamples: kept.count, generation: generation)
                 self?.processAudio(kept, context: context, generation: generation,
                                    autoEnter: useAutoEnter, streamer: activeStreamer,
                                    quietIfNoSpeech: quietIfNoSpeech)
@@ -1382,6 +1587,7 @@ final class AppController: ObservableObject {
         // 既に待機へ戻して通知も出しているので、ここから先には一切進めない
         guard !isAbandoned(generation) else {
             ActionLog.shared.write("app", "打ち切り済みセッションの音声を破棄 gen=\(generation)")
+            emitTimeline(generation, outcome: DictationTimeline.Outcome.abandoned)
             streamer?.cancel()
             taskFinished(generation: generation)
             return
@@ -1389,10 +1595,14 @@ final class AppController: ObservableObject {
         // ライブ設定でなく録音開始時の snapshot だけを使う
         // （滞留中に設定が変わっても別プロバイダーへ送らないため）
         guard let context, let transcriber = context.transcriber else {
+            emitTimeline(generation, outcome: DictationTimeline.Outcome.noContext)
             streamer?.cancel()
             taskFinished(generation: generation)
             return
         }
+        // 計測は辞書に残したまま処理タスクが更新する。前のタスク待ちや処理中にウォッチドッグが
+        // 打ち切った場合も、辞書に残っていればそちらが `[計測]` を出せる
+        timelines[generation]?.autoEnter = autoEnter
         let vadEnabled = context.vadEnabled
         let splitEnabled = context.splitEnabled
         let delayMs = context.autoEnterDelayMs
@@ -1408,8 +1618,13 @@ final class AppController: ObservableObject {
         pipelineTail = Task {
             await previous?.value
             defer { taskFinished(generation: generation) }
+            // [計測] この録音の 1 行サマリ（ログ専用。return のどの経路でも必ず出る。打ち切り済みなら出さない）
+            defer { emitTimeline(generation, outcome: nil) }
             // 前のタスクを待っている間に打ち切られていたら、ここから先へ進まない
-            guard !isAbandoned(generation) else { return }
+            guard !isAbandoned(generation) else {
+                timelines[generation]?.outcome = DictationTimeline.Outcome.abandoned
+                return
+            }
 
             // --- ストリーミング経路: ライブ（Soniox / OpenAI ライブ / ローカル）の確定テキストを受け取って貼り付け ---
             if let streamer {
@@ -1422,6 +1637,16 @@ final class AppController: ObservableObject {
                 let streamed = await streamer.finish()
                 // 終わり方（Soniox だけが区別する。他のライブ型は unknown＝従来どおりの扱い）
                 let ending = streamer.ending
+                let finalizedAt = ProcessInfo.processInfo.systemUptime
+                timelines[generation]?.finalizedAt = finalizedAt
+                timelines[generation]?.sttMs = Int((finalizedAt - streamStart) * 1000)
+                // ライブ経路で終わった前提で streaming にしておき、REST / 再送へ実際に回るときだけ下で上書きする
+                // （確定が空でも正常終了ならライブで終わっている）
+                timelines[generation]?.route = DictationTimeline.route(
+                    backend: transcriber.backend, hadStreamer: true, streamedText: true)
+                // Deepgram / OpenAI ライブは動作上の ending を持たないので、ログ用の終わり方で補う
+                timelines[generation]?.ending = ending == .unknown
+                    ? (streamer.sessionLog?.endingLabel ?? ending.logLabel) : ending.logLabel
                 ActionLog.shared.write(
                     "transcriber",
                     "文字起こし応答 経路=streaming \(streamed.count) 文字 "
@@ -1431,13 +1656,20 @@ final class AppController: ObservableObject {
                 // 確定待ちの最中に打ち切られていたら貼り付けない（今回の障害の実経路）
                 guard !isAbandoned(generation) else {
                     ActionLog.shared.write("app", "打ち切り済みセッションの確定文字を破棄 gen=\(generation)")
+                    timelines[generation]?.outcome = DictationTimeline.Outcome.abandoned
                     return
                 }
                 if !streamed.isEmpty {
                     // 整形が有効なら貼り付け前に LLM で整形（失敗時は原文が返る）
+                    let streamFmtStart = ProcessInfo.processInfo.systemUptime
                     let formatted = formatEnabled
-                        ? await formatter.format(streamed, prompt: formatPrompt, model: formatModel, presetId: formatPresetId)
+                        ? await formatter.format(
+                            streamed, prompt: formatPrompt, model: formatModel, presetId: formatPresetId,
+                            generation: generation)
                         : streamed
+                    if formatEnabled {
+                        timelines[generation]?.formatMs = Int((ProcessInfo.processInfo.systemUptime - streamFmtStart) * 1000)
+                    }
                     // 数字表記を半角アラビア数字へ正規化してからユーザー辞書置換を適用
                     // （全角→半角・連続漢数字→算用数字。置換はその後＝正規化後テキストに効かせる）
                     let corrected = config.applyReplacements(NumeralNormalizer.normalize(
@@ -1448,14 +1680,22 @@ final class AppController: ObservableObject {
                     ))
                     // 「翻訳して入力」が ON なら、この最終テキストを 1 回だけ訳す
                     // （正規化・ユーザー辞書は原文の誤認識を直すためのものなので、翻訳より前に効かせる）
-                    let output = await self.translateIfEnabled(corrected)
+                    let (output, streamTranslateMs) = await self.translateIfEnabled(corrected, generation: generation)
+                    timelines[generation]?.translateMs = streamTranslateMs
                     // 貼り付け先アプリを貼り付け直前に再取得する（録音中に切り替えた場合は今の前面が正）
                     let target = frontApp.snapshot()
                     // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する（履歴保存 OFF はスキップ）
                     if config.historyEnabled {
                         history.add(output, appBundleID: target.bundleID, appName: target.name)
                     }
-                    await Paster.paste(output)
+                    let streamPasteStart = ProcessInfo.processInfo.systemUptime
+                    await Paster.paste(output, logGeneration: generation)
+                    let streamPastedAt = ProcessInfo.processInfo.systemUptime
+                    timelines[generation]?.pasteMs = Int((streamPastedAt - streamPasteStart) * 1000)
+                    timelines[generation]?.pastedAt = streamPastedAt
+                    timelines[generation]?.characters = output.count
+                    timelines[generation]?.targetBundleID = target.bundleID
+                    timelines[generation]?.outcome = DictationTimeline.Outcome.pasted
                     // 接続がエラー・切断で途中で壊れたときは、入ったのが途中までかもしれないと知らせる
                     // （喋った分は捨てずに貼る）。タイムアウトは確定待ちが長引いただけなので知らせない
                     if case .failed(let failure) = ending, failure != .timeout, !isAbandoned(generation) {
@@ -1463,7 +1703,7 @@ final class AppController: ObservableObject {
                     }
                     if autoEnter {
                         try? await Task.sleep(for: .milliseconds(max(0, delayMs)))
-                        Paster.pressEnter()
+                        Paster.pressEnter(logGeneration: generation)
                     }
                     // 実績の集計（JSON 書き出しを含む）は貼り付けに関係しないので、貼り付け・Enter の後に回す
                     stats.recordSession(
@@ -1477,6 +1717,7 @@ final class AppController: ObservableObject {
                 // 録音の再送になり、空振りのたびに通信と待ち時間を足すので、ここで静かに終える
                 if ending == .completed {
                     ActionLog.shared.write("transcriber", "ライブの確定が空（正常終了）のため入力なし")
+                    timelines[generation]?.outcome = DictationTimeline.Outcome.liveEmptyCompleted
                     return
                 }
                 // 確定が空（接続失敗・無音など）→ 取得済みバッファで REST にフォールバック
@@ -1490,14 +1731,21 @@ final class AppController: ObservableObject {
             // ハンズフリー=EL プロキシ、およびストリーミング確定が空だった時のフォールバックが通る。
             let restT0 = ProcessInfo.processInfo.systemUptime
             let duration = Double(samples.count) / AudioRecorder.sampleRate
+            // ライブを張っていない録音は最初から REST 系。ライブから回ってきた録音は、実際に送る直前で決める
+            if streamer == nil {
+                timelines[generation]?.route = DictationTimeline.route(
+                    backend: transcriber.backend, hadStreamer: false, streamedText: false)
+            }
             guard duration >= kMinAudioSec else {
                 log.info("録音が短すぎるためスキップ (\(String(format: "%.2f", duration))s)")
+                timelines[generation]?.outcome = DictationTimeline.Outcome.tooShort
                 return
             }
 
             // 1+2. 正規化と VAD（CPU 処理はメインスレッド外で実行される）
             guard let audio = await Self.prepareAudio(samples, vadEnabled: vadEnabled) else {
                 log.info("発話が検出されなかったためスキップ")
+                timelines[generation]?.outcome = DictationTimeline.Outcome.noSpeech
                 // 誤タップ由来（ダブルタップ待ちの期限切れ）の無音は通知しない。
                 // 打ち切り済みなら、待機に戻したピルに古い通知を出さない
                 if !quietIfNoSpeech, !isAbandoned(generation) {
@@ -1506,6 +1754,7 @@ final class AppController: ObservableObject {
                 return
             }
             let vadMs = Int((ProcessInfo.processInfo.systemUptime - restT0) * 1000)
+            timelines[generation]?.vadMs = vadMs
 
             // 3. API 文字起こし（長文は無音区間で分割し並列送信して待ち時間を短縮）。
             // 単発送信かつサーバー統合整形が使えるときは、STT と整形を 1 リクエストで済ませる
@@ -1513,6 +1762,9 @@ final class AppController: ObservableObject {
             let sttStart = ProcessInfo.processInfo.systemUptime
             let text: String
             let didServerFormat: Bool
+            // ここで REST（Soniox は録音全体の再送）へ実際に送ることが確定する
+            timelines[generation]?.route = DictationTimeline.route(
+                backend: transcriber.backend, hadStreamer: streamer != nil, streamedText: false)
             ActionLog.shared.write(
                 "transcriber",
                 "文字起こし要求 経路=rest backend=\(transcriber.backend.rawValue) "
@@ -1526,8 +1778,10 @@ final class AppController: ObservableObject {
             } catch let error as TranscriptionError {
                 log.error("文字起こし失敗: \(error.message, privacy: .public)")
                 ActionLog.shared.write("transcriber", "文字起こしエラー: \(error.message)")
+                timelines[generation]?.outcome = DictationTimeline.Outcome.transcribeFailed
                 if !isAbandoned(generation) {
-                    hud.notice(error.message)
+                    // 通知文は HTTP 応答本文の先頭を含みうるので、[HUD] 行には出さない（内容は直前の transcriber 行にある）
+                    hud.notice(error.message, logText: "文字起こしエラー（内容は transcriber 行）")
                     // HUD の通知はクリックを透過するので、入力先（設定 › API キー）は別途開いて案内する。
                     // 開くのは起動中 1 回だけ（失敗のたびに設定画面が前面に出て入力中のアプリから
                     // フォーカスを奪わないように。2 回目以降は上の HUD 通知だけ）
@@ -1537,18 +1791,23 @@ final class AppController: ObservableObject {
             } catch {
                 log.error("文字起こしで予期しないエラー: \(error.localizedDescription)")
                 ActionLog.shared.write("transcriber", "文字起こしエラー(想定外): \(error.localizedDescription)")
+                timelines[generation]?.outcome = DictationTimeline.Outcome.transcribeFailed
                 if !isAbandoned(generation) { hud.notice("文字起こしに失敗しました") }
                 return
             }
             let sttMs = Int((ProcessInfo.processInfo.systemUptime - sttStart) * 1000)
             ActionLog.shared.write("transcriber", "文字起こし応答 経路=rest \(text.count) 文字 \(sttMs)ms")
+            timelines[generation]?.sttMs = sttMs
+            timelines[generation]?.finalizedAt = ProcessInfo.processInfo.systemUptime
             // 応答を待っている間に打ち切られていたら貼り付けない
             guard !isAbandoned(generation) else {
                 ActionLog.shared.write("app", "打ち切り済みセッションの確定文字を破棄 gen=\(generation)")
+                timelines[generation]?.outcome = DictationTimeline.Outcome.abandoned
                 return
             }
             guard !text.isEmpty else {
                 log.info("文字起こし結果が空でした")
+                timelines[generation]?.outcome = DictationTimeline.Outcome.emptyResult
                 return
             }
 
@@ -1562,11 +1821,13 @@ final class AppController: ObservableObject {
             if didServerFormat {
                 formatted = text
             } else if formatEnabled {
-                formatted = await formatter.format(text, prompt: formatPrompt, model: formatModel, presetId: formatPresetId)
+                formatted = await formatter.format(
+                    text, prompt: formatPrompt, model: formatModel, presetId: formatPresetId, generation: generation)
             } else {
                 formatted = text
             }
             let fmtMs = Int((ProcessInfo.processInfo.systemUptime - fmtStart) * 1000)
+            if !didServerFormat && formatEnabled { timelines[generation]?.formatMs = fmtMs }
             // 数字表記を半角アラビア数字へ正規化してからユーザー辞書置換を適用
             // （全角→半角・連続漢数字→算用数字。置換はその後＝正規化後テキストに効かせる）
             let corrected = config.applyReplacements(NumeralNormalizer.normalize(
@@ -1576,7 +1837,8 @@ final class AppController: ObservableObject {
                 protectWords: Set(config.numeralProtectWords)
             ))
             // 「翻訳して入力」が ON なら、この最終テキストを 1 回だけ訳す（OFF なら素通り）
-            let output = await self.translateIfEnabled(corrected)
+            let (output, restTranslateMs) = await self.translateIfEnabled(corrected, generation: generation)
+            timelines[generation]?.translateMs = restTranslateMs
             // 貼り付け先アプリを貼り付け直前に再取得する（録音中に切り替えた場合は今の前面が正）
             let target = frontApp.snapshot()
             // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する（履歴保存 OFF はスキップ）
@@ -1584,15 +1846,20 @@ final class AppController: ObservableObject {
                 history.add(output, appBundleID: target.bundleID, appName: target.name)
             }
             let pasteStart = ProcessInfo.processInfo.systemUptime
-            await Paster.paste(output)
+            await Paster.paste(output, logGeneration: generation)
             let pasteMs = Int((ProcessInfo.processInfo.systemUptime - pasteStart) * 1000)
+            timelines[generation]?.pasteMs = pasteMs
+            timelines[generation]?.pastedAt = ProcessInfo.processInfo.systemUptime
+            timelines[generation]?.characters = output.count
+            timelines[generation]?.targetBundleID = target.bundleID
+            timelines[generation]?.outcome = DictationTimeline.Outcome.pasted
             let totalMs = Int((ProcessInfo.processInfo.systemUptime - restT0) * 1000)
             // 統合時は整形を STT と一緒に済ませたことが分かるよう「整形 サーバー統合」と表記する
             let fmtDesc = didServerFormat ? "整形 サーバー統合" : "整形 \(fmtMs)"
             log.info("[計測] \(transcriber.backend.label, privacy: .public) 録音停止→貼付 総計\(totalMs)ms（VAD \(vadMs) / 文字起こし \(sttMs) / \(fmtDesc, privacy: .public) / 貼付 \(pasteMs)）")
             if autoEnter {
                 try? await Task.sleep(for: .milliseconds(max(0, delayMs)))
-                Paster.pressEnter()
+                Paster.pressEnter(logGeneration: generation)
             }
             // 実績の集計（JSON 書き出しを含む）は貼り付けに関係しないので、貼り付け・Enter の後に回す
             stats.recordSession(characters: output.count, recordingSeconds: duration,
