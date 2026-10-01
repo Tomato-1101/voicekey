@@ -4,6 +4,8 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-10-02
+
 ### Added
 - **ターミナル 1 行でのインストール（Mac のみ）**。`brew install --cask tomato-1101/tap/voicekey`（自前の tap `Tomato-1101/homebrew-tap`）と
   `curl -fsSL https://raw.githubusercontent.com/Tomato-1101/voicekey/main/install.sh | sh` の 2 通り。
