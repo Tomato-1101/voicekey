@@ -13,7 +13,7 @@
 //  （AppController.startMicSubsystem / startHotkeySubsystem）。これで「初回起動で権限ポップアップが
 //  一気に複数出る」事故を防ぐ。
 //
-//  レイアウト: 左＝白磁のコンテンツ（大見出し・短い本文・黒ピル CTA）、右＝淡いパステルウォッシュ＋
+//  レイアウト: 左＝白磁のコンテンツ（大見出し・短い本文・黒ピル CTA）、右＝淡い暖色のウォッシュ＋
 //  実物大のモックアップ（レベルメーター・巨大キー・擬似アプリ）。全画面インタースティシャルは
 //  セクションの区切りに使う。ガラスは Glass.swift の共通トークンを使い、CTA だけはこの画面専用の
 //  黒ピル（Typeless 参照）にする（紫・ネオンは使わない）。
@@ -389,32 +389,32 @@ final class OnboardingModel: ObservableObject {
     }
 }
 
-// MARK: - この画面専用の配色（Porcelain 白磁＋淡いパステルウォッシュ・紫は使わない）
+// MARK: - この画面専用の配色（ブランドのボーン／カーボン系の白磁＋暖色ウォッシュ・アクセントは灯りだけ）
 
 private enum OB {
-    /// 白磁（左ペイン・ルート）。ほんのり暖色のオフホワイト／ダークは無彩色チャコール。
+    /// 白磁（左ペイン・ルート）。ボーン寄りの暖色オフホワイト／ダークはカーボン寄りの暖色チャコール。
     static func porcelain(_ s: ColorScheme) -> Color {
-        s == .dark ? Color(red: 0.115, green: 0.115, blue: 0.125)
-                   : Color(red: 0.988, green: 0.986, blue: 0.984)
+        s == .dark ? Color(nsColor: Brand.NS.rgb(0x201F1D))
+                   : Color(nsColor: Brand.NS.rgb(0xF7F5F0))
     }
-    /// 右ペインの淡いパステルウォッシュ（低彩度・青みグレー→暖色。紫は避ける）。
+    /// 右ペインの淡いウォッシュ（ボーン→暖色の低彩度／ダークはカーボン→さらに暗い暖色）。
     static func wash(_ s: ColorScheme) -> [Color] {
         s == .dark
-            ? [Color(red: 0.16, green: 0.17, blue: 0.20), Color(red: 0.115, green: 0.12, blue: 0.135)]
-            : [Color(red: 0.918, green: 0.941, blue: 0.965), Color(red: 0.968, green: 0.949, blue: 0.933)]
+            ? [Color(nsColor: Brand.NS.rgb(0x2B2A27)), Color(nsColor: Brand.NS.rgb(0x1E1D1B))]
+            : [Color(nsColor: Brand.NS.rgb(0xEFEBE3)), Color(nsColor: Brand.NS.rgb(0xF6F1EA))]
     }
-    /// 見出し・本文の色（白磁の上で読みやすい濃さ）。
+    /// 見出し・本文の色（ライト=カーボン／ダーク=ボーン）。
     static func ink(_ s: ColorScheme) -> Color {
-        s == .dark ? Color(white: 0.95) : Color(white: 0.10)
+        s == .dark ? Brand.bone : Brand.carbon
     }
-    /// アクティブなアクセント（レベルメーター・点灯キー）。青系（システムアクセント）。
-    static let signal = Color.accentColor
+    /// アクティブなアクセント（レベルメーター・点灯キー）。ブランドの灯り（signal）。
+    static let signal = Brand.signal
 }
 
 // MARK: - 黒ピル CTA / ゴーストボタン（この画面専用スタイル）
 
 /// 白磁ペインの上で強いコントラストを作る黒ピル primary CTA（Typeless 参照）。
-/// アプリのアクセント（青）ではなく黒（ライト）／白（ダーク）。
+/// アプリのアクセント（灯りの橙）ではなく黒（ライト）／白（ダーク）。
 private struct BlackPillButtonStyle: ButtonStyle {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.isEnabled) private var isEnabled
@@ -585,7 +585,7 @@ struct OnboardingView: View {
             micDeviceRow
         case .hotkeyTest:
             heading("録音キーをためす")
-            bodyText("下の録音キー \(model.config.slot1.hotkeyLabel) を、ちょっと押してみてください。右のキーが青く光れば、しっかり効いています。ここでは文字は入りません（練習です）。")
+            bodyText("下の録音キー \(model.config.slot1.hotkeyLabel) を、ちょっと押してみてください。右のキーがオレンジに光れば、しっかり効いています。ここでは文字は入りません（練習です）。")
             hotkeyTestStatusRow
         default:
             EmptyView()
@@ -813,8 +813,8 @@ struct OnboardingView: View {
     /// ログインの右ペイン（無料体験の価値提案）。
     private var loginValuePane: some View {
         VStack(spacing: 16) {
-            Image(nsImage: NSApp.applicationIconImage ?? NSImage())
-                .resizable().frame(width: 60, height: 60)
+            // 外観でボーン／カーボンを切り替える（applicationIconImage は外観変化で再描画されないため）
+            BrandIcon().frame(width: 60, height: 60)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
             Text("無料で 200 回、ためせます").font(.system(size: 15, weight: .semibold))
             VStack(alignment: .leading, spacing: 12) {

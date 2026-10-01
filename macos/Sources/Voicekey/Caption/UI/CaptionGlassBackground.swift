@@ -86,6 +86,15 @@ final class GlassRimView: NSView {
     override var isFlipped: Bool { false }
 
     override func draw(_ dirtyRect: NSRect) {
+        // ブランドの地色をガラスに薄く乗せる（ライト=ボーン 0.30／ダーク=カーボン 0.34）。
+        // 録音ピル（HudView.glassFace）と同じ色・同じ不透明度にして、ピルが字幕へ育つ
+        // 「一体に見える」関係を保つ。ガラス自体（alpha 0.62）には手を入れない
+        let face = Brand.isDark(effectiveAppearance)
+            ? Brand.NS.carbon.withAlphaComponent(0.34)
+            : Brand.NS.bone.withAlphaComponent(0.30)
+        face.setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: cornerRadius, yRadius: cornerRadius).fill()
+
         let inset = bounds.insetBy(dx: 0.25, dy: 0.25)
         let path = NSBezierPath(roundedRect: inset, xRadius: cornerRadius, yRadius: cornerRadius)
         path.lineWidth = 0.5

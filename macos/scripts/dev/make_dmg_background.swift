@@ -27,8 +27,14 @@ NSGraphicsContext.current!.cgContext.scaleBy(x: 2, y: 2)
 // AppKit は左下原点なので、デザイン上の「上からの位置」を変換するヘルパ
 func fromTop(_ y: CGFloat) -> CGFloat { H - y }
 
-// 背景: ごく薄いグレー（Finder 標準に近い・両外観でラベルが読める）
-NSColor(calibratedRed: 0.957, green: 0.961, blue: 0.969, alpha: 1).setFill()
+// ブランドの色（design/brand/README.md と同じ値）
+func brand(_ hex: UInt32, alpha: CGFloat = 1) -> NSColor {
+    NSColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255,
+            blue: CGFloat(hex & 0xFF) / 255, alpha: alpha)
+}
+
+// 背景: ボーン（ごく薄い暖色の白。両外観でアイコンのラベルが読める明るさ）
+brand(0xF4F1EB).setFill()
 NSRect(x: 0, y: 0, width: W, height: H).fill()
 
 // 中央揃えでテキストを描くヘルパ
@@ -39,17 +45,25 @@ func drawCentered(_ text: String, centerX: CGFloat, topY: CGFloat, font: NSFont,
     s.draw(at: NSPoint(x: centerX - size.width / 2, y: fromTop(topY) - size.height))
 }
 
-// タイトルと説明
-drawCentered("voicekey", centerX: W / 2, topY: 64,
-             font: .systemFont(ofSize: 30, weight: .bold),
-             color: NSColor(calibratedWhite: 0.12, alpha: 1))
+// タイトル（ワードマーク画像。文字はパス化済みなのでフォントに依存しない）と説明
+let wordmarkURL = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent()
+    .appendingPathComponent("../assets/wordmark.svg")
+    .standardizedFileURL
+guard let wordmark = NSImage(contentsOf: wordmarkURL), wordmark.size.height > 0 else {
+    fatalError("ワードマークを読めません: \(wordmarkURL.path)")
+}
+let wordmarkHeight: CGFloat = 34
+let wordmarkWidth = wordmark.size.width * wordmarkHeight / wordmark.size.height
+wordmark.draw(in: NSRect(x: (W - wordmarkWidth) / 2, y: fromTop(64) - wordmarkHeight,
+                         width: wordmarkWidth, height: wordmarkHeight))
 drawCentered("アイコンを Applications フォルダにドラッグしてインストール", centerX: W / 2, topY: 96,
              font: .systemFont(ofSize: 14, weight: .regular),
              color: NSColor(calibratedWhite: 0.45, alpha: 1))
 
 // 矢印（アプリアイコン位置 x=165 と Applications 位置 x=495 の間、アイコン中心の高さ y=205）
 let arrowY = fromTop(205)
-let arrowColor = NSColor(calibratedRed: 0.04, green: 0.52, blue: 1.0, alpha: 0.85) // システムブルー寄り
+let arrowColor = brand(0xFF5A1F, alpha: 0.85) // ブランドの灯り（signal）
 arrowColor.setStroke()
 arrowColor.setFill()
 
@@ -71,7 +85,7 @@ head.fill()
 drawCentered("初回起動は voicekey を右クリック →「開く」（詳細は同梱のお読みくださいへ）",
              centerX: W / 2, topY: 376,
              font: .systemFont(ofSize: 12, weight: .regular),
-             color: NSColor(calibratedWhite: 0.55, alpha: 1))
+             color: brand(0x7F796F))  // 刻印（legend）
 
 NSGraphicsContext.restoreGraphicsState()
 

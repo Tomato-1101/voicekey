@@ -97,6 +97,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var activityToken: NSObjectProtocol?
     /// ライブ字幕の ⌥⌘S ホットキー（macOS 26 以降のみ。型を直接持てないので AnyObject で保持）
     private var captionHotKey: AnyObject?
+    /// 外観（ライト/ダーク）の変化の監視。アプリアイコン画像の差し替えに使う
+    private var appearanceObservation: NSKeyValueObservation?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         // メニューバー常駐アプリとして Dock / Cmd+Tab から隠す
@@ -114,6 +116,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             forEventClass: AEEventClass(kInternetEventClass),
             andEventID: AEEventID(kAEGetURL)
         )
+    }
+
+    /// いまの外観に合ったアイコンを `NSApp.applicationIconImage` に入れる
+    private func applyAppIcon() {
+        NSApp.applicationIconImage = Brand.appIcon(dark: Brand.isDark(NSApp.effectiveAppearance))
     }
 
     /// 受信した voicekey:// URL をログイン司令塔へ渡す。
@@ -168,6 +175,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // （セットアップガイドの入力欄・内蔵ターミナルへの貼り付け不可の実機報告・2026-07-05）。
         // メニューは画面に出ないが、キーイベントのフォールバック先として機能する。
         installMainMenu()
+
+        // NSAlert・Dock などに出るアプリアイコンを外観に合わせる（ライト=ボーン／ダーク=カーボン）。
+        // KVO の通知はメインスレッドで届く（effectiveAppearance は AppKit がメインで更新する）
+        applyAppIcon()
+        appearanceObservation = NSApp.observe(\.effectiveAppearance) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.applyAppIcon() }
+        }
 
         // App Nap を無効化する。ウィンドウを 1 つも持たないメニューバーアプリは
         // ナップ対象になり、イベントタップのコールバックが遅延 → OS にタイムアウト
@@ -520,6 +534,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
                 self?.feedbackWindow?.close()
                 self?.feedbackWindow = nil
             })
+            // .tint（トグル・選択・.foregroundStyle(.tint)）をシステムのアクセントではなくブランドの灯りにする
+            .tint(Brand.signal)
         )
         let window = NSWindow(contentViewController: hosting)
         window.title = "フィードバック"
@@ -650,6 +666,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
                 controller: controller,
                 onShowOnboarding: { [weak self] in self?.showOnboarding(fromStep: 0) }
             )
+            // .tint（トグル・選択・.foregroundStyle(.tint)）をシステムのアクセントではなくブランドの灯りにする
+            .tint(Brand.signal)
         )
         let window = NSWindow(contentViewController: hosting)
         window.title = "voicekey"
@@ -716,46 +734,91 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     }
 }
 
-/// メニューバーアイコンの生成（状態で色が変わる）
+/// メニューバーアイコンの生成（ロゴ「17 LEGEND」のキーを描き、灯りの形と色で状態を示す）
+///
+/// 18×18pt のキャンバス（y 下向き）に、キー枠・刻印バー・灯りを描く。
+/// 待機はテンプレート画像にして OS にメニューバーの明暗を任せる。色付きの状態は
+/// テンプレートにできないので、枠と刻印は描画時の外観で解決される `labelColor` で描く
+/// （drawingHandler は描かれるたびにその時の外観で呼ばれるため、明暗の切替に追従する）。
 enum StatusIcon {
+
+    /// キャンバスの大きさ（pt）
+    static let canvas = NSSize(width: 18, height: 18)
+    /// キー枠
+    private static let frameRect = NSRect(x: 1.875, y: 1.875, width: 14.25, height: 14.25)
+    private static let frameRadius: CGFloat = 4.125
+    private static let frameLineWidth: CGFloat = 1.35
+    /// 刻印バー
+    private static let legendRect = NSRect(x: 4.5, y: 11.4, width: 4.875, height: 1.35)
+    private static let legendRadius: CGFloat = 0.675
+    /// 灯りの中心
+    private static let lightCenter = NSPoint(x: 11.7, y: 6.3)
 
     /// 状態に応じたメニューバーアイコンを返す
     static func image(for state: AppState) -> NSImage {
+        let image: NSImage
         switch state {
         case .idle:
-            // テンプレート画像: ライト/ダークメニューバーに自動追従
-            return symbol("mic.fill", color: nil)
-        case .recording(let autoEnter, let handsFree):
-            return symbol("mic.fill", color: handsFree ? .systemTeal : (autoEnter ? .systemPurple : .systemRed))
-        case .transcribing:
-            return symbol("waveform", color: .systemOrange)
-        }
-    }
-
-    private static func symbol(_ name: String, color: NSColor?) -> NSImage {
-        let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
-        guard var image = NSImage(
-            systemSymbolName: name,
-            accessibilityDescription: "voicekey"
-        )?.withSymbolConfiguration(config) else {
-            return NSImage()
-        }
-        if let color {
-            // 色付き = 非テンプレート（録音中などの状態を色で示す）
-            image = tinted(image, color: color)
-            image.isTemplate = false
-        } else {
+            // テンプレート画像: ライト/ダークメニューバーに自動追従（色は OS が決めるので黒で描く）
+            image = draw { _ in
+                drawKey(color: .black, legendColor: .black)
+                ring(radius: 1.5, lineWidth: 1.05, color: .black)
+            }
             image.isTemplate = true
+        case .recording(let autoEnter, let handsFree):
+            image = draw { _ in
+                // 自動送信は刻印バーも灯す（＝離したら Enter が押される合図）
+                drawKey(color: .labelColor, legendColor: autoEnter ? Brand.NS.signal : .labelColor)
+                if handsFree {
+                    // ハンズフリーは点の外側に光輪
+                    ring(radius: 3.2, lineWidth: 0.9, color: Brand.NS.signal.withAlphaComponent(0.45))
+                }
+                dot(radius: 2.1, color: Brand.NS.signal)
+            }
+            image.isTemplate = false
+        case .transcribing:
+            image = draw { _ in
+                drawKey(color: .labelColor, legendColor: .labelColor)
+                ring(radius: 1.6, lineWidth: 1.2, color: Brand.NS.signal)
+            }
+            image.isTemplate = false
         }
+        image.accessibilityDescription = "voicekey"
         return image
     }
 
-    private static func tinted(_ image: NSImage, color: NSColor) -> NSImage {
-        NSImage(size: image.size, flipped: false) { rect in
-            image.draw(in: rect)
-            color.set()
-            rect.fill(using: .sourceAtop)
+    private static func draw(_ body: @escaping (NSRect) -> Void) -> NSImage {
+        NSImage(size: canvas, flipped: true) { rect in
+            body(rect)
             return true
         }
+    }
+
+    /// キー枠（線）と刻印バー（塗り）
+    private static func drawKey(color: NSColor, legendColor: NSColor) {
+        let frame = NSBezierPath(roundedRect: frameRect, xRadius: frameRadius, yRadius: frameRadius)
+        frame.lineWidth = frameLineWidth
+        color.setStroke()
+        frame.stroke()
+        legendColor.setFill()
+        NSBezierPath(roundedRect: legendRect, xRadius: legendRadius, yRadius: legendRadius).fill()
+    }
+
+    /// 灯りの輪（線）
+    private static func ring(radius: CGFloat, lineWidth: CGFloat, color: NSColor) {
+        let path = NSBezierPath(ovalIn: circleRect(radius: radius))
+        path.lineWidth = lineWidth
+        color.setStroke()
+        path.stroke()
+    }
+
+    /// 灯りの点（塗り）
+    private static func dot(radius: CGFloat, color: NSColor) {
+        color.setFill()
+        NSBezierPath(ovalIn: circleRect(radius: radius)).fill()
+    }
+
+    private static func circleRect(radius: CGFloat) -> NSRect {
+        NSRect(x: lightCenter.x - radius, y: lightCenter.y - radius, width: radius * 2, height: radius * 2)
     }
 }

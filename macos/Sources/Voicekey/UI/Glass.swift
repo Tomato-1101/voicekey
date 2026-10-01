@@ -138,7 +138,7 @@ private struct LiquidButtonBackground: ViewModifier {
                 // アクセントのグラデ塗り（全 OS 共通・glassEffect 不使用）。上が明るく立体感を出す
                 .background(
                     LinearGradient(
-                        colors: [Color.accentColor, Color.accentColor.opacity(0.78)],
+                        colors: [Brand.signal, Brand.signal.opacity(0.78)],
                         startPoint: .top, endPoint: .bottom
                     ),
                     in: Capsule()
@@ -236,13 +236,13 @@ private struct FrostedBackdrop: View {
         }
     }
 
-    /// 無彩色ベースの落ち着いたウォッシュ。紫・ネオンは「信頼できる色に」との指摘で撤去し、
-    /// 黒〜ダークグレー（ダーク）／白（ライト）主体にして、アクセントは気配程度（0.04）に留める。
+    /// ブランドの地色ベースの落ち着いたウォッシュ。紫・ネオンは「信頼できる色に」との指摘で撤去済み。
+    /// カーボン〜黒（ダーク）／ボーン（ライト）主体にして、灯り（signal）は気配程度（0.035）に留める。
     private var wash: some View {
         LinearGradient(
             colors: colorScheme == .dark
-                ? [Color.accentColor.opacity(0.04), Color.black.opacity(0.18), Color.black.opacity(0.30)]
-                : [Color.accentColor.opacity(0.04), Color.white.opacity(0.22), Color.white.opacity(0.06)],
+                ? [Brand.signal.opacity(0.035), Brand.carbon.opacity(0.30), Color.black.opacity(0.30)]
+                : [Brand.signal.opacity(0.035), Brand.bone.opacity(0.30), Brand.bone.opacity(0.10)],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
         )

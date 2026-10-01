@@ -134,7 +134,7 @@ struct HomeView: View {
                 let threshold = Float(i) / Float(bars)
                 let on = micTest.running && micTest.level >= threshold + 0.02
                 Capsule()
-                    .fill(on ? Color.accentColor : Color.primary.opacity(0.12))
+                    .fill(on ? Brand.signal : Color.primary.opacity(0.12))
                     .frame(height: 14)
                     .animation(.easeOut(duration: 0.08), value: micTest.level)
             }
@@ -184,7 +184,7 @@ struct HomeView: View {
         return today > 0 ? "今日はここまで \(today) 文字を入力しました" : "今日はまだ入力していません"
     }
 
-    /// 新バージョン検知時だけ出す更新ピル。落ち着いた青系・小さめの横長角丸ピル。
+    /// 新バージョン検知時だけ出す更新ピル。ブランドの灯りの色・小さめの横長角丸ピル。
     /// クリックで Sparkle の対話フロー（DL→インストール）を開始する。
     private var updatePill: some View {
         Button {
@@ -200,8 +200,8 @@ struct HomeView: View {
             .padding(.vertical, 6)
             .foregroundStyle(.white)
             .background(
-                // アクセントを使わず彩度を抑えた青（雰囲気を壊さない・少しだけ目立つ）
-                Capsule().fill(Color(red: 0.32, green: 0.50, blue: 0.80))
+                // 唯一のアクセント（灯り）で「押すと何か起きる」ことを示す
+                Capsule().fill(Brand.signal)
             )
             .overlay(
                 Capsule().strokeBorder(Color.white.opacity(0.25), lineWidth: 0.5)
@@ -374,7 +374,7 @@ struct HomeView: View {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
                         Capsule().fill(Color.primary.opacity(0.08))
-                        Capsule().fill(Color.accentColor.opacity(0.75))
+                        Capsule().fill(Brand.signal.opacity(0.75))
                             .frame(width: max(6, geo.size.width * ratio))
                     }
                 }

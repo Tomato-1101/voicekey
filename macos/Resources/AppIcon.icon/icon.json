@@ -1,0 +1,48 @@
+{
+  "fill": "none",
+  "groups": [
+    {
+      "blur-material": null,
+      "hidden": false,
+      "layers": [
+        {
+          "glass": false,
+          "hidden": false,
+          "image-name-specializations": [
+            {
+              "value": "bone-bleed-1024.png"
+            },
+            {
+              "appearance": "dark",
+              "value": "carbon-bleed-1024.png"
+            }
+          ],
+          "name": "key",
+          "position": {
+            "scale": 1,
+            "translation-in-points": [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "lighting": "combined",
+      "name": "key",
+      "shadow": {
+        "kind": "none",
+        "opacity": 0
+      },
+      "specular": false,
+      "translucency": {
+        "enabled": false,
+        "value": 0
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}

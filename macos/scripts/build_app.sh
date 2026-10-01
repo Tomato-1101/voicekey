@@ -25,6 +25,29 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/voicekey "$APP/Contents/MacOS/voicekey"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/"
+# アプリ内（設定サイドバー・オンボーディング）で外観別に出すアイコン
+cp Resources/AppIconLight.png Resources/AppIconDark.png "$APP/Contents/Resources/"
+
+# macOS 26 以降で外観（ライト=ボーン／ダーク=カーボン）に追従するアイコンと
+# アクセント色を Assets.car にまとめる。actool が無い環境では icns だけで従来どおり動く
+# （Info.plist の CFBundleIconFile が icns を指しているため）。
+if xcrun --find actool >/dev/null 2>&1; then
+    echo "==> actool (AppIcon.icon + AccentColor)"
+    ACTOOL_OUT="$(mktemp -d)"
+    xcrun actool Resources/Assets.xcassets Resources/AppIcon.icon \
+        --compile "$ACTOOL_OUT" \
+        --platform macosx \
+        --minimum-deployment-target 14.0 \
+        --app-icon AppIcon \
+        --accent-color AccentColor \
+        --output-partial-info-plist "$ACTOOL_OUT/partial.plist" \
+        --output-format human-readable-text
+    # actool は自前の AppIcon.icns も出すが、icns は手元のもの（Resources/AppIcon.icns）を正とするので Assets.car だけ使う
+    cp "$ACTOOL_OUT/Assets.car" "$APP/Contents/Resources/"
+    rm -rf "$ACTOOL_OUT"
+else
+    echo "==> actool が無いため Assets.car を省略（icns のみ）"
+fi
 
 # Sparkle.framework を同梱する。SPM の手組みバンドルでは Xcode と違い自動埋め込み
 # されないため、xcframework から自分でコピーして rpath を通す

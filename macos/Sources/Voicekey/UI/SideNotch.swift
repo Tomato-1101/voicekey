@@ -78,8 +78,8 @@ final class SideNotchSlitView: NSView {
         bar.borderWidth = 0.75
         bar.borderColor = barBorderColor()
         if recording {
-            // 録音中はアクセント色のソフトグローで「点灯」を表す（バーの基調は黒のまま）
-            bar.shadowColor = NSColor.controlAccentColor.cgColor
+            // 録音中は灯りの色（signal）のソフトグローで「点灯」を表す（バーの基調は黒のまま）
+            bar.shadowColor = Brand.NS.signal.cgColor
             bar.shadowOpacity = 0.9
             bar.shadowRadius = 4
             bar.shadowOffset = .zero
@@ -98,7 +98,7 @@ final class SideNotchSlitView: NSView {
     /// バーの外枠（通常は薄グレーの細線で輪郭。録音中だけアクセント寄りに点灯させる）
     private func barBorderColor() -> CGColor {
         if recording {
-            return NSColor.controlAccentColor.withAlphaComponent(0.9).cgColor
+            return Brand.NS.signal.withAlphaComponent(0.9).cgColor
         }
         let alpha: CGFloat = hovering ? 0.4 : 0.28
         return NSColor.white.withAlphaComponent(alpha).cgColor
@@ -616,6 +616,7 @@ final class SideNotchController {
                 },
                 onClose: { [weak self] in self?.closeHistory() }
             )
+            .tint(Brand.signal)  // システムのアクセントではなくブランドの灯り
         )
         view.frame = NSRect(x: 0, y: 0, width: width, height: height)
         panel.contentView = view

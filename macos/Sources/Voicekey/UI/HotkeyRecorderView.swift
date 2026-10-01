@@ -27,7 +27,7 @@ struct HotkeyRecorderView: View {
         Button(action: toggleRecording) {
             HStack {
                 Text(displayText)
-                    .foregroundStyle(isRecording ? Color.accentColor : Color.primary)
+                    .foregroundStyle(isRecording ? Brand.signal : Color.primary)
                 Spacer()
                 if isRecording {
                     Text("ESC で割り当てなし")
@@ -41,7 +41,7 @@ struct HotkeyRecorderView: View {
             .background(
                 RoundedRectangle(cornerRadius: 6)
                     .strokeBorder(
-                        isRecording ? Color.accentColor : Color.secondary.opacity(0.4),
+                        isRecording ? Brand.signal : Color.secondary.opacity(0.4),
                         lineWidth: 1
                     )
             )

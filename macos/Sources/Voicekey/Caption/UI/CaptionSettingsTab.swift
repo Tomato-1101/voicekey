@@ -111,7 +111,7 @@ struct CaptionSettingsTab: View {
             Text("状態").font(.headline)
             HStack(spacing: 12) {
                 Label(model.stateTitle, systemImage: model.isActive ? "waveform" : "pause.circle")
-                    .foregroundStyle(model.isActive ? Color.accentColor : .secondary)
+                    .foregroundStyle(model.isActive ? Brand.signal : .secondary)
                 Spacer()
                 Button(model.isActive ? "字幕を停止" : "字幕を開始") { model.toggle() }
             }

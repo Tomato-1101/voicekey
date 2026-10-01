@@ -10,6 +10,9 @@
 	<string>voicekey</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
+	<!-- macOS 26 以降は Assets.car の AppIcon（外観で切り替わる）を使う。無ければ上の icns -->
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.voicekey.app</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -37,6 +40,9 @@
 	<string>14.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<!-- アクセント色はシステム設定（青・紫など）ではなくブランドの灯り（#FF5A1F）。Assets.car の AccentColor -->
+	<key>NSAccentColorName</key>
+	<string>AccentColor</string>
 	<key>NSAppSleepDisabled</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>

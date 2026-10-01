@@ -5,6 +5,12 @@ voicekeyの変更履歴を記録するファイルです。
 ## [Unreleased] - 2026-10-01
 
 ### Added
+- **新ロゴ「17 LEGEND」のブランド資産を追加**。マスター SVG・生成スクリプト・展開先の一覧を `design/brand/` に置いた
+  （Geist の TTF は再配布しないため `fonts/` は git 管理外。再生成手順は `design/brand/README.md`）
+- 配色を `macos/Sources/Voicekey/UI/Brand.swift` に集約（灯り `#FF5A1F` / 深い灯り `#D9480F` / ボーン `#F4F1EB` /
+  ストーン `#CFC9BE` / 刻印 `#7F796F` / カーボン `#2B2A27`）。画面で使うアプリアイコンは外観で切り替わる `BrandIcon` から出す（Mac のみ）
+- アクセントカラー（`AccentColor` = `#FF5A1F`）をアプリに登録（`NSAccentColorName`）（Mac のみ）
+- メニューバーアイコンの回帰テスト `StatusIconTests` を追加（状態ごとの色・形、テンプレート扱い、外観で枠の明暗が反転すること）（Mac のみ）
 - **Soniox（`stt-rt-v5`）のライブ文字起こしを追加**。録音中から WebSocket で並行認識し、離鍵時に finalize して確定する。
   キーは中央 Keychain の `SONIOX_API_KEY`。「言語」設定を言語ヒント（未設定＝自動判定のときはヒントを送らない）に、プロンプトを文脈（context）として渡す（Mac のみ）
 - **OpenAI `gpt-transcribe` を追加**。`response_format=json` と `languages[]` で送り、JSON の `text` を読む（Mac のみ）
@@ -19,6 +25,18 @@ voicekeyの変更履歴を記録するファイルです。
 - ローカル WebSocket サーバー（NWListener・外部通信なし）相手の Soniox 実接続回帰テスト `SonioxSessionLocalServerTests`（Mac のみ）
 
 ### Changed
+- **アプリアイコンを新ロゴに差し替え、OS の外観で自動で切り替わるようにした**（ライト = ボーン地 / ダーク = カーボン地）。
+  Icon Composer 形式（`macos/Resources/AppIcon.icon`）を `actool` で `Assets.car` に組み込み、古い OS 向けに `AppIcon.icns` も更新。
+  起動中の Dock アイコンも外観の変更に追従する（Mac のみ）
+- **メニューバーアイコンを「キー」の自前描画に変更**。待機 = 輪（テンプレート画像でメニューバーの明暗に追従）／録音中 = 橙の点／
+  自動送信の録音 = 左下の刻印も橙／ハンズフリー録音 = 点のまわりに光輪／変換中 = 橙の輪（Mac のみ）
+- 録音 HUD: 録音中の点を灯りの橙＋淡い光に、ハンズフリーの波形バーと自動送信の ⏎ 印も橙に統一。
+  ピル・待機ピル・ライブ字幕のガラスに地色（ライト = ボーン 0.30 / ダーク = カーボン 0.34）を薄く重ね、ピルと字幕の一体感はそのまま（Mac のみ）
+- サイドノッチの録音中の光と枠、履歴パネルのアクセントを灯りの橙に変更（Mac のみ）
+- 設定・ホーム・オンボーディング・フィードバックの各画面のアクセント（選択中の項目・ボタン・メーター・更新バッジ等）を灯りの橙に統一し、
+  背景のウォッシュとオンボーディングの地色をボーン／カーボン系に変更。設定のサイドバーとログイン画面のアイコンを新ロゴに（Mac のみ）
+- DMG の背景をボーン地＋ワードマーク（`macos/scripts/assets/wordmark.svg`）に変更し、矢印を灯りの橙・補足文字を刻印色にした（Mac のみ）
+- Windows はアイコンファイル（`icon.ico`）の差し替えのみ（UI の配色は変えていない）
 - 文字起こしエンジンの選択肢を Soniox / ローカル（Apple）/ OpenAI ライブ / OpenAI / Microsoft MAI / ElevenLabs / Groq の順にした（Mac のみ）
 - 新規インストール時の既定を **録音キー 1 = Soniox / 録音キー 2 = Groq** に変更（Mac のみ）
 - 保存済み設定の移行: Deepgram の録音キーは Soniox へ、その他の選べないエンジンは Groq へ移す。モデル名は
@@ -35,9 +53,19 @@ voicekeyの変更履歴を記録するファイルです。
 - `AZURE_SPEECH_ENDPOINT` は scheme・ホスト・ポートだけを使う（パス・クエリは捨て、`https://` が無ければ補う）（Mac のみ）
 
 ### Removed
+- 旧アイコン生成スクリプト `macos/scripts/dev/make_app_icon.swift` を削除（アイコンは `design/brand/` から生成する）
 - モデル `nova-2` / `gpt-realtime-whisper` / `whisper-large-v3` / `gpt-4o-mini-transcribe` / `gpt-4o-transcribe` / `scribe_v1_experimental` を選択肢から削除。
   これらを保存していた録音キーは各エンジンの既定モデルへ自動で移る（Mac のみ）
 - Deepgram を選択肢から外した（内部の実装は残している）（Mac のみ）
+
+### Technical Details（ロゴ「17 LEGEND」とブランド配色）
+- **UI/Brand.swift**（新規）: `Brand`（SwiftUI `Color` と `Brand.NS` の `NSColor`）、`Brand.appIcon(dark:)`、`Brand.isDark(_:)`、`BrandIcon`
+- **VoicekeyApp.swift**: `StatusIcon` を 18×18pt の自前描画に置き換え。`NSApp.effectiveAppearance` を KVO で監視して
+  `applicationIconImage` を差し替え。フィードバック・メインウィンドウのルートに `.tint(Brand.signal)`
+- **Hud.swift**: `HudView.glassFace(dark:)` を追加。**CaptionGlassBackground.swift**: `GlassRimView` が同じ地色を先に塗る
+- **build_app.sh**: `AppIconLight.png` / `AppIconDark.png` を同梱し、`xcrun actool` で `Assets.car` を生成（actool が無い環境は icns のみ）
+- **Info.plist**: `CFBundleIconName` = `AppIcon`、`NSAccentColorName` = `AccentColor`
+- **make_dmg_background.swift**: 配色をブランド色に、タイトル文字をワードマーク SVG（高さ 34pt）に置き換え。座標は変更なし
 
 ### Fixed
 - 自由入力したモデル名（候補一覧に無い名前）が再起動のたびに既定モデルへ戻っていたのを修正（Mac のみ）

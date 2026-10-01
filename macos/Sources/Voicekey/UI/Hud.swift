@@ -468,10 +468,10 @@ struct HudView: View {
     /// ライブ字幕（personal）の固定幅。幅を固定することで文字更新のたびにカプセルが揺れない。
     /// 波形バー等と足しても外側パネル幅(460)に収まる値にする（横あふれ防止）。
     static let liveTextWidth: CGFloat = 190
-    /// ハンズフリー録音のアクセント色（赤＝通常録音 / 紫＝自動送信 と区別するティール）
-    static let handsFreeAccent = Color(red: 0.0, green: 0.78, blue: 0.72)
 
     @ObservedObject var model: HudModel
+    /// ガラスに重ねるブランドの色面（ライト=ボーン／ダーク=カーボン）を選ぶため
+    @Environment(\.colorScheme) private var colorScheme
 
     /// 中身（アイコン/波形/変換マーク）の実測サイズ。これに padding を足した値を
     /// カプセルの .frame に spring で反映することで、mode が変わってもカプセルは削除・挿入
@@ -524,6 +524,10 @@ struct HudView: View {
                     .background {
                         HudBackdrop()
                             .clipShape(Capsule())
+                            // ブランドの地色をガラスに薄く乗せる（ガラスのライブ感は残す＝下の
+                            // バックドロップはそのまま、上に色面を重ねるだけ）。ライブ字幕のガラス
+                            // （GlassRimView）にも同じ色・同じ不透明度で重ねて「一体に見える」関係を保つ
+                            .overlay(Capsule().fill(Self.glassFace(dark: colorScheme == .dark)))
                             // 既存のリム（.primary 由来なのでライト/ダーク両対応）。
                             // ガラスを薄めた（VEV alpha 0.7）ぶん装飾も弱め、存在感を下げる
                             .overlay(Capsule().strokeBorder(Color.primary.opacity(0.09), lineWidth: 0.5))
@@ -655,28 +659,33 @@ struct HudView: View {
         }
     }
 
+    /// ガラスに重ねる色面（ライト=ボーン 0.30／ダーク=カーボン 0.34）。字幕のガラスと共通の値
+    static func glassFace(dark: Bool) -> Color {
+        dark ? Brand.carbon.opacity(0.34) : Brand.bone.opacity(0.30)
+    }
+
     /// 録音中の中身（アプリアイコン・状態ドット・波形・自動送信バッジ）。
-    /// ハンズフリーは「ハンズフリー」ラベルや停止ヒントを出さず、状態ドットと波形バーを
-    /// アクセント色（ティール）に着色することだけで通常録音と区別する（情報最小限・幅も詰まる）。
+    /// ハンズフリーは「ハンズフリー」ラベルや停止ヒントを出さず、波形バーを灯りの色（signal）に
+    /// 着色することだけで通常録音と区別する（情報最小限・幅も詰まる）。
     @ViewBuilder
     private func recordingContent(autoEnter: Bool, handsFree: Bool) -> some View {
-        // 状態色: ハンズフリー=ティール / 自動送信=パープル / 通常=レッド
-        let accent: Color = handsFree ? Self.handsFreeAccent : (autoEnter ? Color.purple : Color.red)
         HStack(spacing: 10) {
             appIconView  // 貼り付け先アプリのアイコン（左端）
+            // 状態ドットは通常・自動送信・ハンズフリーとも灯りの色。にじみで「点灯」に見せる
             Circle()
-                .fill(accent)
+                .fill(Brand.signal)
                 .frame(width: 7, height: 7)
+                .shadow(color: Brand.signal.opacity(0.6), radius: 3)
             // 音声レベル連動の波形バー。ハンズフリー中はバーもアクセント色で塗る（ラベル無しでも一目で判る）。
             // personal のライブ字幕（liveText）が出ている間はバーを出さない（字幕とバーの二重表示を避ける・
             // ユーザー指示 2026-07-17）。非 personal は liveText が常に空なのでこれまで通りバーを表示する。
             if model.liveText.isEmpty {
-                levelBars(tint: handsFree ? Self.handsFreeAccent : Color.primary.opacity(0.75))
+                levelBars(tint: handsFree ? Brand.signal : Color.primary.opacity(0.75))
             }
             if autoEnter {
                 Image(systemName: "return")
                     .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(.purple)
+                    .foregroundStyle(Brand.signal)
             }
             // personal のライブ字幕（ストリーミング暫定テキスト）。幅を固定して横揺れを防ぎ、
             // tail 側（最新語）を head トランケーションで見せる。空なら要素ごと出さない。
