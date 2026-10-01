@@ -10,15 +10,15 @@
 - 両 OS に存在する変更は Mac / Windows 同時実装。README・OVERVIEW・CHANGELOG はコードと同じコミットで更新。
 - 文字起こしエンジン（スロットの backend）の切替は本人の判断。Claude は変えない（10-01 時点は右⌥・右⌘とも apple_local）。
 
-## STT エンジン入れ替え（10-02 01:50 更新）
+## STT エンジン入れ替え（10-02 01:58 更新）
 - 目的: 本人決定（10-01）の追加・削除を Mac に実装（Windows は開発停止中）。本人は主に日本語（混在は重視しない）。
 - 現状: 3f207c9 で push・dist 入替済み。追加＝Soniox stt-rt-v5（ライブ・新規の既定）／gpt-transcribe／MAI-Transcribe-2／scribe_v2。
-  疎通済み: Soniox（米国窓口）離鍵→確定 0.28〜0.30s 誤りゼロ／gpt-transcribe 1.7〜1.8s／scribe_v2 0.6〜1.0s。
-- Soniox JP リージョンは 10-01 にサポートが有効化（返信メール確認済み）。733d7f4 で接続先をキーから自動判定（無料の /v1/models を
-  jp・us 並列で叩き 200 の方。キーの指紋ごとに UserDefaults へ記憶）。いまの米国キーは jp=401 / us=200 で us 判定になることを確認。
-- 次にやること: 本人が Soniox コンソールで region=JP のプロジェクトとキーを作り `SONIOX_API_KEY` を差し替え →
-  無料の /v1/models で jp=200 を確認 → JP 窓口で疎通（要承認・数回）→ ActionLog「Soniox 再送」の実測で再送待ち上限 15s を詰める。
-  Azure（MAI）は本人がまだ作らない方針（10-02）。作る時はサブスク作成→southeastasia に Speech→ENDPOINT/KEY 登録→MAI 3 回（承認済み）。
+  疎通済み: gpt-transcribe 1.7〜1.8s／scribe_v2 0.6〜1.0s。Soniox は 733d7f4 で接続先をキーから自動判定（/v1/models を jp・us 並列、
+  200 の方。キー指紋ごとに UserDefaults へ記憶）。
+- Soniox JP（10-02）: 本人が JP プロジェクトのキーに差し替え済み（jp=200 / us=401）。承認済み 3 回で離鍵→確定 120〜128ms・誤りゼロ
+  （米国窓口の 280〜300ms から短縮）。初回判定 554ms、2 回目以降はキャッシュ命中 0ms。
+- 次にやること: ActionLog「Soniox 再送」の実測で再送待ち上限 15s を詰める。
+  Azure（MAI）は本人が後で作る（10-02「作らないのではなく後で」）。作ったらサブスク→southeastasia に Speech→ENDPOINT/KEY 登録→MAI 3 回（承認済み）。
 
 ## 録音部の既知問題（10-01 15:10 更新）
 - 目的: 重さ・ハング（7498144/91ded40）と末尾欠け（1ea7e59）は完了済み。残りの既知問題だけを置く。
