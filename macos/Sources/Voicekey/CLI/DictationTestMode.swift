@@ -14,7 +14,9 @@
 //    --translate-test <原文>         : 「翻訳して入力」の 1 往復（エンジン・出力言語は設定に従う）
 //        --to <言語コード>           : 出力言語を上書き（既定は設定値）
 //    --rest-stt-test <音声ファイル>  : REST バックエンド（Groq / Gemini 等）の 1 往復
-//        --backend <識別子>          : groq / elevenlabs / openai / deepgram / apple_local（既定 groq）
+//        --backend <識別子>          : groq / elevenlabs / openai / azure_mai / soniox / apple_local（既定 groq）
+//                                      soniox は REST を持たないので、実時間で区切って WebSocket へ流す
+//        --model <モデル名>          : 使うモデル（既定はバックエンドの推奨モデル）
 //        --expect "語1,語2"          : 認識テキストに含まれるべき語
 //        **課金 API を叩く**ので手動実行のみ（CI では回さない。apple_local は無料）
 //
@@ -65,12 +67,13 @@ enum DictationTestMode {
         case "--rest-stt-test":
             let path = optionValue("--rest-stt-test", in: arguments) ?? ""
             let backend = Backend(rawValue: optionValue("--backend", in: arguments) ?? "groq") ?? .groq
+            let model = optionValue("--model", in: arguments) ?? backend.defaultModel
             let expect = (optionValue("--expect", in: arguments) ?? "")
                 .split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty }
             runAsync {
                 await RestSttTestRunner.run(
-                    audioPath: path, backend: backend, expected: expect, writer: writer
+                    audioPath: path, backend: backend, model: model, expected: expect, writer: writer
                 )
             }
         default:
@@ -280,11 +283,12 @@ enum RestSttTestRunner {
     /// - Parameters:
     ///   - audioPath: 読み込む音声ファイル
     ///   - backend: 使うバックエンド
+    ///   - model: 使うモデル（--model 未指定ならバックエンドの推奨モデル）
     ///   - expected: 認識テキストに含まれるべき語
     ///   - writer: 行出力先
     /// - Returns: 終了コード（0=PASS / 1=FAIL）
     static func run(
-        audioPath: String, backend: Backend, expected: [String], writer: CaptionTestLogWriter
+        audioPath: String, backend: Backend, model: String, expected: [String], writer: CaptionTestLogWriter
     ) async -> Int32 {
         defer { writer.close() }
         writer.write("[INFO] rest-stt-test 開始 backend=\(backend.rawValue) file=\(audioPath)")
@@ -305,20 +309,26 @@ enum RestSttTestRunner {
         }
 
         let language = UserDefaults.standard.string(forKey: "language") ?? "ja"
-        let transcriber = Transcriber(
-            backend: backend, model: backend.defaultModel, language: language, prompt: ""
-        )
-        writer.write("[INFO] model=\(backend.defaultModel) language=\(language)")
+        writer.write("[INFO] model=\(model) language=\(language)")
 
         let started = Date()
         let text: String
-        do {
-            text = try await transcriber.transcribe(samples: samples)
-        } catch {
-            let message = (error as? TranscriptionError)?.message ?? String(describing: error)
-            writer.write("[ERROR] \(message)")
-            writer.write("[DONE] status=fail reason=request-failed")
-            return 1
+        if backend == .soniox {
+            // Soniox は REST を持たない。アプリと同じく録音中に流し、離鍵（finish）から確定までを測る
+            text = await streamLive(
+                SonioxLiveTranscriber(model: model, language: language, prompt: ""),
+                samples: samples, writer: writer
+            )
+        } else {
+            let transcriber = Transcriber(backend: backend, model: model, language: language, prompt: "")
+            do {
+                text = try await transcriber.transcribe(samples: samples)
+            } catch {
+                let message = (error as? TranscriptionError)?.message ?? String(describing: error)
+                writer.write("[ERROR] \(message)")
+                writer.write("[DONE] status=fail reason=request-failed")
+                return 1
+            }
         }
         let elapsedMs = Int(Date().timeIntervalSince(started) * 1000)
         writer.write("[TEXT] \(text)")
@@ -337,5 +347,29 @@ enum RestSttTestRunner {
         }
         writer.write("[DONE] status=ok chars=\(text.count) ms=\(elapsedMs)")
         return 0
+    }
+
+    /// ライブ型へ音声を実時間で流し、finish() の確定テキストを返す。
+    /// 一気に流すと録音中の挙動と変わる（サーバー側の確定の進み方が違う）ので 120ms ずつ区切って待つ。
+    /// [FINISH-MS] が離鍵から確定までの体感遅延にあたる
+    private static func streamLive(
+        _ stream: any LiveTranscribing, samples: [Float], writer: CaptionTestLogWriter
+    ) async -> String {
+        guard stream.start() else {
+            writer.write("[ERROR] ライブ接続を開始できませんでした")
+            return ""
+        }
+        let chunk = Int(AudioRecorder.sampleRate * 0.12)
+        var index = 0
+        while index < samples.count {
+            let end = min(index + chunk, samples.count)
+            stream.send(Array(samples[index..<end]))
+            index = end
+            try? await Task.sleep(for: .milliseconds(120))
+        }
+        let finishStart = Date()
+        let text = await stream.finish()
+        writer.write("[FINISH-MS] \(Int(Date().timeIntervalSince(finishStart) * 1000))")
+        return text
     }
 }

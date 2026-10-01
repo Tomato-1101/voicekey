@@ -17,6 +17,11 @@ final class BackendLabelTests: XCTestCase {
         XCTAssertEqual(Backend.deepgram.developerLabel, "Deepgram nova-3")
         XCTAssertEqual(Backend.openaiLive.developerLabel, "OpenAI gpt-live-transcribe")
         XCTAssertEqual(Backend.groq.developerLabel, "Groq whisper-large-v3-turbo")
+        // 2026-10-01 追加・変更（Mac のみ）
+        XCTAssertEqual(Backend.soniox.developerLabel, "Soniox stt-rt-v5")
+        XCTAssertEqual(Backend.openai.developerLabel, "OpenAI gpt-transcribe")
+        XCTAssertEqual(Backend.azureMAI.developerLabel, "Microsoft MAI-Transcribe-2")
+        XCTAssertEqual(Backend.elevenlabs.developerLabel, "ElevenLabs scribe_v2")
     }
 
     /// 表示したモデル名と、実際に選択される（＝録音時に使われる）モデルが一致すること。

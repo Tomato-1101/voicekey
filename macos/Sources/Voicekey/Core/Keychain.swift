@@ -51,6 +51,8 @@ enum Keychain {
         case .deepgram: return "voicekey.Deepgram"
         // ローカル（Apple）はキーを使わない。項目は作らない（apiKey が先に nil を返す）
         case .appleLocal: return "voicekey.AppleLocal"
+        case .soniox: return "voicekey.Soniox"
+        case .azureMAI: return "voicekey.AzureSpeech"
         }
     }
 
@@ -88,15 +90,8 @@ enum Keychain {
             return value
         }
         // 環境変数フォールバック（開発時用）
-        let envVar: String
-        switch backend {
-        case .openai, .openaiLive: envVar = "OPENAI_API_KEY"
-        case .groq: envVar = "GROQ_API_KEY"
-        case .elevenlabs: envVar = "ELEVENLABS_API_KEY"
-        case .deepgram: envVar = "DEEPGRAM_API_KEY"
-        // 上の guard で弾かれるためここには来ない（網羅性のためだけの分岐）
-        case .appleLocal: envVar = ""
-        }
+        // appleLocal は上の guard で弾かれるため nil にはならない（網羅性のためだけの既定値）
+        let envVar = keyVariableName(for: backend) ?? ""
         if let env = ProcessInfo.processInfo.environment[envVar], !env.isEmpty {
             return env
         }
@@ -115,6 +110,41 @@ enum Keychain {
         // 配布ビルドにプロバイダーキーは埋め込まない（製品版はサーバー経由）。
         // どこにも無ければ未設定として nil を返す。
         return nil
+    }
+
+    /// バックエンドのキーの変数名（環境変数名＝中央 Keychain の service 名）。
+    /// キー読み出しと「未設定です」の案内文の両方がここを引く（名前の対応表を 1 か所に保つため）。
+    /// ローカル（Apple）はキーを使わないので nil
+    static func keyVariableName(for backend: Backend) -> String? {
+        switch backend {
+        case .openai, .openaiLive: return "OPENAI_API_KEY"
+        case .groq: return "GROQ_API_KEY"
+        case .elevenlabs: return "ELEVENLABS_API_KEY"
+        case .deepgram: return "DEEPGRAM_API_KEY"
+        case .soniox: return "SONIOX_API_KEY"
+        case .azureMAI: return "AZURE_SPEECH_KEY"
+        case .appleLocal: return nil
+        }
+    }
+
+    /// Microsoft MAI（Azure Speech）の接続先エンドポイントを取得する（環境変数 → 中央 Keychain）。
+    ///
+    /// Azure はリソースごとに URL が違うので、キーとは別に `AZURE_SPEECH_ENDPOINT` を持つ
+    /// （秘密ではないが置き場所をキーと揃えて、設定の正本を中央 Keychain の 1 か所にする）。
+    static func azureSpeechEndpoint() -> String? {
+        let name = "AZURE_SPEECH_ENDPOINT"
+        lock.lock()
+        if let cached = cache[name] {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+
+        let env = ProcessInfo.processInfo.environment[name]
+        let value = (env?.isEmpty == false ? env : nil) ?? readCentral(service: name)
+        guard let value, !value.isEmpty else { return nil }
+        lock.lock(); cache[name] = value; lock.unlock()
+        return value
     }
 
     /// 中央 Keychain（service = 環境変数名 / account = `shared`）から読む

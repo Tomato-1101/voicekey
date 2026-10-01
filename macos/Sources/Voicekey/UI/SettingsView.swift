@@ -157,8 +157,8 @@ struct MainWindowView: View {
     /// サイドバー先頭のブランド行（アプリアイコン＋名称）
     private var brandHeader: some View {
         HStack(spacing: 8) {
-            Image(nsImage: NSApp.applicationIconImage ?? NSImage())
-                .resizable()
+            // 外観でボーン／カーボンを切り替える（applicationIconImage は外観変化で再描画されないため）
+            BrandIcon()
                 .frame(width: 30, height: 30)
                 .clipShape(RoundedRectangle(cornerRadius: 7))
             Text("voicekey").font(.headline)
@@ -202,7 +202,7 @@ struct MainWindowView: View {
         if selected {
             RoundedRectangle(cornerRadius: 9)
                 .fill(LinearGradient(
-                    colors: [Color.accentColor, Color.accentColor.opacity(0.75)],
+                    colors: [Brand.signal, Brand.signal.opacity(0.75)],
                     startPoint: .top, endPoint: .bottom
                 ))
                 .overlay(
@@ -252,7 +252,7 @@ struct MainWindowView: View {
     private var avatar: some View {
         ZStack {
             Circle().fill(LinearGradient(
-                colors: [Color.accentColor, Color.accentColor.opacity(0.7)],
+                colors: [Brand.signal, Brand.signal.opacity(0.7)],
                 startPoint: .top, endPoint: .bottom
             ))
             if isLoggedIn, let first = login.accountEmail?.first {
@@ -400,7 +400,7 @@ private struct GeneralSettingsTab: View {
             if let micDetectStatus {
                 Text(micDetectStatus)
                     .font(.caption)
-                    .foregroundStyle(isDetectingMic ? Color.accentColor : .secondary)
+                    .foregroundStyle(isDetectingMic ? Brand.signal : .secondary)
             }
             LabeledContent("ダブルタップ送信の待ち時間") {
                 HStack {
@@ -704,13 +704,19 @@ private struct SlotSettingsTab: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             // 自分用ビルドはモデルまで自分で選べる（製品版はモデル非選択で固定）。
-            // 選択肢が 1 つだけのエンジン（ローカル）は選ばせても意味が無いので出さない。
-            if slot.backend.knownModels.count > 1 {
+            // 選択肢が 1 つだけのエンジン（ローカル等）は選ばせても意味が無いので出さない。
+            // ただし保存済みモデルが一覧外（自由入力）のときは、何が使われているか見えるよう出す。
+            let isCustomModel = !slot.backend.knownModels.contains(slot.model)
+            if slot.backend.knownModels.count > 1 || isCustomModel {
                 Picker("モデル", selection: $slot.model) {
                     // 表示は推奨モデルに「（推奨）」を付け、tag（保存値）はモデル識別子のまま
                     ForEach(slot.backend.knownModels, id: \.self) { model in
                         Text(model == slot.backend.defaultModel ? "\(model)（推奨）" : model)
                             .tag(model)
+                    }
+                    // 一覧外のモデルも選択状態を保って表示する（一般タブの整形モデルと同じ扱い）
+                    if isCustomModel {
+                        Text(slot.model).tag(slot.model)
                     }
                 }
             }
@@ -767,19 +773,29 @@ private struct SlotSettingsTab: View {
     /// スタンダード(groq)はハンズフリー録音時に内部で高精度エンジン(ElevenLabs)へ切替する旨も添える。
     private static func backendCaption(_ backend: Backend) -> String {
         switch backend {
-        case .deepgram:
-            return "しゃべり終わった瞬間、全文がまとめて入力されます（最速・実測 0.1 秒）"
+        // soniox / openai / azureMAI / elevenlabs も personal 限定の選択肢（2026-10-01 追加・Mac のみ）
+        case .soniox:
+            return "しゃべりながら文字起こしし、離した瞬間に入力します（速さ重視のおすすめ）。\n"
+                + "日本語・英語・中国語の混ざった話にも強いエンジンです（鍵: SONIOX_API_KEY）。"
+        case .openai:
+            return "録音後に OpenAI の gpt-transcribe で文字起こしします（日本語の精度重視）。"
+        case .azureMAI:
+            return "録音後に Microsoft の MAI-Transcribe-2 で文字起こしします（精度が高く単価も安め・プレビュー）。\n"
+                + "鍵: AZURE_SPEECH_KEY と AZURE_SPEECH_ENDPOINT。リソースは対応リージョンに作ってください（japaneast は非対応）。"
+        case .elevenlabs:
+            return "録音後に ElevenLabs の Scribe v2 で文字起こしします（日本語の精度重視）。\n"
+                + "数字が漢数字で出やすいので、気になるときは「数字入力」の設定と併用してください。"
         // openaiLive は personal 限定の選択肢なので、この説明は personal でしか表示されない
         // （＝ピッカーにモデル名が出ている前提で書く）
         case .openaiLive:
             return "OpenAI の新しいライブ文字起こしで入力します。\n"
-                + "Deepgram より確定は遅めですが（実測 0.7 秒）、固有名詞や数字に強いエンジンです。"
+                + "確定はやや遅めですが（実測 0.7 秒）、固有名詞や数字に強いエンジンです。"
         // appleLocal も personal 限定の選択肢
         case .appleLocal:
             return "Mac の中だけで文字起こしします。通信もAPIキーも使わないので最速で、オフラインでも動きます。\n"
                 + "初回だけ言語モデルのダウンロードが走ります（進捗は録音 HUD に出ます）。"
         case .groq:
-            return "録音後にきれいな文章にして入力します（おすすめ）\n"
+            return "録音後にきれいな文章にして入力します（録音後に送る方式で最速）\n"
                 + "ハンズフリー録音のときは、長い録音に強いエンジンへ自動で切り替わります。"
         default:
             return ""
@@ -860,8 +876,8 @@ private struct TranslateInputTab: View {
 
 private struct ApiKeysTab: View {
     // 製品版で使うキーのみ表示（開発ビルドのみ表示されるタブ）。
-    // 文字起こし 2 択（Deepgram/ElevenLabs）＋ 裏のテキスト整形に使う Groq。OpenAI は使わない。
-    private let backends: [Backend] = [.deepgram, .elevenlabs, .groq]
+    // ElevenLabs ＋ 裏のテキスト整形に使う Groq。Deepgram は 2026-10-01 に選択肢から外したので出さない。
+    private let backends: [Backend] = [.elevenlabs, .groq]
 
     var body: some View {
         Form {

@@ -1,10 +1,17 @@
-# Voicekey
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="design/brand/svg/lockup-dark-large.svg">
+    <img src="design/brand/svg/lockup-light-large.svg" alt="voicekey" width="360">
+  </picture>
+</p>
 
 <div align="center">
 
 **高速・高精度な常駐型音声入力ツール（Windows / macOS 対応）**
 
 ホットキーを押すだけで音声入力を開始し、文字起こし結果を瞬時にアクティブウィンドウへ自動入力
+
+### [voicekey.app](https://voicekey.app)
 
 [![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey.svg)]()
@@ -223,13 +230,18 @@ Copy-Item -Path settings.example.yaml -Destination settings.yaml -ErrorAction Si
 
 ### API キーの設定（起動後）
 
-クラウドの文字起こし（Deepgram / Groq / ElevenLabs）を使うモードでは API キーが必要です。**ローカル（Apple）文字起こしを選べばキーは不要**です：
+クラウドの文字起こしを使うモードでは API キーが必要です。**ローカル（Apple）文字起こしを選べばキーは不要**です。
+Mac の選択肢は [Mac の文字起こしエンジン](#mac-の文字起こしエンジン) を参照（Soniox / OpenAI / Microsoft MAI / ElevenLabs / Groq）。
+Windows は**開発停止中のため旧構成のまま**です（Deepgram / Groq / ElevenLabs）：
 
 | サービス | 用途 | 取得先 |
 |---|---|---|
-| Deepgram（即時入力） | 文字起こし（ストリーミング・低遅延） | https://console.deepgram.com/ |
-| Groq（正確性） | 文字起こし（普通入力の既定・最速）＋テキスト整形 | https://console.groq.com/keys |
-| ElevenLabs（高精度） | 文字起こし（ハンズフリーの既定・高精度） | https://elevenlabs.io/ |
+| Soniox（Mac） | 文字起こし（ライブ・録音キー 1 の既定） | https://console.soniox.com/ |
+| Groq | 文字起こし（録音キー 2 の既定・最速）＋テキスト整形 | https://console.groq.com/keys |
+| OpenAI（Mac） | 文字起こし（gpt-transcribe・OpenAI ライブ） | https://platform.openai.com/ |
+| Microsoft MAI（Mac） | 文字起こし（MAI-Transcribe-2・Azure Speech） | https://portal.azure.com/ |
+| ElevenLabs | 文字起こし（scribe_v2・高精度） | https://elevenlabs.io/ |
+| Deepgram（Windows のみ・旧構成） | 文字起こし（ストリーミング・低遅延） | https://console.deepgram.com/ |
 
 **設定方法（推奨）**: トレイ/メニューバーのアイコン → 設定ウィンドウ → API キーフィールドに貼り付けて保存。
 キーは **macOS Keychain / Windows Credential Manager** に安全に保存される（`.env` や YAML に書く必要なし）。
@@ -254,7 +266,7 @@ Copy-Item -Path settings.example.yaml -Destination settings.yaml -ErrorAction Si
 | **Python** | 3.10 以上 |
 | **ffmpeg** | `PATH` に通っていること（音声変換用） |
 | **GPU** | **不要**（VAD はローカル CPU 実行＝Silero ONNX を onnxruntime で。文字起こしはすべてクラウド API） |
-| **API キー** | 文字起こし用のキーを中央 Keychain（service = 変数名 / account = `shared`）に置く（Deepgram / Groq / ElevenLabs / OpenAI。整形と翻訳も Groq）。**ログイン・アカウントの概念はありません**。ローカル（Apple）文字起こしと Apple 翻訳はキー不要 |
+| **API キー** | 文字起こし用のキーを中央 Keychain（service = 変数名 / account = `shared`）に置く（Mac: Soniox / OpenAI / Microsoft MAI / ElevenLabs / Groq。Windows は旧構成の Deepgram / Groq / ElevenLabs / OpenAI。整形と翻訳も Groq）。**ログイン・アカウントの概念はありません**。ローカル（Apple）文字起こしと Apple 翻訳はキー不要 |
 
 > **💡 Tip**: 文字起こしはすべてクラウド API、発話区間検出（VAD）だけローカル CPU 実行なので、GPU 非搭載 PC でも動作します。
 
@@ -350,6 +362,9 @@ python run.py
 ### 基本的な使い方
 
 1. システムトレイ（Windows）/ メニューバー（macOS）にアイコンが表示される
+   - Mac のメニューバーアイコンはキーの形で、右上の灯りが状態を示します: 待機＝輪／録音中＝橙の点／
+     自動送信の録音＝左下の刻印も橙／ハンズフリー録音＝点のまわりに光輪／変換中＝橙の輪
+   - Mac のアプリアイコンは外観に合わせて切り替わります（ライト＝ボーン地／ダーク＝カーボン地）
 2. ホットキーを押す（既定: `<f2>` / `<f3>`）
 3. 音声入力する
 4. ホットキーを離す（`hold` モード）またはもう一度押す（`toggle` モード）
@@ -364,7 +379,7 @@ python run.py
 ※ 先に切替キー（修飾キー）を押してからホットキーを押してください。
 
 **止め方**: 録音を終えるときは**同じホットキーをもう一度押すだけ**です（切替キーは押さなくてよい）。
-ハンズフリー録音中は HUD の状態ドットと波形バーが**ティール色**に変わるので（文字ラベルは出しません）、
+ハンズフリー録音中は HUD の波形バーが色付きに変わるので（**Mac は灯りの橙**、Windows は状態ドットも**ティール色**。文字ラベルは出しません）、
 いまトグル録音中だと色だけで一目で分かります（両 OS）。
 
 ### 設定を変更する
@@ -401,7 +416,26 @@ voicekey は **2 つの独立したホットキー** を設定でき、各ホッ
 | ホットキー 1 | `<ctrl>+<space>` | `Language: Japanese` | 日本語入力 |
 | ホットキー 2 | `<alt>+<space>` | `Language: English` | 英語入力 |
 
-### モード比較
+### Mac の文字起こしエンジン
+
+Mac は録音キーごとに**プロバイダー名＋モデル名**で選びます（新規インストール時の既定は **録音キー 1 = Soniox / 録音キー 2 = Groq**）。
+既存の設定で Deepgram を選んでいた録音キーは Soniox へ、廃止モデルを選んでいた録音キーは各プロバイダーの既定モデルへ自動で移行します（廃止モデルの移行は初回起動時の一度だけ。その後に自由入力で選び直したモデル名は保持します）。
+
+| エンジン | モデル | 方式 | API キー（中央 Keychain） |
+|---|---|---|---|
+| **Soniox** | `stt-rt-v5` | ライブ（録音中に並行して認識・離した瞬間に入力） | `SONIOX_API_KEY` |
+| **ローカル（Apple）** | オンデバイス音声認識 | オンデバイス（macOS 26 以降） | 不要 |
+| **OpenAI ライブ** | `gpt-live-transcribe` | ライブ | `OPENAI_API_KEY` |
+| **OpenAI** | `gpt-transcribe` | 録音後に送る | `OPENAI_API_KEY` |
+| **Microsoft MAI** | `MAI-Transcribe-2` | 録音後に送る（Azure Speech。japaneast リージョンは非対応） | `AZURE_SPEECH_KEY` ＋ `AZURE_SPEECH_ENDPOINT` |
+| **ElevenLabs** | `scribe_v2`（既定）/ `scribe_v1` | 録音後に送る | `ELEVENLABS_API_KEY` |
+| **Groq** | `whisper-large-v3-turbo` | 録音後に送る（最速） | `GROQ_API_KEY` |
+
+> Groq の録音キーをハンズフリー録音（トグル）で使うと、従来どおり長い録音に強い ElevenLabs `scribe_v1` へ内部で自動切替します（ElevenLabs の既定が `scribe_v2` になってもここは `scribe_v1` 固定）。
+
+> Soniox は録音中の接続が切れて文字が取れなかったとき、手元の録音をもう一度送り直して入力します。途中まで取れていた場合はその分を入力し、HUD に「接続が途中で切れたため、途中までの入力です」と出します。キーが無効・残高切れ・上限超過のときは原因を HUD に出します。言語が「自動判定」のときは言語ヒントを送らず Soniox の判定に任せます。
+
+### モード比較（Windows・開発停止中のため旧構成）
 
 | モード | 速度 | 特徴 |
 |---|---|---|
@@ -530,7 +564,11 @@ dev_mode: false
 
 ### API キーの設定
 
-Mac は中央 Keychain（service = 変数名 / account = `shared`）を直接読みます。Windows は設定ウィンドウの API キーフィールドで保存するか、プロジェクトルートに `.env` を作成します：
+Mac は中央 Keychain（service = 変数名 / account = `shared`）を直接読みます。使う変数名は
+`SONIOX_API_KEY` / `OPENAI_API_KEY` / `AZURE_SPEECH_KEY` ＋ `AZURE_SPEECH_ENDPOINT`（Azure Speech リソースのエンドポイント URL。パス・クエリ付きや `https://` 無しでも可）/
+`ELEVENLABS_API_KEY` / `GROQ_API_KEY` です（[Mac の文字起こしエンジン](#mac-の文字起こしエンジン)）。
+
+Windows（開発停止中のため旧構成）は設定ウィンドウの API キーフィールドで保存するか、プロジェクトルートに `.env` を作成します：
 
 ```env
 DEEPGRAM_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxx      # 即時入力（文字起こし・ストリーミング）
@@ -542,9 +580,12 @@ ELEVENLABS_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxx    # 高精度（文字起こし・�
 
 | サービス | 用途 | 取得先 |
 |---|---|---|
-| **Deepgram**（即時入力） | 文字起こし（ストリーミング・低遅延） | [console.deepgram.com](https://console.deepgram.com/) |
+| **Soniox**（Mac） | 文字起こし（ライブ・録音キー 1 の既定） | [console.soniox.com](https://console.soniox.com/) |
+| **OpenAI**（Mac） | 文字起こし（gpt-transcribe・OpenAI ライブ） | [platform.openai.com](https://platform.openai.com/) |
+| **Microsoft MAI**（Mac） | 文字起こし（MAI-Transcribe-2・Azure Speech リソースのキーとエンドポイント） | [portal.azure.com](https://portal.azure.com/) |
+| **Deepgram**（Windows のみ・旧構成） | 文字起こし（ストリーミング・低遅延） | [console.deepgram.com](https://console.deepgram.com/) |
 | **Groq**（正確性） | 文字起こし（普通入力の既定・最速）＋テキスト整形 | [console.groq.com/keys](https://console.groq.com/keys) |
-| **ElevenLabs**（高精度） | 文字起こし（ハンズフリーの既定・高精度） | [elevenlabs.io](https://elevenlabs.io/) |
+| **ElevenLabs**（高精度） | 文字起こし（ハンズフリーの既定・高精度。Mac は scribe_v2 も選択可） | [elevenlabs.io](https://elevenlabs.io/) |
 
 ---
 
@@ -754,7 +795,7 @@ GNU General Public License v3.0 — 詳細は [LICENSE](LICENSE) を参照。
 - [PySide6](https://wiki.qt.io/Qt_for_Python) — GUI フレームワーク
 - [pynput](https://github.com/moses-palmer/pynput) — グローバルキーボード制御
 - [sounddevice](https://python-sounddevice.readthedocs.io/) — マイク入力
-- [OpenAI API](https://platform.openai.com/) — gpt-4o-transcribe
+- [OpenAI API](https://platform.openai.com/) — gpt-transcribe（Mac）/ gpt-4o-transcribe（Windows・旧構成）
 - [Groq API](https://console.groq.com/) — whisper-large-v3-turbo
 
 ---

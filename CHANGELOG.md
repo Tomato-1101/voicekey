@@ -2,6 +2,50 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
+## [Unreleased] - 2026-10-01
+
+### Added
+- **Soniox（`stt-rt-v5`）のライブ文字起こしを追加**。録音中から WebSocket で並行認識し、離鍵時に finalize して確定する。
+  キーは中央 Keychain の `SONIOX_API_KEY`。「言語」設定を言語ヒント（未設定＝自動判定のときはヒントを送らない）に、プロンプトを文脈（context）として渡す（Mac のみ）
+- **OpenAI `gpt-transcribe` を追加**。`response_format=json` と `languages[]` で送り、JSON の `text` を読む（Mac のみ）
+- **Microsoft MAI-Transcribe-2 を追加**。Azure Speech の REST（api-version 2025-10-15・enhancedMode・`locales` 指定）で送り、
+  `combinedPhrases[0].text` を読む。キーは `AZURE_SPEECH_KEY`、接続先は `AZURE_SPEECH_ENDPOINT`（どちらも中央 Keychain）（Mac のみ）
+- **ElevenLabs を選択肢に戻した**。既定モデルは `scribe_v2`（`scribe_v1` も選択可）、`tag_audio_events=false` を送る（Mac のみ）
+- 検証ハーネス `--rest-stt-test` に `--model` を追加し、`soniox`（実時間でライブ送信して `[FINISH-MS]` を出す）・`azure_mai` も通しで試せるようにした。
+  課金 API を呼ぶので手動実行のみ（Mac のみ）
+- **Soniox のライブ接続が失敗して文字が取れなかったとき、録音全体を新しいセッションへ流し直して救済する**。
+  実時間を待たず 100ms ずつ送り、待ち上限は「3 秒＋音声長×0.5」（最大 15 秒）。所要時間を ActionLog に残す（Mac のみ）
+- Soniox の失敗理由別の案内: キー無効（401/403）・残高切れ（402）・上限超過（429）・それ以外（接続できない）（Mac のみ）
+- ローカル WebSocket サーバー（NWListener・外部通信なし）相手の Soniox 実接続回帰テスト `SonioxSessionLocalServerTests`（Mac のみ）
+
+### Changed
+- 文字起こしエンジンの選択肢を Soniox / ローカル（Apple）/ OpenAI ライブ / OpenAI / Microsoft MAI / ElevenLabs / Groq の順にした（Mac のみ）
+- 新規インストール時の既定を **録音キー 1 = Soniox / 録音キー 2 = Groq** に変更（Mac のみ）
+- 保存済み設定の移行: Deepgram の録音キーは Soniox へ、その他の選べないエンジンは Groq へ移す。モデル名は
+  エンジンを移したとき・空のときだけ既定へ戻す。廃止モデルは初回起動時の一回限りの移行（V19）で既定へ戻す（Mac のみ）
+- ハンズフリー録音で内部利用する ElevenLabs は `scribe_v1` に固定（ElevenLabs の既定が `scribe_v2` になっても長時間録音の実績側を使う）（Mac のみ）
+- 設定画面: エンジンごとの説明文を更新。モデル候補が複数あるか自由入力のモデル名が保存されているときだけモデル選択を出す。
+  開発者用 API キータブから Deepgram を外した（Mac のみ）
+- v1.8 の「整形を既定 OFF にする一回限りの移行」の対象を Soniox に変更（保存済みの Deepgram は Soniox として読まれるため、従来の意図を保つ）（Mac のみ）
+- Soniox の離鍵時の終端を「200ms の無音 → finalize → 空フレーム」にし、finalize への `<fin>` が届いた時点で確定を返す（`finished` を待たない）（Mac のみ）
+- ライブ文字起こしの終わり方（正常終了 / エラー・切断・タイムアウト）を区別する。正常終了で空なら REST へ回さず入力なしで終える。
+  エラー・切断で途中まで取れていた場合はそのまま入力し、HUD に「接続が途中で切れたため、途中までの入力です」と出す（Mac のみ）
+- OpenAI `gpt-transcribe` にはユーザーのプロンプトだけを送る（Whisper 用の数字の例文を送らない・空なら prompt 自体を送らない）（Mac のみ）
+- API キー未設定の案内に、中央 Keychain に登録すべき変数名を出す（Mac のみ）
+- `AZURE_SPEECH_ENDPOINT` は scheme・ホスト・ポートだけを使う（パス・クエリは捨て、`https://` が無ければ補う）（Mac のみ）
+
+### Removed
+- モデル `nova-2` / `gpt-realtime-whisper` / `whisper-large-v3` / `gpt-4o-mini-transcribe` / `gpt-4o-transcribe` / `scribe_v1_experimental` を選択肢から削除。
+  これらを保存していた録音キーは各エンジンの既定モデルへ自動で移る（Mac のみ）
+- Deepgram を選択肢から外した（内部の実装は残している）（Mac のみ）
+
+### Fixed
+- 自由入力したモデル名（候補一覧に無い名前）が再起動のたびに既定モデルへ戻っていたのを修正（Mac のみ）
+- 保存値のエンジン名が未知（新しい版で保存した値など）だと、録音キーのホットキー・モード・プロンプトまで既定に戻っていたのを修正。
+  未知のエンジンだけ Groq へ移し、他の設定は保持する（Mac のみ）
+- Soniox: 応答の `error_code: null` をエラー扱いしていたのを修正。接続時に設定 JSON が必ず音声より先に送られるようにした（Mac のみ）
+- OpenAI: 送信形式と応答の読み方を 1 回の判定で揃える（送信中に設定が変わっても食い違わない）（Mac のみ）
+
 ## [Unreleased] - 2026-09-19
 
 ### Fixed

@@ -22,7 +22,7 @@ import os.log
 private let log = Logger(subsystem: "com.voicekey.app", category: "stream")
 
 /// ライブ（WebSocket）文字起こしセッションの共通契約。
-/// Deepgram（StreamingTranscriber）と OpenAI（OpenAILiveTranscriber）を
+/// Deepgram（StreamingTranscriber）・OpenAI（OpenAILiveTranscriber）・Soniox（SonioxLiveTranscriber）を
 /// AppController から同じ扱いで差し替えるために切っている。
 protocol LiveTranscribing: AnyObject {
     /// 現在の全文（確定 + 暫定）の更新通知。HUD のライブ字幕用
@@ -35,6 +35,46 @@ protocol LiveTranscribing: AnyObject {
     func finish() async -> String
     /// 結果を使わずに接続を破棄する
     func cancel()
+    /// finish() がどう終わったか（finish() の後に読む）。
+    /// 空の結果が「本当に無言だった」のか「接続が壊れて取れなかった」のかを呼び出し側が区別するために使う。
+    /// extension の既定値だけだと適合型の実装が静的ディスパッチで無視されるので、要求として宣言している
+    var ending: LiveEnding { get }
+}
+
+extension LiveTranscribing {
+    /// 終わり方を区別しない実装（Deepgram / OpenAI ライブ / ローカル）は従来どおりの扱いにする
+    var ending: LiveEnding { .unknown }
+}
+
+/// ライブ文字起こしの終わり方
+enum LiveEnding: Equatable {
+    /// 区別しない（従来の扱い＝空なら REST へ回す）
+    case unknown
+    /// サーバーが送った音声を最後まで処理し終えた（空なら本当に何も話していない）
+    case completed
+    /// 途中で失敗した（返ってきたのは取れた分だけ）
+    case failed(LiveFailure)
+
+    /// 行動ログ用の短い表記（障害時にログだけで終わり方を追えるようにする）
+    var logLabel: String {
+        switch self {
+        case .unknown: return "unknown"
+        case .completed: return "completed"
+        case .failed(.error(let code, let type)): return "failed:error(code=\(code ?? "-") type=\(type ?? "-"))"
+        case .failed(.disconnect): return "failed:disconnect"
+        case .failed(.timeout): return "failed:timeout"
+        }
+    }
+}
+
+/// ライブ文字起こしの失敗理由
+enum LiveFailure: Equatable {
+    /// サーバーのエラー応答。プロバイダーのコードと種別だけを持つ（本文はキー等が混ざりうるので持たない）
+    case error(code: String?, type: String?)
+    /// 接続の確立失敗・途中切断
+    case disconnect
+    /// 完了の知らせが時間内に来なかった
+    case timeout
 }
 
 /// OpenAI Realtime WebSocket による逐次文字起こしセッション（1 録音 = 1 インスタンス）

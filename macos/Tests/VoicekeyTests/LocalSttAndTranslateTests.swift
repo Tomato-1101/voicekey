@@ -16,7 +16,9 @@ final class LocalSttAndTranslateTests: XCTestCase {
     /// 選択肢に「ローカル（Apple）」が入り、既存の選択肢を消していないこと。
     func testAppleLocalIsSelectableAlongsideExisting() {
         let cases = Backend.selectableCases
-        XCTAssertTrue(cases.contains(.deepgram), "既存の即時入力(Deepgram)を消してはいけない")
+        // 2026-10-01: 即時入力は Deepgram から Soniox に置き換えた（Deepgram は選択肢に出さない）
+        XCTAssertTrue(cases.contains(.soniox), "ライブ型の既定(Soniox)を消してはいけない")
+        XCTAssertFalse(cases.contains(.deepgram), "Deepgram は選択肢から外した")
         XCTAssertTrue(cases.contains(.groq), "既存のスタンダード(Groq)を消してはいけない")
         XCTAssertTrue(cases.contains(.openaiLive), "既存の OpenAI ライブを消してはいけない")
         if #available(macOS 26.0, *) {

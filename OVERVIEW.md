@@ -34,7 +34,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 
 | 項目 | personal（唯一の版） |
 |---|---|
-| 文字起こしの選択肢 | 4 プロバイダーを**実名表示**（OpenAI / Groq / ElevenLabs / Deepgram）＋ **ローカル（Apple）オンデバイス**（macOS 26+・キー不要） |
+| 文字起こしの選択肢 | **Mac**: Soniox（ライブ・stt-rt-v5）/ OpenAI ライブ / OpenAI（gpt-transcribe）/ Microsoft MAI（MAI-Transcribe-2）/ ElevenLabs（scribe_v2・v1）/ Groq を**実名表示**＋ **ローカル（Apple）オンデバイス**（macOS 26+・キー不要）。既定は録音キー 1 = Soniox / 2 = Groq。Deepgram は選択肢から外し、保存済みの Deepgram は Soniox へ自動移行。**Windows** は開発停止中のため旧構成（OpenAI / Groq / ElevenLabs / Deepgram） |
 | モデル選択 | あり（フルコントロール） |
 | テキスト整形（Groq） | トグルあり・モデル/プロンプト選択可＋整え方プリセット 4 種（標準/そのまま/すっきり/箇条書き）。既定はエンジン別（スタンダード=ON / 即時入力・ローカル=OFF） |
 | API キー | 中央 Keychain（service = 変数名 / account = `shared`）から直読み。**ログイン・課金・アクティベーションキーは無し**（サーバー往復ゼロ＝最速） |
@@ -85,8 +85,8 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | 設定モデル・既定値 | `Config/AppConfig.swift`（`ConfigStore`） | `config/config_manager.py` / `constants.py` / `types.py` |
 | ホットキー検出 | `Core/HotkeyMonitor.swift` / `KeyToken.swift` | `app.py` 内 pynput リスナ / `platform/common/keymap.py` |
 | 音声録音 | `Core/AudioRecorder.swift` / `AudioDevices.swift` | `core/audio_recorder.py` / `audio_preprocess.py` / `audio_utils.py` |
-| 文字起こし（REST） | `Core/Transcriber.swift` | `core/api_transcriber.py` |
-| 文字起こし（ストリーミング） | `Core/StreamingTranscriber.swift` | `core/streaming_transcriber.py` |
+| 文字起こし（REST） | `Core/Transcriber.swift`（OpenAI / Microsoft MAI / ElevenLabs / Groq） | `core/api_transcriber.py` |
+| 文字起こし（ストリーミング） | `Core/SonioxLiveTranscriber.swift`（Soniox）/ `Core/OpenAILiveTranscriber.swift`（OpenAI ライブ）/ `Core/StreamingTranscriber.swift`（Deepgram・選択肢からは外した） | `core/streaming_transcriber.py` |
 | テキスト整形（Groq）/ 後処理 | `Core/TextFormatter.swift` | `core/text_formatter.py` / `text_processor.py` / `text_utils.py` |
 | 文字入力（貼り付け） | `Core/Paster.swift`（復元判定は `ClipboardRestorePolicy` / `CLI/PasteRestoreTestMode.swift` が `--paste-restore-test` で実動検証） | `core/input_handler.py`（判定は `decide_restore`） |
 | VAD / マイク自動検出 / 履歴 | `Core/VoiceActivity.swift` / `MicAutoDetector.swift` / `HistoryStore.swift` | `core/vad.py` / `mic_auto_detect.py` / `history.py` |
@@ -98,6 +98,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | 操作音 / メディアダッキング / フルスクリーン判定 | `Core/SoundFX.swift` / `MediaDucker.swift` / `FrontAppTracker.swift`（Mac） | `core/sound_fx.py` / `media_ducker.py` / `fullscreen.py`、実ブラーは `platform/windows/acrylic.py` |
 | 初回セットアップ（オンボーディング） | `UI/OnboardingView.swift`（起動分岐は `VoicekeyApp.swift`） | `ui/onboarding_window.py`（表示配線は `app.py`） |
 | HUD / トレイ | `UI/Hud.swift` / `VoicekeyApp.swift`（メニューバー） | `ui/hud.py` / `system_tray.py` |
+| ブランド（配色・アプリアイコン） | `UI/Brand.swift`（パレットと外観で切り替わる `BrandIcon`。マスターは `design/brand/`） | — （`icon.ico` のみ） |
 | API キー保管 | `Core/Keychain.swift` / `Config/EmbeddedKeys.generated.swift` | `utils/secrets.py` / `.env` |
 | 自動更新 | `Core/UpdaterController.swift`（Sparkle） | `utils/updater.py` |
 | ライブ字幕（personal のみ） | `Caption/`（`CaptionService` / `Audio` システム音声タップ / `Speech` 認識・読み上げ / `Translation` Apple・Gemini・Groq / `Transcript` 議事録の保存 / `Pipeline` / `UI` 字幕 HUD・メニュー・設定タブ / `CLI` 検証ハーネス） | — （Mac 専用） |
@@ -116,7 +117,7 @@ Windows（`core/history_sync.py`）の両クライアントを実装済み。詳
 
 - **Mac**: DMG・自動更新フィード（Sparkle appcast）とも Vercel サイト `voicekey.vercel.app`（ソース `/Users/tomato/Project/voicekey-site/`、`vercel deploy --prod`）。
 - **Windows**: インストーラ（約 270MB）は公開バイナリ専用リポ `voicekey-releases` の GitHub Releases。更新フィード `version.json` / `downloads.json` は Vercel。
-- 配布版は**ログイン必須**。**v1.5.0〜はログインで無料体験 200 回**（文字起こし 1 回＝1 消費・累計一度きり）、使い切ると**アクティベーションキー必須**（課金は未実装＝当面はキー登録のみが解放手段）。文字起こしは自社サーバー（`voicekey.vercel.app`）が利用権と無料体験の残量を検証（`entitlements.free_quota/free_used`・残枠ゼロは 402）し、Deepgram=短命トークン直叩き / ElevenLabs・Groq=サーバープロキシで処理（埋め込みキーは撤去済み＝製品版は完全サーバー経由）。無料枠の消費は録音開始のクリティカルパスから外して録音成立後に確定する（`/api/v1/usage/confirm`）＝有料と同じく録音開始のサーバー往復ゼロ。旧版（v1.2.0 以前）は埋め込み済みの提供元キーが漏洩済みのためローテーションで順次無効化。**ソース非公開**。
+- 配布版は**ログイン必須**。**v1.5.0〜はログインで無料体験 200 回**（文字起こし 1 回＝1 消費・累計一度きり）、使い切ると**アクティベーションキー必須**（課金は未実装＝当面はキー登録のみが解放手段）。文字起こしは自社サーバー（`voicekey.vercel.app`）が利用権と無料体験の残量を検証（`entitlements.free_quota/free_used`・残枠ゼロは 402）し、Deepgram=短命トークン直叩き / ElevenLabs・Groq=サーバープロキシで処理（埋め込みキーは撤去済み＝製品版は完全サーバー経由）。無料枠の消費は録音開始のクリティカルパスから外して録音成立後に確定する（`/api/v1/usage/confirm`）＝有料と同じく録音開始のサーバー往復ゼロ。旧版（v1.2.0 以前）は埋め込み済みの提供元キーが漏洩済みのためローテーションで順次無効化。ソースは 2026-10-01 から本リポジトリで公開。
 - リリースは常に Mac/Windows 両 OS 同期。版番号は semver で Claude が決める。手順の全文は `HANDOFF.md`「リリース手順」。
 
 ## 7. ドキュメント体系（どれを見ればいいか）
@@ -132,6 +133,7 @@ Windows（`core/history_sync.py`）の両クライアントを実装済み。詳
 | `CONTRIBUTING.md` | コミット規約・バージョニング | コミット時 |
 | `docs/BUILD_WINDOWS.md` | Windows ビルド/実機チェックリスト | Windows 配布時 |
 | `docs/HISTORY_SYNC.md` | 履歴同期の API 仕様・構築手順・障害対応 | 履歴同期に触るとき |
+| `design/brand/` | ロゴ「17 LEGEND」のマスター SVG・生成スクリプト・展開先の一覧（`README.md`） | アイコン・ロゴを作り直すとき |
 
 ## 8. 更新ルール（重要・README 更新ルールと同じ精神）
 

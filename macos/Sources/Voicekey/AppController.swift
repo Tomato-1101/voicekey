@@ -895,12 +895,12 @@ final class AppController: ObservableObject {
         // 設定された入力デバイスを反映（変更がなければ recorder 側では何もしない）
         recorder.inputDeviceUID = config.inputDeviceUID
 
-        // ライブ系バックエンド（Deepgram / OpenAI ライブ）かつストリーミング有効なら
+        // ライブ系バックエンド（Soniox / OpenAI ライブ / ローカル）かつストリーミング有効なら
         // WebSocket を開いて低遅延で確定テキストを得る。
         // 開始できなければ（キー無し等）chunkHandler を張らないため REST 経路に自動フォールバック。
         // chunkHandler は録音開始前に張る必要がある（最初のチャンクを取りこぼさない）
         if config.streamingEnabled, let stream = Self.makeLiveTranscriber(
-            backend: slot.backend, model: slot.model, language: config.language) {
+            backend: slot.backend, model: slot.model, language: config.language, prompt: slot.prompt) {
             // personal（個人用最速版）: ストリーミングの暫定（interim）テキストを HUD に
             // ライブ字幕として逐次表示する（喋りながら見せる）。onInterim は URLSession の
             // 受信キューから来るためメインへホップする。確定入力（貼付）は従来どおり。
@@ -1295,22 +1295,24 @@ final class AppController: ObservableObject {
     }
 
     /// ライブ（WebSocket）文字起こしのセッションをバックエンドに応じて生成する。
-    /// ライブ非対応のバックエンド（groq / elevenlabs / openai）は nil＝REST 経路で処理する。
+    /// ライブ非対応のバックエンド（groq / elevenlabs / openai / azureMAI）は nil＝REST 経路で処理する。
     /// 生成しただけでは接続しない（呼び出し側が start() の成否でフォールバックを判断する）。
     private static func makeLiveTranscriber(
-        backend: Backend, model: String, language: String
+        backend: Backend, model: String, language: String, prompt: String
     ) -> (any LiveTranscribing)? {
         switch backend {
         case .deepgram:
             return StreamingTranscriber(model: model, language: language)
         case .openaiLive:
             return OpenAILiveTranscriber(model: model, language: language)
+        case .soniox:
+            return SonioxLiveTranscriber(model: model, language: language, prompt: prompt)
         case .appleLocal:
             // オンデバイス（SpeechAnalyzer）。macOS 26 未満では選択肢に出ないが、
             // 旧 OS に保存値が残っていた場合は nil＝REST 経路でエラー文言を出す。
             guard #available(macOS 26.0, *) else { return nil }
             return LocalSpeechTranscriber(language: language)
-        case .groq, .elevenlabs, .openai:
+        case .groq, .elevenlabs, .openai, .azureMAI:
             return nil
         }
     }
@@ -1395,7 +1397,7 @@ final class AppController: ObservableObject {
             // 前のタスクを待っている間に打ち切られていたら、ここから先へ進まない
             guard !isAbandoned(generation) else { return }
 
-            // --- ストリーミング経路: ライブ（Deepgram / OpenAI ライブ）の確定テキストを受け取って貼り付け ---
+            // --- ストリーミング経路: ライブ（Soniox / OpenAI ライブ / ローカル）の確定テキストを受け取って貼り付け ---
             if let streamer {
                 let streamStart = ProcessInfo.processInfo.systemUptime
                 ActionLog.shared.write(
@@ -1404,10 +1406,13 @@ final class AppController: ObservableObject {
                         + "model=\(transcriber.model) 音声=\(secText(Double(samples.count) / AudioRecorder.sampleRate))s"
                 )
                 let streamed = await streamer.finish()
+                // 終わり方（Soniox だけが区別する。他のライブ型は unknown＝従来どおりの扱い）
+                let ending = streamer.ending
                 ActionLog.shared.write(
                     "transcriber",
                     "文字起こし応答 経路=streaming \(streamed.count) 文字 "
                         + "\(Int((ProcessInfo.processInfo.systemUptime - streamStart) * 1000))ms"
+                        + " 終わり方=\(ending.logLabel)"
                 )
                 // 確定待ちの最中に打ち切られていたら貼り付けない（今回の障害の実経路）
                 guard !isAbandoned(generation) else {
@@ -1437,6 +1442,11 @@ final class AppController: ObservableObject {
                         history.add(output, appBundleID: target.bundleID, appName: target.name)
                     }
                     await Paster.paste(output)
+                    // 接続がエラー・切断で途中で壊れたときは、入ったのが途中までかもしれないと知らせる
+                    // （喋った分は捨てずに貼る）。タイムアウトは確定待ちが長引いただけなので知らせない
+                    if case .failed(let failure) = ending, failure != .timeout, !isAbandoned(generation) {
+                        hud.notice("接続が途中で切れたため、途中までの入力です")
+                    }
                     if autoEnter {
                         try? await Task.sleep(for: .milliseconds(max(0, delayMs)))
                         Paster.pressEnter()
@@ -1449,7 +1459,14 @@ final class AppController: ObservableObject {
                     )
                     return
                 }
+                // サーバーが最後まで処理して空＝本当に無言（咳・短いタップ）。REST へ回すと Soniox は
+                // 録音の再送になり、空振りのたびに通信と待ち時間を足すので、ここで静かに終える
+                if ending == .completed {
+                    ActionLog.shared.write("transcriber", "ライブの確定が空（正常終了）のため入力なし")
+                    return
+                }
                 // 確定が空（接続失敗・無音など）→ 取得済みバッファで REST にフォールバック
+                // （Soniox は Transcriber が録音全体を新しいセッションへ流し直して救う）
                 log.info("ストリーミング結果が空のため REST にフォールバックします")
             }
 
@@ -1679,6 +1696,10 @@ final class AppController: ObservableObject {
 
     // MARK: - 設定反映
 
+    /// ハンズフリーで内部利用する ElevenLabs のモデル。ElevenLabs の既定が scribe_v2 に変わっても
+    /// ここは長時間録音で実績のある scribe_v1 に固定する（2026-10-01）
+    static let handsfreeELModel = "scribe_v1"
+
     private func rebuildTranscribers() {
         for slotId in [1, 2] {
             let slot = config.slot(slotId)
@@ -1700,13 +1721,13 @@ final class AppController: ObservableObject {
         // ハンズフリー(toggle 実効)で groq スロットが使われるときに差し替える EL(scribe_v1) を常設する。
         // 言語変更でも作り直されるよう、スロット transcriber と同じ再構築フローに乗せる（backend/model は固定）。
         if let existing = handsfreeTranscriber, existing.backend == .elevenlabs {
-            existing.model = Backend.elevenlabs.defaultModel
+            existing.model = Self.handsfreeELModel
             existing.language = config.language
             existing.prompt = ""
         } else {
             handsfreeTranscriber = Transcriber(
                 backend: .elevenlabs,
-                model: Backend.elevenlabs.defaultModel,
+                model: Self.handsfreeELModel,
                 language: config.language,
                 prompt: ""
             )

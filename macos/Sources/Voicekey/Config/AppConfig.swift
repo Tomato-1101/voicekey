@@ -41,6 +41,14 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
     /// personal 限定の選択肢＝release（製品版）には出さない。
     /// ネットワーク往復も API キーも無い＝原理的にいちばん速い経路。
     case appleLocal = "apple_local"
+    /// Soniox のリアルタイム文字起こし（stt-rt-v5・WebSocket のライブ型）。
+    /// 2026-10-01 に Deepgram の後継として追加（公開ベンチで速さ最上位・日本語/英語/中国語の混在に強い）。
+    /// REST 経路は持たない（ライブ専用）。ライブが失敗したときの救済は、録音全体を新しい WebSocket
+    /// セッションへ流し直す（Transcriber の Soniox 分岐）。
+    case soniox
+    /// Microsoft MAI-Transcribe-2（Azure Speech の LLM Speech API・REST）。
+    /// 2026-10-01 追加。精度・単価の良さで選べるようにする（プレビュー）。
+    case azureMAI = "azure_mai"
 
     var id: String { rawValue }
 
@@ -54,15 +62,17 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .deepgram: return "即時入力"
         case .groq: return "スタンダード"
-        // elevenlabs は選択肢外。スタンダード(groq)のハンズフリー録音時に内部でのみ使う名前で、
-        // 計測ログ・エラーメッセージに出る（UI のピッカーには出さない）。
-        case .elevenlabs: return "スタンダード（ハンズフリー）"
-        // openai は選択肢外（開発用のみ）。elevenlabs との表示重複バグを解消する。
-        case .openai: return "OpenAI（開発用）"
+        // 2026-10-01 から選択肢に戻した（scribe_v2）。スタンダード(groq)のハンズフリー録音時の
+        // 内部利用（scribe_v1 固定）でも計測ログ・エラーメッセージにこの名前が出る。
+        case .elevenlabs: return "ElevenLabs"
+        // 2026-10-01 から選択肢に戻した（gpt-transcribe）。エラー文にも出るので提供元名にする。
+        case .openai: return "OpenAI"
         // personal 限定の 3 つ目。Deepgram と同じ「離した瞬間に入力」型だが OpenAI 製。
         case .openaiLive: return "OpenAI ライブ"
         // personal 限定。ネットワークを使わず Mac の中だけで文字起こしする。
         case .appleLocal: return "ローカル（Apple）"
+        case .soniox: return "Soniox"
+        case .azureMAI: return "Microsoft MAI"
         }
     }
 
@@ -81,9 +91,14 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
     /// 注意: openaiLive / appleLocal は personal（自分用）専用の選択肢。release へこの行を持ち込まないこと。
     /// appleLocal は macOS 26 以降の SpeechAnalyzer が要るため、使える環境でだけ選択肢に出す
     /// （古い OS では保存値も decode 時に groq へ移行する＝選べない値が残らない）。
+    /// 2026-10-01: Deepgram を選択肢から外して Soniox に置き換え、OpenAI（gpt-transcribe）・
+    /// Microsoft MAI・ElevenLabs（scribe_v2）を追加した（Mac のみ）。deepgram の case は
+    /// 保存値の decode 互換（→ soniox へ移行）のために enum に残す。
     static var selectableCases: [Backend] {
-        if #available(macOS 26.0, *) { return [.deepgram, .appleLocal, .openaiLive, .groq] }
-        return [.deepgram, .openaiLive, .groq]
+        if #available(macOS 26.0, *) {
+            return [.soniox, .appleLocal, .openaiLive, .openai, .azureMAI, .elevenlabs, .groq]
+        }
+        return [.soniox, .openaiLive, .openai, .azureMAI, .elevenlabs, .groq]
     }
 
     /// 提供元名（API キー欄でどのキーかを示すためだけに使う。配布版では
@@ -95,6 +110,8 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
         case .elevenlabs: return "ElevenLabs"
         case .deepgram: return "Deepgram"
         case .appleLocal: return "Apple"
+        case .soniox: return "Soniox"
+        case .azureMAI: return "Microsoft"
         }
     }
 
@@ -102,24 +119,35 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
     /// 先頭が既定＝推奨（ベンチ実測 2026-06-10 に基づく。Windows 版と順序を一致させる）。
     var knownModels: [String] {
         switch self {
-        // mini が高速で短文精度は同等（CER 2.7%）
-        case .openai: return ["gpt-4o-mini-transcribe", "gpt-4o-transcribe"]
-        // turbo が REST 最速（330ms〜）で精度も良好
-        case .groq: return ["whisper-large-v3-turbo", "whisper-large-v3"]
-        // scribe_v1 が日本語最高精度（scribe_v2 は最新だが日本語長文で後退）
-        case .elevenlabs: return ["scribe_v1", "scribe_v2", "scribe_v1_experimental"]
-        // nova-3 がベンチで速度・精度とも最良（ストリーミング既定）。ja は多言語モードで対応
-        case .deepgram: return ["nova-3", "nova-2"]
-        // gpt-live-transcribe が新世代（2026-07-28）。TTFB は前世代 gpt-realtime-whisper より
-        // 速い（delay=minimal で 449-524ms vs 637-774ms・2026-07-31 実測）
-        case .openaiLive: return ["gpt-live-transcribe", "gpt-realtime-whisper"]
+        // 2026-10-01: 旧 gpt-4o 系を外して日本語精度の高い gpt-transcribe に一本化
+        case .openai: return ["gpt-transcribe"]
+        // turbo が REST 最速（330ms〜）で精度も良好。whisper-large-v3 は 2026-10-01 に外した
+        case .groq: return ["whisper-large-v3-turbo"]
+        // 2026-10-01: scribe_v2 を既定に（公開情報で日本語精度が上位）。scribe_v1 はハンズフリーの
+        // 内部利用（AppController が固定で使う）と比較用に残す
+        case .elevenlabs: return ["scribe_v2", "scribe_v1"]
+        // 選択肢からは外した（保存値は soniox へ移行）。製品版の warm 経路と decode 互換のためだけに残す
+        case .deepgram: return ["nova-3"]
+        // gpt-live-transcribe が新世代（2026-07-28）。前世代 gpt-realtime-whisper は 2026-10-01 に外した
+        case .openaiLive: return ["gpt-live-transcribe"]
         // Apple はモデルを選べない（OS が言語ごとに 1 つ持つ）。表示名として 1 件だけ持つ。
         case .appleLocal: return ["オンデバイス音声認識"]
+        case .soniox: return ["stt-rt-v5"]
+        case .azureMAI: return ["MAI-Transcribe-2"]
         }
     }
 
     /// 既定モデル（＝設定 UI で「（推奨）」表記するモデル）
     var defaultModel: String { knownModels[0] }
+
+    /// 2026-10-01 に選択肢から外したモデル名。保存値がこれなら ConfigStore の一回限りの移行（V19）で
+    /// 既定モデルへ戻す（移行後にユーザーが自由入力で選び直したものは保持する）。
+    /// ここに無い一覧外の名前（ユーザーの自由入力）は保持する
+    /// （以前は「一覧外なら既定へ」だったため、自由入力のモデル名が再起動のたびに消えていた）。
+    static let retiredModels: Set<String> = [
+        "nova-2", "gpt-realtime-whisper", "whisper-large-v3",
+        "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "scribe_v1_experimental",
+    ]
 
     /// モード別のテキスト整形の既定 ON/OFF。
     /// 即時入力(deepgram)は速度全振りのため既定 OFF（トグルで ON は可能）、
@@ -127,9 +155,9 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
     /// 設定 UI でモードを切り替えたときに整形トグルをこの既定へ追従させる。
     var defaultFormatEnabled: Bool {
         switch self {
-        // ライブ系（Deepgram / OpenAI ライブ / ローカル）は速度全振りのため既定 OFF
-        case .deepgram, .openaiLive, .appleLocal: return false
-        case .groq, .elevenlabs, .openai: return true
+        // ライブ系（Deepgram / OpenAI ライブ / ローカル / Soniox）は速度全振りのため既定 OFF
+        case .deepgram, .openaiLive, .appleLocal, .soniox: return false
+        case .groq, .elevenlabs, .openai, .azureMAI: return true
         }
     }
 }
@@ -168,17 +196,38 @@ extension SlotConfig {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         hotkey = try c.decodeIfPresent([String].self, forKey: .hotkey) ?? []
         mode = try c.decodeIfPresent(HotkeyMode.self, forKey: .mode) ?? .hold
-        // 製品版で選べるのは deepgram（即時入力）/ groq（スタンダード）の 2 択。
-        // 選択肢に無い保存値（旧「高精度」= elevenlabs・openai）は groq（スタンダード・既定）へ移行する。
-        // deepgram は選択肢に残るため、保存済み deepgram はそのまま維持される。
+        // 選択肢（selectableCases）に無い保存値は groq（スタンダード・既定）へ移行する
+        // （古い OS での apple_local など）。
+        // 2026-10-01: Deepgram を選択肢から外したので、保存済み deepgram は同じライブ型の soniox へ移行する。
         // enum の case は decode 互換と EL の内部利用のため削らない（「選べる集合」だけを絞る）。
-        let decoded = try c.decodeIfPresent(Backend.self, forKey: .backend) ?? .groq
-        let migrated = Backend.selectableCases.contains(decoded) ? decoded : .groq
+        // backend は文字列で読む。Backend として decode すると未知の値（新しい版で保存した値など）で
+        // throw し、loadSlot の try? でホットキー・モード・プロンプトまで丸ごと既定に戻ってしまうため。
+        // 未知の値は decoded = nil として groq へ写す（モデルも groq の推奨へ）。
+        let decoded: Backend?
+        if let rawBackend = try c.decodeIfPresent(String.self, forKey: .backend) {
+            decoded = Backend(rawValue: rawBackend)
+        } else {
+            decoded = .groq  // フィールドが無い旧保存値は従来どおり groq
+        }
+        let migrated: Backend
+        if let decoded, Backend.selectableCases.contains(decoded) {
+            migrated = decoded
+        } else if decoded == .deepgram {
+            migrated = .soniox
+        } else {
+            migrated = .groq
+        }
         backend = migrated
         let decodedModel = try c.decodeIfPresent(String.self, forKey: .model) ?? ""
-        // バックエンドを移行した（または保存モデルが当該バックエンドのものでない）場合は
-        // そのバックエンドの推奨モデルに揃える（製品版はモデル非選択で固定なので実害はないが整合のため）
-        model = migrated.knownModels.contains(decodedModel) ? decodedModel : migrated.defaultModel
+        // バックエンドを移行したら、旧バックエンドのモデル名は意味が無いので推奨モデルへ揃える。
+        // 同じバックエンドなら、空のときだけ推奨へ戻し、それ以外（一覧外の自由入力も）は保持する。
+        // 廃止モデルの置換は ConfigStore の一回限りの移行（V19）で行う。ここで毎回置換すると、
+        // ユーザーが意図して自由入力した旧モデル名まで起動のたびに消えてしまう。
+        if migrated != decoded || decodedModel.isEmpty {
+            model = migrated.defaultModel
+        } else {
+            model = decodedModel
+        }
         prompt = try c.decodeIfPresent(String.self, forKey: .prompt) ?? ""
         // 製品版は整形を既定オン（裏で整形）。保存値が無ければ true
         formatEnabled = try c.decodeIfPresent(Bool.self, forKey: .formatEnabled) ?? true
@@ -344,19 +393,21 @@ final class ConfigStore: ObservableObject {
         static let numeralProtectWords = "numeralProtectWords"
         /// モード別整形既定の一回限りマイグレーション済みフラグ（v1.8）
         static let didMigrateModeDefaultsV18 = "didMigrateModeDefaultsV18"
+        /// 廃止モデル→既定モデルの一回限りマイグレーション済みフラグ（2026-10-01 のエンジン入れ替え）
+        static let didMigrateRetiredModelsV19 = "didMigrateRetiredModelsV19"
     }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
 
-        // 製品版の既定: スロット1=メイン(右⌘・押している間・Deepgram「即時入力」nova-3)
-        //             スロット2=ハンズフリー(右⌥・トグル・Groq「スタンダード」)
-        //             ハンズフリー(toggle)録音では groq を内部で ElevenLabs(scribe_v1) に自動切替する。
-        //             （2026-07-03 ユーザー指示: 新規ユーザーはメイン=即時入力長押しで始める。
-        //              既存ユーザーは保存値が優先されるため影響しない）
+        // 既定: スロット1=メイン(右⌘・押している間・Soniox stt-rt-v5 のライブ型)
+        //       スロット2=ハンズフリー(右⌥・トグル・Groq「スタンダード」)
+        //       ハンズフリー(toggle)録音では groq を内部で ElevenLabs(scribe_v1) に自動切替する。
+        //       （2026-07-03 ユーザー指示: 新規ユーザーはメイン=ライブ型の長押しで始める。
+        //        2026-10-01 に Deepgram を外して Soniox へ。既存ユーザーは保存値が優先されるため影響しない）
         slot1 = Self.loadSlot(defaults, key: Keys.slot1) ?? SlotConfig(
-            hotkey: ["cmd_r"], mode: .hold, backend: .deepgram,
-            model: Backend.deepgram.defaultModel, prompt: ""
+            hotkey: ["cmd_r"], mode: .hold, backend: .soniox,
+            model: Backend.soniox.defaultModel, prompt: ""
         )
         slot2 = Self.loadSlot(defaults, key: Keys.slot2) ?? SlotConfig(
             hotkey: ["alt_r"], mode: .toggle, backend: .groq,
@@ -424,11 +475,24 @@ final class ConfigStore: ObservableObject {
         // ユーザーが deepgram で整形 ON にしたらそれを尊重する。decode 内ではやらない
         // （decode は保存値をそのまま復元する役目で、一回限りの副作用を持たせない）。
         if !defaults.bool(forKey: Keys.didMigrateModeDefaultsV18) {
-            if slot1.backend == .deepgram { slot1.formatEnabled = false }
-            if slot2.backend == .deepgram { slot2.formatEnabled = false }
+            // 保存済み deepgram は decode 時に soniox へ移行して届く（2026-10-01）ので、
+            // 同じライブ型の soniox を対象にする（新規ユーザーの既定スロット1もここで OFF になる）
+            if slot1.backend == .soniox { slot1.formatEnabled = false }
+            if slot2.backend == .soniox { slot2.formatEnabled = false }
             saveSlot(slot1, key: Keys.slot1)
             saveSlot(slot2, key: Keys.slot2)
             defaults.set(true, forKey: Keys.didMigrateModeDefaultsV18)
+        }
+
+        // 一回限りのマイグレーション（2026-10-01 に選択肢から外したモデル → そのバックエンドの既定）。
+        // V18 と同じ理由で decode 内ではやらない。毎回置換すると、移行後にユーザーが自由入力で
+        // 選び直した旧モデル名（whisper-large-v3 など）まで起動のたびに消えるため
+        if !defaults.bool(forKey: Keys.didMigrateRetiredModelsV19) {
+            if Backend.retiredModels.contains(slot1.model) { slot1.model = slot1.backend.defaultModel }
+            if Backend.retiredModels.contains(slot2.model) { slot2.model = slot2.backend.defaultModel }
+            saveSlot(slot1, key: Keys.slot1)
+            saveSlot(slot2, key: Keys.slot2)
+            defaults.set(true, forKey: Keys.didMigrateRetiredModelsV19)
         }
 
         // 変更を自動保存（起動直後の初期代入は上で完了しているため安全）

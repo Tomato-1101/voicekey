@@ -1,10 +1,15 @@
 //
 //  Transcriber.swift
-//  文字起こし API クライアント（OpenAI / Groq / ElevenLabs / Deepgram）
+//  文字起こし API クライアント（OpenAI / Groq / ElevenLabs / Deepgram / Microsoft MAI）
 //
 //  - OpenAI / Groq: OpenAI 互換 REST（multipart WAV、Bearer 認証、text 応答）
+//    gpt-transcribe だけは json 応答・languages[] で送る（2026-10-01 追加）
 //  - ElevenLabs: Scribe API（multipart WAV、xi-api-key 認証、JSON 応答）
 //  - Deepgram: prerecorded API（WAV 生バイト、Token 認証、JSON 応答）
+//  - Microsoft MAI: Azure Speech の LLM Speech API（multipart WAV＋definition、
+//    Ocp-Apim-Subscription-Key 認証、JSON 応答）
+//  - Soniox はライブ（SonioxLiveTranscriber）専用で REST を持たない。ここに来るのはライブ接続で
+//    文字が取れなかったときだけで、録音全体を新しいライブセッションへ流し直して救う
 //
 
 import Foundation
@@ -127,15 +132,24 @@ final class Transcriber: @unchecked Sendable {
         return "gpt-transcribe"
     }
 
+    /// gpt-transcribe の送信形式（json 応答・languages[]）で送るか。
+    /// Whisper 系（Groq・旧 gpt-4o 系）は従来の text 応答・language のまま。
+    /// モデルは設定変更で途中から変わりうるので、transcribe() で 1 回だけ評価して送信と解析の両方へ渡す
+    /// （別々に評価すると、json で送って text として読む等の食い違いが起きる）。
+    var usesGptTranscribeFormat: Bool {
+        backend != .groq && restModel.hasPrefix("gpt-transcribe")
+    }
+
     /// 接続を再利用するためバックエンドごとに URLSession を保持
     private let session: URLSession
 
     /// 以降の HTTP 経路（baseURL / setAuth / buildRequest / parseResponse）に `.appleLocal` は
     /// 到達しない（`transcribe()` の冒頭でオンデバイス経路へ分岐するため）。
-    /// switch の網羅性を満たすためだけに `.openai` と同じ枝へ畳んである。
+    /// `.soniox`（REST を持たない）と `.azureMAI`（リソースごとの URL を別に組み立てる）も
+    /// baseURL / buildRequest には来ない。switch の網羅性を満たすためだけに `.openai` と同じ枝へ畳んである。
     private var baseURL: URL {
         switch backend {
-        case .openai, .openaiLive, .appleLocal: return URL(string: "https://api.openai.com/v1")!
+        case .openai, .openaiLive, .appleLocal, .soniox, .azureMAI: return URL(string: "https://api.openai.com/v1")!
         case .groq: return URL(string: "https://api.groq.com/openai/v1")!
         case .elevenlabs: return URL(string: "https://api.elevenlabs.io/v1")!
         case .deepgram: return URL(string: "https://api.deepgram.com/v1")!
@@ -164,11 +178,21 @@ final class Transcriber: @unchecked Sendable {
     /// TLS 接続を事前確立して初回リクエストの往復を短縮する（録音開始時に呼ぶ）。
     /// 失敗しても文字起こしには影響しないため、結果は無視する。
     func prewarm() {
+        // Soniox はライブ（WebSocket）専用で REST を叩かないので、温める接続が無い
+        if backend == .soniox { return }
         guard let apiKey = Keychain.apiKey(for: backend) else { return }
+        if backend == .azureMAI {
+            // Azure はリソースごとに接続先が違う。TLS を張るだけなので認証なしの GET で足りる
+            guard let base = Self.azureBaseURL(Keychain.azureSpeechEndpoint()) else { return }
+            var request = URLRequest(url: base)
+            request.timeoutInterval = 5
+            session.dataTask(with: request) { _, _, _ in }.resume()
+            return
+        }
         // 軽量な GET エンドポイントにアクセスして接続だけ確立する
         let path: String
         switch backend {
-        case .openai, .openaiLive, .groq, .elevenlabs, .appleLocal: path = "models"
+        case .openai, .openaiLive, .groq, .elevenlabs, .appleLocal, .soniox, .azureMAI: path = "models"
         case .deepgram: path = "projects"
         }
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
@@ -180,10 +204,12 @@ final class Transcriber: @unchecked Sendable {
     /// バックエンドごとの認証ヘッダを設定する
     private func setAuth(_ apiKey: String, on request: inout URLRequest) {
         switch backend {
-        case .openai, .openaiLive, .groq, .appleLocal:
+        case .openai, .openaiLive, .groq, .appleLocal, .soniox:
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         case .elevenlabs:
             request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
+        case .azureMAI:
+            request.setValue(apiKey, forHTTPHeaderField: "Ocp-Apim-Subscription-Key")
         case .deepgram:
             request.setValue("Token \(apiKey)", forHTTPHeaderField: "Authorization")
         }
@@ -227,8 +253,8 @@ final class Transcriber: @unchecked Sendable {
             case .groq: return try await transcribeGroqViaProxy(samples: samples, serverFormat: serverFormat, presetId: presetId)
             case .elevenlabs: return try await transcribeElevenLabsViaProxy(samples: samples)
             case .deepgram: return try await transcribeDeepgramViaJWT(samples: samples)
-            case .openai, .openaiLive, .appleLocal:
-                // 配布版は openai / openaiLive を提供しない（openaiLive は personal 限定）。
+            case .openai, .openaiLive, .appleLocal, .soniox, .azureMAI:
+                // 配布版は openai / openaiLive / soniox / azureMAI を提供しない（personal 限定）。
                 // appleLocal はここに来ない（冒頭でオンデバイス経路へ分岐済み）。
                 // 開発ビルド（ログイン）では従来どおり直叩きへ委ねる。
                 if EmbeddedKeys.isDist {
@@ -243,16 +269,32 @@ final class Transcriber: @unchecked Sendable {
 
         // 直叩き（personal / 未ログイン開発とも Keychain のキーで直接プロバイダーを叩く）。
         guard let apiKey = Keychain.apiKey(for: backend) else {
-            throw TranscriptionError(
-                message: "\(backend.label) の API キーが未設定です（設定画面から保存してください）"
-            )
+            throw TranscriptionError(message: Self.missingKeyMessage(for: backend))
         }
 
-        let request = buildRequest(audio: encodeAudio(samples), apiKey: apiKey)
+        // Soniox は REST を持たない（ライブ専用）。ここに来るのはライブ接続で文字が取れなかったときだけ
+        if backend == .soniox {
+            return try await transcribeSonioxReplay(samples: samples, apiKey: apiKey)
+        }
+
+        // 送信形式と応答の解析形式は同じ判定を使う（途中でモデル設定が変わっても食い違わないよう 1 回だけ評価）
+        let gptTranscribeFormat = usesGptTranscribeFormat
+        let request: URLRequest
+        if backend == .azureMAI {
+            guard let url = Self.azureTranscribeURL(endpoint: Keychain.azureSpeechEndpoint()) else {
+                throw TranscriptionError(
+                    message: "Microsoft の接続先（AZURE_SPEECH_ENDPOINT）が未設定です（中央 Keychain に保存してください）"
+                )
+            }
+            request = azureRequest(url: url, wav: WavEncoder.encode(samples), apiKey: apiKey)
+        } else {
+            request = buildRequest(audio: encodeAudio(samples), apiKey: apiKey, gptTranscribeFormat: gptTranscribeFormat)
+        }
         let start = Date()
         let data = try await send(request)
         let text = TextNormalize.stripCJKSpaces(
-            try parseResponse(data).trimmingCharacters(in: .whitespacesAndNewlines)
+            try parseResponse(data, gptTranscribeFormat: gptTranscribeFormat)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
         )
         let elapsed = Int(Date().timeIntervalSince(start) * 1000)
         log.info("\(self.backend.label, privacy: .public) 文字起こし完了: \(elapsed)ms, \(text.count) 文字")
@@ -279,6 +321,67 @@ final class Transcriber: @unchecked Sendable {
         }
         let elapsed = Int(Date().timeIntervalSince(start) * 1000)
         log.info("\(self.backend.label, privacy: .public) 文字起こし完了: \(elapsed)ms, \(text.count) 文字")
+        return text
+    }
+
+    // MARK: - Soniox の救済（録音全体の再送）
+
+    /// キー未設定の案内文。personal には API キーの入力欄が無いので、登録先の変数名をそのまま出す
+    static func missingKeyMessage(for backend: Backend) -> String {
+        let name = Keychain.keyVariableName(for: backend) ?? ""
+        return "\(backend.label) の API キーが未設定です（中央 Keychain に \(name) を登録してください）"
+    }
+
+    /// Soniox の失敗を、ユーザーが次に何をすればよいか分かる文言へ写す。
+    /// コードは数値で来ても文字列で来ても文字列にそろえてある（SonioxTranscript）
+    static func sonioxFailureMessage(_ failure: LiveFailure) -> String {
+        if case .error(let code?, _) = failure {
+            switch code {
+            case "401", "403":
+                return "Soniox の API キーが無効です（中央 Keychain の \(Keychain.keyVariableName(for: .soniox) ?? "") を確認してください）"
+            case "402":
+                return "Soniox の残高・利用上限が尽きています"
+            case "429":
+                return "Soniox の同時接続・回数の上限に達しました"
+            default:
+                break
+            }
+        }
+        return "Soniox に接続できませんでした（ネットワークを確認してください）"
+    }
+
+    /// 録音中のライブ接続が失敗して文字が取れなかったときに、手元の録音を新しいセッションへ流し直す。
+    /// 録音はもう終わっているので実時間は待たず、100ms 分ずつ続けて送信キューへ積む。
+    /// 正常に終わって空なら空文字（本当に無言）。失敗して何も取れなければ原因別の文言で投げる
+    private func transcribeSonioxReplay(samples: [Float], apiKey: String) async throws -> String {
+        let session = SonioxLiveTranscriber(model: model, language: language, prompt: prompt)
+        guard session.start(apiKey: apiKey) else {
+            throw TranscriptionError(message: Self.missingKeyMessage(for: backend))
+        }
+        let start = Date()
+        let chunk = Int(AudioRecorder.sampleRate / 10)
+        var index = 0
+        while index < samples.count {
+            let end = min(index + chunk, samples.count)
+            session.send(Array(samples[index..<end]))
+            index = end
+        }
+        let audioSeconds = Double(samples.count) / AudioRecorder.sampleRate
+        let text = await session.finish(
+            timeout: SonioxLiveTranscriber.replayFinishTimeout(audioSeconds: audioSeconds)
+        )
+        let ending = session.ending
+        // 実時間より速く送ったときの処理時間は公式に明記が無い。待ち上限を実測で詰めるために必ず残す
+        let elapsed = Int(Date().timeIntervalSince(start) * 1000)
+        let summary = "Soniox 再送: 音声 \(String(format: "%.1f", audioSeconds))s → \(elapsed)ms, "
+            + "\(text.count) 文字, 終わり方=\(ending.logLabel)"
+        log.notice("\(summary, privacy: .public)")
+        ActionLog.shared.write("transcriber", summary)
+
+        // 失敗でも取れた分があれば返す（喋った内容を捨てない）。何も取れなければ原因を伝える
+        if case .failed(let failure) = ending, text.isEmpty {
+            throw TranscriptionError(message: Self.sonioxFailureMessage(failure))
+        }
         return text
     }
 
@@ -346,8 +449,9 @@ final class Transcriber: @unchecked Sendable {
 
         let start = Date()
         let data = try await send(request)
+        // Deepgram の解析は gpt-transcribe 形式を見ない（OpenAI 系の判定なので常に false）
         let text = TextNormalize.stripCJKSpaces(
-            try parseResponse(data).trimmingCharacters(in: .whitespacesAndNewlines)
+            try parseResponse(data, gptTranscribeFormat: false).trimmingCharacters(in: .whitespacesAndNewlines)
         )
         let elapsed = Int(Date().timeIntervalSince(start) * 1000)
         log.info("\(self.backend.label, privacy: .public) 文字起こし完了: \(elapsed)ms, \(text.count) 文字")
@@ -413,17 +517,19 @@ final class Transcriber: @unchecked Sendable {
 
     // MARK: - リクエスト構築（バックエンド別）
 
-    /// アップロードする符号化済み音声（FLAC または WAV）
-    private struct EncodedAudio {
+    /// アップロードする符号化済み音声（FLAC または WAV）。
+    /// リクエスト組み立てをテストから呼ぶため internal にしている
+    struct EncodedAudio {
         let data: Data
         let filename: String
         let contentType: String
     }
 
-    private func buildRequest(audio: EncodedAudio, apiKey: String) -> URLRequest {
+    private func buildRequest(audio: EncodedAudio, apiKey: String, gptTranscribeFormat: Bool) -> URLRequest {
         switch backend {
-        case .openai, .openaiLive, .groq, .appleLocal:
-            return openAIRequest(audio: audio, apiKey: apiKey)
+        // soniox / azureMAI はここに来ない（transcribe() で先に分岐する）。網羅性のためだけに畳む
+        case .openai, .openaiLive, .groq, .appleLocal, .soniox, .azureMAI:
+            return openAIRequest(audio: audio, apiKey: apiKey, gptTranscribeFormat: gptTranscribeFormat)
         case .elevenlabs:
             return elevenLabsRequest(audio: audio, apiKey: apiKey)
         case .deepgram:
@@ -431,34 +537,48 @@ final class Transcriber: @unchecked Sendable {
         }
     }
 
-    /// OpenAI 互換 Audio Transcriptions API（OpenAI / Groq 共用）
-    private func openAIRequest(audio: EncodedAudio, apiKey: String) -> URLRequest {
+    /// OpenAI 互換 Audio Transcriptions API（OpenAI / Groq 共用）。
+    /// テストから送信内容を確かめるため internal にしている
+    /// - Parameter gptTranscribeFormat: gpt-transcribe の形で送るか（transcribe() が 1 回だけ評価した値）
+    func openAIRequest(audio: EncodedAudio, apiKey: String, gptTranscribeFormat: Bool) -> URLRequest {
         var request = URLRequest(url: baseURL.appendingPathComponent("audio/transcriptions"))
         request.httpMethod = "POST"
         setAuth(apiKey, on: &request)
 
         var form = MultipartForm()
         form.field("model", restModel)
-        form.field("response_format", "text")
-        form.field("temperature", "0")
-        if !language.isEmpty { form.field("language", language) }
-        // 数字を半角で出させる style プロンプト（＋ユーザー設定プロンプト）を常に付与する。
-        // このリクエストは Whisper 系（OpenAI / Groq 直叩き）専用なので Whisper 前提でよい。
-        form.field("prompt", Self.whisperPrompt(userPrompt: prompt))
+        if gptTranscribeFormat {
+            // gpt-transcribe は json 応答で、言語は複数指定の languages[] で渡す
+            // （単数の language と両方送らない。temperature は仕様に無いので送らない）
+            form.field("response_format", "json")
+            if !language.isEmpty { form.field("languages[]", language) }
+            // gpt-transcribe の prompt は自由形式の「文脈」として読まれるので、Whisper 用の数字の例文を
+            // 混ぜると例文そのものが出力に漏れうる。ユーザーのプロンプトだけを送る（空なら送らない）。
+            // 数字の表記はアプリ側の NumeralNormalizer が半角へ直す
+            let user = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !user.isEmpty { form.field("prompt", user) }
+        } else {
+            form.field("response_format", "text")
+            form.field("temperature", "0")
+            if !language.isEmpty { form.field("language", language) }
+            // Whisper 系（Groq / 旧 gpt-4o 系）は prompt の表記に追従するので、数字を半角で出させる
+            // style プロンプト（＋ユーザー設定プロンプト）を常に付与する
+            form.field("prompt", Self.whisperPrompt(userPrompt: prompt))
+        }
         form.file("file", filename: audio.filename, contentType: audio.contentType, data: audio.data)
         form.apply(to: &request)
         return request
     }
 
-    /// ElevenLabs Scribe API（speech-to-text）
-    private func elevenLabsRequest(audio: EncodedAudio, apiKey: String) -> URLRequest {
+    /// ElevenLabs Scribe API（speech-to-text）。テストから送信内容を確かめるため internal にしている
+    func elevenLabsRequest(audio: EncodedAudio, apiKey: String) -> URLRequest {
         var request = URLRequest(url: baseURL.appendingPathComponent("speech-to-text"))
         request.httpMethod = "POST"
         setAuth(apiKey, on: &request)
 
         var form = MultipartForm()
         form.field("model_id", model)
-        // (笑い) などの音声イベントタグは音声入力には不要
+        // (笑い) などの音声イベントタグは音声入力には不要。scribe_v2 は既定で付けるので必ず明示する
         form.field("tag_audio_events", "false")
         if !language.isEmpty { form.field("language_code", language) }
         form.file("file", filename: audio.filename, contentType: audio.contentType, data: audio.data)
@@ -493,9 +613,81 @@ final class Transcriber: @unchecked Sendable {
         return request
     }
 
+    /// Azure の API バージョン（LLM Speech API の MAI-Transcribe 対応版）
+    private static let azureAPIVersion = "2025-10-15"
+
+    /// AZURE_SPEECH_ENDPOINT を正規化したベース URL（scheme + host + port だけを使う）。
+    /// Azure ポータルからコピーした値に余計なパス・クエリが付いていても壊れないよう、それらは捨てる。
+    /// scheme の無い値（xxx.cognitiveservices.azure.com）は https を補う。
+    /// 未設定・空白を含む値・ホストを持たない値は nil
+    static func azureBaseURL(_ endpoint: String?) -> URL? {
+        guard var text = endpoint?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty,
+              !text.contains(where: \.isWhitespace) else {
+            return nil
+        }
+        if !text.contains("://") { text = "https://" + text }
+        guard let parsed = URLComponents(string: text), let host = parsed.host, !host.isEmpty else {
+            return nil
+        }
+        var base = URLComponents()
+        base.scheme = parsed.scheme
+        base.host = host
+        base.port = parsed.port
+        return base.url
+    }
+
+    /// 文字起こしの送信先 URL。appendingPathComponent はパス中の「:」をエスケープしうるので文字列で組む
+    static func azureTranscribeURL(endpoint: String?) -> URL? {
+        guard let base = azureBaseURL(endpoint) else { return nil }
+        return URL(string: base.absoluteString
+            + "/speechtotext/transcriptions:transcribe?api-version=\(azureAPIVersion)")
+    }
+
+    /// multipart の definition（LLM Speech の enhancedMode で MAI モデルを指定する）。
+    /// 言語が空なら locales を付けない＝自動判定に任せる
+    static func azureDefinitionJSON(model: String, language: String) -> String {
+        var definition: [String: Any] = ["enhancedMode": ["enabled": true, "model": model]]
+        let lang = language.trimmingCharacters(in: .whitespaces)
+        if !lang.isEmpty { definition["locales"] = [lang] }
+        guard let data = try? JSONSerialization.data(withJSONObject: definition, options: [.sortedKeys]),
+              let json = String(data: data, encoding: .utf8) else { return "{}" }
+        return json
+    }
+
+    /// Microsoft MAI-Transcribe（Azure Speech の LLM Speech API）。テストから送信内容を確かめるため internal
+    func azureRequest(url: URL, wav: Data, apiKey: String) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        setAuth(apiKey, on: &request)
+
+        var form = MultipartForm()
+        form.file("audio", filename: "audio.wav", contentType: "audio/wav", data: wav)
+        form.field("definition", Self.azureDefinitionJSON(model: model, language: language))
+        form.apply(to: &request)
+        return request
+    }
+
+    /// Azure の応答から本文を取り出す。combinedPhrases[0].text を優先し、無ければ phrases を連結する。
+    /// 無音（どちらも空配列）は空文字、形が違えば nil（解析失敗）
+    static func parseAzureResponse(_ data: Data) -> String? {
+        guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        let combined = obj["combinedPhrases"] as? [[String: Any]]
+        if let text = combined?.first?["text"] as? String { return text }
+        if let phrases = obj["phrases"] as? [[String: Any]] {
+            // 区切りの空白は stripCJKSpaces が日本語の間だけ取り除く
+            return phrases.compactMap { $0["text"] as? String }.joined(separator: " ")
+        }
+        return combined != nil ? "" : nil
+    }
+
     // MARK: - 応答解析（バックエンド別）
 
     private struct ElevenLabsResponse: Decodable {
+        let text: String
+    }
+
+    /// gpt-transcribe（response_format=json）の応答
+    private struct OpenAIJSONResponse: Decodable {
         let text: String
     }
 
@@ -506,11 +698,24 @@ final class Transcriber: @unchecked Sendable {
         let results: Results
     }
 
-    private func parseResponse(_ data: Data) throws -> String {
+    /// 応答本文を取り出す。テストから確かめるため internal にしている
+    /// - Parameter gptTranscribeFormat: 送信時と同じ判定（gpt-transcribe なら json 応答として読む）
+    func parseResponse(_ data: Data, gptTranscribeFormat: Bool) throws -> String {
         switch backend {
-        case .openai, .openaiLive, .groq, .appleLocal:
+        case .openai, .openaiLive, .groq, .appleLocal, .soniox:
+            if gptTranscribeFormat {
+                guard let parsed = try? JSONDecoder().decode(OpenAIJSONResponse.self, from: data) else {
+                    throw TranscriptionError(message: "\(backend.label) API の応答を解析できませんでした")
+                }
+                return parsed.text
+            }
             // response_format=text のためプレーンテキストがそのまま返る
             return String(data: data, encoding: .utf8) ?? ""
+        case .azureMAI:
+            guard let text = Self.parseAzureResponse(data) else {
+                throw TranscriptionError(message: "\(backend.label) API の応答を解析できませんでした")
+            }
+            return text
         case .elevenlabs:
             guard let parsed = try? JSONDecoder().decode(ElevenLabsResponse.self, from: data) else {
                 throw TranscriptionError(message: "\(backend.label) API の応答を解析できませんでした")
