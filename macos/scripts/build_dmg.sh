@@ -188,3 +188,7 @@ echo "    1. Resources/Info.plist のバージョン更新をコミットして 
 echo "    2. gh release create v$VERSION \"$DMG\" \"$ZIP\" \"$REL_DIR/appcast.xml\" \\"
 echo "         --repo Tomato-1101/voicekey --title \"voicekey $VERSION\" --notes \"<変更点>\""
 echo "       ※ pre-release / draft にしない（アプリは releases/latest/download/appcast.xml を見る）"
+echo "    3. Homebrew の tap（~/Project/homebrew-tap/Casks/voicekey.rb）を新しい版に合わせてコミットして push:"
+echo "         version \"$VERSION\""
+echo "         sha256 \"$(shasum -a 256 "$ZIP" | awk '{print $1}')\""
+echo "       ※ install.sh は appcast から最新版を取るので更新不要"

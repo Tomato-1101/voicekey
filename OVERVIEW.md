@@ -116,6 +116,7 @@ Windows（`core/history_sync.py`）の両クライアントを実装済み。詳
 ## 6. 配布構成（要点のみ・詳細は HANDOFF.md）
 
 - **Mac**: personal 版（キーなし・利用者が設定 › API キー で入力）を本リポジトリの GitHub Releases（タグ `v<版>`）で配布。
+  入口は Homebrew の tap（`Tomato-1101/homebrew-tap`）と `install.sh`（curl 1 行）。公証なしでも quarantine が付かない／外すので警告なしで開ける。
   添付は DMG・Sparkle 更新用 zip・`appcast.xml` の 3 つで、アプリは `releases/latest/download/appcast.xml` を見る（draft / pre-release にしない）。
   作り方は `macos/scripts/build_dmg.sh --version X.Y.Z`（終了時に公開コマンドを表示）。公証なし＝初回は「このまま開く」が要る。
   旧版が見ていた `voicekey.vercel.app/mac/appcast.xml` はサイト側で GitHub の appcast へリダイレクトしている。

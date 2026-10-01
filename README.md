@@ -40,12 +40,29 @@
 
 ## 📥 ダウンロードとインストール（macOS）
 
-1. [GitHub Releases の最新版](https://github.com/Tomato-1101/voicekey/releases/latest) から `voicekey-<版>.dmg` をダウンロードします（macOS 14 以降・Apple シリコン）。
-2. DMG を開き、`voicekey.app` を「アプリケーション」へドラッグします。
-3. 初回は「開発元を検証できません」と出て開けません（Apple の公証を受けていないため）。
+macOS 14 以降・Apple シリコン専用です。ターミナルで次のどちらか 1 行を実行すると、警告なしで開ける状態で入ります。
+
+```bash
+brew install --cask tomato-1101/tap/voicekey
+```
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Tomato-1101/voicekey/main/install.sh | sh
+```
+
+<details>
+<summary>ブラウザでダウンロードする場合</summary>
+
+1. [GitHub Releases の最新版](https://github.com/Tomato-1101/voicekey/releases/latest) から `voicekey-<版>.dmg` をダウンロードし、`voicekey.app` を「アプリケーション」へドラッグします。
+2. 初回は「開発元を検証できません」と出て開けません（Apple の公証を受けていないため）。
    **システム設定 › プライバシーとセキュリティ** の下の方にある「**このまま開く**」を押してから、もう一度開いてください。
-4. マイク・入力監視・アクセシビリティの許可を求められたら、すべて許可します（録音と自動貼り付けに必要）。
-5. メニューバーのアイコン → 設定 › **API キー** に、使うサービスのキーを入力します。
+
+</details>
+
+起動したら:
+
+1. マイク・入力監視・アクセシビリティの許可を求められたら、すべて許可します（録音と自動貼り付けに必要）。
+2. メニューバーのアイコン → 設定 › **API キー** に、使うサービスのキーを入力します。
    - **macOS 26 以降**は、最初から**ローカル（Apple）文字起こし**で動きます（キー不要・音声は Mac の外に出ません）。
    - クラウドの文字起こし（Soniox / OpenAI / Microsoft MAI / ElevenLabs / Groq）を使うときだけキーが要ります。
      取得先は [API キーの取得](#api-キーの取得)。キーはこの Mac の Keychain（アプリ専用の項目）に保存され、画面にもログにも出ません。

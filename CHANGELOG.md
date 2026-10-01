@@ -4,6 +4,13 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased]
 
+### Added
+- **ターミナル 1 行でのインストール（Mac のみ）**。`brew install --cask tomato-1101/tap/voicekey`（自前の tap `Tomato-1101/homebrew-tap`）と
+  `curl -fsSL https://raw.githubusercontent.com/Tomato-1101/voicekey/main/install.sh | sh` の 2 通り。
+  配布版は公証していないため、ブラウザで落とすと Gatekeeper の「このまま開く」が要る。curl で落としたファイルには quarantine が付かず、
+  cask は導入後に quarantine を外すので、どちらも警告なしで開ける（AeroSpace などの無料配布アプリと同じ方式）。
+  `build_dmg.sh` の最後に tap の更新手順（版と zip の sha256）を出すようにした。
+
 ### Fixed
 - **イベントタップが OS に一時停止されている間にホットキーを離すと、録音が止まらないのを修正（Mac のみ）**。
   停止中は離鍵が届かず、押下中のまま残っていた（hold モードで録音が上限まで続く／もう一度押して離すまで止まらない）。
