@@ -95,7 +95,7 @@ final class ApiUsageTests: XCTestCase {
 
     // MARK: - 表示モード（定価／実際に払った分）
 
-    /// 実払いモードは OpenAI・Soniox・Microsoft だけを計上し、無料枠のプロバイダーは 0 円（行は残る）
+    /// 実払いモードは OpenAI・Soniox・Microsoft・Google（Gemini）だけを計上し、無料枠のプロバイダーは 0 円（行は残る）
     func testPaidModeCountsOnlyPaidProviders() {
         let store = ApiUsageStore(directory: makeTempDir())
         store.recordAudio(provider: .soniox, model: "stt-rt-v5", seconds: 3600)             // $0.12・有料
@@ -103,14 +103,14 @@ final class ApiUsageTests: XCTestCase {
         store.recordAudio(provider: .groq, model: "whisper-large-v3-turbo", seconds: 3600)   // $0.04・無料枠
         store.recordAudio(provider: .elevenlabs, model: "scribe_v1", seconds: 60)            // 単価未確認・無料枠
         store.recordTokens(provider: .gemini, model: "gemini-3.5-flash-lite", purpose: .captionTranslation,
-                           inputTokens: 1_000_000, outputTokens: 0)                          // $0.30・無料枠
+                           inputTokens: 1_000_000, outputTokens: 0)                          // $0.30・有料（Google Cloud）
 
         let list = store.todaySummary(mode: .list)
         XCTAssertEqual(list.usd, 0.12 + 0.27 + 0.04 + 0.30, accuracy: 1e-9)
         XCTAssertTrue(list.hasUnpriced, "定価では単価未確認が残る")
 
         let paid = store.todaySummary(mode: .paid)
-        XCTAssertEqual(paid.usd, 0.12 + 0.27, accuracy: 1e-9)
+        XCTAssertEqual(paid.usd, 0.12 + 0.27 + 0.30, accuracy: 1e-9)
         XCTAssertFalse(paid.hasUnpriced, "無料枠は未確認でも 0 円として確定する")
         XCTAssertEqual(paid.requests, 5, "回数はモードで変えない")
         // 無料枠の行も内訳に残る（0 円）
@@ -119,8 +119,9 @@ final class ApiUsageTests: XCTestCase {
         XCTAssertEqual(rows.first { $0.provider == "groq" }?.costUSD(mode: .paid), 0)
         XCTAssertTrue(ApiCostMode.paid.isFreeTier(.groq))
         XCTAssertFalse(ApiCostMode.paid.isFreeTier(.openai))
+        XCTAssertFalse(ApiCostMode.paid.isFreeTier(.gemini), "Google（Gemini）は Google Cloud で有料")
         XCTAssertFalse(ApiCostMode.list.isFreeTier(.groq))
-        XCTAssertEqual(store.dailySeries(30, mode: .paid).last?.summary.usd ?? 0, 0.39, accuracy: 1e-9)
+        XCTAssertEqual(store.dailySeries(30, mode: .paid).last?.summary.usd ?? 0, 0.69, accuracy: 1e-9)
     }
 
     /// 推定行は実測と別行で数え、合計の「うち推定」に出る。古い JSON（estimated 無し）は実測として読める

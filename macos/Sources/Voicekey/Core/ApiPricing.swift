@@ -82,9 +82,10 @@ enum ApiPricing {
 
     /// 本人が実際にお金を払っている契約のあるプロバイダー（「実際に払った分」表示の対象）。
     /// 2026-10-02 本人申告＋メール確認: OpenAI はカードチャージの領収あり、Soniox・Azure（MAI）は有料契約。
-    /// Groq / ElevenLabs / Deepgram は請求メールが無い（無料枠）、Gemini も無料枠運用のため含めない。
+    /// Google（Gemini）は Google Cloud の請求先アカウントで有料（10-02 本人申告・毎月の請求書メールあり）。
+    /// Groq / ElevenLabs / Deepgram は請求メールが無い（無料枠）ため含めない。
     /// 契約が変わったらここ 1 か所だけ直す。
-    static let paidProviders: Set<ApiProvider> = [.openai, .soniox, .microsoft]
+    static let paidProviders: Set<ApiProvider> = [.openai, .soniox, .microsoft, .gemini]
 
     /// 単価表。キーは「プロバイダー/モデル ID（小文字）」。ここに無いモデルは単価未確認（nil）。
     /// 各行のコメントに出典 URL と確認日を書く。値を推測で足さないこと。

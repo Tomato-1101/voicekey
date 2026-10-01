@@ -366,7 +366,7 @@ struct HomeView: View {
             Text("使用量 × 各社の公開単価から計算した推定で、実際の請求額とは異なることがあります。"
                  + "10/2 以前の分は、ログに残る要求（残っていない古い日は統計から Groq と仮定）を元にした推定で、「推定」と表示しています。"
                  + "単価は \(ApiPricing.checkedOn) 時点（Gemini は有料枠の単価で計算）。"
-                 + (mode == .paid ? "「実際に払った分」は OpenAI・Soniox・Microsoft だけを計上し、ほかは無料枠として 0 ドルにしています。" : ""))
+                 + (mode == .paid ? "「実際に払った分」は OpenAI・Soniox・Microsoft・Google（Gemini）だけを計上し、ほかは無料枠として 0 ドルにしています。" : ""))
                 .font(.caption2).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
