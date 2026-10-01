@@ -25,6 +25,10 @@
   abortStalledRecordStart 後にキューが復帰すると誰も stop しない録音が残りうる。
 - Bluetooth 入力（AirPods 等）で押下ごとに「再構成します」が出ないか実機確認（本人）。MicAutoDetector はまだ AVAudioEngine（低優先）。
 
-## 旧形式の引き継ぎ
-- 目的: ロゴ・配色の刷新（17 LEGEND が最有力・仕上げ版の確認待ち）。
-- ロゴ: 案はキャンバス https://claude.ai/artifact/SJtFByb9SXyDdwEt6brp2j（01–04 は独自案、05–12 は巨匠オマージュ: Rams/Vignelli/Wyman/原研哉/Kare/Rand/Bayer/Aicher。推奨は 01 CARET、次点 08 YOHAKU・05 GRILLE）。本人の好みは 02 KEYCAP・08 YOHAKU・11 BAUHAUS → その派生 13–24 を VOL.3 として追加（13–15 BAUHAUS 系／16–18 KEYCAP 系／19–21 余白系／22–24 かけ合わせ。生成は scratchpad の gen_v3.py）。本人評価は 17 LEGEND が 1 位（15・16 も好評）→ 仕上げ版を「17 LEGEND — FINAL」「17 BEFORE → AFTER」ボードに追加（刻印 Geist・余白 92 で統一・LED にレンズ・ライト=Bone／ダーク=16 の Carbon・メニューバーは待機=輪／録音=橙。生成は scratchpad の gen_v4.py）。決定したら AppIcon.icns／icon.ico／メニューバー用テンプレ／サイト logo.svg／HUD アクセントへ展開。表記は voicekey（小文字）に統一する案。promo/PROMPT.md は所在不明で本人に確認中。
+## ロゴ・配色の刷新「17 LEGEND」（10-01 17:31 更新）
+- 目的: 確定ロゴ 17 LEGEND（ライト=Bone／ダーク=Carbon を外観で自動切替）と配色（灯り #FF5A1F）を全面採用。原本・生成手順は design/brand/。
+- 現状: Mac は a6980d9 で push 済み（アイコン・メニューバー・HUD・字幕ガラス・設定 UI）。Windows は停止中のため icon.ico だけ差替。
+  GitHub: 本リポ PUBLIC・About/README/プロフィールから voicekey.app へ導線・ソーシャルプレビュー（本リポ＋voicekey-releases）設定済み。
+  サイト voicekey-site は 8c75e08・81937ed で push 済み（private）だが**本番未反映**（Vercel CLI のログイン切れ）。
+- 次にやること: Vercel 再ログイン → preview 確認 → `vercel deploy --prod` → voicekey.app で確認。Cloudflare への移行は本人判断待ち。
+  任意: DMG 副題色を #7F796F に。promo/PROMPT.md は所在不明（本人に確認）。
