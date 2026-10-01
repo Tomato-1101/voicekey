@@ -241,7 +241,8 @@ final class SlotConfigMigrationTests: XCTestCase {
         XCTAssertNotEqual(AppController.handsfreeELModel, Backend.elevenlabs.defaultModel)
     }
 
-    // 新規ユーザーの既定: スロット1=Soniox（整形 OFF）、スロット2=Groq
+    // 新規ユーザーの既定: Apple ローカルが使える環境（macOS 26 以降）なら両スロットとも
+    // キー不要の Apple ローカル（整形 OFF）。使えなければ従来どおりスロット1=Soniox（整形 OFF）、スロット2=Groq
     @MainActor
     func testFreshInstallDefaults() {
         let suite = "voicekey.test.\(UUID().uuidString)"
@@ -249,11 +250,54 @@ final class SlotConfigMigrationTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
 
         let store = ConfigStore(defaults: defaults)
+        if Backend.selectableCases.contains(.appleLocal) {
+            XCTAssertEqual(store.slot1.backend, .appleLocal)
+            XCTAssertEqual(store.slot1.model, Backend.appleLocal.defaultModel)
+            XCTAssertFalse(store.slot1.formatEnabled)  // 整形は Groq のキーが要るので既定 OFF
+            XCTAssertEqual(store.slot2.backend, .appleLocal)
+            XCTAssertFalse(store.slot2.formatEnabled)
+        } else {
+            XCTAssertEqual(store.slot1.backend, .soniox)
+            XCTAssertEqual(store.slot1.model, "stt-rt-v5")
+            XCTAssertFalse(store.slot1.formatEnabled)  // ライブ型は速度全振り
+            XCTAssertEqual(store.slot2.backend, .groq)
+            XCTAssertEqual(store.slot2.model, "whisper-large-v3-turbo")
+        }
+        // ホットキー・モードは OS に関係なく従来どおり
+        XCTAssertEqual(store.slot1.hotkey, ["cmd_r"])
+        XCTAssertEqual(store.slot1.mode, .hold)
+        XCTAssertEqual(store.slot2.hotkey, ["alt_r"])
+        XCTAssertEqual(store.slot2.mode, .toggle)
+    }
+
+    // 新規インストールのエンジン選び（純関数）: Apple ローカルが選択肢にあればそれ、無ければ従来の既定
+    @MainActor
+    func testFreshInstallBackendChoice() {
+        XCTAssertEqual(ConfigStore.freshInstallBackend(fallback: .soniox, selectable: [.soniox, .appleLocal, .groq]), .appleLocal)
+        XCTAssertEqual(ConfigStore.freshInstallBackend(fallback: .groq, selectable: [.soniox, .appleLocal, .groq]), .appleLocal)
+        XCTAssertEqual(ConfigStore.freshInstallBackend(fallback: .soniox, selectable: [.soniox, .openai, .groq]), .soniox)
+        XCTAssertEqual(ConfigStore.freshInstallBackend(fallback: .groq, selectable: [.soniox, .openai, .groq]), .groq)
+    }
+
+    // 既存ユーザー（保存値あり）のスロットは、Apple ローカルが使える環境でも一切変えない
+    @MainActor
+    func testSavedSlotsAreNotReplacedByFreshInstallDefault() throws {
+        let suite = "voicekey.test.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let slot1 = SlotConfig(hotkey: ["cmd_r"], mode: .hold, backend: .soniox,
+                               model: "stt-rt-v5", prompt: "", formatEnabled: false)
+        let slot2 = SlotConfig(hotkey: ["alt_r"], mode: .toggle, backend: .groq,
+                               model: "whisper-large-v3-turbo", prompt: "", formatEnabled: true)
+        defaults.set(try JSONEncoder().encode(slot1), forKey: "slot1")
+        defaults.set(try JSONEncoder().encode(slot2), forKey: "slot2")
+
+        let store = ConfigStore(defaults: defaults)
         XCTAssertEqual(store.slot1.backend, .soniox)
         XCTAssertEqual(store.slot1.model, "stt-rt-v5")
-        XCTAssertFalse(store.slot1.formatEnabled)  // ライブ型は速度全振り
         XCTAssertEqual(store.slot2.backend, .groq)
-        XCTAssertEqual(store.slot2.model, "whisper-large-v3-turbo")
+        XCTAssertTrue(store.slot2.formatEnabled)
     }
 
     // MARK: - モード別整形既定（v1.8）

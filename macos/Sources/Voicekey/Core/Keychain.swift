@@ -28,6 +28,47 @@ struct AuthSession: Codable {
     }
 }
 
+/// 設定 › API キー で入力できる項目（1 行 = 1 項目）。
+/// アプリ自身の Keychain 項目名と、環境変数名（＝中央 Keychain の service 名）の対応表を 1 か所に置く。
+enum ApiKeyItem: String, CaseIterable, Identifiable {
+    case soniox
+    case openai
+    case azureKey
+    case azureEndpoint
+    case elevenlabs
+    case groq
+    case gemini
+
+    var id: String { rawValue }
+
+    /// アプリ自身の Keychain 項目の service 名。
+    /// 文字起こし側の `Keychain.service(for:)` と同じ名前にして、既存の保存済みキーをそのまま読む。
+    var appService: String {
+        switch self {
+        case .soniox: return "voicekey.Soniox"
+        case .openai: return "voicekey.OpenAI"
+        case .azureKey: return "voicekey.AzureSpeech"
+        case .azureEndpoint: return "voicekey.AzureSpeechEndpoint"
+        case .elevenlabs: return "voicekey.ElevenLabs"
+        case .groq: return "voicekey.Groq"
+        case .gemini: return "voicekey.Gemini"
+        }
+    }
+
+    /// 環境変数名（＝中央 Keychain の service 名）
+    var variableName: String {
+        switch self {
+        case .soniox: return "SONIOX_API_KEY"
+        case .openai: return "OPENAI_API_KEY"
+        case .azureKey: return "AZURE_SPEECH_KEY"
+        case .azureEndpoint: return "AZURE_SPEECH_ENDPOINT"
+        case .elevenlabs: return "ELEVENLABS_API_KEY"
+        case .groq: return "GROQ_API_KEY"
+        case .gemini: return "GEMINI_API_KEY"
+        }
+    }
+}
+
 enum Keychain {
 
     /// Python 版 keyring と互換のアカウント名
@@ -60,56 +101,101 @@ enum Keychain {
     /// 録音のたびに走るとレイテンシに直結するため
     private static var cache: [String: String] = [:]
     private static let lock = NSLock()
+    /// キャッシュの世代。set / delete のたびに進める（lock で保護）。
+    /// 読み出しはロックの外で Keychain・子プロセスを叩くので、その最中に保存・削除が走ると、
+    /// 読み出し側が後から古い値でキャッシュを上書きしてしまう。読み始めの世代と一致するときだけ書き戻す
+    private static var cacheGeneration: UInt64 = 0
 
     /// device_id の初回生成を直列化する（同時呼び出しで別々の ID を生成し、サーバーの
     /// 同時利用台数上限に誤って当たるのを防ぐ）。
     private static let deviceIdLock = NSLock()
 
-    /// API キーを取得する（Keychain → 環境変数の順。未設定なら nil）
+    /// キーの探索順を決める純関数（アプリ項目 → 環境変数 → 中央 Keychain）。
+    ///
+    /// 文字起こし・整形（`apiKey(for:)`）と字幕翻訳（`APIKeyStore.load`）の両方がここを通り、
+    /// 「設定 › API キー で入れた値が最優先」を全経路でそろえる。各段は遅延評価なので、
+    /// 手前で見つかれば後段（中央 Keychain の子プロセス起動など）は走らない。空文字は未設定扱い。
+    static func resolve(
+        app: () -> String?,
+        env: () -> String?,
+        central: () -> String?
+    ) -> (value: String, source: APIKeySource)? {
+        if let value = app(), !value.isEmpty { return (value, .app) }
+        if let value = env(), !value.isEmpty { return (value, .environment) }
+        if let value = central(), !value.isEmpty { return (value, .centralKeychain) }
+        return nil
+    }
+
+    /// キャッシュを引く。外れたときは、あとで `storeInCache` に渡す読み始めの世代も返す
+    private static func cachedValue(_ key: String) -> (value: String?, generation: UInt64) {
+        lock.lock(); defer { lock.unlock() }
+        return (cache[key], cacheGeneration)
+    }
+
+    /// 読み出した値をキャッシュへ書き戻す。読み始めから set / delete が挟まっていたら捨てる
+    private static func storeInCache(_ key: String, _ value: String, ifGeneration generation: UInt64) {
+        lock.lock(); defer { lock.unlock() }
+        guard cacheGeneration == generation else { return }
+        cache[key] = value
+    }
+
+    /// 録音開始のクリティカルパス向けに、キーが「あると分かっているか」だけを返す。
+    ///
+    /// Keychain（数十 ms）にも中央 Keychain の子プロセスにも触れず、キャッシュ済みか環境変数に
+    /// あるときだけ true。false は「無い」か「まだ読んでいない」のどちらか（`apiKey(for:)` を
+    /// 裏で一度呼べばキャッシュに載り、次から true になる）。
+    static func isApiKeyKnown(for backend: Backend) -> Bool {
+        guard backend != .appleLocal else { return false }
+        if cachedValue(service(for: backend)).value != nil { return true }
+        guard let envVar = keyVariableName(for: backend),
+              let value = ProcessInfo.processInfo.environment[envVar] else { return false }
+        return !value.isEmpty
+    }
+
+    /// API キーを取得する（アプリ Keychain → 環境変数 → 中央 Keychain の順。未設定なら nil）
     static func apiKey(for backend: Backend) -> String? {
         // ローカル（Apple）はオンデバイス処理なのでキーが要らない。Keychain も一切読まない
         guard backend != .appleLocal else { return nil }
         let svc = service(for: backend)
 
-        lock.lock()
-        if let cached = cache[svc] {
-            lock.unlock()
-            return cached
-        }
-        lock.unlock()
+        let cached = cachedValue(svc)
+        if let value = cached.value { return value }
 
-        if let value = read(service: svc) {
-            // 注意: 以前はここで「読めた値で書き直す」自己修復移行（delete→add）を行っていたが、
-            // Apple Development 証明書への移行完了（partition_id に teamid が入った状態）後は撤去した。
-            // 起動のたびに項目を作り直すと、ad-hoc 署名の実行（debug ビルド・検証ハーネス等）が
-            // 一度でも鍵を読んだ時点で項目の所有が cdhash 固定に退行し、次の正規ビルドで
-            // パスワード要求ダイアログが再発する原因になるため（2026-06-12 実測）。
-            // もし承認ダイアログが再発した場合は、設定画面からキーを 1 回再保存すれば
-            // 現アプリ所有の項目に作り直される（保存経路の delete→add は維持している）
-            lock.lock(); cache[svc] = value; lock.unlock()
-            return value
-        }
-        // 環境変数フォールバック（開発時用）
         // appleLocal は上の guard で弾かれるため nil にはならない（網羅性のためだけの既定値）
         let envVar = keyVariableName(for: backend) ?? ""
-        if let env = ProcessInfo.processInfo.environment[envVar], !env.isEmpty {
-            return env
+        // 注意: 以前はアプリ項目を読めたとき「読めた値で書き直す」自己修復移行（delete→add）を行っていたが、
+        // Apple Development 証明書への移行完了（partition_id に teamid が入った状態）後は撤去した。
+        // 起動のたびに項目を作り直すと、ad-hoc 署名の実行（debug ビルド・検証ハーネス等）が
+        // 一度でも鍵を読んだ時点で項目の所有が cdhash 固定に退行し、次の正規ビルドで
+        // パスワード要求ダイアログが再発する原因になるため（2026-06-12 実測）。
+        // もし承認ダイアログが再発した場合は、設定画面からキーを 1 回再保存すれば
+        // 現アプリ所有の項目に作り直される（保存経路の delete→add は維持している）
+        //
+        // 中央 Keychain（service = 環境変数名 / account = shared）は、プロバイダーごとにキーを
+        // 1 本だけ発行して全プロジェクトで使い回すための共通置き場（2026-08-09 導入）。
+        guard let found = resolve(
+            app: { read(service: svc) },
+            env: { ProcessInfo.processInfo.environment[envVar] },
+            central: { readCentral(service: envVar) }
+        ) else {
+            // 配布ビルドにプロバイダーキーは埋め込まない。どこにも無ければ未設定として nil を返す。
+            return nil
         }
-        // 中央 Keychain（service = 環境変数名 / account = shared）。
-        // プロバイダーごとにキーを 1 本だけ発行して全プロジェクトで使い回すための共通置き場
-        // （2026-08-09 導入。字幕側の APIKeyStore は既にここを読んでいる）。
-        if let central = readCentral(service: envVar) {
+        switch found.source {
+        case .environment:
+            // 環境変数は開発時用。プロセス内で変わりうるのでキャッシュしない（従来どおり）
+            return found.value
+        case .centralKeychain:
             // 値は出さない（取得元と末尾 4 桁のみ）。キーがどこから来たかを後から追えないと
             // 「キー未設定」系の不具合を実機で切り分けられないため .notice で残す
             centralLogger.notice(
-                "中央 Keychain から取得 service=\(envVar, privacy: .public) suffix=\(String(central.suffix(4)), privacy: .public)"
+                "中央 Keychain から取得 service=\(envVar, privacy: .public) suffix=\(String(found.value.suffix(4)), privacy: .public)"
             )
-            lock.lock(); cache[svc] = central; lock.unlock()
-            return central
+        case .app:
+            break
         }
-        // 配布ビルドにプロバイダーキーは埋め込まない（製品版はサーバー経由）。
-        // どこにも無ければ未設定として nil を返す。
-        return nil
+        storeInCache(svc, found.value, ifGeneration: cached.generation)
+        return found.value
     }
 
     /// バックエンドのキーの変数名（環境変数名＝中央 Keychain の service 名）。
@@ -127,24 +213,39 @@ enum Keychain {
         }
     }
 
-    /// Microsoft MAI（Azure Speech）の接続先エンドポイントを取得する（環境変数 → 中央 Keychain）。
+    /// Microsoft MAI（Azure Speech）の接続先エンドポイントを取得する（アプリ Keychain → 環境変数 → 中央 Keychain）。
     ///
     /// Azure はリソースごとに URL が違うので、キーとは別に `AZURE_SPEECH_ENDPOINT` を持つ
-    /// （秘密ではないが置き場所をキーと揃えて、設定の正本を中央 Keychain の 1 か所にする）。
+    /// （秘密ではないが置き場所をキーと揃え、設定 › API キー からも入れられるようにする）。
     static func azureSpeechEndpoint() -> String? {
-        let name = "AZURE_SPEECH_ENDPOINT"
-        lock.lock()
-        if let cached = cache[name] {
-            lock.unlock()
-            return cached
-        }
-        lock.unlock()
+        let item = ApiKeyItem.azureEndpoint
+        let cached = cachedValue(item.appService)
+        if let value = cached.value { return value }
 
-        let env = ProcessInfo.processInfo.environment[name]
-        let value = (env?.isEmpty == false ? env : nil) ?? readCentral(service: name)
-        guard let value, !value.isEmpty else { return nil }
-        lock.lock(); cache[name] = value; lock.unlock()
-        return value
+        guard let found = lookup(item) else { return nil }
+        storeInCache(item.appService, found.value, ifGeneration: cached.generation)
+        return found.value
+    }
+
+    /// 項目の値と取得元を、アプリ → 環境変数 → 中央 Keychain の順で探す（キャッシュを通さない）。
+    /// 値を返すのは実際に使う経路のためだけ。設定画面は `apiKeySource(for:)` で取得元だけを見る。
+    static func lookup(_ item: ApiKeyItem) -> (value: String, source: APIKeySource)? {
+        resolve(
+            app: { read(service: item.appService) },
+            env: { ProcessInfo.processInfo.environment[item.variableName] },
+            central: { readCentral(service: item.variableName) }
+        )
+    }
+
+    /// アプリ自身の Keychain 項目だけを読む（字幕側の `APIKeyStore` が探索順をそろえるために使う）
+    static func appValue(for item: ApiKeyItem) -> String? {
+        read(service: item.appService)
+    }
+
+    /// 項目がどこから読めるか（設定画面の状態表示用。値は返さない。未設定なら nil）。
+    /// Keychain・子プロセスに触れるので SwiftUI の body からは呼ばない。
+    static func apiKeySource(for item: ApiKeyItem) -> APIKeySource? {
+        lookup(item)?.source
     }
 
     /// 中央 Keychain（service = 環境変数名 / account = `shared`）から読む
@@ -171,52 +272,51 @@ enum Keychain {
         return value.isEmpty ? nil : value
     }
 
-    /// API キーを保存する
+    /// API キー（または Azure の接続先）をアプリ自身の Keychain 項目へ保存する。
+    /// 中央 Keychain には書かない。保存直後から全経路で使われるようキャッシュも差し替える
+    /// （`apiKey(for:)` のキャッシュキーは `service(for:)` ＝ `appService` と同じ名前）。
+    /// 値は `APIKeyStore.sanitize` で正規化してから保存する（`SONIOX_API_KEY=...` のような
+    /// 前置き・引用符付きで貼られても、どの保存経路からでも同じ形で入るように）。空になれば保存しない。
     @discardableResult
-    static func setApiKey(_ key: String, for backend: Backend) -> Bool {
-        let svc = service(for: backend)
-        let ok = write(service: svc, value: key)
+    static func setApiKey(_ key: String, for item: ApiKeyItem) -> Bool {
+        let value = APIKeyStore.sanitize(key)
+        guard !value.isEmpty else { return false }
+        let ok = write(service: item.appService, value: value)
         if ok {
-            lock.lock(); cache[svc] = key; lock.unlock()
+            // 書き込み後に世代を進める＝書き込み前から走っていた読み出しは古い値を書き戻さない
+            lock.lock(); cacheGeneration &+= 1; cache[item.appService] = value; lock.unlock()
         }
         return ok
     }
 
-    /// API キーを削除する
+    /// アプリ自身の Keychain 項目だけを削除する（環境変数・中央 Keychain には触らない）。
+    /// キャッシュも捨てるので、次の読み出しから環境変数 → 中央 Keychain へ自然に戻る。
     @discardableResult
-    static func deleteApiKey(for backend: Backend) -> Bool {
-        let svc = service(for: backend)
-        lock.lock(); cache.removeValue(forKey: svc); lock.unlock()
+    static func deleteApiKey(for item: ApiKeyItem) -> Bool {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: svc,
+            kSecAttrService as String: item.appService,
             kSecAttrAccount as String: account,
         ]
         let status = SecItemDelete(query as CFDictionary)
+        // 削除の後で世代を進めてキャッシュを捨てる。先に捨てると、削除前の項目を読んだ読み出しが
+        // 同じ世代のまま古い値を書き戻し、消したはずのキーが使われ続けるため
+        lock.lock(); cacheGeneration &+= 1; cache.removeValue(forKey: item.appService); lock.unlock()
         return status == errSecSuccess || status == errSecItemNotFound
-    }
-
-    /// キーが設定済みかどうか
-    static func hasApiKey(for backend: Backend) -> Bool {
-        apiKey(for: backend) != nil
     }
 
     // MARK: - 履歴同期トークン
 
     /// 履歴同期トークンを取得する（アプリ Keychain → 中央 Keychain → 環境変数）。
     static func syncToken() -> String? {
-        lock.lock()
-        if let cached = cache[syncTokenService] {
-            lock.unlock()
-            return cached
-        }
-        lock.unlock()
+        let cached = cachedValue(syncTokenService)
+        if let value = cached.value { return value }
 
         let value = read(service: syncTokenService)
             ?? readCentral(service: "VOICEKEY_SYNC_TOKEN")
             ?? ProcessInfo.processInfo.environment["VOICEKEY_SYNC_TOKEN"]
         guard let value, !value.isEmpty else { return nil }
-        lock.lock(); cache[syncTokenService] = value; lock.unlock()
+        storeInCache(syncTokenService, value, ifGeneration: cached.generation)
         return value
     }
 
@@ -225,7 +325,7 @@ enum Keychain {
     static func setSyncToken(_ token: String) -> Bool {
         let ok = write(service: syncTokenService, value: token)
         if ok {
-            lock.lock(); cache[syncTokenService] = token; lock.unlock()
+            lock.lock(); cacheGeneration &+= 1; cache[syncTokenService] = token; lock.unlock()
         }
         return ok
     }
@@ -233,13 +333,14 @@ enum Keychain {
     /// 履歴同期トークンをアプリ Keychain から削除する。
     @discardableResult
     static func deleteSyncToken() -> Bool {
-        lock.lock(); cache.removeValue(forKey: syncTokenService); lock.unlock()
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: syncTokenService,
             kSecAttrAccount as String: account,
         ]
         let status = SecItemDelete(query as CFDictionary)
+        // deleteApiKey と同じ理由で、削除の後に世代を進めてキャッシュを捨てる
+        lock.lock(); cacheGeneration &+= 1; cache.removeValue(forKey: syncTokenService); lock.unlock()
         return status == errSecSuccess || status == errSecItemNotFound
     }
 

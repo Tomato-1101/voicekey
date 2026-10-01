@@ -262,8 +262,8 @@ struct CaptionSettingsTab: View {
         } header: {
             Text("API キー")
         } footer: {
-            Text("キーの正本は共有 Keychain（と環境変数）です。ここでは状態だけを表示し、"
-                 + "voicekey からは読み取りだけ行います。")
+            Text("キーは「設定 › API キー」で入力できます。ここでは状態だけを表示します"
+                 + "（アプリに保存した値 → 環境変数 → 共有 Keychain の順に読みます）。")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }

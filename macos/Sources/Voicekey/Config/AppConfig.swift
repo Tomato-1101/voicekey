@@ -408,13 +408,20 @@ final class ConfigStore: ObservableObject {
         //       ハンズフリー(toggle)録音では groq を内部で ElevenLabs(scribe_v1) に自動切替する。
         //       （2026-07-03 ユーザー指示: 新規ユーザーはメイン=ライブ型の長押しで始める。
         //        2026-10-01 に Deepgram を外して Soniox へ。既存ユーザーは保存値が優先されるため影響しない）
+        //       2026-10-01: GitHub で一般配布するため、Apple ローカルが使える環境（macOS 26 以降）では
+        //       両スロットともキー不要の Apple ローカルで始める（キーを入れる前から動くように）。
+        //       保存値があるスロットは一切変えない（既存ユーザー・作者の設定はそのまま）。
+        let backend1 = Self.freshInstallBackend(fallback: .soniox)
+        let backend2 = Self.freshInstallBackend(fallback: .groq)
         slot1 = Self.loadSlot(defaults, key: Keys.slot1) ?? SlotConfig(
-            hotkey: ["cmd_r"], mode: .hold, backend: .soniox,
-            model: Backend.soniox.defaultModel, prompt: ""
+            hotkey: ["cmd_r"], mode: .hold, backend: backend1,
+            model: backend1.defaultModel, prompt: "",
+            formatEnabled: backend1.defaultFormatEnabled
         )
         slot2 = Self.loadSlot(defaults, key: Keys.slot2) ?? SlotConfig(
-            hotkey: ["alt_r"], mode: .toggle, backend: .groq,
-            model: Backend.groq.defaultModel, prompt: ""
+            hotkey: ["alt_r"], mode: .toggle, backend: backend2,
+            model: backend2.defaultModel, prompt: "",
+            formatEnabled: backend2.defaultFormatEnabled
         )
         language = defaults.string(forKey: Keys.language) ?? "ja"
         // VAD・HUD・ストリーミング・長文分割は常時 ON に固定（設定 UI から撤去）。
@@ -564,6 +571,14 @@ final class ConfigStore: ObservableObject {
     /// スロット設定を ID で取得する
     func slot(_ id: Int) -> SlotConfig {
         id == 1 ? slot1 : slot2
+    }
+
+    /// 新規インストール（保存値なし）のスロットに使うエンジン。
+    /// Apple ローカルが選択肢にある環境ならそれ（キー不要で最初から動く）、無ければ従来の既定。
+    static func freshInstallBackend(
+        fallback: Backend, selectable: [Backend] = Backend.selectableCases
+    ) -> Backend {
+        selectable.contains(.appleLocal) ? .appleLocal : fallback
     }
 
     private static func loadSlot(_ defaults: UserDefaults, key: String) -> SlotConfig? {

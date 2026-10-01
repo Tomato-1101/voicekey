@@ -20,6 +20,9 @@ private let log = Logger(subsystem: "com.voicekey.app", category: "transcriber")
 /// 文字起こし失敗。message はそのままユーザー通知に使える日本語
 struct TranscriptionError: LocalizedError {
     let message: String
+    /// キーが未設定・無効・接続先未設定など「設定 › API キー」で直せる失敗か。
+    /// true のとき AppController が API キーの設定画面へ案内する
+    var needsApiKey: Bool = false
     var errorDescription: String? { message }
 }
 
@@ -269,7 +272,7 @@ final class Transcriber: @unchecked Sendable {
 
         // 直叩き（personal / 未ログイン開発とも Keychain のキーで直接プロバイダーを叩く）。
         guard let apiKey = Keychain.apiKey(for: backend) else {
-            throw TranscriptionError(message: Self.missingKeyMessage(for: backend))
+            throw TranscriptionError(message: Self.missingKeyMessage(for: backend), needsApiKey: true)
         }
 
         // Soniox は REST を持たない（ライブ専用）。ここに来るのはライブ接続で文字が取れなかったときだけ
@@ -283,7 +286,8 @@ final class Transcriber: @unchecked Sendable {
         if backend == .azureMAI {
             guard let url = Self.azureTranscribeURL(endpoint: Keychain.azureSpeechEndpoint()) else {
                 throw TranscriptionError(
-                    message: "Microsoft の接続先（AZURE_SPEECH_ENDPOINT）が未設定です（中央 Keychain に保存してください）"
+                    message: "Microsoft の接続先（エンドポイント）が未設定です（設定 › API キー で入力してください）",
+                    needsApiKey: true
                 )
             }
             request = azureRequest(url: url, wav: WavEncoder.encode(samples), apiKey: apiKey)
@@ -326,10 +330,9 @@ final class Transcriber: @unchecked Sendable {
 
     // MARK: - Soniox の救済（録音全体の再送）
 
-    /// キー未設定の案内文。personal には API キーの入力欄が無いので、登録先の変数名をそのまま出す
+    /// キー未設定の案内文。入力先（設定 › API キー）をそのまま案内する
     static func missingKeyMessage(for backend: Backend) -> String {
-        let name = Keychain.keyVariableName(for: backend) ?? ""
-        return "\(backend.label) の API キーが未設定です（中央 Keychain に \(name) を登録してください）"
+        "\(backend.label) の API キーが未設定です（設定 › API キー で入力してください）"
     }
 
     /// Soniox の失敗を、ユーザーが次に何をすればよいか分かる文言へ写す。
@@ -338,7 +341,7 @@ final class Transcriber: @unchecked Sendable {
         if case .error(let code?, _) = failure {
             switch code {
             case "401", "403":
-                return "Soniox の API キーが無効です（中央 Keychain の \(Keychain.keyVariableName(for: .soniox) ?? "") を確認してください）"
+                return "Soniox の API キーが無効です（設定 › API キー を確認してください）"
             case "402":
                 return "Soniox の残高・利用上限が尽きています"
             case "429":
@@ -350,13 +353,19 @@ final class Transcriber: @unchecked Sendable {
         return "Soniox に接続できませんでした（ネットワークを確認してください）"
     }
 
+    /// Soniox の失敗がキーの無効（401/403）か。設定 › API キー へ案内するかの判定に使う
+    static func isInvalidKeyFailure(_ failure: LiveFailure) -> Bool {
+        if case .error(let code?, _) = failure { return code == "401" || code == "403" }
+        return false
+    }
+
     /// 録音中のライブ接続が失敗して文字が取れなかったときに、手元の録音を新しいセッションへ流し直す。
     /// 録音はもう終わっているので実時間は待たず、100ms 分ずつ続けて送信キューへ積む。
     /// 正常に終わって空なら空文字（本当に無言）。失敗して何も取れなければ原因別の文言で投げる
     private func transcribeSonioxReplay(samples: [Float], apiKey: String) async throws -> String {
         let session = SonioxLiveTranscriber(model: model, language: language, prompt: prompt)
         guard session.start(apiKey: apiKey) else {
-            throw TranscriptionError(message: Self.missingKeyMessage(for: backend))
+            throw TranscriptionError(message: Self.missingKeyMessage(for: backend), needsApiKey: true)
         }
         let start = Date()
         let chunk = Int(AudioRecorder.sampleRate / 10)
@@ -380,7 +389,10 @@ final class Transcriber: @unchecked Sendable {
 
         // 失敗でも取れた分があれば返す（喋った内容を捨てない）。何も取れなければ原因を伝える
         if case .failed(let failure) = ending, text.isEmpty {
-            throw TranscriptionError(message: Self.sonioxFailureMessage(failure))
+            throw TranscriptionError(
+                message: Self.sonioxFailureMessage(failure),
+                needsApiKey: Self.isInvalidKeyFailure(failure)
+            )
         }
         return text
     }
@@ -505,7 +517,10 @@ final class Transcriber: @unchecked Sendable {
         case 200:
             break
         case 401:
-            throw TranscriptionError(message: "\(backend.label) の API キーが無効です（設定を確認してください）")
+            throw TranscriptionError(
+                message: "\(backend.label) の API キーが無効です（設定 › API キー を確認してください）",
+                needsApiKey: true
+            )
         case 429:
             throw TranscriptionError(message: "\(backend.label) API のレート制限に達しました（しばらく待って再試行してください）")
         default:

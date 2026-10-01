@@ -1,14 +1,16 @@
 /// ライブ字幕が使う API キー（プロバイダー別）の探索
 ///
-/// 探索順:
-///   1. 環境変数（`GEMINI_API_KEY` / `GROQ_API_KEY` / `OPENAI_API_KEY`）
-///   2. **中央 Keychain**（service = 変数名 / account = `shared`）
+/// 探索順（文字起こし側の `Keychain.apiKey(for:)` と同じ。順序は `Keychain.resolve` の 1 か所で決める）:
+///   1. **アプリ自身の Keychain 項目**（設定 › API キー で保存した値。`voicekey.Gemini` / `voicekey.Groq` / `voicekey.OpenAI`）
+///   2. 環境変数（`GEMINI_API_KEY` / `GROQ_API_KEY` / `OPENAI_API_KEY`）
+///   3. **中央 Keychain**（service = 変数名 / account = `shared`）
 ///
 /// 中央 Keychain は `/usr/bin/security` を子プロセスで起動して読む。SecItem で直読みすると
 /// **項目ごとにアクセス承認ダイアログが出る**ため（`security` コマンドは既に許可済み）。
 ///
-/// **書き込みは一切しない**。voicekey 本体が持つ Keychain 項目（`voicekey.Groq` など）には
-/// 触らない（作り直すとアクセス許可がリセットされ、毎回ダイアログが出るようになるため）。
+/// **ここからは書き込みを一切しない**（保存は設定 › API キー の `Keychain.setApiKey` だけ）。
+/// voicekey 本体の Keychain 項目は読むだけで作り直さない（作り直すとアクセス許可がリセットされ、
+/// 毎回ダイアログが出るようになるため）。
 /// キーが無くても既定エンジン（Apple のオンデバイス翻訳）で字幕は完全に動く。
 /// キーの値は絶対にログ・UI へ出さない（出すのは「どこから読めたか」と末尾 4 桁のみ）。
 import Foundation
@@ -28,15 +30,34 @@ enum APIProvider: String, CaseIterable {
         case .openai: return "OpenAI"
         }
     }
+
+    /// 設定 › API キー の項目（アプリ Keychain 項目名の対応）。Groq / OpenAI は文字起こしと同じ項目を共用する
+    var keyItem: ApiKeyItem {
+        switch self {
+        case .gemini: return .gemini
+        case .groq: return .groq
+        case .openai: return .openai
+        }
+    }
 }
 
 /// キーがどこから読めたか
 enum APIKeySource: String {
+    case app = "アプリ"
     case environment = "環境変数"
     case centralKeychain = "共有Keychain"
 
     /// メニュー等に出す短い表記
     var displayName: String { rawValue }
+
+    /// 設定 › API キー の状態表示
+    var statusLabel: String {
+        switch self {
+        case .app: return "アプリに保存済み"
+        case .environment: return "環境変数から読込"
+        case .centralKeychain: return "中央 Keychain から読込"
+        }
+    }
 }
 
 /// API キーの読み出し（読み取り専用）
@@ -54,15 +75,12 @@ enum APIKeyStore {
     /// - Parameter provider: 対象プロバイダー（既定は Gemini）
     /// - Returns: 見つかったキーと取得元。どこにも無ければ nil
     static func load(_ provider: APIProvider = defaultProvider) -> (key: String, source: APIKeySource)? {
-        if let raw = ProcessInfo.processInfo.environment[provider.rawValue] {
-            let key = sanitize(raw)
-            if !key.isEmpty { return (key, .environment) }
-        }
-        if let raw = readFromCentralKeychain(provider) {
-            let key = sanitize(raw)
-            if !key.isEmpty { return (key, .centralKeychain) }
-        }
-        return nil
+        guard let found = Keychain.resolve(
+            app: { Keychain.appValue(for: provider.keyItem).map(sanitize) },
+            env: { ProcessInfo.processInfo.environment[provider.rawValue].map(sanitize) },
+            central: { readFromCentralKeychain(provider).map(sanitize) }
+        ) else { return nil }
+        return (found.value, found.source)
     }
 
     /// キーが設定済みかどうか（値は返さない）
@@ -81,12 +99,17 @@ enum APIKeyStore {
     ///
     /// `export KEY=xxx` 形式のまま入っていることがあるため、右辺だけを取り出して
     /// 前後の空白・改行・引用符を除去する。
+    /// 前置きは設定 › API キー の全項目（`ApiKeyItem.variableName`）で外す。字幕の 3 社だけに
+    /// 絞っていると、`SONIOX_API_KEY=...` 等をそのまま貼ったとき前置きごと保存されて 401 になるため。
     static func sanitize(_ raw: String) -> String {
         var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if value.hasPrefix("export ") { value = String(value.dropFirst("export ".count)) }
-        for provider in APIProvider.allCases {
-            let prefix = "\(provider.rawValue)="
-            if value.hasPrefix(prefix) { value = String(value.dropFirst(prefix.count)) }
+        for item in ApiKeyItem.allCases {
+            let prefix = "\(item.variableName)="
+            if value.hasPrefix(prefix) {
+                value = String(value.dropFirst(prefix.count))
+                break
+            }
         }
         value = value.trimmingCharacters(in: .whitespacesAndNewlines)
         for quote in ["\"", "'"] where value.hasPrefix(quote) && value.hasSuffix(quote) && value.count >= 2 {

@@ -2,9 +2,11 @@
 //  UpdaterController.swift
 //  Sparkle 自動アップデートの薄いラッパー
 //
-//  配布（DIST）ビルドのみ有効化する:
-//  - 開発ビルドで有効だと、公開済みの新バージョンを検知して
-//    開発中のアプリに更新ダイアログが出てしまう
+//  build_dmg.sh で作った配布リリース（EmbeddedKeys.isRelease）だけで有効化する:
+//  - GitHub Releases で配る作者署名の版（2026-10-01〜）は更新を受け取れるようにする
+//  - ソースから自分でビルドした personal 版で有効だと、作者署名の版へ更新されて署名が変わり、
+//    TCC（マイク・アクセシビリティ等）と Keychain の許可が外れてしまう
+//  - 開発ビルドで有効だと、公開済みの新バージョンを検知して開発中のアプリに更新ダイアログが出てしまう
 //  - swift run などの未バンドル実行では Sparkle が正しく動作しない
 //
 //  ObservableObject 化し、新バージョン検知の状態を publish する。設定の「バージョン情報」
@@ -48,8 +50,8 @@ final class UpdaterController: NSObject, ObservableObject, SPUUpdaterDelegate {
 
     private override init() {
         super.init()
-        // DIST ビルド かつ .app バンドルとして実行されているときのみ起動
-        guard EmbeddedKeys.isDist, Bundle.main.bundlePath.hasSuffix(".app") else {
+        // 配布リリース（build_dmg.sh 製）かつ .app バンドルとして実行されているときのみ起動
+        guard EmbeddedKeys.isRelease, Bundle.main.bundlePath.hasSuffix(".app") else {
             return
         }
         // startingUpdater: true で updater を起動する。updaterDelegate に self を渡し、検知結果を

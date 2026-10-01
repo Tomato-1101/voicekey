@@ -152,6 +152,12 @@ final class AppController: ObservableObject {
     /// オンボーディングの「巨大キー点灯」表示がこのコールバックを登録して購読する。
     var onHotkeyHeldChanged: ((Int?) -> Void)?
 
+    /// キー未設定・無効など「設定 › API キー」で直せる失敗が起きたときの通知。
+    /// メニューバー側が登録し、API キーの設定画面を開く（初めて使う人を入力先へ案内する導線）。
+    var onNeedsApiKey: (() -> Void)?
+    /// 上の設定画面を自動で開くのを起動中 1 回に絞る判定
+    private var apiKeyPrompt = ApiKeyPromptPolicy()
+
     /// マイクテスト（モニタ）中にレベルを受け取るハンドラ。非 nil の間はレベルを HUD ではなく
     /// こちらへ流す（録音とモニタは排他なので、これで出し分けできる）。
     private var micMonitorHandler: ((Float) -> Void)?
@@ -862,10 +868,18 @@ final class AppController: ObservableObject {
         // ハンズフリー(toggle 実効)で groq スロットのときは、この録音の処理エンジンだけ内部で
         // ElevenLabs(scribe_v1) に差し替える（長時間録音の精度対策。保存値 groq は変えない）。
         // それ以外（hold 実効・groq 以外）は選択中スロットの transcriber をそのまま使う。
-        let usesHandsfreeEL = effectiveMode == .toggle && slot.backend == .groq
+        // ElevenLabs のキーが無い人（新規インストールで Groq だけ入れた人など）に差し替えると
+        // 「ElevenLabs のキーが未設定」で失敗するので、キーがあると分かっているときだけ差し替える。
+        // 判定はキャッシュと環境変数だけを見る（録音開始前に Keychain・子プロセスを待たない）。
+        let wantsHandsfreeEL = effectiveMode == .toggle && slot.backend == .groq
+        let usesHandsfreeEL = wantsHandsfreeEL && Keychain.isApiKeyKnown(for: .elevenlabs)
         let activeTranscriber = usesHandsfreeEL ? handsfreeTranscriber : transcribers[slotId]
         if usesHandsfreeEL {
             log.info("ハンズフリー: 内部エンジン切替 (groq→elevenlabs)")
+        } else if wantsHandsfreeEL {
+            log.info("ハンズフリー: ElevenLabs のキーが未確認のため groq のまま処理")
+            // まだ読んでいないだけかもしれないので裏で一度読み、あれば次の録音から差し替える
+            Self.warmHandsfreeELKey()
         }
 
         // オンボーディング体験（整形ステップ）中はスロット設定に関わらず整形を強制 ON にする。
@@ -1512,7 +1526,13 @@ final class AppController: ObservableObject {
             } catch let error as TranscriptionError {
                 log.error("文字起こし失敗: \(error.message, privacy: .public)")
                 ActionLog.shared.write("transcriber", "文字起こしエラー: \(error.message)")
-                if !isAbandoned(generation) { hud.notice(error.message) }
+                if !isAbandoned(generation) {
+                    hud.notice(error.message)
+                    // HUD の通知はクリックを透過するので、入力先（設定 › API キー）は別途開いて案内する。
+                    // 開くのは起動中 1 回だけ（失敗のたびに設定画面が前面に出て入力中のアプリから
+                    // フォーカスを奪わないように。2 回目以降は上の HUD 通知だけ）
+                    if error.needsApiKey, apiKeyPrompt.shouldAutoOpenSettings() { onNeedsApiKey?() }
+                }
                 return
             } catch {
                 log.error("文字起こしで予期しないエラー: \(error.localizedDescription)")
@@ -1700,6 +1720,13 @@ final class AppController: ObservableObject {
     /// ここは長時間録音で実績のある scribe_v1 に固定する（2026-10-01）
     static let handsfreeELModel = "scribe_v1"
 
+    /// ハンズフリー用の ElevenLabs キーを裏で一度読んでキャッシュに載せる。
+    /// 録音開始の判定（`Keychain.isApiKeyKnown`）はキャッシュしか見ないので、起動直後の
+    /// 1 回目のハンズフリーから差し替えが効くよう先読みしておく（Keychain・子プロセスはメイン外で）
+    private static func warmHandsfreeELKey() {
+        Task.detached(priority: .utility) { _ = Keychain.apiKey(for: .elevenlabs) }
+    }
+
     private func rebuildTranscribers() {
         for slotId in [1, 2] {
             let slot = config.slot(slotId)
@@ -1720,6 +1747,9 @@ final class AppController: ObservableObject {
         }
         // ハンズフリー(toggle 実効)で groq スロットが使われるときに差し替える EL(scribe_v1) を常設する。
         // 言語変更でも作り直されるよう、スロット transcriber と同じ再構築フローに乗せる（backend/model は固定）。
+        if [1, 2].contains(where: { config.slot($0).backend == .groq }) {
+            Self.warmHandsfreeELKey()
+        }
         if let existing = handsfreeTranscriber, existing.backend == .elevenlabs {
             existing.model = Self.handsfreeELModel
             existing.language = config.language

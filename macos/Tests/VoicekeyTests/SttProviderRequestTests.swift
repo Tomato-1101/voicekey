@@ -168,7 +168,7 @@ final class SttProviderRequestTests: XCTestCase {
     func testSonioxFailureMessages() {
         let invalid = Transcriber.sonioxFailureMessage(.error(code: "401", type: "unauthenticated"))
         XCTAssertTrue(invalid.contains("API キーが無効"), invalid)
-        XCTAssertTrue(invalid.contains("SONIOX_API_KEY"), invalid)
+        XCTAssertTrue(invalid.contains("設定 › API キー"), invalid)
         XCTAssertEqual(Transcriber.sonioxFailureMessage(.error(code: "403", type: nil)), invalid)
         XCTAssertTrue(Transcriber.sonioxFailureMessage(.error(code: "402", type: nil)).contains("残高"))
         XCTAssertTrue(Transcriber.sonioxFailureMessage(.error(code: "429", type: nil)).contains("上限"))
@@ -179,12 +179,24 @@ final class SttProviderRequestTests: XCTestCase {
         XCTAssertEqual(Transcriber.sonioxFailureMessage(.timeout), network)
     }
 
-    /// キー未設定の案内に、登録先の変数名（Keychain.swift の対応表）が入る
-    func testMissingKeyMessageContainsVariableName() {
-        XCTAssertTrue(Transcriber.missingKeyMessage(for: .soniox).contains("SONIOX_API_KEY"))
-        XCTAssertTrue(Transcriber.missingKeyMessage(for: .azureMAI).contains("AZURE_SPEECH_KEY"))
-        XCTAssertTrue(Transcriber.missingKeyMessage(for: .openaiLive).contains("OPENAI_API_KEY"))
-        XCTAssertTrue(Transcriber.missingKeyMessage(for: .groq).contains("中央 Keychain"))
+    /// キー未設定の案内は、どのエンジンのキーかと入力先（設定 › API キー）を示す
+    func testMissingKeyMessagePointsToApiKeySettings() {
+        for backend in [Backend.soniox, .azureMAI, .openaiLive, .openai, .elevenlabs, .groq] {
+            let message = Transcriber.missingKeyMessage(for: backend)
+            XCTAssertTrue(message.contains(backend.label), message)
+            XCTAssertTrue(message.contains("設定 › API キー"), message)
+        }
+    }
+
+    /// 設定 › API キー へ案内するのは Soniox のキー無効（401/403）だけ。残高・上限・通信断は案内しない
+    func testSonioxInvalidKeyFailureDetection() {
+        XCTAssertTrue(Transcriber.isInvalidKeyFailure(.error(code: "401", type: "unauthenticated")))
+        XCTAssertTrue(Transcriber.isInvalidKeyFailure(.error(code: "403", type: nil)))
+        XCTAssertFalse(Transcriber.isInvalidKeyFailure(.error(code: "402", type: nil)))
+        XCTAssertFalse(Transcriber.isInvalidKeyFailure(.error(code: "429", type: nil)))
+        XCTAssertFalse(Transcriber.isInvalidKeyFailure(.error(code: nil, type: "internal")))
+        XCTAssertFalse(Transcriber.isInvalidKeyFailure(.disconnect))
+        XCTAssertFalse(Transcriber.isInvalidKeyFailure(.timeout))
     }
 
     // MARK: - Soniox: Float → Int16 LE

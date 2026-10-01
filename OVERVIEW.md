@@ -21,7 +21,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | 言語/UI | Swift（AppKit メニューバー + SwiftUI 設定画面） | Python（PySide6 / Qt） |
 | 置き場所 | `macos/Sources/Voicekey/` | `src/` |
 | 設定の保存先 | `UserDefaults`（`ConfigStore`） | `settings.yaml`（`ConfigManager`）+ `QSettings`（フラグ） |
-| ビルド | `macos/scripts/build_app.sh` / 配布は `build_dmg.sh` | `scripts/build/generate_embedded_keys.py --personal` → `pyinstaller voicekey.spec` / 配布は GitHub Actions |
+| ビルド | `macos/scripts/build_app.sh` / 配布は `build_dmg.sh`（personal 版を GitHub Releases へ） | `scripts/build/generate_embedded_keys.py --personal` → `pyinstaller voicekey.spec`（配布は停止中・ソースから） |
 | エディション判定 | `EmbeddedKeys.isPersonal` / `isDist`（生成物） | `utils/secrets.py` の `is_personal_build()` / `is_dist_build()`（生成物 `config/embedded_keys.py`）。personal は認証セッションを常に無視して Credential Manager のキーで直叩き |
 
 同じ機能でも別コードベース。**UI 文言・表示名・設定項目・機能挙動など両 OS に同等に存在する要素を変えるときは、両方を同じコミットで直す**（OS 固有 API でしか存在しないものだけ片方で完結）。詳細は `CLAUDE.md` / `AGENTS.md`。
@@ -34,16 +34,16 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 
 | 項目 | personal（唯一の版） |
 |---|---|
-| 文字起こしの選択肢 | **Mac**: Soniox（ライブ・stt-rt-v5）/ OpenAI ライブ / OpenAI（gpt-transcribe）/ Microsoft MAI（MAI-Transcribe-2）/ ElevenLabs（scribe_v2・v1）/ Groq を**実名表示**＋ **ローカル（Apple）オンデバイス**（macOS 26+・キー不要）。既定は録音キー 1 = Soniox / 2 = Groq。Deepgram は選択肢から外し、保存済みの Deepgram は Soniox へ自動移行。**Windows** は開発停止中のため旧構成（OpenAI / Groq / ElevenLabs / Deepgram） |
+| 文字起こしの選択肢 | **Mac**: Soniox（ライブ・stt-rt-v5）/ OpenAI ライブ / OpenAI（gpt-transcribe）/ Microsoft MAI（MAI-Transcribe-2）/ ElevenLabs（scribe_v2・v1）/ Groq を**実名表示**＋ **ローカル（Apple）オンデバイス**（macOS 26+・キー不要）。新規インストールの既定は macOS 26+ なら両録音キーともローカル（Apple）、それ以前は録音キー 1 = Soniox / 2 = Groq。Deepgram は選択肢から外し、保存済みの Deepgram は Soniox へ自動移行。**Windows** は開発停止中のため旧構成（OpenAI / Groq / ElevenLabs / Deepgram） |
 | モデル選択 | あり（フルコントロール） |
 | テキスト整形（Groq） | トグルあり・モデル/プロンプト選択可＋整え方プリセット 4 種（標準/そのまま/すっきり/箇条書き）。既定はエンジン別（スタンダード=ON / 即時入力・ローカル=OFF） |
-| API キー | 中央 Keychain（service = 変数名 / account = `shared`）から直読み。**ログイン・課金・アクティベーションキーは無し**（サーバー往復ゼロ＝最速） |
+| API キー | 利用者が設定 › API キー で入力（アプリ専用 Keychain 項目）。読み順は **アプリ項目 → 環境変数 → 中央 Keychain（service = 変数名 / account = `shared`）**（`Keychain.resolve` の 1 か所）。**ログイン・課金・アクティベーションキーは無し**（サーバー往復ゼロ＝最速） |
 | personal 限定機能 | ライブ字幕 / ローカル（Apple）文字起こし / 翻訳して入力（いずれも Mac・macOS 26+） |
 
 共通: **VAD・長文分割・ストリーミング・録音 HUD は常時 ON 固定**（設定 UI から撤去済み。Mac は `ConfigStore` で true 固定、Windows は `config_manager._force_always_on` が読込・保存時に矯正）。
 
-製品版（顧客配布・課金）の運用は終了した。販売まわりのリポジトリ（`voicekey-site` / `voicekey-releases`）は
-別リポジトリとして現状維持で、本リポジトリからは切り離す。経緯は `CLAUDE.md` 冒頭「単一ブランチ運用」。
+製品版（顧客配布・課金）の運用は終了した。2026-10-01 から personal 版そのものを本リポジトリの GitHub Releases で
+一般配布している（§6）。サイト（`voicekey-site`）は GitHub への導線だけを持ち、`voicekey-releases` はアーカイブ。
 
 ## 4. 機能一覧（両 OS 対応）
 
@@ -65,7 +65,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | 操作音 / メディアダッキング | 録音開始/停止のブリップ音（同一周波数で合成）・録音中はメディア音量を自動で下げる（既定 ON。Win ダッキングは Core Audio/pycaw・非対応時は無害スキップ） | ✅ | ✅ |
 | 最後の入力を再貼り付け | グローバルキー（既定 ⌃⌘V）で直前の入力を再貼り付け | ✅ | ❌ |
 | 使用実績（統計＋チャート＋レベル） | レベル/経験値・推定節約時間・連続利用日数に加え、今日/今週/累計の入力量と期間切替（週/月/年）の棒グラフを表示（**Mac はホーム画面**／Win は「実績」タブ・カウントアップ／棒伸びアニメ・集計は貼付後の処理＝遅延ゼロ）。Mac はアプリ別使用状況も集計。実績はこの端末のローカル集計（personal はログイン・アカウント連携なし） | ✅ | ✅ |
-| 自動更新 | Mac=Sparkle / Win=version.json フィード（バックグラウンドでサイレント自動確認・手動確認は「バージョン情報」タブのみ。**Mac は新版検知時にホーム左上へ「更新する」ピル**） | ✅ | ✅ |
+| 自動更新 | Mac=Sparkle（本リポジトリの GitHub Releases の appcast。`build_dmg.sh` 製の配布版＝`EmbeddedKeys.isRelease` だけ。自前ビルドは更新しない）/ Win=version.json フィード（Windows は配布停止中。バックグラウンドでサイレント自動確認・手動確認は「バージョン情報」タブのみ。**Mac は新版検知時にホーム左上へ「更新する」ピル**） | ✅ | ✅ |
 | ログイン起動 | OS のログイン時に自動起動 | ✅ | ✅ |
 | ライブ字幕（personal のみ・macOS 26+） | 再生中のシステム音声を認識 → **翻訳（英→日）／文字起こし（日本語・英語）の 2 モード** → 録音ピルの真上に固定したガラス字幕（ピルが上へ育つ見た目・音声入力中は自動で隠れる）。最前面アプリの音だけが既定・翻訳は Apple/Gemini/Groq・⌥⌘S で開始停止・起動時の自動開始は既定 OFF（統合元は旧 subglass。詳細は CHANGELOG） | ✅ | ❌ |
 | 議事録（文字起こしの自動保存・personal のみ・macOS 26+） | 字幕が確定した文字起こしを `~/Documents/voicekey/transcripts/*.md` へ時刻つきで追記（訳文は保存しない・5 分以上あくと別ファイル） | ✅ | ❌ |
@@ -99,7 +99,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | 初回セットアップ（オンボーディング） | `UI/OnboardingView.swift`（起動分岐は `VoicekeyApp.swift`） | `ui/onboarding_window.py`（表示配線は `app.py`） |
 | HUD / トレイ | `UI/Hud.swift` / `VoicekeyApp.swift`（メニューバー） | `ui/hud.py` / `system_tray.py` |
 | ブランド（配色・アプリアイコン） | `UI/Brand.swift`（パレットと外観で切り替わる `BrandIcon`。マスターは `design/brand/`） | — （`icon.ico` のみ） |
-| API キー保管 | `Core/Keychain.swift` / `Config/EmbeddedKeys.generated.swift` | `utils/secrets.py` / `.env` |
+| API キー保管 | `Core/Keychain.swift`（`ApiKeyItem`・`resolve`）/ `UI/SettingsView.swift`（API キータブ）/ `Config/EmbeddedKeys.generated.swift` | `utils/secrets.py` / `.env` |
 | 自動更新 | `Core/UpdaterController.swift`（Sparkle） | `utils/updater.py` |
 | ライブ字幕（personal のみ） | `Caption/`（`CaptionService` / `Audio` システム音声タップ / `Speech` 認識・読み上げ / `Translation` Apple・Gemini・Groq / `Transcript` 議事録の保存 / `Pipeline` / `UI` 字幕 HUD・メニュー・設定タブ / `CLI` 検証ハーネス） | — （Mac 専用） |
 | Meet 議事録ボット（personal のみ） | `Caption/MeetBot/`（`ChromeDevTools` CDP クライアント / `MeetBotService` 参加・字幕ポーリング・音声のローカル認識 / `CaptionSettleTracker` 伸びる字幕の確定判定 / `MeetBotScripts` **Meet の DOM 依存はここだけ** / `MeetBotMenu` / `MeetBotTestRunner` 疎通・ログイン画面・音声・通し文字起こしのハーネス） | — （Mac 専用） |
@@ -115,10 +115,15 @@ Windows（`core/history_sync.py`）の両クライアントを実装済み。詳
 
 ## 6. 配布構成（要点のみ・詳細は HANDOFF.md）
 
-- **Mac**: DMG・自動更新フィード（Sparkle appcast）とも Vercel サイト `voicekey.vercel.app`（ソース `/Users/tomato/Project/voicekey-site/`、`vercel deploy --prod`）。
-- **Windows**: インストーラ（約 270MB）は公開バイナリ専用リポ `voicekey-releases` の GitHub Releases。更新フィード `version.json` / `downloads.json` は Vercel。
-- 配布版は**ログイン必須**。**v1.5.0〜はログインで無料体験 200 回**（文字起こし 1 回＝1 消費・累計一度きり）、使い切ると**アクティベーションキー必須**（課金は未実装＝当面はキー登録のみが解放手段）。文字起こしは自社サーバー（`voicekey.vercel.app`）が利用権と無料体験の残量を検証（`entitlements.free_quota/free_used`・残枠ゼロは 402）し、Deepgram=短命トークン直叩き / ElevenLabs・Groq=サーバープロキシで処理（埋め込みキーは撤去済み＝製品版は完全サーバー経由）。無料枠の消費は録音開始のクリティカルパスから外して録音成立後に確定する（`/api/v1/usage/confirm`）＝有料と同じく録音開始のサーバー往復ゼロ。旧版（v1.2.0 以前）は埋め込み済みの提供元キーが漏洩済みのためローテーションで順次無効化。ソースは 2026-10-01 から本リポジトリで公開。
-- リリースは常に Mac/Windows 両 OS 同期。版番号は semver で Claude が決める。手順の全文は `HANDOFF.md`「リリース手順」。
+- **Mac**: personal 版（キーなし・利用者が設定 › API キー で入力）を本リポジトリの GitHub Releases（タグ `v<版>`）で配布。
+  添付は DMG・Sparkle 更新用 zip・`appcast.xml` の 3 つで、アプリは `releases/latest/download/appcast.xml` を見る（draft / pre-release にしない）。
+  作り方は `macos/scripts/build_dmg.sh --version X.Y.Z`（終了時に公開コマンドを表示）。公証なし＝初回は「このまま開く」が要る。
+  旧版が見ていた `voicekey.vercel.app/mac/appcast.xml` はサイト側で GitHub の appcast へリダイレクトしている。
+- **Windows**: 開発停止中のため配布物なし（ソースから動かす。README「Windows で使う」）。
+- サイト `voicekey.vercel.app`（`/Users/tomato/Project/voicekey-site/`）は紹介と GitHub への導線だけ。直接ダウンロードの仕組みは撤去済み。
+- 製品版（ログイン・無料体験・アクティベーションキー・サーバー経由の文字起こし）は 2026-10-01 に配布を終了し、サーバー側の提供元キーは削除・失効済み。
+  旧版 v1.0.0〜v1.5.1 の配布物には提供元キーが埋め込まれていた（該当キーは失効済み・旧リリースは非公開化）。
+- 版番号は semver で Claude が決める（Mac は `Info.plist`、Windows は `APP_VERSION` が正本）。
 
 ## 7. ドキュメント体系（どれを見ればいいか）
 

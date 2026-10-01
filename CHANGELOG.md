@@ -2,7 +2,11 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
-## [Unreleased] - 2026-10-01
+## [Unreleased]
+
+## [2.1.0] - 2026-10-02
+
+Mac 版を GitHub Releases で配る最初の版（origin に 2025-12 の旧 `v2.0.0` タグがあるため 2.1.0 から）。
 
 ### Added
 - **Soniox の接続先（米国 / 日本）をキーから自動で決めるようにした**。リージョンごとにキーが別なので、無料のモデル一覧 API に
@@ -13,6 +17,10 @@ voicekeyの変更履歴を記録するファイルです。
   ウィンドウメニューに最小化・拡大/縮小・閉じる（⌘W）を追加（Mac のみ）
 - 画面外で全ページを PNG に書き出す見た目確認ハーネス `--ui-snapshot <出力先> [--appearance light|dark]` と、
   画面の保存・復元の回帰テスト `MainWindowScreenTests` を追加（Mac のみ）
+- **設定に「API キー」タブを追加（personal 版でも表示）**。Soniox / OpenAI / Microsoft MAI（キーとエンドポイント）/ ElevenLabs /
+  Groq / Gemini（字幕翻訳）を入力でき、各行に「アプリに保存済み・中央 Keychain から読込・環境変数から読込・未設定」の状態を出す。
+  キーの値は画面にもログにも出さない。保存先はアプリ専用の Keychain 項目で、削除できるのはアプリに保存した値だけ（Mac のみ）
+- キー未設定・キー無効で文字起こしに失敗したら、通知で「設定 › API キー」を案内し、その画面を自動で開く（Mac のみ）
 - **新ロゴ「17 LEGEND」のブランド資産を追加**。マスター SVG・生成スクリプト・展開先の一覧を `design/brand/` に置いた
   （Geist の TTF は再配布しないため `fonts/` は git 管理外。再生成手順は `design/brand/README.md`）
 - 配色を `macos/Sources/Voicekey/UI/Brand.swift` に集約（灯り `#FF5A1F` / 深い灯り `#D9480F` / ボーン `#F4F1EB` /
@@ -39,6 +47,21 @@ voicekeyの変更履歴を記録するファイルです。
   見出し（音声入力 / 字幕と議事録 / アプリ）付きで常に並べる（1 クリックでどのページへも行ける）。各ページは見出しで区切った
   グループに並べ替え、説明文は項目名の下に入れた。トグルは行のどこを押しても切り替わり、ボタン・ポップアップは大きいサイズに統一。
   ライブ字幕のページも他と同じ形にそろえた（Mac のみ）
+- **API キーの読み順を全経路で「アプリに保存した値 → 環境変数 → 中央 Keychain」にそろえた**。文字起こし・整形・翻訳入力・
+  ライブ字幕の翻訳（`APIKeyStore`）が同じ順で読む。Microsoft の接続先（`AZURE_SPEECH_ENDPOINT`）もアプリに保存できる。
+  アプリに保存が無ければ従来どおり中央 Keychain から読む（Mac のみ）
+- **新規インストールの既定エンジンを、macOS 26 以降ではキー不要の Apple ローカルにした**（録音キー 1・2 とも・整形 OFF）。
+  保存済みの設定がある既存ユーザーは変わらない（Mac のみ）
+- **配布ビルドを personal 版に切り替え、GitHub Releases で配布するようにした**。`build_dmg.sh` は `--personal` で作り、
+  `dist/releases/v<版>/` に今回の版だけの zip と appcast.xml を出す（URL は `github.com/Tomato-1101/voicekey/releases/download/v<版>/`）。
+  更新フィード（`SUFeedURL`）は `releases/latest/download/appcast.xml`。自動アップデートは `build_dmg.sh` が `--personal --release` で作る配布版（`EmbeddedKeys.isRelease`）だけで有効。
+  ソースから自分でビルドした版は、作者署名の版に置き換わって権限が外れないよう更新しない。
+  実行前の `EmbeddedKeys.generated.swift` は退避して終了時に戻す（Mac のみ）
+- DMG 同梱の説明書を訂正（「API キーは不要」→ Apple ローカルはキー不要・クラウドは設定 › API キー で入力、存在しない更新メニューの案内と送信先一覧を修正）（Mac のみ）
+- README に「ダウンロードとインストール（macOS）」（GitHub Releases・初回の「このまま開く」・API キーの入力・ソースからのビルド）と
+  「Windows で使う」（配布物なし・ソースから `--personal` で起動）を追加し、配布ステータス表・必要環境・既定エンジン・API キーの説明を更新
+- バージョン整合テスト（`tests/test_version_consistency.py`）を OS 別にした。macOS 行は `Info.plist`、Windows 行は `APP_VERSION` と照合する
+  （Windows の開発停止で両 OS の版が別々に進むため）
 - **アプリアイコンを新ロゴに差し替え、OS の外観で自動で切り替わるようにした**（ライト = ボーン地 / ダーク = カーボン地）。
   Icon Composer 形式（`macos/Resources/AppIcon.icon`）を `actool` で `Assets.car` に組み込み、古い OS 向けに `AppIcon.icns` も更新。
   起動中の Dock アイコンも外観の変更に追従する（Mac のみ）
@@ -82,7 +105,18 @@ voicekeyの変更履歴を記録するファイルです。
 - **make_dmg_background.swift**: 配色をブランド色に、タイトル文字をワードマーク SVG（高さ 34pt）に置き換え。座標は変更なし
 
 ### Fixed
+- ハンズフリー（トグル）で Groq を使うとき、ElevenLabs のキーが無ければ ElevenLabs に切り替えず Groq のまま処理する
+  （新規インストールで Groq のキーだけ入れた人が「ElevenLabs 未設定」で止まっていた）（Mac のみ）
+- キー未設定・無効で失敗したとき設定画面を自動で開くのは起動中 1 回だけにした（失敗のたびに前面に出て入力中のアプリからフォーカスを奪っていた）（Mac のみ）
+- API キー欄に `SONIOX_API_KEY=…` のように変数名ごと貼っても、全項目で前置きを外して保存する。保存に失敗したら入力を残してエラーを出す（Mac のみ）
+- キーの読み込み中に保存・削除すると、古いキーがキャッシュに書き戻されて再起動まで使われ続けることがあった（世代番号で古い結果を捨てる）（Mac のみ）
+- 鍵漏洩チェックに Gemini 形式（`AIza…`）を追加し、`build_dmg.sh` は `.app` 全体を検査する。途中で失敗したら Info.plist と生成物を元に戻し、
+  版の書き換えは該当 2 行だけにして Info.plist のコメントを消さない
+- 旧 Python 版の配布ワークフロー（`.github/workflows/release.yml`）が `v*` タグで自動起動し、新しい Release に旧版が混ざるのを止めた（手動起動のみ）
 - メインウィンドウの下端が 14pt ほど切れていたのを修正（タイトルバー帯を除いた高さに最小 600pt を詰めていた。最小サイズは窓側だけで守る）（Mac のみ）
+- 配布物の鍵漏洩チェック（`scripts/build/verify_no_embedded_keys.py`）が、Swift のシンボル名
+  `View.translationTask(_:action:)` のマングル名に含まれる `sk_…` を ElevenLabs のキーと誤検出して DMG ビルドが止まっていたのを修正。
+  直前が英数字（識別子の途中）の `sk_` は対象外にした。ElevenLabs 形式の検出テストと誤検出の回帰テストを追加（Mac のみ）
 - 自由入力したモデル名（候補一覧に無い名前）が再起動のたびに既定モデルへ戻っていたのを修正（Mac のみ）
 - 保存値のエンジン名が未知（新しい版で保存した値など）だと、録音キーのホットキー・モード・プロンプトまで既定に戻っていたのを修正。
   未知のエンジンだけ Groq へ移し、他の設定は保持する（Mac のみ）

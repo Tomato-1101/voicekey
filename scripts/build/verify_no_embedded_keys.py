@@ -9,7 +9,7 @@
 
 検査内容:
   1. 各 path（ファイル / ディレクトリ）をバイト列として走査し、既知のプロバイダーキーの
-     接頭辞パターン（OpenAI sk- / Groq gsk_ / ElevenLabs sk_）を探す。
+     接頭辞パターン（OpenAI sk- / Groq gsk_ / ElevenLabs sk_ / Gemini AIza）を探す。
   2. 生成された DIST マーカーモジュール（embedded_keys.py / EmbeddedKeys.generated.swift）が
      キーレス（payload / mask / get_key を持たない＝IS_DIST フラグのみ）であることを確認する。
      ※ Deepgram は固定接頭辞が無く誤検出を避けるためバイト走査の対象外。この
@@ -18,6 +18,7 @@
 いずれかに該当すれば非 0 で終了し、ビルドを止める。
 誤検出を避けるため、走査対象は自分のバイナリ・生成物に絞って渡すこと
 （torch 等の OSS 同梱物が大量にあるディレクトリ全体は渡さない）。
+Mac の .app バンドル（Sparkle 同梱）は全体を渡してよい（build_dmg.sh が zip と同じ中身を走査する）。
 """
 
 import re
@@ -28,7 +29,11 @@ from pathlib import Path
 KEY_PATTERNS = [
     re.compile(rb"sk-[A-Za-z0-9_-]{20,}"),  # OpenAI（sk-proj- 含む）
     re.compile(rb"gsk_[A-Za-z0-9]{20,}"),   # Groq
-    re.compile(rb"sk_[A-Za-z0-9]{32,}"),    # ElevenLabs
+    # ElevenLabs。直前が英数字なら識別子の途中なので除外する（Swift のマングル名
+    # `…translationTask_6actionQr0D00D7Session…`＝ View.translationTask(_:action:) に当たる誤検出の対策）
+    re.compile(rb"(?<![A-Za-z0-9])sk_[A-Za-z0-9]{32,}"),
+    # Gemini（Google API キー）。ライブ字幕の翻訳で利用者が入れるキーと同じ形式（AIza＋35 桁）
+    re.compile(rb"AIza[0-9A-Za-z_-]{35}"),
 ]
 
 # 埋め込み痕跡（旧 XOR 埋め込みの名残）の検出語。キーレスならどれも含まれない。

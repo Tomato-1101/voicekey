@@ -131,8 +131,9 @@ struct MainWindowView: View {
             items.append(.init(id: 6, title: "アカウント", icon: "person.crop.circle", section: "アプリ"))
         }
         items.append(.init(id: 7, title: "バージョン情報", icon: "info.circle", section: "アプリ"))
-        // 配布ビルド・personal は埋め込みキーで動くため、API キーは出さない（混乱防止）
-        if !EmbeddedKeys.isDist, !EmbeddedKeys.isPersonal {
+        // personal は GitHub で一般配布し、利用者が各自のキーを入れて使うので API キーを出す。
+        // 製品版（配布ビルド）はサーバー経由でキーを持たないため出さない（混乱防止）
+        if !EmbeddedKeys.isDist {
             items.append(.init(id: 5, title: "API キー", icon: "key", section: "アプリ"))
         }
         return items
@@ -974,14 +975,27 @@ private struct TranslateInputTab: View {
 // MARK: - API キー
 
 private struct ApiKeysTab: View {
-    // 製品版で使うキーのみ表示（開発ビルドのみ表示されるタブ）。
-    // ElevenLabs ＋ 裏のテキスト整形に使う Groq。Deepgram は 2026-10-01 に選択肢から外したので出さない。
-    private let backends: [Backend] = [.elevenlabs, .groq]
-
     var body: some View {
         Form {
-            ForEach(backends) { backend in
-                ApiKeyRow(backend: backend)
+            Section {
+                Text("使う文字起こしエンジンのキーだけ入れれば動きます。キーはこの Mac の Keychain（アプリ専用の項目）に保存され、"
+                    + "画面やログには表示しません。\nApple（ローカル）はキー不要で、端末内だけで文字起こしします。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Section("文字起こし") {
+                ApiKeyRow(item: .soniox, title: "Soniox")
+                ApiKeyRow(item: .openai, title: "OpenAI", note: "文字起こし（REST / ライブ）で共用")
+                ApiKeyRow(item: .azureKey, title: "Microsoft MAI（キー）")
+                ApiKeyRow(item: .azureEndpoint, title: "Microsoft MAI（エンドポイント）",
+                          placeholder: "https://<リソース名>.cognitiveservices.azure.com", isSecret: false)
+                ApiKeyRow(item: .elevenlabs, title: "ElevenLabs")
+                ApiKeyRow(item: .groq, title: "Groq", note: "文字起こしと文章の自動整形・翻訳入力で共用")
+            }
+            Section("ライブ字幕の翻訳") {
+                ApiKeyRow(item: .gemini, title: "Gemini", note: "未設定でも Apple 翻訳（キー不要）で動きます")
             }
         }
         .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
@@ -991,44 +1005,111 @@ private struct ApiKeysTab: View {
     }
 }
 
+/// 1 項目分の入力行。状態（どこから読めるか）だけを出し、値そのもの（末尾も含む）は一切表示しない。
 private struct ApiKeyRow: View {
-    let backend: Backend
+    let item: ApiKeyItem
+    let title: String
+    var note: String? = nil
+    var placeholder: String = "API キーを入力"
+    /// エンドポイント（URL）は秘密ではないので通常の入力欄にする
+    var isSecret: Bool = true
+
     @State private var input = ""
-    @State private var saved = false
+    /// 取得元。nil = 未設定。読み込み前は loaded=false で「確認中…」を出す
+    @State private var source: APIKeySource?
+    @State private var loaded = false
+    /// 直近の保存に失敗したか（入力は残して、行の下にエラーを出す）
+    @State private var saveFailed = false
+    /// 取得元の読み直しの世代。保存・削除・読み直しのたびに進め、裏で走っている古い読み直しの
+    /// 結果を捨てる（onAppear の読み直しが保存より後に終わると、保存前の取得元で表示を上書きするため）
+    @State private var refreshGeneration = 0
+
+    private var trimmedInput: String { APIKeyStore.sanitize(input) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(backend.providerName)
+                Text(title)
                     .fontWeight(.medium)
-                if saved {
-                    Label("設定済み", systemImage: "checkmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                }
+                Spacer()
+                statusLabel
+            }
+            if let note {
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             HStack {
                 // グループ化フォーム内の既定スタイルは枠が描画されず
                 // 入力欄と認識できないため、明示的に枠付きにする
-                SecureField("API キーを入力", text: $input)
-                    .textFieldStyle(.roundedBorder)
+                // grouped Form ではタイトルが左側のラベルになって欄を狭めるので、
+                // ラベルは隠してプレースホルダ（prompt）として欄の中に出す
+                Group {
+                    if isSecret {
+                        SecureField("", text: $input, prompt: Text(placeholder))
+                    } else {
+                        TextField("", text: $input, prompt: Text(placeholder))
+                    }
+                }
+                .labelsHidden()
+                .textFieldStyle(.roundedBorder)
                 Button("保存") {
-                    let key = input.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !key.isEmpty else { return }
-                    Keychain.setApiKey(key, for: backend)
-                    input = ""
-                    saved = true
+                    let value = trimmedInput
+                    guard !value.isEmpty else { return }
+                    // 走っている読み直しの結果はこの保存より古いので捨てる
+                    refreshGeneration &+= 1
+                    if Keychain.setApiKey(value, for: item) {
+                        source = .app
+                        loaded = true
+                        saveFailed = false
+                        input = ""
+                    } else {
+                        // 失敗を黙って入力欄を空にすると「保存できた」と誤解されるので、入力は残して知らせる
+                        saveFailed = true
+                    }
                 }
-                .disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(trimmedInput.isEmpty)
+                // 消せるのはアプリに保存した値だけ（環境変数・中央 Keychain には触らない）
                 Button("削除") {
-                    Keychain.deleteApiKey(for: backend)
-                    saved = false
+                    Keychain.deleteApiKey(for: item)
+                    saveFailed = false
+                    refresh()
                 }
-                .disabled(!saved)
+                .disabled(source != .app)
+            }
+            if saveFailed {
+                Text("保存できませんでした（Keychain に書き込めませんでした）。もう一度お試しください")
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
         }
-        .onAppear {
-            saved = Keychain.hasApiKey(for: backend)
+        // Keychain の読み出し（中央 Keychain は子プロセス起動）は body で呼ばず、表示時に一度だけ裏で行う
+        .onAppear { refresh() }
+    }
+
+    @ViewBuilder private var statusLabel: some View {
+        if !loaded {
+            Text("確認中…").font(.caption).foregroundStyle(.secondary)
+        } else if let source {
+            Label(source.statusLabel, systemImage: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.green)
+        } else {
+            Text("未設定").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    /// 取得元を裏で調べ直す（値は受け取らない）
+    private func refresh() {
+        let item = item
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
+        Task {
+            let found = await Task.detached { Keychain.apiKeySource(for: item) }.value
+            // 読んでいる間に保存・削除・別の読み直しが入っていたら、この結果は古いので使わない
+            guard generation == refreshGeneration else { return }
+            source = found
+            loaded = true
         }
     }
 }

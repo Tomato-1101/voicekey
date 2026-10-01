@@ -14,10 +14,15 @@ voicekey は **`personal` ブランチ 1 本だけ**で運用する。旧 `main`
 - **`personal` = 開発者本人が毎日使う唯一の版**。全プロバイダーを**実プロバイダー名で表示**
   （Mac: Soniox / Apple ローカル / OpenAI ライブ / OpenAI / Microsoft MAI / ElevenLabs / Groq。
   Deepgram は 2026-10-01 に選択肢から外した・Windows は停止中のため旧構成）＋**モデル名も表示・選択可**。テキスト整形（Groq）は
-  モデル・プロンプトともフル設定可。API キーは中央 Keychain から直読み（サーバー往復ゼロ＝最速）。
+  モデル・プロンプトともフル設定可。API キーは設定 › API キー で入れた値 → 環境変数 → 中央 Keychain の順に読む
+  （作者は中央 Keychain のまま使える。サーバー往復ゼロ＝最速）。
   ライブ字幕・ローカル（Apple）文字起こし・翻訳して入力も personal 限定機能としてここにある。
-- 製品版（顧客配布・ログイン・課金・アクティベーションキー）の運用は**終了**した。販売まわりのリポジトリ
-  （`voicekey-site` / `voicekey-releases`）は別リポジトリとして現状維持で、本リポジトリからは切り離す。
+- 製品版（顧客配布・ログイン・課金・アクティベーションキー）の運用は**終了**した。
+- **2026-10-01〜 Mac の personal 版そのものを本リポジトリの GitHub Releases で一般配布する**（ユーザー指示
+  「最新バージョンを GitHub からダウンロードできるように。API キーは自分で入力してもらう」）。
+  利用者は設定 › API キー で自分のキーを入れる。**作者のキーを配布物に絶対に入れない**（`build_dmg.sh` の漏洩チェックを外さない）。
+  リリースは `macos/scripts/build_dmg.sh --version X.Y.Z` → 表示される `gh release create`（draft / pre-release にしない）。
+  Windows は配布しない（ソースから）。サイト（`voicekey-site`）は GitHub への導線だけ・`voicekey-releases` はアーカイブ。
 - 本リポジトリは **PUBLIC**（2026-10-01 ユーザー確認「公開していい」）。鍵・個人データ・第三者の実データはコミットしない。
   GitHub の About 欄（Website）と README 冒頭からサイト（https://voicekey.vercel.app）へ辿れるようにしてある。
   **voicekey.app は他社（Android の AI キーボード「VoiceKey AI」）のドメイン**。自分のサイトとしてリンクしない。

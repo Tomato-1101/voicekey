@@ -425,6 +425,12 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         settings.target = self
         menu.addItem(settings)
 
+        // キー未設定・無効で文字起こしが失敗したら、入力先（設定 › API キー＝タブ 5）を開いて案内する。
+        // 製品版（配布ビルド）は API キータブを持たないので結線しない
+        if !EmbeddedKeys.isDist {
+            controller.onNeedsApiKey = { [weak self] in self?.showSettings(initialTab: 5) }
+        }
+
         // アップデートの手動確認は設定「バージョン情報」タブのボタンに集約した（Phase B）。
         // 新バージョン検知はサイレントに行い、ホーム左上の更新ピルだけで通知する。
 

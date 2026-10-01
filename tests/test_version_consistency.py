@@ -1,11 +1,13 @@
 """バージョン定義の一元化チェック（#27）。
 
-`src/config/constants.py` の `APP_VERSION` を単一ソースとし、
-- `src/__init__.py` の `__version__`（そこから参照する）
-- macOS バンドル（`macos/Resources/Info.plist` の CFBundleShortVersionString）
-- README の配布ステータス表
-がすべて一致することを保証する。実態（main=1.2 系 / release=1.5 系）はブランチで
-異なるため、特定の値ではなく「相互一致」を検証する（どのブランチでも通る）。
+Windows は `src/config/constants.py` の `APP_VERSION`、macOS は `macos/Resources/Info.plist` の
+CFBundleShortVersionString をそれぞれの単一ソースとし、
+- `src/__init__.py` の `__version__`（APP_VERSION を参照する）
+- README の配布ステータス表（🪟 行は APP_VERSION、🍎 行は Info.plist）
+が一致することを保証する。特定の値ではなく「相互一致」を検証する。
+
+2026-10-01 に Windows の開発を止め、macOS だけを GitHub Releases で配布するようになったため、
+両 OS の版は別々に進む（以前は APP_VERSION 1 つで両 OS をそろえていた）。
 
 インストーラー（.iss は AppVersion=0.0.0 プレースホルダを build 時に /DAppVersion で上書き）と
 更新フィード（Vercel 配信。リポジトリ内の dist/ci/version.json は CI 生成物）は、
@@ -46,29 +48,31 @@ class TestVersionConsistency(unittest.TestCase):
             "__init__.py にバージョンのハードコードが残っている",
         )
 
-    def test_macos_info_plist_matches(self):
-        """macOS Info.plist の表示バージョンが APP_VERSION と一致する。"""
+    def _readme_row_version(self, prefix: str) -> str:
+        """README 配布ステータス表で prefix から始まる行の `**vX.Y.Z**` を返す。"""
+        rows = [ln for ln in _read("README.md").splitlines() if ln.startswith(prefix)]
+        self.assertEqual(len(rows), 1, f"README 配布ステータス表の {prefix} 行が 1 行でない")
+        m = re.search(r"\*\*v(\d+\.\d+\.\d+)\*\*", rows[0])
+        self.assertIsNotNone(m, f"行にバージョン表記が無い: {rows[0][:40]}")
+        return m.group(1)
+
+    def test_readme_macos_row_matches_info_plist(self):
+        """README の macOS 行のバージョンが Info.plist の CFBundleShortVersionString と一致する。"""
         with open(_ROOT / "macos" / "Resources" / "Info.plist", "rb") as f:
             plist = plistlib.load(f)
+        mac_version = plist.get("CFBundleShortVersionString")
+        self.assertRegex(mac_version or "", r"^\d+\.\d+\.\d+$", f"不正なバージョン形式: {mac_version}")
         self.assertEqual(
-            plist.get("CFBundleShortVersionString"), self.version,
-            "Info.plist の CFBundleShortVersionString が APP_VERSION と不一致",
+            self._readme_row_version("| 🍎"), mac_version,
+            "README の macOS 行が Info.plist の CFBundleShortVersionString と不一致",
         )
 
-    def test_readme_status_table_matches(self):
-        """README 配布ステータス表（macOS/Windows 行）のバージョンが APP_VERSION と一致する。"""
-        rows = [
-            ln for ln in _read("README.md").splitlines()
-            if ln.startswith("| 🍎") or ln.startswith("| 🪟")
-        ]
-        self.assertTrue(rows, "README 配布ステータス表の OS 行が見つからない")
-        for row in rows:
-            m = re.search(r"\*\*v(\d+\.\d+\.\d+)\*\*", row)
-            self.assertIsNotNone(m, f"行にバージョン表記が無い: {row[:40]}")
-            self.assertEqual(
-                m.group(1), self.version,
-                f"README のバージョンが APP_VERSION と不一致: {row[:30]}",
-            )
+    def test_readme_windows_row_matches_app_version(self):
+        """README の Windows 行のバージョンが APP_VERSION と一致する。"""
+        self.assertEqual(
+            self._readme_row_version("| 🪟"), self.version,
+            "README の Windows 行が APP_VERSION と不一致",
+        )
 
 
 if __name__ == "__main__":

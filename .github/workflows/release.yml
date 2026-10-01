@@ -1,9 +1,8 @@
 name: Release
 
+# 2026-10-01 から Mac 版は作者の Mac で build_dmg.sh を回して GitHub Releases に出す（Swift 版・作者署名）。
+# このワークフローは旧 Python 版の配布物を作るので、v* タグで自動起動させない（新しい Release に旧版が混ざるため）。
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
 
 permissions:

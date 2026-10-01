@@ -27,19 +27,67 @@
 同じ機能で揃え、ビルド・配布・自動更新まで一人で開発・運用しています。
 
 - 文字起こしの API（STT プロバイダー）は設定で差し替えられます
-- API キーはリポジトリに含めず、ビルド時に手元のキーチェーンから読み込みます
+- API キーはリポジトリにもアプリにも含めません。使う人が自分のキーを設定画面で入力します（Apple のローカル文字起こしならキー不要）
 
-| プラットフォーム | バージョン | 状態 | ビルド方法 |
+| プラットフォーム | バージョン | 状態 | 入手方法 |
 |---|---|---|---|
-| 🍎 macOS | **v1.8.0** | ✅ 常用中（Swift ネイティブ） | `cd macos && ./scripts/generate_embedded_keys.sh --personal && ./scripts/build_app.sh` |
-| 🪟 Windows | **v1.8.0** | ✅ 常用中（Python / PySide6） | `python scripts\build\generate_embedded_keys.py --personal && pyinstaller voicekey.spec --clean --noconfirm`（手順は `docs/PERSONAL_EDITION.md` §7） |
+| 🍎 macOS | **v2.1.0** | ✅ 配布中（Swift ネイティブ） | [GitHub Releases からダウンロード](https://github.com/Tomato-1101/voicekey/releases/latest)、または [ソースからビルド](#ソースからビルドする) |
+| 🪟 Windows | **v1.8.0** | ⏸ 開発停止中（配布バイナリなし） | [ソースから動かす](#windows-で使う)（Python / PySide6） |
 
-> バージョンは `src/config/constants.py` の `APP_VERSION` が単一ソース（この表とのズレはテストが検出します）。
+> macOS の版は `macos/Resources/Info.plist`、Windows の版は `src/config/constants.py` の `APP_VERSION` が正本（この表とのズレはテストが検出します）。
+
+---
+
+## 📥 ダウンロードとインストール（macOS）
+
+1. [GitHub Releases の最新版](https://github.com/Tomato-1101/voicekey/releases/latest) から `voicekey-<版>.dmg` をダウンロードします（macOS 14 以降・Apple シリコン）。
+2. DMG を開き、`voicekey.app` を「アプリケーション」へドラッグします。
+3. 初回は「開発元を検証できません」と出て開けません（Apple の公証を受けていないため）。
+   **システム設定 › プライバシーとセキュリティ** の下の方にある「**このまま開く**」を押してから、もう一度開いてください。
+4. マイク・入力監視・アクセシビリティの許可を求められたら、すべて許可します（録音と自動貼り付けに必要）。
+5. メニューバーのアイコン → 設定 › **API キー** に、使うサービスのキーを入力します。
+   - **macOS 26 以降**は、最初から**ローカル（Apple）文字起こし**で動きます（キー不要・音声は Mac の外に出ません）。
+   - クラウドの文字起こし（Soniox / OpenAI / Microsoft MAI / ElevenLabs / Groq）を使うときだけキーが要ります。
+     取得先は [API キーの取得](#api-キーの取得)。キーはこの Mac の Keychain（アプリ専用の項目）に保存され、画面にもログにも出ません。
+   - キーが未設定・無効のまま録音すると、通知とともに API キーの設定画面が開きます。
+
+アップデートはアプリが自動で確認します（GitHub Releases の最新版。設定 › バージョン情報 から手動確認も可）。
+ソースから自分でビルドした版は自動更新しません（`git pull` してビルドし直してください）。
+
+### ソースからビルドする
+
+Xcode（または Swift 6 のコマンドラインツール）が入った Mac で:
+
+```bash
+git clone https://github.com/Tomato-1101/voicekey.git
+cd voicekey/macos
+./scripts/generate_embedded_keys.sh --personal   # 配布版と同じ構成（キーは埋め込まない）
+./scripts/build_app.sh                            # → macos/dist/voicekey.app
+open dist/voicekey.app
+```
+
+キーチェーンに Apple Development 証明書があればそれで署名し、無ければアドホック署名になります
+（アドホック署名はビルドのたびにマイク等の許可を付け直す必要があります）。キーは上と同じく設定 › API キー で入力します。
+開発者向けに、環境変数や共有 Keychain（service = 変数名 / account = `shared`）からも読めます（[API キーの設定](#api-キーの設定)）。
+
+### Windows で使う
+
+Windows 版は開発を止めているため、ダウンロードできる配布物はありません（旧構成のまま）。使う場合はソースから動かしてください。
+手順は [Windows 完全セットアップ](#windows-完全セットアップpowershell) のとおりで、起動（手順 5）の前に次の 1 行を実行して、
+配布版と同じ「自分のキーで直接つなぐ」構成にします。
+
+```powershell
+python scripts\build\generate_embedded_keys.py --personal
+```
+
+起動後、タスクトレイのアイコン → 設定 › **API キー** に自分のキーを入力します（Windows の資格情報マネージャーに保存）。
+Windows で使えるのは Deepgram / Groq / ElevenLabs です。exe にまとめる手順は `docs/PERSONAL_EDITION.md` §7。
 
 ---
 
 ## 📖 目次
 
+- [ダウンロードとインストール（macOS）](#-ダウンロードとインストールmacos)
 - [特徴](#-特徴)
 - [AI エージェント向けセットアップ手順](#-ai-エージェント向けセットアップ手順)
 - [必要環境](#-必要環境)
@@ -97,7 +145,7 @@
   **Mac は新版を見つけたときだけホーム画面の左上に「⬆ 更新する」ピルが出て**、クリックで更新できます（バックグラウンド確認で勝手にダイアログは出しません）。手動で確認したいときは設定の「バージョン情報」タブのボタンから行います（メニューバーの「アップデートを確認…」項目は廃止）
 - **📖 ユーザー辞書（確定置換）**: 設定の「ユーザー辞書」タブで、よく誤変換される語の置き換えルール（変換元 → 変換先）を登録できる。
   文字起こし・整形が終わった文章を貼り付ける直前にローカルで機械置換するため、音声入力に待ちを足しません
-- **💬 ライブ字幕（Mac・macOS 26 以降・自分用ビルドのみ）**: 再生中の音声をその場で字幕にして、
+- **💬 ライブ字幕（Mac・macOS 26 以降）**: 再生中の音声をその場で字幕にして、
   画面下のガラス HUD に出します。メニューバーの「ライブ字幕」または **⌥⌘S** で開始/停止。
   - **2 つのモードがあります**（メニューの「モード」/ 設定タブで切り替え）
     - **翻訳**: 英語を聞いて**日本語に訳して**出す（従来のライブ翻訳）
@@ -122,7 +170,7 @@
   - 訳文の読み上げ（既定オフ）・英語の原文併記（既定オン）もメニューから切り替えられます
   - 初回だけ「システムオーディオを収録するためのアクセス権」の許可が必要です（マイクは使いません）
   - 注: ディクテーション録音中は他アプリの音量が下がる（メディアダッキング）ため、その間は字幕の認識が途切れることがあります
-- **🤖 Google Meet 議事録ボット（Mac・macOS 26 以降・自分用ビルドのみ・Chrome が必要）**: 会議の URL を渡すと、
+- **🤖 Google Meet 議事録ボット（Mac・macOS 26 以降・Chrome が必要）**: 会議の URL を渡すと、
   **ボットが裏で会議に入って文字起こしを議事録として保存**します。メニューバーの「Meet 議事録ボット」→「会議に参加…」。
   - URL 欄はクリップボードの Meet URL を自動で入れます。参加すると `~/Documents/voicekey/transcripts/` に
     追記されます（`- 14:32:05 **山田**: 本日の議題は…`）
@@ -141,13 +189,13 @@
   - ボット用の Chrome は**普段使いの Chrome とは別のプロファイル**（`~/Library/Application Support/voicekey/meetbot-profile`）で
     裏（ヘッドレス）で動くので、作業中のタブには影響しません
   - 退出はメニューの「会議から退出」。voicekey を終了しても Chrome は畳まれます
-- **🖥 ローカル文字起こし「ローカル（Apple）」（Mac・macOS 26 以降・自分用ビルドのみ）**: 文字起こしを **Mac の中だけ**で行うモード。
+- **🖥 ローカル文字起こし「ローカル（Apple）」（Mac・macOS 26 以降）**: 文字起こしを **Mac の中だけ**で行うモード。
   録音キーの設定で文字起こしエンジンに「Apple オンデバイス音声認識」を選ぶと使えます。
   - **通信も API キーも使いません**。オフラインでも動き、音声が外部に出ません
   - しゃべり終わった瞬間に確定する「即時入力」型です（録音中から並行して認識し、キーを離すと確定）
   - 認識する言語は設定の「言語」に従います。初回だけ言語モデルのダウンロードが走り、進捗が録音 HUD に出ます
   - ライブ字幕と同時に使えます（字幕を出したまま音声入力しても互いに干渉しません）
-- **🌏 翻訳して入力（Mac・macOS 26 以降・自分用ビルドのみ）**: 話した内容を**翻訳してから貼り付け**ます
+- **🌏 翻訳して入力（Mac・macOS 26 以降）**: 話した内容を**翻訳してから貼り付け**ます
   （本命は「**日本語で話す → 英語が入力される**」）。設定ウィンドウの「**翻訳して入力**」タブで切り替えます。
   - **全体で 1 つのトグル**です（録音キー 1・2 のどちらでも、どの文字起こしエンジンでも同じように効きます）
   - 入力する言語は **英語（既定）/ 中国語（簡体）/ 韓国語 / スペイン語 / 日本語**から選べます
@@ -262,11 +310,11 @@ Windows は**開発停止中のため旧構成のまま**です（Deepgram / Gro
 
 | 項目 | 要件 |
 |---|---|
-| **OS** | Windows 10/11 または macOS 11+ |
+| **OS** | macOS 14 以降・Apple シリコン（ローカル文字起こし・ライブ字幕・翻訳入力は macOS 26 以降）／ Windows 10/11（ソースから） |
 | **Python** | 3.10 以上 |
 | **ffmpeg** | `PATH` に通っていること（音声変換用） |
 | **GPU** | **不要**（VAD はローカル CPU 実行＝Silero ONNX を onnxruntime で。文字起こしはすべてクラウド API） |
-| **API キー** | 文字起こし用のキーを中央 Keychain（service = 変数名 / account = `shared`）に置く（Mac: Soniox / OpenAI / Microsoft MAI / ElevenLabs / Groq。Windows は旧構成の Deepgram / Groq / ElevenLabs / OpenAI。整形と翻訳も Groq）。**ログイン・アカウントの概念はありません**。ローカル（Apple）文字起こしと Apple 翻訳はキー不要 |
+| **API キー** | 使うサービスのキーを設定 › API キー で入力（Mac: Soniox / OpenAI / Microsoft MAI / ElevenLabs / Groq / Gemini。Windows は旧構成の Deepgram / Groq / ElevenLabs。整形と翻訳も Groq）。**ログイン・アカウントの概念はありません**。ローカル（Apple）文字起こしと Apple 翻訳はキー不要 |
 
 > **💡 Tip**: 文字起こしはすべてクラウド API、発話区間検出（VAD）だけローカル CPU 実行なので、GPU 非搭載 PC でも動作します。
 
@@ -418,10 +466,10 @@ voicekey は **2 つの独立したホットキー** を設定でき、各ホッ
 
 ### Mac の文字起こしエンジン
 
-Mac は録音キーごとに**プロバイダー名＋モデル名**で選びます（新規インストール時の既定は **録音キー 1 = Soniox / 録音キー 2 = Groq**）。
+Mac は録音キーごとに**プロバイダー名＋モデル名**で選びます（新規インストール時の既定は、macOS 26 以降なら **録音キー 1・2 ともローカル（Apple）**＝キー不要、それより前の macOS では **録音キー 1 = Soniox / 録音キー 2 = Groq**）。
 既存の設定で Deepgram を選んでいた録音キーは Soniox へ、廃止モデルを選んでいた録音キーは各プロバイダーの既定モデルへ自動で移行します（廃止モデルの移行は初回起動時の一度だけ。その後に自由入力で選び直したモデル名は保持します）。
 
-| エンジン | モデル | 方式 | API キー（中央 Keychain） |
+| エンジン | モデル | 方式 | API キー（設定 › API キー。括弧内は環境変数・共有 Keychain の名前） |
 |---|---|---|---|
 | **Soniox** | `stt-rt-v5` | ライブ（録音中に並行して認識・離した瞬間に入力） | `SONIOX_API_KEY` |
 | **ElevenLabs** | `scribe_v2`（既定）/ `scribe_v1` | 録音後に送る | `ELEVENLABS_API_KEY` |
@@ -567,9 +615,12 @@ dev_mode: false
 
 ### API キーの設定
 
-Mac は中央 Keychain（service = 変数名 / account = `shared`）を直接読みます。使う変数名は
-`SONIOX_API_KEY` / `OPENAI_API_KEY` / `AZURE_SPEECH_KEY` ＋ `AZURE_SPEECH_ENDPOINT`（Azure Speech リソースのエンドポイント URL。パス・クエリ付きや `https://` 無しでも可）/
-`ELEVENLABS_API_KEY` / `GROQ_API_KEY` です（[Mac の文字起こしエンジン](#mac-の文字起こしエンジン)）。
+Mac は **設定 › API キー** で入力します（Soniox / OpenAI / Microsoft MAI のキーとエンドポイント / ElevenLabs / Groq / Gemini）。
+保存先はこの Mac の Keychain のアプリ専用の項目で、値は画面にもログにも出しません。削除できるのはアプリに保存した値だけです。
+
+キーは **アプリに保存した値 → 環境変数 → 共有 Keychain（service = 変数名 / account = `shared`）** の順に探します（開発者向けの置き場所）。
+変数名は `SONIOX_API_KEY` / `OPENAI_API_KEY` / `AZURE_SPEECH_KEY` ＋ `AZURE_SPEECH_ENDPOINT`（Azure Speech リソースのエンドポイント URL。パス・クエリ付きや `https://` 無しでも可）/
+`ELEVENLABS_API_KEY` / `GROQ_API_KEY` / `GEMINI_API_KEY`（ライブ字幕の翻訳）です（[Mac の文字起こしエンジン](#mac-の文字起こしエンジン)）。
 
 Windows（開発停止中のため旧構成）は設定ウィンドウの API キーフィールドで保存するか、プロジェクトルートに `.env` を作成します：
 
