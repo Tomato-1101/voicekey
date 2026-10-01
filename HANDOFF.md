@@ -35,12 +35,14 @@
 - 次にやること: 本人の使用感待ち。参考収集（Superwhisper・MacWhisper・Wispr Flow 等）から残る改善候補は、ホットキーのチップ化・
   エンジン＋モデルの検索付き 1 リスト化・辞書の常時入力欄。ライトのスナップショットで一部 SF Symbol が薄いのは作り直し前からある画面外描画の癖。
 
-## GitHub 配布（10-02 02:20 更新）
-- 現状: v2.1.0（build 22）を本体リポの GitHub Releases で公開済み（Latest・dmg/zip/appcast）。旧 Release・voicekey-releases の全 Release は draft、
-  voicekey-releases はアーカイブ（mac/appcast.xml は 2.1.0 を指す）。サイトは GitHub 導線だけで本番反映済み（旧 URL は GitHub へ 307）。
-- 次の版を出す手順: `cd macos && ./scripts/build_dmg.sh --version X.Y.Z` → Info.plist をコミット・push → 表示される `gh release create … --latest`
-  （draft / pre-release にしない）→ 常用版は `./scripts/build_app.sh` で作り直す（build_dmg.sh が dist/voicekey.app を配布版で上書きするため）。
-- 残り（任意）: サイトのダッシュボード（¥980 表記）・特商法ページ・OG 画像の文言が製品版のまま。Keychain の account=voicekey-site の失効済み 3 項目の削除は本人。
+## GitHub 配布（10-02 04:00 更新）
+- 現状: v2.1.0（build 22）を本体リポの GitHub Releases で公開済み（Latest・dmg/zip/appcast）。voicekey-releases はアーカイブ。
+  サイトは製品版ページ（dashboard・signup・特商法等）を削除して本番反映済み（/login は /admin 用に残す・どこからもリンクしない）。
+- 公証なし（$99 払わない・本人決定）で警告を出さない入口: `brew install --cask tomato-1101/tap/voicekey`（`~/Project/homebrew-tap`・
+  postflight で quarantine を外す＝AeroSpace 方式）と `install.sh`（curl は quarantine が付かない）。ブラウザ DL だけ「このまま開く」が要る。
+- 次の版を出す手順: `cd macos && ./scripts/build_dmg.sh --version X.Y.Z` → Info.plist をコミット・push → 表示される `gh release create`
+  （draft / pre-release にしない）→ 表示される版と sha256 で homebrew-tap の cask を更新・push → 常用版は `./scripts/build_app.sh` で作り直す。
+- 残り（任意）: サイトの「はじめかた」に brew / curl の 1 行を載せる（本番反映は本人承認）。~/Library/Preferences に voicekey.test.*.plist が大量に残っている。
 
 ## ロゴ・配色の刷新「17 LEGEND」（10-01 19:15 更新）
 - 目的: 確定ロゴ 17 LEGEND（ライト=Bone／ダーク=Carbon を外観で自動切替）と配色（灯り #FF5A1F）を全面採用。原本・生成手順は design/brand/。
