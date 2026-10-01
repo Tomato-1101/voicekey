@@ -94,11 +94,14 @@ enum Backend: String, Codable, CaseIterable, Identifiable {
     /// 2026-10-01: Deepgram を選択肢から外して Soniox に置き換え、OpenAI（gpt-transcribe）・
     /// Microsoft MAI・ElevenLabs（scribe_v2）を追加した（Mac のみ）。deepgram の case は
     /// 保存値の decode 互換（→ soniox へ移行）のために enum に残す。
+    /// 並びは日本語で使うときのおすすめ順（2026-10-02 本人指示「上からおすすめ順に」）。
+    /// 根拠: Soniox＝日本窓口で確定 0.12 秒・誤りゼロ／Scribe v2＝0.6〜1.0 秒・公開の日本語ベンチ上位／
+    /// gpt-transcribe＝誤りゼロだが 1.7 秒／MAI と OpenAI ライブは日本語の自前実測なし／
+    /// Apple は無料・オフラインだが精度は一段下／Whisper turbo は速いが日本語の誤りが最も多い（CER 2.7〜5.4%）。
     static var selectableCases: [Backend] {
-        if #available(macOS 26.0, *) {
-            return [.soniox, .appleLocal, .openaiLive, .openai, .azureMAI, .elevenlabs, .groq]
-        }
-        return [.soniox, .openaiLive, .openai, .azureMAI, .elevenlabs, .groq]
+        let ranked: [Backend] = [.soniox, .elevenlabs, .openai, .azureMAI, .openaiLive, .appleLocal, .groq]
+        if #available(macOS 26.0, *) { return ranked }
+        return ranked.filter { $0 != .appleLocal }
     }
 
     /// 提供元名（API キー欄でどのキーかを示すためだけに使う。配布版では

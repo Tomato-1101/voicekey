@@ -217,8 +217,9 @@ final class SlotConfigMigrationTests: XCTestCase {
 
     // 選択肢の並びと、Deepgram が選択肢から外れていること
     func testSelectableCases() {
-        var expected: [Backend] = [.soniox, .openaiLive, .openai, .azureMAI, .elevenlabs, .groq]
-        if #available(macOS 26.0, *) { expected.insert(.appleLocal, at: 1) }
+        // 日本語のおすすめ順（2026-10-02）
+        var expected: [Backend] = [.soniox, .elevenlabs, .openai, .azureMAI, .openaiLive, .groq]
+        if #available(macOS 26.0, *) { expected.insert(.appleLocal, at: 5) }
         XCTAssertEqual(Backend.selectableCases, expected)
         XCTAssertFalse(Backend.selectableCases.contains(.deepgram))
     }

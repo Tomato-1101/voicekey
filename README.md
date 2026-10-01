@@ -424,12 +424,14 @@ Mac は録音キーごとに**プロバイダー名＋モデル名**で選びま
 | エンジン | モデル | 方式 | API キー（中央 Keychain） |
 |---|---|---|---|
 | **Soniox** | `stt-rt-v5` | ライブ（録音中に並行して認識・離した瞬間に入力） | `SONIOX_API_KEY` |
-| **ローカル（Apple）** | オンデバイス音声認識 | オンデバイス（macOS 26 以降） | 不要 |
-| **OpenAI ライブ** | `gpt-live-transcribe` | ライブ | `OPENAI_API_KEY` |
+| **ElevenLabs** | `scribe_v2`（既定）/ `scribe_v1` | 録音後に送る | `ELEVENLABS_API_KEY` |
 | **OpenAI** | `gpt-transcribe` | 録音後に送る | `OPENAI_API_KEY` |
 | **Microsoft MAI** | `MAI-Transcribe-2` | 録音後に送る（Azure Speech。japaneast リージョンは非対応） | `AZURE_SPEECH_KEY` ＋ `AZURE_SPEECH_ENDPOINT` |
-| **ElevenLabs** | `scribe_v2`（既定）/ `scribe_v1` | 録音後に送る | `ELEVENLABS_API_KEY` |
+| **OpenAI ライブ** | `gpt-live-transcribe` | ライブ | `OPENAI_API_KEY` |
+| **ローカル（Apple）** | オンデバイス音声認識 | オンデバイス（macOS 26 以降） | 不要 |
 | **Groq** | `whisper-large-v3-turbo` | 録音後に送る（最速） | `GROQ_API_KEY` |
+
+> 設定画面の一覧と上の表は、日本語で使うときのおすすめ順です（上ほどおすすめ）。
 
 > Groq の録音キーをハンズフリー録音（トグル）で使うと、従来どおり長い録音に強い ElevenLabs `scribe_v1` へ内部で自動切替します（ElevenLabs の既定が `scribe_v2` になってもここは `scribe_v1` 固定）。
 

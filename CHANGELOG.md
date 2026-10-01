@@ -33,6 +33,8 @@ voicekeyの変更履歴を記録するファイルです。
 - ローカル WebSocket サーバー（NWListener・外部通信なし）相手の Soniox 実接続回帰テスト `SonioxSessionLocalServerTests`（Mac のみ）
 
 ### Changed
+- **エンジンの選択肢を日本語のおすすめ順に並べ替えた**（Soniox → ElevenLabs → OpenAI gpt-transcribe → Microsoft MAI →
+  OpenAI ライブ → Apple オンデバイス → Groq）。根拠は自前の実測と公開ベンチ（Mac のみ）
 - **設定画面を押しやすく作り直した**。サイドバーは開閉と「設定」への切替をやめ、ダッシュボードと全設定ページを
   見出し（音声入力 / 字幕と議事録 / アプリ）付きで常に並べる（1 クリックでどのページへも行ける）。各ページは見出しで区切った
   グループに並べ替え、説明文は項目名の下に入れた。トグルは行のどこを押しても切り替わり、ボタン・ポップアップは大きいサイズに統一。
