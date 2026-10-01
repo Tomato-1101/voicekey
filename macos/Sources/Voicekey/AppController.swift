@@ -947,12 +947,20 @@ final class AppController: ObservableObject {
         }
     }
 
+    /// ⌘V を送れなかったときの通知（結果はクリップボードに残してあるので手で貼ってもらう）
+    private static let pasteFailedNotice = "貼り付けできませんでした。⌘V で貼り付けてください"
+    /// auto_enter の Enter を送れなかったときの通知（本文は貼り付け済みなので送信だけ手でしてもらう）
+    private static let enterFailedNotice = "送信できませんでした。Enter を押してください"
+
     /// 履歴の先頭テキストをもう一度貼り付ける（履歴が空なら何もしない）。
     /// 録音中はこの経路に来ない（handlePress の録音中分岐で return 済み）。
     private func repasteLast() {
         guard let last = history.items.first else { return }
         log.info("再貼り付けショートカット: 直近テキストを貼り付け (\(last.text.count) 文字)")
-        Task { await Paster.paste(last.text) }
+        Task {
+            // ⌘V を送れなかったときは結果がクリップボードに残っているので、手で貼るよう知らせる
+            if !(await Paster.paste(last.text)) { hud.notice(Self.pasteFailedNotice) }
+        }
     }
 
     // MARK: - 録音制御
@@ -1689,21 +1697,30 @@ final class AppController: ObservableObject {
                         history.add(output, appBundleID: target.bundleID, appName: target.name)
                     }
                     let streamPasteStart = ProcessInfo.processInfo.systemUptime
-                    await Paster.paste(output, logGeneration: generation)
+                    let streamPasted = await Paster.paste(output, logGeneration: generation)
                     let streamPastedAt = ProcessInfo.processInfo.systemUptime
                     timelines[generation]?.pasteMs = Int((streamPastedAt - streamPasteStart) * 1000)
                     timelines[generation]?.pastedAt = streamPastedAt
                     timelines[generation]?.characters = output.count
                     timelines[generation]?.targetBundleID = target.bundleID
-                    timelines[generation]?.outcome = DictationTimeline.Outcome.pasted
-                    // 接続がエラー・切断で途中で壊れたときは、入ったのが途中までかもしれないと知らせる
-                    // （喋った分は捨てずに貼る）。タイムアウトは確定待ちが長引いただけなので知らせない
-                    if case .failed(let failure) = ending, failure != .timeout, !isAbandoned(generation) {
-                        hud.notice("接続が途中で切れたため、途中までの入力です")
-                    }
-                    if autoEnter {
-                        try? await Task.sleep(for: .milliseconds(max(0, delayMs)))
-                        Paster.pressEnter(logGeneration: generation)
+                    timelines[generation]?.outcome = streamPasted
+                        ? DictationTimeline.Outcome.pasted : DictationTimeline.Outcome.pasteFailed
+                    if !streamPasted {
+                        // 結果はクリップボードに残してある。入っていないのに Enter を送ると
+                        // 入力欄の別の内容を送信しかねないので、auto_enter も送らない
+                        if !isAbandoned(generation) { hud.notice(Self.pasteFailedNotice) }
+                    } else {
+                        // 接続がエラー・切断で途中で壊れたときは、入ったのが途中までかもしれないと知らせる
+                        // （喋った分は捨てずに貼る）。タイムアウトは確定待ちが長引いただけなので知らせない
+                        if case .failed(let failure) = ending, failure != .timeout, !isAbandoned(generation) {
+                            hud.notice("接続が途中で切れたため、途中までの入力です")
+                        }
+                        if autoEnter {
+                            try? await Task.sleep(for: .milliseconds(max(0, delayMs)))
+                            if !(await Paster.pressEnter(logGeneration: generation)), !isAbandoned(generation) {
+                                hud.notice(Self.enterFailedNotice)
+                            }
+                        }
                     }
                     // 実績の集計（JSON 書き出しを含む）は貼り付けに関係しないので、貼り付け・Enter の後に回す
                     stats.recordSession(
@@ -1777,11 +1794,14 @@ final class AppController: ObservableObject {
                 )
             } catch let error as TranscriptionError {
                 log.error("文字起こし失敗: \(error.message, privacy: .public)")
-                ActionLog.shared.write("transcriber", "文字起こしエラー: \(error.message)")
+                // 応答本文（detail）は原因の切り分け用。HUD には出さず、この行にだけ残す
+                ActionLog.shared.write(
+                    "transcriber",
+                    "文字起こしエラー: \(error.message)" + (error.detail.map { " 応答=\($0)" } ?? ""))
                 timelines[generation]?.outcome = DictationTimeline.Outcome.transcribeFailed
                 if !isAbandoned(generation) {
-                    // 通知文は HTTP 応答本文の先頭を含みうるので、[HUD] 行には出さない（内容は直前の transcriber 行にある）
-                    hud.notice(error.message, logText: "文字起こしエラー（内容は transcriber 行）")
+                    // 応答本文は message から外したので、通知文はそのまま [HUD] 行に出してよい
+                    hud.notice(error.message)
                     // HUD の通知はクリックを透過するので、入力先（設定 › API キー）は別途開いて案内する。
                     // 開くのは起動中 1 回だけ（失敗のたびに設定画面が前面に出て入力中のアプリから
                     // フォーカスを奪わないように。2 回目以降は上の HUD 通知だけ）
@@ -1846,20 +1866,26 @@ final class AppController: ObservableObject {
                 history.add(output, appBundleID: target.bundleID, appName: target.name)
             }
             let pasteStart = ProcessInfo.processInfo.systemUptime
-            await Paster.paste(output, logGeneration: generation)
+            let pasted = await Paster.paste(output, logGeneration: generation)
             let pasteMs = Int((ProcessInfo.processInfo.systemUptime - pasteStart) * 1000)
             timelines[generation]?.pasteMs = pasteMs
             timelines[generation]?.pastedAt = ProcessInfo.processInfo.systemUptime
             timelines[generation]?.characters = output.count
             timelines[generation]?.targetBundleID = target.bundleID
-            timelines[generation]?.outcome = DictationTimeline.Outcome.pasted
+            timelines[generation]?.outcome = pasted
+                ? DictationTimeline.Outcome.pasted : DictationTimeline.Outcome.pasteFailed
+            // 結果はクリップボードに残してあるので、手で貼るよう知らせる
+            if !pasted, !isAbandoned(generation) { hud.notice(Self.pasteFailedNotice) }
             let totalMs = Int((ProcessInfo.processInfo.systemUptime - restT0) * 1000)
             // 統合時は整形を STT と一緒に済ませたことが分かるよう「整形 サーバー統合」と表記する
             let fmtDesc = didServerFormat ? "整形 サーバー統合" : "整形 \(fmtMs)"
             log.info("[計測] \(transcriber.backend.label, privacy: .public) 録音停止→貼付 総計\(totalMs)ms（VAD \(vadMs) / 文字起こし \(sttMs) / \(fmtDesc, privacy: .public) / 貼付 \(pasteMs)）")
-            if autoEnter {
+            // 入っていないのに Enter を送ると入力欄の別の内容を送信しかねないので、貼れたときだけ送る
+            if autoEnter, pasted {
                 try? await Task.sleep(for: .milliseconds(max(0, delayMs)))
-                Paster.pressEnter(logGeneration: generation)
+                if !(await Paster.pressEnter(logGeneration: generation)), !isAbandoned(generation) {
+                    hud.notice(Self.enterFailedNotice)
+                }
             }
             // 実績の集計（JSON 書き出しを含む）は貼り付けに関係しないので、貼り付け・Enter の後に回す
             stats.recordSession(characters: output.count, recordingSeconds: duration,

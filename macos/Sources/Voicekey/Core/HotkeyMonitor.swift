@@ -84,6 +84,9 @@ final class HotkeyMonitor {
                     CGEvent.tapEnable(tap: tap, enable: true)
                     log.warning("ウォッチドッグ: 無効化されたイベントタップを再有効化しました")
                     ActionLog.shared.write("hotkey", "ウォッチドッグ発火: イベントタップを再有効化")
+                    // 無効化中の離鍵は届いていないので、ここでも押下状態を実キーボードに合わせる
+                    // （タイマーはタップと同じ RunLoop＝同じスレッドで動くので、イベント処理と競合しない）
+                    self.resyncPressedTokens()
                 }
             }
             // 5 秒ごとの健全性チェックはホットキー入力の判定には関与しない
@@ -150,13 +153,14 @@ final class HotkeyMonitor {
                 let reason = type == .tapDisabledByTimeout ? "timeout" : "userInput"
                 log.warning("イベントタップが無効化されたため再有効化しました (理由: \(reason, privacy: .public))")
                 ActionLog.shared.write("hotkey", "イベントタップ無効化を検知し再有効化 (理由=\(reason))")
+                resyncPressedTokens()
             }
 
         case .flagsChanged:
             lastEventTimestamp = event.timestamp
             // 修飾キー: デバイス依存ビットから現在の押下集合を計算し、差分を通知
             let current = KeyToken.modifierTokens(from: event.flags)
-            let previous = pressedTokens.filter { isModifierToken($0) }
+            let previous = pressedTokens.filter { Self.isModifierToken($0) }
             for token in current.subtracting(previous) {
                 pressedTokens.insert(token)
                 onPress?(token)
@@ -191,7 +195,64 @@ final class HotkeyMonitor {
         }
     }
 
-    private func isModifierToken(_ token: String) -> Bool {
+    /// タップ再有効化時に、押下中集合を実際のキーボード状態に合わせる（タップスレッド上）。
+    ///
+    /// 無効化されている間の離鍵はタップに届かないため、放置すると「離したのに押下中」のまま残り、
+    /// hold モードの録音が上限まで止まらない。消えたキーは通常の離鍵と同じ onRelease で知らせる。
+    /// 逆に無効化中に新しく押されたキーは押下通知しない（意図しない録音開始を避ける。
+    /// 押し続けていれば次の flagsChanged / keyDown で普通に拾われる）。
+    private func resyncPressedTokens() {
+        guard !pressedTokens.isEmpty else { return }
+        // 左右の区別はデバイス依存ビット頼み。そのビットが状態取得で欠けていても誤って離鍵扱いに
+        // しない（握っている最中の録音を切らない）よう、修飾キーのキーコード単位の状態も合わせて見る
+        var currentModifiers = KeyToken.modifierTokens(
+            from: CGEventSource.flagsState(.combinedSessionState))
+        for (code, token) in Self.modifierKeyCodes
+        where CGEventSource.keyState(.combinedSessionState, key: code) {
+            currentModifiers.insert(token)
+        }
+        let released = Self.tokensToRelease(
+            pressed: pressedTokens,
+            currentModifiers: currentModifiers,
+            isKeyDown: { token in
+                // 同じトークンに複数のキーコードがある（enter=Return/テンキー Enter）ので、どれか押されていれば押下中
+                KeyToken.keyCodeTokens.contains { code, name in
+                    name == token && CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(code))
+                }
+            })
+        guard !released.isEmpty else { return }
+        let list = released.sorted().joined(separator: ",")
+        log.warning("タップ再有効化で押下状態を補正: \(list, privacy: .public)")
+        ActionLog.shared.write("hotkey", "[ホットキー] タップ再有効化で押下状態を補正 離鍵扱い=\(list)")
+        for token in released.sorted() {
+            pressedTokens.remove(token)
+            onRelease?(token)
+        }
+    }
+
+    /// 押下中と記録しているトークンのうち、実際にはもう離されているもの（離鍵扱いにするもの）を返す。
+    /// 副作用のない純ロジック（テスト対象）。
+    ///
+    /// - Parameters:
+    ///   - pressed: 押下中として記録しているトークン集合
+    ///   - currentModifiers: 実キーボードで今押されている修飾キートークン集合
+    ///   - isKeyDown: 修飾キー以外のトークンが今押されているか。確かめられないキーは false を返す
+    ///     （押しっぱなし扱いで録音が止まらないより、離鍵扱いで止める方が安全なため）
+    static func tokensToRelease(pressed: Set<String>,
+                                currentModifiers: Set<String>,
+                                isKeyDown: (String) -> Bool) -> Set<String> {
+        pressed.filter { token in
+            isModifierToken(token) ? !currentModifiers.contains(token) : !isKeyDown(token)
+        }
+    }
+
+    /// 修飾キーのキーコード（kVK_*）→ トークン。押下状態の補正にだけ使う
+    private static let modifierKeyCodes: [(code: CGKeyCode, token: String)] = [
+        (59, "ctrl_l"), (62, "ctrl_r"), (56, "shift_l"), (60, "shift_r"),
+        (55, "cmd_l"), (54, "cmd_r"), (58, "alt_l"), (61, "alt_r"), (63, "fn"),
+    ]
+
+    private static func isModifierToken(_ token: String) -> Bool {
         token == "fn" || KeyToken.modifierBits.contains { $0.token == token }
     }
 }

@@ -4,6 +4,28 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased]
 
+### Fixed
+- **イベントタップが OS に一時停止されている間にホットキーを離すと、録音が止まらないのを修正（Mac のみ）**。
+  停止中は離鍵が届かず、押下中のまま残っていた（hold モードで録音が上限まで続く／もう一度押して離すまで止まらない）。
+  タップを再有効化したとき（無効化通知・ウォッチドッグの両方）に実際のキーボード状態と突き合わせ、離されていたキーは
+  通常の離鍵として扱う。停止中に新しく押されたキーは押下扱いにしない（誤って録音を始めない）。
+  補正したときは行動ログに `[ホットキー] タップ再有効化で押下状態を補正 離鍵扱い=…` を残す。
+- **貼り付けのキー操作（⌘V）を作れなかったとき、文字起こし結果が消えるのを修正（Mac のみ）**。
+  これまでは失敗しても成功扱いで進み、1 秒後にクリップボードを元へ戻していたため、結果がどこにも残らなかった。
+  失敗したら 1 回だけ作り直し、それでも駄目なら結果をクリップボードに残して「貼り付けできませんでした。⌘V で貼り付けてください」と
+  通知する（このとき auto_enter の Enter は送らない）。auto_enter の Enter を送れなかったときは「送信できませんでした。Enter を押してください」と
+  通知する（本文は貼り付け済みなのでクリップボードは通常どおり戻す）。押下・解放の片方だけ送ることもやめた（⌘V の二重貼り付け防止）。
+  行動ログの `[貼付]` 行の `⌘V送信=` は `ok / 失敗 / なし`、`[計測]` 行の結果に `貼付失敗` を追加。
+- **文字起こし API のエラー時に、サーバー応答の本文（生 JSON）が通知に混ざるのを修正（Mac のみ）**。
+  通知は「<サービス名> API エラー (HTTP <番号>)」までにし、本文は 1 行化・200 文字で切って行動ログの transcriber 行にだけ残す。
+
+### Technical Details
+- **HotkeyMonitor.swift**: `resyncPressedTokens()`（`CGEventSource.flagsState` と修飾キー・通常キーの `keyState` で現在の押下を取る）と
+  純ロジック `tokensToRelease(pressed:currentModifiers:isKeyDown:)` を追加。回帰テスト `HotkeyResyncTests`
+- **Paster.swift**: `paste` / `pressEnter` が送れたかを返す（`@discardableResult`）。`postKeystroke` は押下・解放の両方を作れたときだけ送る
+- **Transcriber.swift**: `TranscriptionError.detail` と `responseDetail(_:limit:)` を追加。回帰テスト `TranscriptionErrorDetailTests`
+- **Hud.swift**: 本文が通知に載らなくなったので `notice(_:logText:)` の `logText` を削除
+
 ## [2.1.0] - 2026-10-02
 
 Mac 版を GitHub Releases で配る最初の版（origin に 2025-12 の旧 `v2.0.0` タグがあるため 2.1.0 から）。

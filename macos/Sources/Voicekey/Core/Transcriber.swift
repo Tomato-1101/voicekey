@@ -23,7 +23,23 @@ struct TranscriptionError: LocalizedError {
     /// キーが未設定・無効・接続先未設定など「設定 › API キー」で直せる失敗か。
     /// true のとき AppController が API キーの設定画面へ案内する
     var needsApiKey: Bool = false
+    /// サーバー応答本文（1 行化・切り詰め済み）。原因の切り分けに要るが、生 JSON を
+    /// HUD に出すと読めないうえ通知が長くなるので message とは分け、行動ログにだけ出す
+    var detail: String? = nil
     var errorDescription: String? { message }
+
+    /// 応答本文を行動ログ 1 行に収まる形へ整える（改行・制御文字を空白にして詰め、limit 文字で切る）。
+    /// HTML のエラーページのような巨大な本文でも全体を文字列化しないよう、先にバイト数で頭だけ取る
+    static func responseDetail(_ data: Data, limit: Int = 200) -> String {
+        // 1 文字は UTF-8 で最大 4 バイトなので、limit 文字ぶん取るには limit×4 バイトあれば足りる
+        let head = String(decoding: data.prefix(limit * 4), as: UTF8.self)
+        let flattened = String(String.UnicodeScalarView(head.unicodeScalars.map {
+            $0.properties.generalCategory == .control ? " " : $0
+        }))
+        let oneLine = flattened.split(separator: " ", omittingEmptySubsequences: true).joined(separator: " ")
+        guard oneLine.count > limit else { return oneLine }
+        return String(oneLine.prefix(limit)) + "…"
+    }
 }
 
 /// 音声サンプル（Float32, 16kHz, モノラル）を WAV (PCM16) に変換する
@@ -524,8 +540,11 @@ final class Transcriber: @unchecked Sendable {
         case 429:
             throw TranscriptionError(message: "\(backend.label) API のレート制限に達しました（しばらく待って再試行してください）")
         default:
-            let detail = String(data: data.prefix(200), encoding: .utf8) ?? ""
-            throw TranscriptionError(message: "\(backend.label) API エラー (HTTP \(http.statusCode)): \(detail)")
+            // 本文は HUD に出さない（detail に分けて行動ログの transcriber 行にだけ残す）
+            throw TranscriptionError(
+                message: "\(backend.label) API エラー (HTTP \(http.statusCode))",
+                detail: TranscriptionError.responseDetail(data)
+            )
         }
         return data
     }

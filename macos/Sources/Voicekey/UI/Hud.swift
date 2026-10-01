@@ -295,14 +295,12 @@ final class HudController {
     }
 
     /// 一時通知を 2 秒間表示する
-    /// - Parameter logText: 行動ログに出す文言（省略時は text）。API エラーの通知文は HTTP 応答本文の
-    ///   先頭を含むので、呼び出し側が本文を含まない文言を渡す
-    func notice(_ text: String, logText: String? = nil) {
+    func notice(_ text: String) {
         // 何を知らせたか（＝ユーザーに何が見えたか）を後から追えるようにする。
-        // 文字起こし・翻訳の本文は通知に載らないが、API エラーの通知は応答本文を含むため logText で差し替える
+        // 文字起こし・翻訳の本文や API の応答本文は通知に載せない（応答本文は TranscriptionError.detail 側）
         ActionLog.shared.write(
             "hud",
-            "[HUD] gen=\(DiagnosticText.gen(logGeneration())) 通知「\(DiagnosticText.clip(logText ?? text, 120))」"
+            "[HUD] gen=\(DiagnosticText.gen(logGeneration())) 通知「\(DiagnosticText.clip(text, 120))」"
                 + (enabled ? "" : " 表示=なし(HUD 無効)"))
         noticeTask?.cancel()
         model.mode = .notice(text)

@@ -54,6 +54,8 @@ struct DictationTimeline {
     /// 結果の表記（ログの検索キーになるので固定文言にしておく）
     enum Outcome {
         static let pasted = "貼付"
+        /// ⌘V を送れなかった（結果はクリップボードに残してある）
+        static let pasteFailed = "貼付失敗"
         static let tooShort = "短すぎ"
         static let noSpeech = "無音"
         static let emptyResult = "空結果"
