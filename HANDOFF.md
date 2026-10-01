@@ -10,13 +10,13 @@
 - 両 OS に存在する変更は Mac / Windows 同時実装。README・OVERVIEW・CHANGELOG はコードと同じコミットで更新。
 - 文字起こしエンジン（スロットの backend）の切替は本人の判断。Claude は変えない（10-01 時点は右⌥・右⌘とも apple_local）。
 
-## STT エンジン入れ替え（10-01 21:00 更新）
+## STT エンジン入れ替え（10-01 20:05 更新）
 - 目的: 本人決定（10-01）の追加・削除を Mac に実装（Windows は開発停止中）。本人は主に日本語（混在は重視しない）。
 - 現状: 3f207c9 で push・dist 入替済み。追加＝Soniox stt-rt-v5（ライブ・新規の既定）／gpt-transcribe／MAI-Transcribe-2／scribe_v2。
   削除＝Deepgram・nova-2・gpt-realtime-whisper・whisper-large-v3・gpt-4o 系・scribe_v1_experimental（廃止モデルは V19 の一回限り移行）。
   疎通済み: gpt-transcribe 1.7〜1.8s 誤りゼロ／scribe_v2 0.6〜1.0s（漢数字は数字入力の正規化で 3時）。Codex は上限のため Opus 2 体で代行レビュー→12 件修正。
-- 次にやること: 本人が SONIOX_API_KEY を登録し直す（2 回目は Soniox 以外の文字列が入り 401。正しい値は `snx_proj_` で始まる）→ Soniox 3 回疎通（承認済み・1 回消化）。
-  Azure はログイン済みだがサブスクリプションが 0 件＝本人が作成（カード登録）するまで Speech リソースを作れない。
+- Soniox 疎通済み（10-01・米国窓口・承認済み 3 回を消化）: 7 秒の日本語で離鍵→確定 0.28〜0.30s・誤りゼロ。キーは米国窓口のみ有効（JP 窓口は 401）。
+- 次にやること: Azure はログイン済みだがサブスクリプションが 0 件＝本人が作成（カード登録）するまで Speech リソースを作れない。
   Soniox JP リージョンの有効化を support@soniox.com へ本人の Gmail から依頼済み（10-01）。返信が来たら JP プロジェクトでキーを作り、
   `SonioxLiveTranscriber.defaultEndpoint` を `wss://stt-rt.jp.soniox.com/transcribe-websocket` に替えて再疎通。
   Azure は本人の Chrome ログイン後に southeastasia でリソース作成 → ENDPOINT 登録・本人が KEY 登録 → MAI 3 回疎通（承認済み）。
