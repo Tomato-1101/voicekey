@@ -312,6 +312,11 @@ final class Transcriber: @unchecked Sendable {
         }
         let start = Date()
         let data = try await send(request)
+        // 応答が成功で返った＝課金された時点で使用量を記録する（数量だけ・本文は渡さない）。
+        // openaiLive がここに来るのは REST フォールバックなので、実際に呼んだ restModel で数える
+        ApiUsageStore.shared.recordAudio(
+            provider: ApiProvider(backend: backend), model: restModel,
+            seconds: Double(samples.count) / AudioRecorder.sampleRate)
         let text = TextNormalize.stripCJKSpaces(
             try parseResponse(data, gptTranscribeFormat: gptTranscribeFormat)
                 .trimmingCharacters(in: .whitespacesAndNewlines)

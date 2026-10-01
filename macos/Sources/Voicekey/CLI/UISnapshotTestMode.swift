@@ -9,6 +9,7 @@
 //  使い方:
 //    dist/voicekey.app/Contents/MacOS/voicekey --ui-snapshot <出力ディレクトリ> [--appearance light|dark] [--log-file <path>]
 //  出力: <home|タブ名>-<幅>x<高さ>-<light|dark>.png（760x600 と 1100x760 の 2 通り）
+//  --api-usage-sample を付けると API 料金の欄を見本データで撮り、縦長の 760x1500 も足す。
 //  最終行の [VERDICT] status=ok files=<数> を判定に使う。
 //
 //  AppController を作らない＝ホットキー監視・録音・マイク・文字起こし・履歴同期の通信を一切起動しない。
@@ -86,6 +87,14 @@ enum UISnapshotTestMode {
         )
         let stats = StatsStore()
 
+        // --api-usage-sample: API 料金の欄を見本の数値で撮る（一時ディレクトリのストアに差し替える＝
+        // 本人の api-usage.json は読みも書きもしない）。欄はホームの下の方なので縦長の 1 枚も足す
+        var sizes = Self.sizes
+        if arguments.contains("--api-usage-sample") {
+            ApiUsageStore.shared = makeSampleApiUsage()
+            sizes.append(NSSize(width: 760, height: 1500))
+        }
+
         var screens: [(name: String, showingSettings: Bool, tab: Int)] = [("home", false, 0)]
         for id in MainWindowView.settingsTabIDs {
             screens.append((tabSlugs[id] ?? "tab\(id)", true, id))
@@ -126,6 +135,28 @@ enum UISnapshotTestMode {
             }
         }
         finish(written: written, failed: failed)
+    }
+
+    /// API 料金の欄の見本データ（直近 30 日に数種類の API を散らす。単価未確認のモデルも 1 つ混ぜる）
+    private static func makeSampleApiUsage() -> ApiUsageStore {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voicekey-ui-snapshot-api-usage-\(UUID().uuidString)", isDirectory: true)
+        let store = ApiUsageStore(directory: dir)
+        let cal = Calendar.current
+        for offset in 0..<30 where offset % 3 != 2 {
+            guard let date = cal.date(byAdding: .day, value: -offset, to: Date()) else { continue }
+            store.recordAudio(provider: .soniox, model: "stt-rt-v5", seconds: Double(300 + offset * 41), date: date)
+            if offset % 4 == 0 {
+                store.recordAudio(provider: .openai, model: "gpt-live-transcribe", seconds: Double(120 + offset * 9), date: date)
+            }
+            store.recordAudio(provider: .groq, model: "whisper-large-v3-turbo", seconds: 4, date: date)
+            store.recordTokens(provider: .groq, model: "openai/gpt-oss-20b", purpose: .translation,
+                               inputTokens: 1_800 + offset * 30, outputTokens: 600, date: date)
+            store.recordTokens(provider: .groq, model: "llama-3.1-8b-instant", purpose: .formatting,
+                               inputTokens: 2_400, outputTokens: 900, date: date)
+        }
+        store.flush()
+        return store
     }
 
     /// View を画面外のウィンドウで描き、PNG データにする

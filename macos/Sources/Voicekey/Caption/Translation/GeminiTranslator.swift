@@ -157,6 +157,8 @@ final class GeminiTranslator: Translator {
 
         switch http.statusCode {
         case 200:
+            // 200 が返った＝課金された時点でトークン数を記録する（数量だけ・本文は渡さない）
+            ApiUsageStore.shared.recordGeminiUsage(fromJSON: data, model: model, purpose: .captionTranslation)
             return try extractText(from: data)
         case 401, 403:
             throw TranslationError.unauthorized

@@ -381,6 +381,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
 
     private let statusItem: NSStatusItem
     private let stateMenuItem: NSMenuItem
+    /// 「今日の API 代」の行（メニューを開くたびに数え直す）
+    private let apiCostMenuItem: NSMenuItem
     private weak var controller: AppController?
     private var stateObservation: AnyCancellable?
     /// 直近にログへ出したアイコン状態（同じ状態の再通知でログを重ねないため）
@@ -406,6 +408,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         // ドラッグでメニューバーから取り外せないようにする（誤操作で消えるのを防ぐ）
         statusItem.behavior = []
         stateMenuItem = NSMenuItem(title: controller.state.label, action: nil, keyEquivalent: "")
+        apiCostMenuItem = NSMenuItem(title: Self.apiCostTitle(), action: nil, keyEquivalent: "")
 
         super.init()
 
@@ -416,6 +419,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
 
         let menu = NSMenu()
         menu.addItem(stateMenuItem)  // 状態表示（action なし = 自動で無効表示）
+        menu.addItem(apiCostMenuItem)  // 今日の API 代（同じく情報行）
+        menu.delegate = self
         menu.addItem(.separator())
 
         // ホーム（実績・履歴・アプリ別使用率をまとめたメイン画面・Phase B）
@@ -818,6 +823,19 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     @objc private func quitApp() {
         // applicationWillTerminate でホットキー監視等が停止される
         NSApp.terminate(nil)
+    }
+
+    /// 「今日の API 代 $x.xx（¥y）」。単価未確認の利用があればそれも添える
+    static func apiCostTitle() -> String {
+        let today = ApiUsageStore.shared.todaySummary()
+        return "今日の API 代 \(ApiPricing.formatted(today.usd))" + (today.hasUnpriced ? "＋単価未確認分" : "")
+    }
+}
+
+extension StatusItemController: NSMenuDelegate {
+    /// メニューを開くたびに今日の API 代を数え直す（常時購読して再描画するより軽い）
+    func menuWillOpen(_ menu: NSMenu) {
+        apiCostMenuItem.title = Self.apiCostTitle()
     }
 }
 

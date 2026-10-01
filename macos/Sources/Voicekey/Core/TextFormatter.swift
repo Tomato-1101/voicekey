@@ -206,6 +206,9 @@ final class TextFormatter {
                 ActionLog.shared.write("formatter", "整形エラー: HTTP \(code)（原文を使用）")
                 return text
             }
+            // 200 が返った＝課金された時点でトークン数を記録する（数量だけ・本文は渡さない）
+            ApiUsageStore.shared.recordChatUsage(
+                fromJSON: data, provider: .groq, model: model, purpose: .formatting)
             guard let parsed = try? JSONDecoder().decode(ChatResponse.self, from: data),
                   let content = parsed.choices.first?.message.content else {
                 log.warning("整形失敗: 応答の解析に失敗しました（原文を使用）")

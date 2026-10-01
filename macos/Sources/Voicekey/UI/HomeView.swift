@@ -51,6 +51,8 @@ struct HomeView: View {
     @ObservedObject var history: HistoryStore
     @ObservedObject var stats: StatsStore
     @ObservedObject var updater: UpdaterController
+    /// API 使用量（記録はどのスレッドからでも入り、変更通知だけがメインに届く）
+    @ObservedObject var apiUsage: ApiUsageStore = .shared
     /// マイクテスト・ガイド再表示に使う（観測しない＝録音のたびの再描画を避けるため plain 参照）。
     var controller: AppController?
     /// 「セットアップガイド」カードから初回ガイドを再表示する。
@@ -64,6 +66,8 @@ struct HomeView: View {
 
     /// 期間カードの選択（1=今日 / 7=今週）。UserDefaults に保存し、次回起動でも維持する。
     @AppStorage("home.periodDays") private var periodDays: Int = 1
+    /// API 料金の内訳の期間（today / month / all）。次回起動でも維持する。
+    @AppStorage("home.apiCostPeriod") private var apiCostPeriod: String = "month"
 
     var body: some View {
         // レイアウト v2.1: 島で全面を包まない。MainWindowView の frosted backdrop の上に
@@ -72,6 +76,7 @@ struct HomeView: View {
             VStack(alignment: .leading, spacing: 16) {
                 header
                 statsCard
+                apiCostSection
                 toolsSection
                 appUsageSection
                 historySection
@@ -326,6 +331,168 @@ struct HomeView: View {
             // periodDays の変化を 1 つのトランザクションにまとめ、numericText を滑らかに走らせる
             .animation(.snappy, value: periodDays)
         }
+    }
+
+    // MARK: - API の利用料金
+
+    /// API の利用料金。上段に今日 / 今月 / 累計の合計、下に内訳（プロバイダー × モデル × 用途）と
+    /// 直近 30 日の推移を置く。料金は使用量 × 公開単価の推定なので、その旨と換算レートを小さく添える。
+    private var apiCostSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("API の利用料金").font(.headline)
+            HStack(alignment: .top, spacing: 12) {
+                apiCostTotalCard("今日", apiUsage.todaySummary())
+                apiCostTotalCard("今月", apiUsage.monthSummary())
+                apiCostTotalCard("累計", apiUsage.allTimeSummary())
+            }
+            apiCostBreakdownCard
+            apiCostTrendCard
+            Text("使用量 × 各社の公開単価から計算した推定で、実際の請求額とは異なることがあります。"
+                 + "記録はこの機能を入れた後の分だけです。単価は \(ApiPricing.checkedOn) 時点"
+                 + "（Gemini は有料枠の単価で計算）、円換算は 1 ドル = \(String(format: "%.1f", ApiPricing.usdToJpy)) 円"
+                 + "（\(ApiPricing.rateDate)）。")
+                .font(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// 合計カード 1 枚（ドルを主役に、円と「単価未確認を含む」を小さく添える）
+    private func apiCostTotalCard(_ title: String, _ summary: ApiCostSummary) -> some View {
+        dashCard {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title).font(.caption).foregroundStyle(.secondary)
+                bigNumberText(ApiPricing.formattedUSD(summary.usd), size: 26)
+                Text(ApiPricing.formattedJPY(ApiPricing.jpy(summary.usd)))
+                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                if summary.hasUnpriced {
+                    // 単価が分からない分を 0 円に見せて隠さない
+                    Label("単価未確認を含む", systemImage: "questionmark.circle")
+                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+        }
+    }
+
+    /// 内訳の対象日を選ぶ（右上のセグメントの選択に対応）
+    private func apiCostIncludes(_ day: String) -> Bool {
+        let today = ApiUsageStore.dayString(Date())
+        switch apiCostPeriod {
+        case "today": return day == today
+        case "all": return true
+        default: return day.hasPrefix(String(today.prefix(7)))
+        }
+    }
+
+    /// 内訳カード（プロバイダー × モデル × 用途ごとの数量と料金）
+    private var apiCostBreakdownCard: some View {
+        let rows = apiUsage.breakdown(where: apiCostIncludes)
+        return dashCard {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("内訳").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Picker("期間", selection: $apiCostPeriod) {
+                        Text("今日").tag("today")
+                        Text("今月").tag("month")
+                        Text("累計").tag("all")
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                }
+                if rows.isEmpty {
+                    Text("この期間に API の利用はありません。")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 40, alignment: .center)
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+                            apiCostRow(row)
+                            if index < rows.count - 1 { Divider() }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// 内訳 1 行（左＝プロバイダー・モデル・用途と数量、右＝料金）
+    private func apiCostRow(_ row: ApiUsageEntry) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(row.providerKind?.label ?? row.provider) · \(row.model)")
+                    .font(.system(size: 13)).lineLimit(1)
+                Text("\(row.purposeKind?.label ?? row.purpose) · \(apiQuantityText(row)) · \(grouped(row.requests)) 回")
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 2) {
+                if let usd = row.costUSD {
+                    Text(ApiPricing.formattedUSD(usd))
+                        .font(.system(size: 13, weight: .semibold)).monospacedDigit()
+                    Text(ApiPricing.formattedJPY(ApiPricing.jpy(usd)))
+                        .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+                } else {
+                    Text("単価未確認").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.vertical, 6)
+    }
+
+    /// 数量の表示（音声は時間、LLM は入出力トークン）。最低課金秒数で課金時間が延びた分も見せる
+    private func apiQuantityText(_ row: ApiUsageEntry) -> String {
+        if row.audioSeconds > 0 {
+            let actual = formattedDuration(row.audioSeconds)
+            if row.billedAudioSeconds >= row.audioSeconds + 1 {
+                return "\(actual)（課金対象 \(formattedDuration(row.billedAudioSeconds))）"
+            }
+            return actual
+        }
+        return "入力 \(grouped(row.inputTokens)) / 出力 \(grouped(row.outputTokens)) トークン"
+    }
+
+    /// 直近 30 日の推移（1 日 1 本の縦バー。最も高い日を 1.0 とした相対の高さ）
+    private var apiCostTrendCard: some View {
+        let days = apiUsage.dailySeries(30)
+        let maxUSD = days.map(\.summary.usd).max() ?? 0
+        let total = days.reduce(0) { $0 + $1.summary.usd }
+        return dashCard {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("直近 30 日").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Text("合計 \(ApiPricing.formatted(total))")
+                        .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+                }
+                HStack(alignment: .bottom, spacing: 3) {
+                    ForEach(days) { day in
+                        let ratio = maxUSD > 0 ? day.summary.usd / maxUSD : 0
+                        Capsule()
+                            .fill(day.summary.usd > 0 ? Brand.signal.opacity(0.75) : Color.primary.opacity(0.08))
+                            .frame(height: max(4, 56 * ratio))
+                            .frame(maxWidth: .infinity)
+                            .help("\(day.day)  \(ApiPricing.formatted(day.summary.usd))"
+                                  + (day.summary.hasUnpriced ? "（単価未確認を含む）" : ""))
+                    }
+                }
+                .frame(height: 56, alignment: .bottom)
+                HStack {
+                    Text(Self.shortDay(days.first?.day))
+                    Spacer()
+                    Text("今日")
+                }
+                .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// yyyy-MM-dd を「M/d」に縮める（推移の左端の日付ラベル）
+    private static func shortDay(_ day: String?) -> String {
+        guard let day else { return "" }
+        let parts = day.split(separator: "-")
+        guard parts.count == 3, let m = Int(parts[1]), let d = Int(parts[2]) else { return day }
+        return "\(m)/\(d)"
     }
 
     // MARK: - アプリ別使用率

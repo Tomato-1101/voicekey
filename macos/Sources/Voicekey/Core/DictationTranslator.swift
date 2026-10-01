@@ -218,7 +218,8 @@ actor DictationTranslator {
         let translator = GroqTranslator(
             keyProvider: { Keychain.apiKey(for: .groq) },
             modelProvider: { CaptionSettings.groqModelID },
-            systemPromptProvider: { Self.groqSystemPrompt(targetCode: target) }
+            systemPromptProvider: { Self.groqSystemPrompt(targetCode: target) },
+            usagePurpose: .translation
         )
         return try await translator.translate(text, context: [])
     }

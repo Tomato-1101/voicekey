@@ -24,19 +24,24 @@ struct GroqTranslator: StreamingTranslator {
     private let modelProvider: @Sendable () -> String
     /// システムプロンプト（既定は字幕の英→日。音声入力の「翻訳して入力」が向きを差し替える）
     private let systemPromptProvider: @Sendable () -> String
+    /// API 使用量の内訳に出す用途（字幕の翻訳 / 音声入力の「翻訳して入力」）
+    private let usagePurpose: ApiUsagePurpose
 
     /// - Parameters:
     ///   - keyProvider: API キーを返すクロージャ（未設定なら nil）
     ///   - modelProvider: 使用するモデル ID を返すクロージャ
     ///   - systemPromptProvider: システムプロンプトを返すクロージャ（既定は字幕の英→日）
+    ///   - usagePurpose: 使用量を記録するときの用途（既定は字幕の翻訳）
     init(
         keyProvider: @escaping @Sendable () -> String? = { APIKeyStore.load(.groq)?.key },
         modelProvider: @escaping @Sendable () -> String = { CaptionSettings.groqModelID },
-        systemPromptProvider: @escaping @Sendable () -> String = { GeminiTranslator.systemPrompt }
+        systemPromptProvider: @escaping @Sendable () -> String = { GeminiTranslator.systemPrompt },
+        usagePurpose: ApiUsagePurpose = .captionTranslation
     ) {
         self.keyProvider = keyProvider
         self.modelProvider = modelProvider
         self.systemPromptProvider = systemPromptProvider
+        self.usagePurpose = usagePurpose
 
         let configuration = URLSessionConfiguration.ephemeral
         // 字幕が数十秒固まるより、早く諦めて Apple 翻訳へ落ちる方がよい
@@ -66,9 +71,11 @@ struct GroqTranslator: StreamingTranslator {
         guard !trimmed.isEmpty else { return "" }
         guard let key = keyProvider(), !key.isEmpty else { throw TranslationError.missingAPIKey }
 
+        // 使用量の記録に同じモデル名を使うため 1 回だけ取り出す
+        let model = modelProvider()
         let request = try Self.makeChatRequest(
             endpointBase: Self.endpointBase,
-            model: modelProvider(),
+            model: model,
             key: key,
             text: trimmed,
             context: context,
@@ -94,8 +101,17 @@ struct GroqTranslator: StreamingTranslator {
         }
 
         var accumulated = ""
+        var usageRecorded = false
         do {
             for try await line in stream.lines {
+                // 最終チャンクの usage（include_usage の `usage` か Groq 独自の `x_groq.usage`）を 1 回だけ記録する。
+                // usage を含む行だけを読む（差分の行ごとに余計な JSON 解析をしない）
+                if !usageRecorded, line.contains("\"usage\""), line.hasPrefix("data:"),
+                   let json = line.dropFirst("data:".count)
+                       .trimmingCharacters(in: .whitespaces).data(using: .utf8) {
+                    usageRecorded = ApiUsageStore.shared.recordChatUsage(
+                        fromJSON: json, provider: .groq, model: model, purpose: usagePurpose)
+                }
                 guard let piece = Self.deltaText(fromSSELine: line) else { continue }
                 if piece.isEmpty { continue }
                 accumulated += piece
@@ -151,7 +167,11 @@ struct GroqTranslator: StreamingTranslator {
             "messages": messages,
             "max_completion_tokens": 512,
         ]
-        if stream { body["stream"] = true }
+        if stream {
+            body["stream"] = true
+            // 最終チャンクにトークン数（usage）を載せてもらう＝ API 使用量の記録に使う（OpenAI 互換の指定）
+            body["stream_options"] = ["include_usage": true]
+        }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"

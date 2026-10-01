@@ -133,6 +133,8 @@ final class SonioxLiveTranscriber: LiveTranscribing, @unchecked Sendable {
     private var transcript = SonioxTranscript()
     /// 接続確立前に届いた PCM の退避（接続時に順序を保ってフラッシュする）
     private var pending: [Data] = []
+    /// 接続済みの WebSocket へ実際に渡した PCM のバイト数（API 使用量の記録用。退避のまま捨てた分は数えない）
+    private var sentBytes = 0
     private var cancelled = false
     /// finish() が呼ばれた（＝終端を送った／接続確立後に connect() が送る）
     private var closeRequested = false
@@ -263,6 +265,7 @@ final class SonioxLiveTranscriber: LiveTranscribing, @unchecked Sendable {
         }
         if !pending.isEmpty { sessionLog?.markAudioSent() }
         for chunk in pending {
+            sentBytes += chunk.count
             task.send(.data(chunk)) { error in
                 if let error {
                     log.debug("退避 PCM 送信エラー: \(error.localizedDescription)")
@@ -308,6 +311,7 @@ final class SonioxLiveTranscriber: LiveTranscribing, @unchecked Sendable {
             lock.unlock()
             return
         }
+        sentBytes += pcm.count
         lock.unlock()
         sessionLog?.markAudioSent()
         let sessionLog = self.sessionLog
@@ -471,7 +475,14 @@ final class SonioxLiveTranscriber: LiveTranscribing, @unchecked Sendable {
         let wasDone = done
         done = true
         if !wasDone { endState = result }
+        // 終端を送っていれば末尾の無音（200ms）も課金対象として送っている
+        let usageBytes = sentBytes + (closeRequested && sentBytes > 0 ? Self.trailingSilence.count : 0)
         lock.unlock()
+        if !wasDone, usageBytes > 0 {
+            // 1 セッション 1 回だけ、実際に送った音声の秒数を記録する（数量だけ・本文は渡さない）
+            ApiUsageStore.shared.recordAudio(
+                provider: .soniox, model: model, seconds: Double(usageBytes) / Double(Self.sampleRate * 2))
+        }
         if !wasDone {
             log.notice("Soniox finish 解決: \(reason, privacy: .public)")
             // 区別しない終わり方（cancelled）は理由のほうが情報になる

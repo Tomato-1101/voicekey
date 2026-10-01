@@ -113,6 +113,8 @@ final class OpenAILiveTranscriber: LiveTranscribing, @unchecked Sendable {
     private var finalText: String = ""
     /// 接続確立前に届いた PCM の退避（接続時に順序を保ってフラッシュする）
     private var pending: [Data] = []
+    /// 接続済みの WebSocket へ実際に渡した PCM（24kHz・Int16）のバイト数（API 使用量の記録用）
+    private var sentBytes = 0
     private var cancelled = false
     /// finish() が接続確立前に呼ばれた（接続確立後に pending フラッシュ後 commit を送る）
     private var closeRequested = false
@@ -182,6 +184,7 @@ final class OpenAILiveTranscriber: LiveTranscribing, @unchecked Sendable {
         }
         self.task = task
         let buffered = pending
+        sentBytes += buffered.reduce(0) { $0 + $1.count }
         pending = []
         let closeAfterFlush = closeRequested
         lock.unlock()
@@ -271,6 +274,7 @@ final class OpenAILiveTranscriber: LiveTranscribing, @unchecked Sendable {
             lock.unlock()
             return
         }
+        sentBytes += pcm.count
         lock.unlock()
         sessionLog?.markAudioSent()
         let sessionLog = self.sessionLog
@@ -462,7 +466,13 @@ final class OpenAILiveTranscriber: LiveTranscribing, @unchecked Sendable {
         finishContinuation = nil
         let wasDone = done
         done = true
+        let usageBytes = sentBytes
         lock.unlock()
+        if !wasDone, usageBytes > 0 {
+            // 1 セッション 1 回だけ、実際に送った音声の秒数を記録する（数量だけ・本文は渡さない）
+            ApiUsageStore.shared.recordAudio(
+                provider: .openai, model: model, seconds: Double(usageBytes) / Double(Self.outputRate * 2))
+        }
         if !wasDone {
             log.notice("OpenAI ライブ finish 解決: \(reason, privacy: .public)")
             sessionLog?.resolve(LiveSessionLog.endingLabel(forReason: reason))
