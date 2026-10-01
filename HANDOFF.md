@@ -25,10 +25,10 @@
   abortStalledRecordStart 後にキューが復帰すると誰も stop しない録音が残りうる。
 - Bluetooth 入力（AirPods 等）で押下ごとに「再構成します」が出ないか実機確認（本人）。MicAutoDetector はまだ AVAudioEngine（低優先）。
 
-## ロゴ・配色の刷新「17 LEGEND」（10-01 17:31 更新）
+## ロゴ・配色の刷新「17 LEGEND」（10-01 19:15 更新）
 - 目的: 確定ロゴ 17 LEGEND（ライト=Bone／ダーク=Carbon を外観で自動切替）と配色（灯り #FF5A1F）を全面採用。原本・生成手順は design/brand/。
 - 現状: Mac は a6980d9 で push 済み（アイコン・メニューバー・HUD・字幕ガラス・設定 UI）。Windows は停止中のため icon.ico だけ差替。
-  GitHub: 本リポ PUBLIC・About/README/プロフィールから voicekey.app へ導線・ソーシャルプレビュー（本リポ＋voicekey-releases）設定済み。
-  サイト voicekey-site は 8c75e08・81937ed で push 済み（private）だが**本番未反映**（Vercel CLI のログイン切れ）。
-- 次にやること: Vercel 再ログイン → preview 確認 → `vercel deploy --prod` → voicekey.app で確認。Cloudflare への移行は本人判断待ち。
-  任意: DMG 副題色を #7F796F に。promo/PROMPT.md は所在不明（本人に確認）。
+  GitHub: 本リポ PUBLIC・About/README/プロフィールから https://voicekey.vercel.app へ導線・ソーシャルプレビュー（本リポ＋releases）設定済み。
+  サイトは 81937ed を本番反映済み（voicekey.vercel.app）。**voicekey.app は他社ドメイン**（一度誤ってリンクし、10-01 に全部差し戻した）。
+  Vercel の環境変数は Production のみ＝preview は 500 になる。確認は `vercel deploy --prod --skip-domain` → 確認 → `vercel promote`。
+- 次にやること: 任意で DMG 副題色を #7F796F に。promo/PROMPT.md は所在不明（本人に確認）。

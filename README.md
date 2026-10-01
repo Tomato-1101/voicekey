@@ -11,7 +11,7 @@
 
 ホットキーを押すだけで音声入力を開始し、文字起こし結果を瞬時にアクティブウィンドウへ自動入力
 
-### [voicekey.app](https://voicekey.app)
+### [voicekey.vercel.app](https://voicekey.vercel.app)
 
 [![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey.svg)]()
