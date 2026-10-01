@@ -1327,12 +1327,13 @@ final class AppController: ObservableObject {
         if config.soundEffectsEnabled { SoundFX.shared.play(.stop) }
         MediaDucker.restore()
         let useAutoEnter = autoEnter
-        // ストリーミング送信を打ち切り、確定待ちはパイプライン側で行う
+        // 確定待ちはパイプライン側で行う。chunkHandler はここでは外さない（外すと stop 内の
+        // フラッシュ＝離鍵直前の声がストリームに届かず、最後の 2〜3 文字が欠ける）。
+        // 録音部が末尾まで送ってから外す。activeStreamer は stop の完了まで下のクロージャが保持する
         let activeStreamer = streamer
         let context = recordContext  // 録音開始時に確定した処理コンテキスト
         streamer = nil
         recordContext = nil
-        recorder.chunkHandler = nil
         recordingSlot = nil
         autoEnter = false
         failsafeTask?.cancel()

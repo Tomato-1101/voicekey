@@ -119,14 +119,15 @@ class AudioRecorder:
         """
         self.sample_rate = sample_rate
         self._level_callback = level_callback
-        # ストリーミング送出フックを録音世代に束縛して保持する（連続録音間の音声混入防止）。
-        # (gen, callback) を 1 タプルで原子的に差し替え、audio callback は世代不一致を拒否する。
-        # 旧録音の stop ドレイン中に次録音が別 streamer を差し替えても、ドレイン中に受理する
-        # 世代（_active_chunk_gen）は進んでいない（_do_start でのみ進む）ため、旧録音末尾の
-        # チャンクが次録音の streamer へ流れ込まない。
-        self._record_gen = 0                  # set_chunk_callback の採番（listener スレッドのみが進める）
-        self._active_chunk_gen = 0            # 現在の物理録音が受理する世代（_do_start で確定）
-        self._chunk_entry: tuple = (0, None)  # (gen, callback)。callback が None なら送出しない
+        # ストリーミング送出フックは「保留」と「稼働」の 2 段で持つ（連続録音間の音声混入防止と
+        # 停止直前の末尾の取りこぼし防止を両立させるため）。
+        # - 保留: listener が次の録音のために張ったもの。start_async が引き取るまで誰にも送らない。
+        # - 稼働: いま動いている物理録音の送出先。_do_start の成功で入り、_do_stop が stream.stop()
+        #   （＝最後の callback）を待った後で外す。停止する録音の末尾はその録音の streamer へ届き、
+        #   _do_stop は保留に触らないので次の録音が張ったフックも消さない。
+        self._pending_chunk_cb: Optional[Callable] = None  # 次の録音の送出先（start_async が引き取る）
+        self._active_chunk_cb: Optional[Callable] = None   # 今の物理録音の送出先（callback が読む）
+        self._chunk_cancel_count = 0  # 解除（None 登録）の回数。引き取り後の解除を _do_start で見分ける
         if chunk_callback is not None:
             self.set_chunk_callback(chunk_callback)
         self._input_device = self.normalize_device_setting(input_device)
@@ -174,7 +175,9 @@ class AudioRecorder:
             on_started: 開始結果（成功 True）を受け取るコールバック。
                         AudioControl スレッド上で呼ばれる
         """
-        self._commands.put(("start", on_started))
+        # 送出フックは「開始を要求した時点」で張られていたものをこの録音に結び付ける。
+        # 制御スレッドで読むと、前の録音の停止待ちの間に張られた別の録音のフックを掴みうる
+        self._commands.put(("start", (on_started, self._claim_chunk_callback())))
 
     def stop_async(self, on_audio: Callable[[npt.NDArray[np.float32]], None]) -> None:
         """
@@ -186,27 +189,33 @@ class AudioRecorder:
         """
         self._commands.put(("stop", on_audio))
 
-    def set_chunk_callback(self, callback: Optional[Callable[[npt.NDArray[np.float32]], None]]) -> int:
-        """ストリーミング送出フックを新しい録音世代で登録／解除する（listener スレッドから）。
+    def set_chunk_callback(self, callback: Optional[Callable[[npt.NDArray[np.float32]], None]]) -> None:
+        """次の録音のストリーミング送出フックを登録／解除する（listener スレッドから）。
 
-        登録（callback あり）のたびに録音世代を 1 つ進めて束縛する。次の物理録音が
-        `_do_start` でこの世代を受理世代として確定するまで、旧録音の stop ドレイン中に
-        差し替えても旧 audio callback には拾われない（世代不一致で拒否）。
+        登録したフックは次の start_async が引き取り、その録音の間だけ送出先になる。
+        録音の正常終了では解除しなくてよい（_do_stop が末尾まで送ってから外す）。
 
         Args:
-            callback: 生 PCM チャンク（float32 モノラル）を受け取る関数。None で解除。
-
-        Returns:
-            登録した録音世代。解除時は 0。
+            callback: 生 PCM チャンク（float32 モノラル）を受け取る関数。None で解除
+                （キャンセル用。保留・稼働・引き取り済みで開始待ちの分をすべて無効にする）。
         """
         if callback is None:
-            # 解除は callback を None にするだけ（世代は次の登録で進む）
-            self._chunk_entry = (0, None)
-            return 0
-        # 採番は listener スレッドのみが行うのでロック不要。タプル代入は GIL 下で原子的
-        self._record_gen += 1
-        self._chunk_entry = (self._record_gen, callback)
-        return self._record_gen
+            self._pending_chunk_cb = None
+            self._active_chunk_cb = None
+            self._chunk_cancel_count += 1
+            return
+        # 書くのは listener スレッドだけなのでロック不要（属性代入は GIL 下で原子的）
+        self._pending_chunk_cb = callback
+
+    def _claim_chunk_callback(self) -> tuple:
+        """保留中の送出フックを引き取る（start_async から）。
+
+        Returns:
+            (callback, 引き取り時点の解除回数)。_do_start がこれで稼働へ入れるか決める。
+        """
+        claim = (self._pending_chunk_cb, self._chunk_cancel_count)
+        self._pending_chunk_cb = None
+        return claim
 
     def set_input_device(self, device: Any) -> None:
         """使用する入力デバイス設定を更新する（次回ストリーム再作成時に適用）。"""
@@ -384,7 +393,7 @@ class AudioRecorder:
 
             try:
                 if cmd == "start":
-                    self._do_start(arg)
+                    self._do_start(*arg, my_generation=my_generation)
                 elif cmd == "stop":
                     self._do_stop(arg, my_generation)
                 elif cmd == "reopen_if_idle":
@@ -397,8 +406,20 @@ class AudioRecorder:
             if self._generation != my_generation:
                 return
 
-    def _do_start(self, on_started: Optional[Callable[[bool], None]]) -> None:
-        """録音を開始する（制御スレッド上）。"""
+    def _do_start(
+        self,
+        on_started: Optional[Callable[[bool], None]],
+        chunk_claim: Optional[tuple] = None,
+        my_generation: Optional[int] = None,
+    ) -> None:
+        """録音を開始する（制御スレッド上）。
+
+        Args:
+            on_started: 開始結果（成功 True）を受け取るコールバック。
+            chunk_claim: start_async が引き取った (送出フック, 解除回数)。None ならストリーミングなし。
+            my_generation: 呼び出し元制御スレッドの世代。stream.start() のハング中に recover() が
+                世代を進めた場合、新世代の録音状態・送出先を壊さないために使う。None なら省く（単体テスト用）。
+        """
         if self._recording:
             logger.info("既に録音中です。")
             if on_started:
@@ -408,6 +429,9 @@ class AudioRecorder:
         import sounddevice as sd  # 遅延 import（起動パスから外す）
 
         ok = False
+        # recover() に見捨てられた旧世代の開始か。旧世代は新世代の状態に触れず、on_started も呼ばない
+        # （app の失敗処理が新しい録音の streamer と送出先まで破棄してしまうため）
+        stale = False
         try:
             # デバイス設定が変わっていたらストリームを作り直す
             if self._stream is not None and self._stream_device != self._input_device:
@@ -426,13 +450,20 @@ class AudioRecorder:
             self._callback_logged = False
             self._drain_audio()
 
-            # この物理録音が受理するストリーミング世代を確定する（stream.start より前）。
-            # 旧録音の stop ドレイン中はこの値が進まないため、ドレイン中に差し替えられた
-            # 次録音の streamer（より新しい世代）には旧音声が渡らない。
-            self._active_chunk_gen = self._chunk_entry[0]
-
             self._stream.start()
-            self._recording = True
+            with self._state_lock:
+                # start() のハング中に recover() が世代を進めていたら撤退する。ここで書き込むと、
+                # 復旧後に始まった新しい録音の送出先を消し、_recording も上書きしてしまう
+                if my_generation is not None and self._generation != my_generation:
+                    stale = True
+                    logger.warning("ハング復旧後に旧世代の録音開始が戻ったため破棄します")
+                    return
+                # この録音の送出先を稼働にする（_recording=True より前。callback は _recording を
+                # 見てから送るので、ここで入れれば最初のチャンクから届く）。引き取った後に解除
+                # （None 登録）されていたら入れない。前の録音の稼働は、その _do_stop が既に外している
+                chunk_cb, cancel_count = chunk_claim if chunk_claim is not None else (None, None)
+                self._active_chunk_cb = chunk_cb if cancel_count == self._chunk_cancel_count else None
+                self._recording = True
             ok = True
             logger.info(
                 f"録音開始 (device={self._stream_device or 'default'}, "
@@ -440,9 +471,13 @@ class AudioRecorder:
             )
         except Exception as e:
             logger.error(f"録音開始に失敗: {e}")
-            self._close_stream()
+            if my_generation is not None and self._generation != my_generation:
+                # 旧世代の失敗。新世代のストリームを閉じず、失敗通知（新しい録音の破棄）も出さない
+                stale = True
+            else:
+                self._close_stream()
         finally:
-            if on_started:
+            if on_started and not stale:
                 try:
                     on_started(ok)
                 except Exception as e:
@@ -491,6 +526,11 @@ class AudioRecorder:
             # 自分が積んだガードだけを片付ける（recover 後に新世代が積んだものは消さない）
             if self._pending_stop_cb is completion:
                 self._pending_stop_cb = None
+            # stream.stop() が最後の callback を待ち終えた＝この録音の末尾は streamer へ送り済み。
+            # ここで送出先を外し、古い streamer を握り続けない。保留（次の録音の分）には触らない。
+            # recover 後の旧世代は新世代の送出先を外してはならない
+            if my_generation is None or self._generation == my_generation:
+                self._active_chunk_cb = None
             audio = None
             try:
                 audio = completion.fire()  # recover が先に発火済みなら None（二重発火しない）
@@ -589,11 +629,10 @@ class AudioRecorder:
             self._audio_q.put(indata.copy())
 
             # ストリーミング送出（Deepgram へ逐次送る。録音ごとに差し替わる）。
-            # REST 経路（audio_q）とは独立。世代が一致しないチャンクは拒否する
-            # （旧録音の stop ドレイン中に差し替えられた次録音の streamer へ混入させない）。
-            # (gen, cb) を 1 タプルで原子読みして cb/gen の不整合読みを避ける
-            gen, chunk_cb = self._chunk_entry
-            if chunk_cb is not None and gen == self._active_chunk_gen:
+            # REST 経路（audio_q）とは独立。送るのはこの録音の稼働の送出先だけ
+            # （次の録音が張った保留のフックには、その録音の _do_start まで送らない）
+            chunk_cb = self._active_chunk_cb
+            if chunk_cb is not None:
                 try:
                     chunk_cb(indata.reshape(-1).copy())
                 except Exception:

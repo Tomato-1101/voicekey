@@ -158,4 +158,39 @@ final class VoiceActivityTests: XCTestCase {
         // 隣接結合のみ＝入れ替え無しなので、連結長は入力の総和と一致する
         XCTAssertEqual(segs.flatMap { $0 }.count, 32000 + 32000 + 128000)
     }
+
+    // MARK: - 末尾レベルの診断（停止時の取りこぼし調査）
+
+    // 普通の音量の録音: 末尾だけ小さい（0.01）と、正規化後も 0.02 未満＝発話なしと読む
+    func testTailLevelQuietTailOfNormalRecording() {
+        let s = [Float](repeating: 0.1, count: 16000) + [Float](repeating: 0.01, count: 2400)
+        let tail = VoiceActivity.tailLevel(s, seconds: 0.15)
+        XCTAssertEqual(tail.dbfs, -40, accuracy: 0.01)
+        XCTAssertFalse(tail.aboveSpeechThreshold)
+    }
+
+    // 小さな声の録音: 生の末尾 RMS（0.005）はしきい値未満でも、正規化（×10）後は 0.05 で発話扱い。
+    // 生の値で比べると誤判定になる＝正規化後で比べていることの確認
+    func testTailLevelComparesAfterNormalization() {
+        let s = [Float](repeating: 0.005, count: 16000)
+        let tail = VoiceActivity.tailLevel(s, seconds: 0.15)
+        XCTAssertLessThan(tail.dbfs, -40)
+        XCTAssertTrue(tail.aboveSpeechThreshold)
+        XCTAssertEqual(VoiceActivity.normalizationGain(s) ?? 0, 10, accuracy: 0.001)
+    }
+
+    // 空・完全無音は -120dBFS で打ち止め、発話なし（ゲイン発散しない）
+    func testTailLevelSilence() {
+        XCTAssertEqual(VoiceActivity.tailLevel([], seconds: 0.15),
+                       VoiceActivity.TailLevel(dbfs: -120, aboveSpeechThreshold: false))
+        XCTAssertEqual(VoiceActivity.tailLevel([Float](repeating: 0, count: 4800), seconds: 0.15),
+                       VoiceActivity.TailLevel(dbfs: -120, aboveSpeechThreshold: false))
+    }
+
+    // normalize は normalizationGain と同じゲインを掛ける（診断と実処理がずれない）
+    func testNormalizeUsesSameGain() {
+        let s: [Float] = [0.02, -0.03, 0.01, 0.5, -0.04]
+        let gain = VoiceActivity.normalizationGain(s) ?? 0
+        XCTAssertEqual(VoiceActivity.normalize(s), s.map { $0 * gain })
+    }
 }

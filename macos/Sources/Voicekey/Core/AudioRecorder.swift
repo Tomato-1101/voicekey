@@ -65,6 +65,59 @@ final class BufferAvailability {
     }
 }
 
+/// ストリーミング送信先（chunkHandler）を物理録音へ結び付ける小さな状態機械（テスト対象）。
+///
+/// 送信先は 2 段で持つ。
+/// - 保留（pending）: main が次の録音のために張ったもの。`claim()` が引き取るまで録音には流れない。
+/// - 稼働（active）: いま動いている物理録音の送り先。start の成功で入り、stop のフラッシュ後に外れる。
+///
+/// これで次の 3 つが同時に成り立つ。
+/// - 停止する録音の末尾（stop 内のフラッシュ）は、その録音の送り先へ届く（停止前に外さない）。
+/// - stop は稼働しか外さないので、次の録音が張った保留を前の stop が消さない。次の録音の稼働入りは
+///   制御キュー上で前の stop より後に並ぶので、前の録音の音も次の送り先へ流れない。
+/// - 解除（nil）は保留・稼働の両方を外し、引き取り済みで開始待ちの分も無効にする（キャンセル経路）。
+///
+/// 自前のロックは持たない（AudioRecorder.stateLock の下で操作する）。
+struct ChunkRouting<Handler> {
+    /// 引き取った送り先と、引き取った時点の解除回数
+    struct Claim {
+        let handler: Handler?
+        fileprivate let cancelCount: Int
+    }
+
+    private(set) var pending: Handler?
+    private(set) var active: Handler?
+    /// 解除（nil）の回数。引き取った後に解除されたかを activate で見分ける
+    private var cancelCount = 0
+
+    /// main: 次の録音の送り先を張る。nil は解除（保留・稼働・開始待ちの引き取り分をすべて無効にする）
+    mutating func set(_ handler: Handler?) {
+        if let handler {
+            pending = handler
+        } else {
+            pending = nil
+            active = nil
+            cancelCount += 1
+        }
+    }
+
+    /// main（start の呼び出し時）: 保留を引き取る。以後の set はこの録音に影響しない
+    mutating func claim() -> Claim {
+        defer { pending = nil }
+        return Claim(handler: pending, cancelCount: cancelCount)
+    }
+
+    /// 制御キュー（start の成功時）: 引き取った送り先を稼働にする。引き取った後に解除されていれば入れない
+    mutating func activate(_ claim: Claim) {
+        active = claim.cancelCount == cancelCount ? claim.handler : nil
+    }
+
+    /// 制御キュー（stop のフラッシュ後）: 稼働を外す。保留（次の録音の分）には触らない
+    mutating func deactivate() {
+        active = nil
+    }
+}
+
 /// 録音中の作り直しの判断基準（純関数・テスト対象）。
 enum InputRestartPolicy {
 
@@ -317,24 +370,15 @@ final class AudioRecorder {
     var levelHandler: ((Float) -> Void)?
 
     /// 16kHz モノラルチャンクの逐次通知（ストリーミング送信用、処理キューから呼ばれる）。
-    /// ストリーミング録音時のみ設定し、終了時に nil へ戻す。
-    /// メインスレッドが書き、処理キューが読むため lock で同期する。
+    /// ストリーミング録音のときだけ start の前に設定する。値は次の start が引き取り、その録音の
+    /// 間だけ送り先になる（`ChunkRouting`）。取得できるのは引き取られる前の保留分だけ。
     ///
-    /// 連続録音間の音声混入防止: 登録のたびに録音世代を進めて束縛し、handleBuffer は
-    /// 「現在の物理録音が受理する世代（activeChunkGen、start で確定）」と一致するチャンク
-    /// だけを送る。旧録音の stop ドレイン中に次録音が別 streamer を差し替えても、受理世代は
-    /// start でしか進まないため、旧録音末尾のチャンクが次録音の streamer へ流れ込まない。
+    /// 録音の正常終了では nil にしない。stop が末尾（フラッシュ分）まで送ってから外す
+    /// （先に外すと離鍵直前の声がストリームに届かず、最後の 2〜3 文字が欠ける）。
+    /// nil の代入はキャンセル用で、保留・稼働ともに外してすべての送信を止める。
     var chunkHandler: (([Float]) -> Void)? {
-        get { stateLock.lock(); defer { stateLock.unlock() }; return _chunkHandler }
-        set {
-            stateLock.lock()
-            _chunkHandler = newValue
-            if newValue != nil {
-                _recordGen += 1
-                _chunkGen = _recordGen
-            }
-            stateLock.unlock()
-        }
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _chunkRouting.pending }
+        set { stateLock.lock(); _chunkRouting.set(newValue); stateLock.unlock() }
     }
 
     /// 使用する入力デバイスの UID（空ならシステム既定）。録音開始のたびに参照する
@@ -356,10 +400,7 @@ final class AudioRecorder {
     private let samplesLock = NSLock()
     /// メイン・制御キュー・処理キューをまたぐ可変状態の保護
     private let stateLock = NSLock()
-    private var _chunkHandler: (([Float]) -> Void)?
-    private var _recordGen = 0       // chunkHandler 登録の採番（main スレッドのみが進める）
-    private var _chunkGen = 0        // _chunkHandler が属する録音世代
-    private var _activeChunkGen = 0  // 現在の物理録音が受理する世代（start で確定）
+    private var _chunkRouting = ChunkRouting<([Float]) -> Void>()
     private var _inputDeviceUID = ""
     /// 最後に処理キューがバッファを受け取った時刻（systemUptime 基準・未受信は 0）。
     /// 「IO は動いていると思っているのに音が来ない」を見分けるために使う
@@ -896,14 +937,45 @@ final class AudioRecorder {
     }
 
     /// AU の IO を止め、リングに残った端数まで処理してから返す（末尾の声を落とさない）。
-    private func stopIO() {
-        guard ioRunning, let unit else { return }
+    /// - Returns: この端数処理で録音に加わった 16kHz サンプル数（停止時フラッシュの診断用）
+    @discardableResult
+    private func stopIO() -> Int {
+        guard ioRunning, let unit else { return 0 }
         AudioOutputUnitStop(unit)
         ioRunning = false
-        if let capture {
-            processQueue.sync { capture.drain(flush: true) }
-            absorbDropCounts(capture)
-        }
+        guard let capture else { return 0 }
+        let flushed = drainTail(capture)
+        absorbDropCounts(capture)
+        return flushed
+    }
+
+    /// リングの残りを端数まで処理する（処理キューで同期実行）。録音中なら稼働中の送り先へも送られる。
+    /// - Returns: この処理で録音に加わった 16kHz サンプル数
+    private func drainTail(_ capture: InputCapture) -> Int {
+        processQueue.sync { drainTailOnProcessQueue(capture) }
+    }
+
+    /// drainTail の本体。処理キュー上から呼ぶこと（入れ子の sync はデッドロックする）
+    private func drainTailOnProcessQueue(_ capture: InputCapture) -> Int {
+        samplesLock.lock()
+        let before = samples.count
+        samplesLock.unlock()
+        capture.drain(flush: true)
+        samplesLock.lock()
+        defer { samplesLock.unlock() }
+        return samples.count - before
+    }
+
+    /// 末尾まで送り終えた録音の送り先を外し、録音を終える（古い streamer を握り続けない）。
+    /// 保留（次の録音が張った分）には触らないので、次の録音の送り先は消えない。
+    /// - Returns: 停止時フラッシュの音声がストリーミングへも送られたか（診断用）
+    private func endRecordingRouting(flushed: Int) -> Bool {
+        stateLock.lock()
+        let streamed = flushed > 0 && _chunkRouting.active != nil
+        _chunkRouting.deactivate()
+        stateLock.unlock()
+        recording = false
+        return streamed
     }
 
     /// 受け渡し器が捨てた件数をこの録音の累計へ足し込む（作り直しで受け渡し器が替わっても失わない）
@@ -970,6 +1042,11 @@ final class AudioRecorder {
         // 以下の async は一生実行されないので、ここで残さないと「要求したのに完了しない」
         // という形跡そのものが残らない（2026-09-02 のハング障害で実際に追えなかった）
         ActionLog.shared.write("audio", "録音開始要求 (device=\(inputDeviceUID.isEmpty ? "既定" : inputDeviceUID))")
+        // 送り先は「開始を要求した時点」で張られていたものをこの録音に結び付ける。制御キューで
+        // 読むと、前の録音の stop を待つ間に張られた別の録音の送り先を掴みうる
+        stateLock.lock()
+        let chunkClaim = _chunkRouting.claim()
+        stateLock.unlock()
         queue.async { [self] in
             guard !recording else {
                 completion(nil)
@@ -986,10 +1063,9 @@ final class AudioRecorder {
                 ActionLog.shared.write("audio", "録音開始失敗 (\(failure))")
                 completion(failure)
             } else {
-                // この物理録音が受理するストリーミング世代を確定する（recording=true より前）。
-                // 旧録音の stop ドレイン中はこの値が進まないため、ドレイン中に差し替えられた
-                // 次録音の streamer（より新しい世代）には旧音声が渡らない。
-                stateLock.lock(); _activeChunkGen = _chunkGen; stateLock.unlock()
+                // この録音の送り先を稼働にする（recording=true より前＝最初のチャンクから届く）。
+                // 前の録音の稼働は、制御キュー上で先に走ったその stop が既に外している
+                stateLock.lock(); _chunkRouting.activate(chunkClaim); stateLock.unlock()
                 recording = true
                 bufferAvailability.markAvailable()  // この録音の buffer を取り出し可能にする（#20）
                 ActionLog.shared.write("audio", "録音開始完了")
@@ -1012,18 +1088,28 @@ final class AudioRecorder {
             // 録音中でなくても、デバイス切断で録音が確定済み（recording=false）の場合は
             // それまでに録音済みの buffer を一度だけ取り出す（#20）。二度目以降は空を返す。
             guard bufferAvailability.consume(recording: recording) else {
+                stateLock.lock(); _chunkRouting.deactivate(); stateLock.unlock()
                 completion([])
                 return
             }
             // 録音中のまま IO を止めて端数まで処理する（離鍵直前の声とストリーミング末尾を落とさない）。
             // マイクテストが同時に動いていれば IO は止めず、端数の処理だけ行う（テストのレベル表示を止めない）
+            let flushed: Int
+            let flushStreamed: Bool
             if monitoring, let capture {
-                processQueue.sync { capture.drain(flush: true) }
+                // マイクテスト中は IO が動き続けるので、端数処理と録音終了を処理キュー上で一続きに行う。
+                // 分けると、その隙に処理キューが拾った離鍵後の音声が、この録音の samples や
+                // 直後に稼働した次の録音の送り先へ紛れ込む
+                (flushed, flushStreamed) = processQueue.sync {
+                    let n = drainTailOnProcessQueue(capture)
+                    return (n, endRecordingRouting(flushed: n))
+                }
                 absorbDropCounts(capture)
             } else {
-                stopIO()
+                // IO を止めた後は新しいバッファが来ないので、端数処理の後に終えてよい
+                flushed = stopIO()
+                flushStreamed = endRecordingRouting(flushed: flushed)
             }
-            recording = false
             stateLock.lock()
             let renderFailures = _renderFailures
             let oversizeDrops = _oversizeDrops
@@ -1049,6 +1135,25 @@ final class AudioRecorder {
             )
             completion(result)
             // AU は Initialize 済みのまま残す（次の start は AudioOutputUnitStart だけで済む）
+
+            // 末尾の取りこぼし調査用の診断（数値のみ）。録音全体の正規化ゲインを求めるので、
+            // 制御キュー（次の押下）も completion の先の処理も待たせないよう別キューで行う
+            DispatchQueue.global(qos: .utility).async {
+                let flushMs = Int((Double(flushed) / Self.sampleRate * 1000).rounded())
+                let tail = VoiceActivity.tailLevel(result, seconds: 0.15)
+                let db = String(format: "%.1f", tail.dbfs)
+                log.notice("""
+                    停止時フラッシュ \(flushed, privacy: .public) サンプル (\(flushMs, privacy: .public)ms) \
+                    ストリーム送信=\(flushStreamed ? "あり" : "なし", privacy: .public) \
+                    末尾150ms=\(db, privacy: .public)dBFS \
+                    正規化後0.02以上=\(tail.aboveSpeechThreshold, privacy: .public)
+                    """)
+                ActionLog.shared.write(
+                    "audio",
+                    "停止時フラッシュ \(flushed) サンプル (\(flushMs)ms, ストリーム送信=\(flushStreamed ? "あり" : "なし")) "
+                        + "末尾150ms \(db)dBFS (正規化後しきい値 0.02 \(tail.aboveSpeechThreshold ? "以上" : "未満"))"
+                )
+            }
         }
     }
 
@@ -1164,16 +1269,12 @@ final class AudioRecorder {
 
             // ストリーミング送信用に逐次チャンクを渡す（全バッファ蓄積とは独立）。
             // ストリーミングが失敗しても samples には残るため REST フォールバックが効く。
-            // 世代一致のチャンクのみ送る（旧録音 stop ドレイン中に差し替えられた新 streamer へ
-            // 混入させない）。handler/gen は原子的にまとめて読む
+            // 送るのはこの録音の稼働中の送り先だけ（次の録音が張った保留の送り先には、
+            // その録音の start まで送らない）
             stateLock.lock()
-            let handler = _chunkHandler
-            let handlerGen = _chunkGen
-            let activeGen = _activeChunkGen
+            let handler = _chunkRouting.active
             stateLock.unlock()
-            if let handler, handlerGen == activeGen {
-                handler(chunk)
-            }
+            handler?(chunk)
         }
 
         // レベル通知（録音・モニタ両方で流す。約 30fps に間引き）

@@ -937,8 +937,8 @@ class VoicekeyApp(QObject):
             if stream.start():
                 with self._state_lock:
                     self._active_streamer = stream
-                # 録音中のみ発火するフック。録音世代に束縛して登録する（次の停止で解除）。
-                # 旧録音の stop ドレイン中に差し替えても旧音声は新 streamer へ混入しない
+                # 録音中のみ発火するフック。次の start_async がこの録音に結び付け、停止時は
+                # 録音部が末尾まで送ってから外す（旧録音の音声は新 streamer へ混入しない）
                 self._recorder.set_chunk_callback(stream.send)
 
         self._recorder.start_async(self._on_record_started)
@@ -989,8 +989,9 @@ class VoicekeyApp(QObject):
                 self._pending_tap_timer.cancel()
                 self._pending_tap_timer = None
 
-        # ストリーミング送出を停止（確定は finish() がワーカー上で行う）
-        self._recorder.set_chunk_callback(None)
+        # ストリーミング送出はここでは外さない。外すと離鍵から stream.stop() 完了までの
+        # 末尾（最後の 2〜3 文字）が streamer に届かない。録音部の _do_stop が末尾まで送ってから
+        # 外し、その後で確定音声を渡すので、finish() はワーカー上で末尾を含めて確定できる
 
         # 操作音（停止）。下げたメディア音量を戻す（設定を録音中に OFF にしても確実に戻すため
         # restore は無条件で呼ぶ）。いずれも撃ちっぱなし。

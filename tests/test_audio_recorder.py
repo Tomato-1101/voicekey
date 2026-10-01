@@ -122,9 +122,10 @@ class TestPersistentStreamSession(unittest.TestCase):
         rec._last_record_end = 0.0
         rec._last_level_time = 0.0
         rec._level_callback = None
-        rec._record_gen = 0
-        rec._active_chunk_gen = 0
-        rec._chunk_entry = (0, None)
+        rec._pending_chunk_cb = None
+        rec._active_chunk_cb = None
+        rec._chunk_cancel_count = 0
+        rec._state_lock = threading.Lock()
         return rec
 
     def test_records_on_first_and_second_recording(self):
@@ -239,12 +240,12 @@ class TestRecoverDoubleCompletion(unittest.TestCase):
 
 
 class TestCrossRecordingChunkBinding(unittest.TestCase):
-    """item7: 旧録音の stop ドレイン中に次録音が streamer を差し替えても、旧録音末尾の
-    チャンクが次録音の streamer へ混入しないことを検証する（連続録音間の音声混入防止）。
+    """ストリーミング送出フックの録音への結び付け（保留／稼働の 2 段）を検証する。
 
-    chunk_callback を録音世代に束縛し、_do_start で確定した受理世代（_active_chunk_gen）と
-    一致しないチャンクを audio callback が拒否する。受理世代は _do_start でのみ進むため、
-    旧録音の stop ドレイン中（_do_start 前）は進まず、差し替えられた新 streamer に渡らない。
+    - 停止する録音の末尾（stream.stop() 中に届く最後の callback）は、その録音の streamer へ届く
+      （離鍵直後の「最後の 2〜3 文字」の取りこぼし防止）。
+    - 次の録音が張ったフックへ前の録音の音声を流さず、前の録音の停止が次のフックを消さない。
+    - 停止後は古い streamer を握り続けない。None 登録（キャンセル）はすべての送出を止める。
     """
 
     def setUp(self):
@@ -273,49 +274,165 @@ class TestCrossRecordingChunkBinding(unittest.TestCase):
         rec._last_record_end = 0.0
         rec._last_level_time = 0.0
         rec._level_callback = None
-        rec._record_gen = 0
-        rec._active_chunk_gen = 0
-        rec._chunk_entry = (0, None)
+        rec._pending_chunk_cb = None
+        rec._active_chunk_cb = None
+        rec._chunk_cancel_count = 0
+        rec._state_lock = threading.Lock()
         return rec
 
-    def test_old_recording_tail_not_sent_to_next_streamer(self):
+    @staticmethod
+    def _start(rec):
+        """start_async → 制御スレッドの _do_start を同期的に模擬する（保留の引き取りも通す）。"""
+        rec._commands = queue.Queue()
+        rec.start_async(None)
+        cmd, arg = rec._commands.get_nowait()
+        assert cmd == "start"
+        rec._do_start(*arg)
+
+    @staticmethod
+    def _stop_with_tail(rec, tail):
+        """stream.stop() の中で最後の callback が届く停止を模擬する（PortAudio は stop で待つ）。"""
+        stream = rec._stream
+        stream.stop = lambda: stream.feed(tail)
+        rec._do_stop(lambda audio: None)
+
+    def test_stopping_recording_tail_reaches_own_streamer(self):
         rec = self._bare_recorder()
         a_chunks, b_chunks = [], []
 
-        # 録音A: streamerA を世代1で登録 → _do_start で受理世代=1 に確定
-        self.assertEqual(rec.set_chunk_callback(lambda s: a_chunks.append(s)), 1)
-        rec._do_start(None)
+        # 録音 A を開始し、録音中のチャンクは streamerA へ届く
+        rec.set_chunk_callback(lambda s: a_chunks.append(s))
+        self._start(rec)
         stream = rec._stream
-        self.assertEqual(rec._active_chunk_gen, 1)
-
-        # A 録音中のチャンクは streamerA に届く（世代一致）
         stream.feed(np.ones((160, 1), dtype=np.float32))
         self.assertEqual(len(a_chunks), 1, "A の音声が streamerA に届いていない")
 
-        # 次録音Bが listener スレッドで streamerB を世代2で差し替える（B の _do_start 前）。
-        # 受理世代は 1 のままなので、この瞬間に届く「A の末尾チャンク」は誰にも送られない
-        self.assertEqual(rec.set_chunk_callback(lambda s: b_chunks.append(s)), 2)
-        stream.feed(np.full((160, 1), 0.3, dtype=np.float32))
-        self.assertEqual(b_chunks, [], "A の末尾が次録音 streamerB へ混入した")
-        self.assertEqual(len(a_chunks), 1, "差し替え後に streamerA へも送られた")
+        # 素早い再押下: A の停止が制御スレッドで走る前に、B がフックを張って開始まで要求する
+        rec.set_chunk_callback(lambda s: b_chunks.append(s))
+        rec._commands = queue.Queue()
+        rec.start_async(None)
+        _, b_arg = rec._commands.get_nowait()
 
-        # A の停止 → B の物理録音開始で受理世代が 2 になり、以降は streamerB に届く
-        rec._do_stop(lambda audio: None)
+        # A の停止中に届く末尾は streamerA へ届き、streamerB へは流れない
+        self._stop_with_tail(rec, np.full((160, 1), 0.3, dtype=np.float32))
+        self.assertEqual(len(a_chunks), 2, "停止中の末尾が streamerA に届いていない（取りこぼし）")
+        self.assertEqual(b_chunks, [], "A の末尾が次の録音の streamerB へ混入した")
         self.assertFalse(rec._recording)
-        rec._do_start(None)
-        self.assertEqual(rec._active_chunk_gen, 2)
+        self.assertIsNone(rec._active_chunk_cb, "停止後も古い streamer を握っている")
+
+        # A の停止は B のフックを消していない。B の開始以降は streamerB だけに届く
+        rec._stream.stop = _FakeStream.stop.__get__(rec._stream)
+        rec._do_start(*b_arg)
         stream.feed(np.full((160, 1), 0.5, dtype=np.float32))
         self.assertEqual(len(b_chunks), 1, "B の音声が streamerB に届いていない")
+        self.assertEqual(len(a_chunks), 2, "B の音声が streamerA へ流れた")
+
+    def test_next_recording_without_streaming_does_not_inherit(self):
+        # ストリーミングしない録音（REST）が前の録音の streamer を引き継がない
+        rec = self._bare_recorder()
+        a_chunks = []
+        rec.set_chunk_callback(lambda s: a_chunks.append(s))
+        self._start(rec)
+        self._stop_with_tail(rec, np.ones((160, 1), dtype=np.float32))
+        self.assertEqual(len(a_chunks), 1)
+
+        rec._stream.stop = _FakeStream.stop.__get__(rec._stream)
+        self._start(rec)  # フックを張らずに開始
+        rec._stream.feed(np.ones((160, 1), dtype=np.float32))
+        self.assertEqual(len(a_chunks), 1, "次の録音の音声が前の streamer へ送られた")
 
     def test_disarm_blocks_all_delivery(self):
-        # set_chunk_callback(None) で解除したら、録音中でも誰にも送られない
+        # set_chunk_callback(None) で解除したら、録音中でも誰にも送られない（キャンセル経路）
         rec = self._bare_recorder()
         got = []
         rec.set_chunk_callback(lambda s: got.append(s))
-        rec._do_start(None)
-        rec.set_chunk_callback(None)  # 解除（finish 経路）
+        self._start(rec)
+        rec.set_chunk_callback(None)
         rec._stream.feed(np.ones((160, 1), dtype=np.float32))
         self.assertEqual(got, [], "解除後もチャンクが送出された")
+
+    def test_disarm_after_claim_prevents_activation(self):
+        # 開始を要求した後（制御スレッドが _do_start する前）に解除されたら、その録音には送らない
+        rec = self._bare_recorder()
+        got = []
+        rec.set_chunk_callback(lambda s: got.append(s))
+        rec._commands = queue.Queue()
+        rec.start_async(None)
+        _, arg = rec._commands.get_nowait()
+        rec.set_chunk_callback(None)
+        rec._do_start(*arg)
+        rec._stream.feed(np.ones((160, 1), dtype=np.float32))
+        self.assertEqual(got, [], "解除済みのフックが録音開始で復活した")
+
+    def _hang_start_then_recover(self, a_start_outcome):
+        """A の stream.start() がハング → recover() → B が開始 → A の start() が戻る、を再現する。
+
+        Args:
+            a_start_outcome: ハング解除後の A の start() の結末（None なら正常復帰、例外なら送出）。
+        Returns:
+            (rec, A の on_started 履歴, B の on_started 履歴, B の受信チャンク)
+        """
+        rec = self._bare_recorder()
+        rec._generation = 0
+        rec._busy_op = None
+        rec._busy_since = 0.0
+        rec._thread = None
+        # recover() が実制御スレッドを起動しないように差し替える
+        rec._start_control_thread = lambda: None
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        class _HangStartStream(_FakeStream):
+            def start(self_inner):
+                entered.set()
+                release.wait(timeout=5)
+                if a_start_outcome is not None:
+                    raise a_start_outcome
+
+        # A のストリームは開いた状態から始める（デバイス一致なので作り直されない）
+        rec._stream = _HangStartStream()
+        a_started, b_started, b_chunks = [], [], []
+
+        rec.set_chunk_callback(lambda s: None)
+        rec._commands = queue.Queue()
+        rec.start_async(lambda ok: a_started.append(ok))
+        _, a_arg = rec._commands.get_nowait()
+        t_a = threading.Thread(
+            target=rec._do_start, args=a_arg, kwargs={"my_generation": 0}, daemon=True
+        )
+        t_a.start()
+        self.assertTrue(entered.wait(timeout=5), "A が stream.start() に入らなかった")
+
+        # ウォッチドッグの復旧 → 新世代で録音 B を開始（新しいストリームが開く）
+        rec.recover()
+        rec.set_chunk_callback(lambda s: b_chunks.append(s))
+        rec.start_async(lambda ok: b_started.append(ok))
+        _, b_arg = rec._commands.get_nowait()
+        rec._do_start(*b_arg, my_generation=1)
+
+        # A のハングを解除して旧スレッドを戻す
+        release.set()
+        t_a.join(timeout=5)
+        self.assertFalse(t_a.is_alive(), "A の開始スレッドが終了しない")
+        return rec, a_started, b_started, b_chunks
+
+    def test_stale_start_returning_after_recover_keeps_new_recording(self):
+        # ハングから戻った旧世代の開始が、新しい録音 B の送出先・録音状態を上書きしない
+        rec, a_started, b_started, b_chunks = self._hang_start_then_recover(None)
+        self.assertEqual(b_started, [True])
+        self.assertEqual(a_started, [], "旧世代の開始結果が通知された（app が B を破棄する）")
+        self.assertTrue(rec._recording)
+        rec._stream.feed(np.ones((160, 1), dtype=np.float32))
+        self.assertEqual(len(b_chunks), 1, "旧世代の開始が B の送出先を消した")
+
+    def test_stale_start_failing_after_recover_keeps_new_stream(self):
+        # ハングから戻った旧世代の開始が失敗しても、B のストリームを閉じず失敗通知も出さない
+        rec, a_started, b_started, b_chunks = self._hang_start_then_recover(RuntimeError("PortAudio"))
+        self.assertEqual(a_started, [], "旧世代の失敗が通知された（app が B を破棄する）")
+        self.assertIsNotNone(rec._stream, "旧世代の失敗処理が B のストリームを閉じた")
+        rec._stream.feed(np.ones((160, 1), dtype=np.float32))
+        self.assertEqual(len(b_chunks), 1)
 
 
 if __name__ == "__main__":

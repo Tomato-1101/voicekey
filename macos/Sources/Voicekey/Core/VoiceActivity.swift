@@ -37,11 +37,18 @@ enum VoiceActivity {
 
     /// Peak+RMS ハイブリッド方式で音量を一定化する（ゲイン上限 +20dB）
     static func normalize(_ samples: [Float]) -> [Float] {
-        guard !samples.isEmpty else { return samples }
+        guard let gain = normalizationGain(samples) else { return samples }
+        return samples.map { $0 * gain }
+    }
+
+    /// normalize が掛けるゲイン。空・完全無音は nil（そのまま返す＝ゲイン発散防止）。
+    /// 診断（tailLevel）が同じゲインで比べられるよう、計算はここ 1 か所に置く
+    static func normalizationGain(_ samples: [Float]) -> Float? {
+        guard !samples.isEmpty else { return nil }
         var sum: Double = 0
         for s in samples { sum += Double(s) * Double(s) }
         let rms = Float(sqrt(sum / Double(samples.count)))
-        guard rms > 1e-6 else { return samples }  // 完全無音はそのまま（ゲイン発散防止）
+        guard rms > 1e-6 else { return nil }  // 完全無音はそのまま（ゲイン発散防止）
 
         // ノイズフロアだけの録音を増幅し尽くさないよう上限を設ける
         var gain = min(targetRms / rms, maxGain)
@@ -52,7 +59,30 @@ enum VoiceActivity {
         if peak * gain > peakCeiling {
             gain = peakCeiling / peak
         }
-        return samples.map { $0 * gain }
+        return gain
+    }
+
+    /// 録音末尾のレベル（停止時の取りこぼし調査用の診断値）
+    struct TailLevel: Equatable {
+        /// 末尾区間の生の RMS を dBFS にした値（無音は -120 で打ち止め）
+        let dbfs: Float
+        /// 正規化ゲインを掛けた末尾 RMS が発話しきい値（energyThreshold）以上か
+        let aboveSpeechThreshold: Bool
+    }
+
+    /// 録音末尾 seconds 秒のレベルを返す。
+    /// energyThreshold は**正規化後**の音声に対する値なので、生の末尾 RMS に録音全体の
+    /// 正規化ゲイン（normalize と同じもの）を掛けてから比べる。生の値のまま比べると、
+    /// 小さな声の録音（ゲイン最大 10 倍）では末尾の発話をしきい値未満と誤って読む
+    static func tailLevel(_ samples: [Float], seconds: Double) -> TailLevel {
+        let count = min(samples.count, Int(Double(sampleRate) * seconds))
+        guard count > 0 else { return TailLevel(dbfs: -120, aboveSpeechThreshold: false) }
+        var sum: Double = 0
+        for s in samples[(samples.count - count)...] { sum += Double(s) * Double(s) }
+        let rms = Float(sqrt(sum / Double(count)))
+        let dbfs = rms > 1e-6 ? max(-120, 20 * log10(rms)) : -120
+        let gain = normalizationGain(samples) ?? 1
+        return TailLevel(dbfs: dbfs, aboveSpeechThreshold: rms * gain >= energyThreshold)
     }
 
     // MARK: - 発話検出
