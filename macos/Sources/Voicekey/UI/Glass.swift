@@ -108,10 +108,12 @@ struct LiquidButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         let small = (controlSize == .small)
+        // 設定画面は .large で包む（押しやすさ優先）。行内の小ボタンでも指 1 本ぶんの高さを確保する
+        let large = (controlSize == .large || controlSize == .extraLarge)
         return configuration.label
             .font(.system(size: small ? 11 : 13))
-            .padding(.horizontal, small ? 8 : 12)
-            .padding(.vertical, small ? 3 : 5)
+            .padding(.horizontal, small ? 8 : (large ? 14 : 12))
+            .padding(.vertical, small ? 3 : (large ? 7 : 5))
             .foregroundStyle(foreground(for: configuration))
             .modifier(LiquidButtonBackground(prominent: prominent, colorScheme: colorScheme))
             .opacity(configuration.isPressed ? 0.7 : (isEnabled ? 1 : 0.5))
@@ -187,6 +189,48 @@ private struct LiquidButtonGlassFill: ViewModifier {
                 colorScheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.35),
                 in: Capsule()
             )
+        }
+    }
+}
+
+// MARK: - 設定の行（押しやすさ）
+
+/// 行のどこを押しても切り替わるスイッチ。
+/// grouped Form の既定トグルは右端の小さなスイッチにしか当たり判定が無く、
+/// 「いちいち狙って押さないといけない」と指摘されたため、ラベル側も押せるようにする。
+/// ラベル部分は Button（.plain）にする。onTapGesture だとウィンドウ背景ドラッグ
+/// （isMovableByWindowBackground）にクリックを取られることがあるため。
+struct RowSwitchToggleStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 12) {
+            Button { configuration.isOn.toggle() } label: {
+                configuration.label
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            Toggle("", isOn: configuration.$isOn)
+                .toggleStyle(.switch)
+                .labelsHidden()
+        }
+    }
+}
+
+/// 設定行のラベル（見出し＋薄字の説明）。説明を別の行に置くと行数が倍になって
+/// どの説明がどの項目のものか分かりにくいので、項目と同じ行の見出しの下に添える。
+struct SettingRowLabel: View {
+    let title: String
+    var detail: String? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+            if let detail {
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }

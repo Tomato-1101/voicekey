@@ -83,6 +83,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if PasteRestoreTestMode.runIfRequested() { return }
         // 録音開始の待ち時間と集約デバイスの増減を測るハーネス（AUHAL 化の回帰判定）。同じく素通り。
         if AudioEngineCostTestMode.runIfRequested() { return }
+        // メインウィンドウ（ホーム＋全設定タブ）を画面に出さずに PNG へ書き出す撮影ハーネス。同じく素通り。
+        if UISnapshotTestMode.runIfRequested() { return }
 
         let app = NSApplication.shared
         let delegate = AppDelegate()
@@ -130,7 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         LoginCoordinator.shared.handleDeepLink(url)
     }
 
-    /// メインメニュー（アプリ＋編集）をコードで設置する。
+    /// メインメニュー（アプリ＋編集＋ウィンドウ）をコードで設置する。
     /// 標準編集キー（⌘V 等）はメニュー項目のキー割当を経由してレスポンダチェーンの
     /// cut:/copy:/paste:/selectAll: に届く仕組みのため、常駐アプリでもメニュー自体は必須。
     private func installMainMenu() {
@@ -157,6 +159,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         edit.addItem(withTitle: "ペースト", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         edit.addItem(withTitle: "すべてを選択", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editItem.submenu = edit
+
+        // ウィンドウメニュー。メインウィンドウを最小化・リサイズできるようにしたので、⌘M / ⌘W の
+        // キー割当の受け皿として要る（編集メニューと同じく、メニューが無いとキーが効かない）。
+        // windowsMenu に登録すると、開いているウィンドウの一覧も AppKit が自動で足す。
+        let windowItem = NSMenuItem()
+        main.addItem(windowItem)
+        let windowMenu = NSMenu(title: "ウィンドウ")
+        windowMenu.addItem(withTitle: "最小化", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: "拡大/縮小", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(.separator())
+        windowMenu.addItem(withTitle: "閉じる", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        windowItem.submenu = windowMenu
+        NSApp.windowsMenu = windowMenu
 
         NSApp.mainMenu = main
     }
@@ -343,7 +358,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Dock アイコンや Finder からアプリを再度開いたときの挙動。
     /// メニューバー常駐アプリは通常ウィンドウを持たないため、標準では何も起きない。
     /// ユーザーの「開き直したい」意図に応えて、オンボーディング表示中ならそれを前面へ、
-    /// それ以外はホーム画面を開く（行き止まりを作らない・Phase B）。
+    /// それ以外はメインウィンドウを前回の画面のまま前面へ出す（行き止まりを作らない・Phase B）。
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         statusBar?.handleReopen()
         return true
@@ -494,7 +509,9 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         let userWindows = [mainWindow, feedbackWindow]
         let anyRemainingVisible = userWindows.contains { win in
             guard let win, win !== closing else { return false }
-            return win.isVisible
+            // 最小化中のウィンドウは isVisible が false だが、Dock から戻す必要があるので残っている扱いにする
+            // （ここで .accessory に戻すと Dock ごと消え、最小化したウィンドウに戻れなくなる）
+            return win.isVisible || win.isMiniaturized
         }
         if !anyRemainingVisible {
             NSApp.setActivationPolicy(.accessory)
@@ -502,12 +519,16 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     }
 
     /// Dock / Finder からの再オープン: オンボーディング表示中ならそれを前面へ、
-    /// それ以外はホーム画面を開く（Phase B。設定はメニュー「設定…」から）。
+    /// それ以外はメインウィンドウを前面へ出す（最小化中なら元に戻す）。
+    /// 画面（ホーム／設定のどのタブ）は変えない。以前は無条件にホームへ戻していたため、
+    /// 設定を開いたまま最小化して Dock から戻すと毎回ホームに飛ばされていた。
     func handleReopen() {
         if mainWindowModel?.onboarding != nil {
-            presentMainWindow(size: onboardingWindowSize, center: false)
+            presentMainWindow(onboarding: true)
         } else {
-            showHome()
+            let model = currentMainWindowModel()
+            log.info("メインウィンドウを前回の画面で前面へ出します (settings=\(model.showingSettings), tab=\(model.settingsTab), 既存=\(self.mainWindow != nil))")
+            presentMainWindow(onboarding: false)
         }
     }
 
@@ -515,8 +536,11 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         showHome()
     }
 
+    /// 前回選んでいた設定タブで開く（初回は一般タブ）。毎回「一般」に戻されると、
+    /// 同じタブを何度も触るときに選び直しが要るため。
     @objc private func openSettings() {
-        showSettings(initialTab: 0)
+        let lastTab = currentMainWindowModel().settingsTab
+        showSettings(initialTab: MainWindowScreen.sanitizedTab(lastTab, validTabs: MainWindowView.settingsTabIDs))
     }
 
     /// フィードバック入力フォームを開く（本文を自社サーバーへ送信する）。
@@ -558,8 +582,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         guard let controller else { return }
         onboardingFinished = false
 
-        let mwModel = mainWindowModel ?? MainWindowModel()
-        mainWindowModel = mwModel
+        let mwModel = currentMainWindowModel()
         mwModel.onboarding = OnboardingModel(
             startStep: OnboardingStep(rawValue: fromStep) ?? .welcome,
             config: controller.config,
@@ -581,7 +604,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             teardown: { [weak controller] in controller?.teardownOnboardingTestModes() }
         )
         // メインウィンドウをオンボーディングサイズで前面表示する（フルウィンドウ・テイクオーバー）
-        presentMainWindow(size: onboardingWindowSize, center: true)
+        presentMainWindow(onboarding: true, center: true)
     }
 
     /// オンボーディングのウィンドウサイズ（2 ペインが収まる横長）。
@@ -594,10 +617,10 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         markOnboardingComplete()
         // テスト用の一時状態（マイクモニタ・ホットキーテスト・整形オーバーライド）を解除
         controller?.teardownOnboardingTestModes()
-        // オンボーディングを閉じてダッシュボード面へ切替、ホームサイズへ戻す
+        // オンボーディングを閉じてダッシュボード面へ切替、通常サイズ（記憶フレーム or 既定サイズ）へ戻す
         mainWindowModel?.onboarding = nil
         mainWindowModel?.showingSettings = false
-        presentMainWindow(size: mainWindowSize, center: true)
+        presentMainWindow(onboarding: false)
         // 権限案内は済んでいるので NSAlert を二重に出さない
         controller?.startup(showPermissionAlert: false)
     }
@@ -646,15 +669,26 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         restoreAccessoryPolicyIfNoUserWindows(closing: closing)
     }
 
-    /// メインウィンドウ（ダッシュボード + 設定）の通常サイズ。
+    /// メインウィンドウ（ダッシュボード + 設定）の既定サイズ＝最小サイズ。
     private var mainWindowSize: NSSize { NSSize(width: 760, height: 600) }
+
+    /// メインウィンドウのフレーム（位置・サイズ）を記憶する名前。
+    /// UserDefaults の "NSWindow Frame <名前>" に AppKit が保存する。
+    private static let mainWindowAutosaveName = "VoicekeyMainWindow"
+
+    /// メインウィンドウの表示モデル（無ければ前回の画面で復元して作る）。
+    private func currentMainWindowModel() -> MainWindowModel {
+        if let mainWindowModel { return mainWindowModel }
+        let model = MainWindowModel.restored()
+        mainWindowModel = model
+        return model
+    }
 
     /// メインウィンドウを生成（無ければ）して返す。生成直後かどうかも返す。
     private func ensureMainWindow() -> (window: NSWindow, isNew: Bool)? {
         if let mainWindow { return (mainWindow, false) }
         guard let controller else { return nil }
-        let model = mainWindowModel ?? MainWindowModel()
-        mainWindowModel = model
+        let model = currentMainWindowModel()
         let hosting = NSHostingController(
             rootView: MainWindowView(
                 config: controller.config,
@@ -669,9 +703,15 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             // .tint（トグル・選択・.foregroundStyle(.tint)）をシステムのアクセントではなくブランドの灯りにする
             .tint(Brand.signal)
         )
+        // ウィンドウの大きさは SwiftUI の内容から自動で決めさせず、下の contentMinSize / contentMaxSize と
+        // presentMainWindow で明示的に管理する。自動追従のままだと、オンボーディング（900×600 固定）から
+        // 通常へ戻した直後に古い制約が残って記憶フレームの復元が負けたり、ユーザーが広げた大きさが
+        // 内容の切替で戻されたりするため。
+        hosting.sizingOptions = []
         let window = NSWindow(contentViewController: hosting)
         window.title = "voicekey"
-        window.styleMask = [.titled, .closable]
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.contentMinSize = mainWindowSize
         window.isReleasedWhenClosed = false
         GlassWindow.applyFrostedChrome(to: window)  // すりガラス化
         window.delegate = self  // クローズ時に Dock アイコンを引っ込めるため
@@ -679,27 +719,52 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         return (window, true)
     }
 
-    /// メインウィンドウを指定サイズで前面に出す（無ければ生成）。center=true で画面中央へ置き直す。
-    /// オンボーディング（900×600）⇄ 通常（760×600）の切替でサイズを付け替える。
-    private func presentMainWindow(size: NSSize, center: Bool) {
+    /// メインウィンドウを前面に出す（無ければ生成。最小化中なら元に戻す）。
+    /// - Parameters:
+    ///   - onboarding: true ならオンボーディング用の 900×600 固定。false なら通常
+    ///     （760×600 以上でリサイズ可・位置とサイズを記憶）。
+    ///   - center: オンボーディングのときだけ画面中央へ置き直す（通常時の位置は記憶フレームに任せる）。
+    private func presentMainWindow(onboarding: Bool, center: Bool = false) {
         guard let (window, isNew) = ensureMainWindow() else { return }
-        window.setContentSize(size)
+        var shouldCenter = false
+        if onboarding {
+            // 900×600 を通常時のフレームとして記憶させないよう、自動保存を外してからサイズを付け替える
+            // （通常に戻すときに、オンボーディング前の記憶フレームへ復元する）
+            window.setFrameAutosaveName("")
+            window.contentMinSize = onboardingWindowSize
+            window.contentMaxSize = onboardingWindowSize
+            window.setContentSize(onboardingWindowSize)
+            shouldCenter = isNew || center
+        } else {
+            window.contentMinSize = mainWindowSize
+            window.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+            // 自動保存が外れている＝生成直後かオンボーディング明け。このときだけ記憶フレームを復元する。
+            // 表示中・閉じた後の再表示では、ユーザーが動かした位置と大きさをそのまま使う（上書きしない）。
+            if window.frameAutosaveName.isEmpty {
+                if !window.setFrameUsingName(Self.mainWindowAutosaveName) {
+                    // 記憶が無い初回だけ既定サイズで画面中央に出す
+                    window.setContentSize(mainWindowSize)
+                    shouldCenter = true
+                }
+                window.setFrameAutosaveName(Self.mainWindowAutosaveName)
+            }
+        }
         // Dock にアイコンを出し前面へ（アクセサリのままだと前面に出ない）
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        if window.isMiniaturized { window.deminiaturize(nil) }
         window.makeKeyAndOrderFront(nil)
-        if isNew || center { centerOnScreen(window) }
+        if shouldCenter { centerOnScreen(window) }
     }
 
     /// メインウィンドウ（ダッシュボード or 設定）を表示する。設定は別ウィンドウを作らず、
     /// 同じウィンドウ内でモード切替する（v3.1）。
     /// - Parameter settingsTab: nil ならダッシュボード、値があればその設定タブを開く。
     func showMainWindow(settingsTab: Int?) {
-        let model = mainWindowModel ?? MainWindowModel()
-        mainWindowModel = model
+        let model = currentMainWindowModel()
         // オンボーディング表示中は設定/ホームを重ねず、オンボーディングを前面化する
         if model.onboarding != nil {
-            presentMainWindow(size: onboardingWindowSize, center: false)
+            presentMainWindow(onboarding: true)
             return
         }
         if let settingsTab {
@@ -709,8 +774,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             model.showingSettings = false
         }
         log.info("メインウィンドウを表示します (settings=\(model.showingSettings), tab=\(model.settingsTab), 既存=\(self.mainWindow != nil))")
-        let isNew = (mainWindow == nil)
-        presentMainWindow(size: mainWindowSize, center: isNew)
+        presentMainWindow(onboarding: false)
     }
 
     /// 設定を開く（メインウィンドウを設定モードで開く）。従来の呼び出し名を維持する。

@@ -79,24 +79,20 @@ struct CaptionSettingsTab: View {
     /// body から毎回呼ぶとスクロールのたびにプロセスが 3 つ立ち上がる。
     @State private var keyStatuses: [(provider: APIProvider, status: String)] = []
 
+    // 他の設定タブと同じ grouped Form に揃える（見出しと説明文の置き方がこのタブだけ違い、押せる場所も狭かった）。
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                statusSection
-                Divider()
-                modeSection
-                Divider()
-                transcriptSection
-                Divider()
-                engineSection
-                Divider()
-                displaySection
-                Divider()
-                keySection
-            }
-            .padding(20)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        Form {
+            statusSection
+            modeSection
+            transcriptSection
+            engineSection
+            displaySection
+            keySection
         }
+        .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
+        .glassFormRows()                   // 行フィルを半透明化して島の中で「ガラスの棚」に見せる
+        .formStyle(.grouped)
+        .padding(.vertical, 8)
         .onAppear {
             // タブを開いたときにだけ字幕サービスへ繋ぐ（起動時の遅延生成を壊さない）
             if let controller { model.attach(controller.caption) }
@@ -107,34 +103,43 @@ struct CaptionSettingsTab: View {
     // MARK: - 状態
 
     private var statusSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("状態").font(.headline)
-            HStack(spacing: 12) {
-                Label(model.stateTitle, systemImage: model.isActive ? "waveform" : "pause.circle")
-                    .foregroundStyle(model.isActive ? Brand.signal : .secondary)
-                Spacer()
+        Section("状態") {
+            LabeledContent {
                 Button(model.isActive ? "字幕を停止" : "字幕を開始") { model.toggle() }
+            } label: {
+                VStack(alignment: .leading, spacing: 3) {
+                    Label(model.stateTitle, systemImage: model.isActive ? "waveform" : "pause.circle")
+                        .foregroundStyle(model.isActive ? Brand.signal : .primary)
+                    Text("ショートカット ⌥⌘S でも開始・停止できます。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
-            Text("ショートカット ⌥⌘S でも開始・停止できます。")
-                .font(.caption).foregroundStyle(.secondary)
-
-            Toggle("起動時に字幕を自動開始", isOn: $config.captionAutoStart)
-            Text("一度でも字幕を開始したあとから効きます（初回起動でいきなり許可を求めないため）。")
-                .font(.caption).foregroundStyle(.secondary)
+            Toggle(isOn: $config.captionAutoStart) {
+                SettingRowLabel(
+                    title: "起動時に字幕を自動開始",
+                    detail: "一度でも字幕を開始したあとから効きます（初回起動でいきなり許可を求めないため）。"
+                )
+            }
         }
     }
 
     // MARK: - モードと言語
 
     private var modeSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("モード").font(.headline)
-            Picker("字幕の動作", selection: modeBinding) {
+        Section("モード") {
+            Picker(selection: modeBinding) {
                 ForEach(CaptionMode.allCases, id: \.self) { mode in
                     Text(mode.displayName).tag(mode)
                 }
+            } label: {
+                SettingRowLabel(
+                    title: "字幕の動作",
+                    detail: config.captionMode == .transcribe
+                        ? "端末内（Apple の音声認識）で文字起こしします。翻訳もクラウド送信も行いません。"
+                        : "英語を聞いて日本語に訳します（認識は英語で固定）。"
+                )
             }
-            .pickerStyle(.radioGroup)
+            .pickerStyle(.segmented)
 
             if config.captionMode == .transcribe {
                 Picker("認識する言語", selection: languageBinding) {
@@ -142,12 +147,6 @@ struct CaptionSettingsTab: View {
                         Text(language.displayName).tag(language)
                     }
                 }
-                .frame(maxWidth: 260)
-                Text("端末内（Apple の音声認識）で文字起こしします。翻訳もクラウド送信も行いません。")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else {
-                Text("英語を聞いて日本語に訳します（認識は英語で固定）。")
-                    .font(.caption).foregroundStyle(.secondary)
             }
         }
     }
@@ -155,18 +154,23 @@ struct CaptionSettingsTab: View {
     // MARK: - 議事録
 
     private var transcriptSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("議事録（文字起こしの保存）").font(.headline)
-            Toggle("文字起こしを自動で保存する", isOn: saveTranscriptBinding)
-            Text("字幕が動いている間、確定した文字起こしを Markdown に追記します"
-                 + "（訳文は保存しません）。5 分以上あくと別のファイルになります。")
-                .font(.caption).foregroundStyle(.secondary)
-            HStack {
-                Text(CaptionService.transcriptDirectory.path)
-                    .font(.caption).foregroundStyle(.secondary)
-                    .lineLimit(1).truncationMode(.middle)
-                Spacer()
+        Section("議事録（文字起こしの保存）") {
+            Toggle(isOn: saveTranscriptBinding) {
+                SettingRowLabel(
+                    title: "文字起こしを自動で保存する",
+                    detail: "字幕が動いている間、確定した文字起こしを Markdown に追記します"
+                        + "（訳文は保存しません）。5 分以上あくと別のファイルになります。"
+                )
+            }
+            LabeledContent {
                 Button("保存先を開く") { openTranscriptDirectory() }
+            } label: {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("保存先")
+                    Text(CaptionService.transcriptDirectory.path)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                }
             }
         }
     }
@@ -181,16 +185,18 @@ struct CaptionSettingsTab: View {
     // MARK: - 翻訳エンジン
 
     private var engineSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("翻訳").font(.headline)
-            Picker("翻訳エンジン", selection: engineBinding) {
+        Section("翻訳") {
+            Picker(selection: engineBinding) {
                 ForEach(TranslationEngine.allCases, id: \.self) { engine in
                     Text(engine.displayName).tag(engine)
                 }
+            } label: {
+                SettingRowLabel(
+                    title: "翻訳エンジン",
+                    detail: "Apple はキー不要・端末内で完結。Gemini / Groq は確定した文だけを送り、"
+                        + "混雑や失敗のときは自動で Apple 翻訳に戻ります。"
+                )
             }
-            Text("Apple はキー不要・端末内で完結。Gemini / Groq は確定した文だけを送り、"
-                 + "混雑や失敗のときは自動で Apple 翻訳に戻ります。")
-                .font(.caption).foregroundStyle(.secondary)
 
             if config.captionEngine == .gemini {
                 modelField(
@@ -211,30 +217,35 @@ struct CaptionSettingsTab: View {
 
     /// モデル ID の入力欄（空欄にすると既定へ戻る）
     private func modelField(title: String, text: Binding<String>, placeholder: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            TextField(title, text: text, prompt: Text(placeholder))
+        LabeledContent {
+            TextField("", text: text, prompt: Text(placeholder))
                 .textFieldStyle(.roundedBorder)
-            Text("空欄にすると既定（\(placeholder)）に戻ります。")
-                .font(.caption).foregroundStyle(.secondary)
+                .frame(minWidth: 220)
+        } label: {
+            SettingRowLabel(title: title, detail: "空欄にすると既定（\(placeholder)）に戻ります。")
         }
     }
 
     // MARK: - 表示
 
     private var displaySection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("表示と対象").font(.headline)
-            Toggle("最前面のアプリだけを翻訳", isOn: frontmostBinding)
-            Text("裏で流している音楽などを字幕に混ぜないための既定です。")
-                .font(.caption).foregroundStyle(.secondary)
+        Section("表示と対象") {
+            Toggle(isOn: frontmostBinding) {
+                SettingRowLabel(
+                    title: "最前面のアプリだけを翻訳",
+                    detail: "裏で流している音楽などを字幕に混ぜないための既定です。"
+                )
+            }
             Toggle("英語の原文も表示", isOn: showSourceBinding)
             Toggle("訳文を読み上げる", isOn: speakBinding)
 
-            HStack {
-                Text("字幕の位置は録音ピルの真上に固定です（大きさだけ変えられます）。")
-                    .font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button("字幕の大きさをリセット") { controller?.caption.resetHUDSize() }
+            LabeledContent {
+                Button("大きさをリセット") { controller?.caption.resetHUDSize() }
+            } label: {
+                SettingRowLabel(
+                    title: "字幕の大きさ",
+                    detail: "位置は録音ピルの真上に固定です（大きさだけ変えられます）。"
+                )
             }
         }
     }
@@ -242,16 +253,15 @@ struct CaptionSettingsTab: View {
     // MARK: - API キー
 
     private var keySection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("API キー").font(.headline)
+        Section {
             ForEach(keyStatuses, id: \.provider) { entry in
-                HStack {
-                    Text(entry.provider.displayName)
-                    Spacer()
+                LabeledContent(entry.provider.displayName) {
                     Text(entry.status).foregroundStyle(.secondary)
                 }
-                .font(.callout)
             }
+        } header: {
+            Text("API キー")
+        } footer: {
             Text("キーの正本は共有 Keychain（と環境変数）です。ここでは状態だけを表示し、"
                  + "voicekey からは読み取りだけ行います。")
                 .font(.caption).foregroundStyle(.secondary)

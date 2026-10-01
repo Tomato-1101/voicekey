@@ -60,7 +60,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | VAD / 長文分割 / ストリーミング / 録音 HUD | 常時 ON 固定（§3） | ✅ | ✅ |
 | マイク自動検出 | 入力レベルの分散で使用マイクを推定 | ✅ | ✅ |
 | 履歴 | 直近の文字起こし結果を保持（Mac は 200 件＋貼付先アプリ・日時のメタデータ、検索付き） | ✅ | ✅ |
-| ホーム画面 / ダッシュボード | 統計 3 カード（累計入力／節約できた時間／この期間）＋最近の履歴のダッシュボード。**Mac** は起動・再オープンで開くメインウィンドウのホーム面（アプリ別使用率・マイクテスト・ガイド再表示・サイドバーで同一ウィンドウ設定切替つき）／**Win** は設定ウィンドウ先頭の「ホーム」ページ（アプリ別使用率は履歴のアプリ情報なしのため非対応）。詳細は CHANGELOG | ✅ | ✅ |
+| ホーム画面 / ダッシュボード | 統計 3 カード（累計入力／節約できた時間／この期間）＋最近の履歴のダッシュボード。**Mac** は起動・再オープンで開くメインウィンドウのホーム面（アプリ別使用率・マイクテスト・ガイド再表示・サイドバーで同一ウィンドウ設定切替つき。再オープン時は最後の画面を復元）／**Win** は設定ウィンドウ先頭の「ホーム」ページ（アプリ別使用率は履歴のアプリ情報なしのため非対応）。詳細は CHANGELOG | ✅ | ✅ |
 | サイドノッチ | 画面左端の履歴スリット → クリックで検索付き履歴パネル（黒基調・録音中はアクセント点灯・フォーカス非奪取・既定 ON。検索は Mac＝テキスト/アプリ名・Win＝テキスト） | ✅ | ✅ |
 | 操作音 / メディアダッキング | 録音開始/停止のブリップ音（同一周波数で合成）・録音中はメディア音量を自動で下げる（既定 ON。Win ダッキングは Core Audio/pycaw・非対応時は無害スキップ） | ✅ | ✅ |
 | 最後の入力を再貼り付け | グローバルキー（既定 ⌃⌘V）で直前の入力を再貼り付け | ✅ | ❌ |
@@ -92,7 +92,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | VAD / マイク自動検出 / 履歴 | `Core/VoiceActivity.swift` / `MicAutoDetector.swift` / `HistoryStore.swift` | `core/vad.py` / `mic_auto_detect.py` / `history.py` |
 | 履歴同期（Mac ⇄ Windows） | `Core/HistorySync.swift` | `core/history_sync.py` |
 | 使用実績（統計・レベル） | `Core/StatsStore.swift` | `core/stats.py` |
-| 設定画面 UI | `UI/SettingsView.swift` / `HotkeyRecorderView.swift` / `Glass.swift`（ガラス様式の共通部品） | `ui/settings_window.py` / `styles.py` |
+| 設定画面 UI | `UI/SettingsView.swift` / `HotkeyRecorderView.swift` / `Glass.swift`（ガラス様式・押しやすい行の共通部品）。見た目の確認は `--ui-snapshot`（`CLI/UISnapshotTestMode.swift`・画面外で全ページを PNG 化） | `ui/settings_window.py` / `styles.py` |
 | ホーム画面 / ダッシュボード | `UI/HomeView.swift` / `MainWindowView.swift`（ホーム＋設定を 1 ウィンドウで切替・Mac） | `ui/settings_window.py`（先頭「ホーム」ページ） |
 | サイドノッチ（履歴スリット） | `UI/SideNotch.swift`（スリット＋検索付き履歴パネル） | `ui/side_notch.py` |
 | 操作音 / メディアダッキング / フルスクリーン判定 | `Core/SoundFX.swift` / `MediaDucker.swift` / `FrontAppTracker.swift`（Mac） | `core/sound_fx.py` / `media_ducker.py` / `fullscreen.py`、実ブラーは `platform/windows/acrylic.py` |
