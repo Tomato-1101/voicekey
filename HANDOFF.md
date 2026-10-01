@@ -10,7 +10,7 @@
 - 両 OS に存在する変更は Mac / Windows 同時実装。README・OVERVIEW・CHANGELOG はコードと同じコミットで更新。
 - 文字起こしエンジン（スロットの backend）の切替は本人の判断。Claude は変えない（10-01 時点は右⌥・右⌘とも apple_local）。
 
-## STT エンジン入れ替え・API 料金表示（10-02 05:30 更新）
+## STT エンジン入れ替え・API 料金表示（10-02 06:45 更新）
 - 目的: 本人決定（10-01）の追加・削除を Mac に実装（Windows は開発停止中）。本人は主に日本語（混在は重視しない）。
 - 現状: 3f207c9 で push・dist 入替済み。追加＝Soniox stt-rt-v5（ライブ・新規の既定）／gpt-transcribe／MAI-Transcribe-2／scribe_v2。
   疎通済み: gpt-transcribe 1.7〜1.8s／scribe_v2 0.6〜1.0s。Soniox は 733d7f4 で接続先をキーから自動判定（/v1/models を jp・us 並列、
@@ -27,6 +27,8 @@
   10/2 以前の推定取り込み（ログの文字起こし要求行／ログの無い 7/3〜9/17 は stats.json を Groq と仮定）を本番反映済み。backfillVersion=1。
   5907d38: Google（Gemini）も有料側へ（本人「Google Cloud は Google 系モデルにお金がかかっている」）。有料＝OpenAI・Soniox・Azure・Google。
 - 課金先の一本化は本人が不要と判断（10-02）。新モデル MAI-Transcribe-2-Streaming（$0.54/時・日本語可・リージョンは北米/欧州/印のみ）は未実装。
+- 0341af3: `swift test` が本番ログへ書いていた（gen=- の Soniox 401・HUD 無効行の正体）のを一時ディレクトリへ分離。
+  Soniox JP の実使用（10-02, n=70）は離鍵→確定 180〜300ms・STT 76〜194ms。発話が長いほど伸びる（120ms は短文 3 回の値）。
 - 次にやること: ActionLog の `[計測]`／「Soniox 再送」の実測で再送待ち上限 15s を詰める。
   Azure（MAI）は本人が後で作る（10-02「作らないのではなく後で」）。作ったらサブスク→southeastasia に Speech→ENDPOINT/KEY 登録→MAI 3 回（承認済み）。
 
