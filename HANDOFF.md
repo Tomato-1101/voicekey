@@ -63,3 +63,10 @@
   サイトは 81937ed を本番反映済み（voicekey.vercel.app）。**voicekey.app は他社ドメイン**（一度誤ってリンクし、10-01 に全部差し戻した）。
   Vercel の環境変数は Production のみ＝preview は 500 になる。確認は `vercel deploy --prod --skip-domain` → 確認 → `vercel promote`。
 - 次にやること: 任意で DMG 副題色を #7F796F に。promo/PROMPT.md は所在不明（本人に確認）。
+
+## サイト LP の全面刷新（10-11 更新）
+- 目的: 実績づくり用に voicekey-site の LP をデザインし直す（英語 `/` 既定・日本語 `/ja`）。
+- 現状: voicekey-site a0e1eca を push・`vercel deploy --prod` 済み。本番の / ・/ja 200、/login 200、/admin 401、appcast 307 を確認。
+  中身は app/components/landing/（文言は copy.ts だけ・見た目は landing.css）。詳細は voicekey-site/CLAUDE.md。
+  遅延の表記は実測（ストリーミング時 0.1〜0.3 秒）に合わせた。製品の挙動・数値が変わったら copy.ts の en/ja も直す。
+- 次にやること（任意）: 英語用の OG 画像（今は日本語の 1 枚を共用）。html lang は ja 固定のまま（LP 側は要素の lang で上書き）。
