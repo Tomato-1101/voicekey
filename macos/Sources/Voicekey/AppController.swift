@@ -642,6 +642,18 @@ final class AppController: ObservableObject {
             return
         }
 
+        // 録音中（2 打目待ちの保留中も含む）に「この 1 回だけ翻訳」キーが押されたら、この録音を翻訳対象にする。
+        // 離鍵の直前まで受け付ける。保留分岐より先に見て return するのは、2 打目待ちの間に押した
+        // 修飾キーが「無関係なキー」扱いになって 1 打目が単発で確定してしまうのを防ぐため。
+        if let slotId = recordingSlot, recordContext != nil,
+           DictationTranslation.isTranslateOnceToken(token, key: config.translateOnceKey),
+           DictationTranslation.isTranslateOnceRequested(
+               key: config.translateOnceKey, slotHotkey: config.slot(slotId).hotkey + config.handsfreeKey,
+               pressed: pressed) {
+            markTranslateOnce()
+            return
+        }
+
         // 1 打目を離した後、録音を止めずに 2 打目を待っている状態。
         // 下の「録音中」分岐より先に見る（recordingSlot は入ったままなので、
         // ここで拾わないと 2 打目が「録音中の再押下」に食われて無視される）。
@@ -701,11 +713,16 @@ final class AppController: ObservableObject {
             // （切替キーは空でなく全キーが押されていること。スロット設定が hold でも toggle になる）
             let handsfree = !config.handsfreeKey.isEmpty && handsfreeKeyPressed(pressed)
             let effectiveMode: HotkeyMode = handsfree ? .toggle : slot.mode
+            // 録音キーと一緒に 1 回翻訳キーが押されていれば、この録音だけ翻訳する。
+            // ハンズフリーキーと同じキーにしてある場合はハンズフリーを優先する（既存の使い方を変えない）
+            let translateOnce = DictationTranslation.isTranslateOnceRequested(
+                key: config.translateOnceKey, slotHotkey: slot.hotkey + config.handsfreeKey, pressed: pressed)
             // ダブルタップ（auto_enter）はここでは決めない。1 打目の離鍵で「保留」に入り、
             // 2 打目の押下で **同じ録音を auto_enter に切り替える**方式にしたため。
             // 録音を作り直さないので、1 打目に入った声が消えず、録音の開始タイミングも
             // auto_enter かどうかで変わらない（どちらも最初の押下が開始点）。
-            beginRecording(slotId: slotId, autoEnter: false, effectiveMode: effectiveMode, event: event)
+            beginRecording(slotId: slotId, autoEnter: false, effectiveMode: effectiveMode,
+                           translateOnce: translateOnce, event: event)
             break
         }
     }
@@ -988,10 +1005,36 @@ final class AppController: ObservableObject {
         /// groq スロット × 整形 ON × ログイン済み × ハンズフリー EL 差し替えでない、が条件。
         /// 単発送信のときだけこれを見て serverFormat=true にし、後段のクライアント整形をスキップする。
         let serverFormatEligible: Bool
+        /// この録音を翻訳してから貼り付けるか。常時 ON の設定か、1 回翻訳キーの押下で true になる
+        /// （1 回翻訳キーは録音中にも押せるので、ここだけ var）
+        var translate: Bool
+        /// 翻訳エンジンと出力言語（録音開始時に固定。録音中に設定を変えても進行中の録音は変わらない）
+        let translateEngine: DictationTranslationEngine
+        let translateTarget: String
+    }
+
+    /// 録音中に 1 回翻訳キーが押された。この録音を翻訳対象にし、HUD に印を出す
+    private func markTranslateOnce() {
+        guard var context = recordContext, !context.translate else { return }
+        context.translate = true
+        recordContext = context
+        ActionLog.shared.write("app", "[翻訳] gen=\(DiagnosticText.gen(recordingGeneration)) 1回翻訳キー(録音中)")
+        prepareTranslation(for: context)
+    }
+
+    /// 翻訳する録音の下準備（HUD の印と、Apple 翻訳セッションの温め）。録音経路は待たせない
+    private func prepareTranslation(for context: RecordContext) {
+        guard context.translate else { return }
+        hud.setTranslateBadge(DictationTranslation.badge(for: context.translateTarget))
+        if #available(macOS 26.0, *) {
+            let translator = dictationTranslator(engine: context.translateEngine, target: context.translateTarget)
+            Task { await translator.prepare() }
+        }
     }
 
     private func beginRecording(
-        slotId: Int, autoEnter: Bool, effectiveMode: HotkeyMode = .hold, event: HotkeyEventTime? = nil
+        slotId: Int, autoEnter: Bool, effectiveMode: HotkeyMode = .hold, translateOnce: Bool = false,
+        event: HotkeyEventTime? = nil
     ) {
         guard recordingSlot == nil else { return }
         // ログ用: メインで押下を受け取った時刻（行の書き出しは録音を仕掛けた後に回す）
@@ -1079,7 +1122,10 @@ final class AppController: ObservableObject {
             formatPrompt: config.autoFormatPrompt,
             formatModel: config.formatModel,
             formatPresetId: slot.formatPresetId,
-            serverFormatEligible: serverFormatEligible
+            serverFormatEligible: serverFormatEligible,
+            translate: DictationTranslation.isEnabled || translateOnce,
+            translateEngine: DictationTranslation.engine,
+            translateTarget: DictationTranslation.targetLanguage
         )
 
         // 設定された入力デバイスを反映（変更がなければ recorder 側では何もしない）
@@ -1169,12 +1215,9 @@ final class AppController: ObservableObject {
         if effectiveFormatEnabled {
             formatter.prewarm()
         }
-        // 「翻訳して入力」が ON なら翻訳セッションも録音中に温める（初回のモデルロードを隠す）。
-        // OFF のときは何も生成しない＝他バックエンドのクリティカルパスに一切足さない。
-        if DictationTranslation.isEnabled, #available(macOS 26.0, *) {
-            let translator = dictationTranslator()
-            Task { await translator.prepare() }
-        }
+        // 翻訳する録音なら翻訳セッションも録音中に温める（初回のモデルロードを隠す）。
+        // 訳さないときは何も生成しない＝他バックエンドのクリティカルパスに一切足さない。
+        if let recordContext { prepareTranslation(for: recordContext) }
 
         logHotkey("押下", slot: slotId, generation: generation, event: event, handledAt: handledAt)
 
@@ -1478,16 +1521,20 @@ final class AppController: ObservableObject {
     ///
     /// - Parameter text: 整形・数字正規化・ユーザー辞書まで済んだ最終テキスト
     /// - Returns: 貼り付けるテキストと、翻訳にかかった時間（訳さなかったときは nil。計測ログ用）
-    private func translateIfEnabled(_ text: String, generation: Int) async -> (text: String, ms: Int?) {
-        guard DictationTranslation.isEnabled, !text.isEmpty else { return (text, nil) }
+    private func translateIfEnabled(
+        _ text: String, generation: Int, context: RecordContext?
+    ) async -> (text: String, ms: Int?) {
+        // 訳すかどうか・エンジン・出力言語は録音開始時のスナップショットで決める
+        // （貼り付け直前に設定を読むと、録音中の設定変更や 1 回翻訳キーが正しく効かない）
+        guard let context, context.translate, !text.isEmpty else { return (text, nil) }
         guard #available(macOS 26.0, *) else { return (text, nil) }
 
-        let translator = dictationTranslator()
+        let translator = dictationTranslator(engine: context.translateEngine, target: context.translateTarget)
         let started = ProcessInfo.processInfo.systemUptime
         let result = await translator.translate(text)
         let elapsedMs = Int((ProcessInfo.processInfo.systemUptime - started) * 1000)
         if result.didTranslate {
-            log.info("翻訳して入力: \(DictationTranslation.engine.rawValue, privacy: .public) → \(DictationTranslation.targetLanguage, privacy: .public) \(elapsedMs)ms")
+            log.info("翻訳して入力: \(context.translateEngine.rawValue, privacy: .public) → \(context.translateTarget, privacy: .public) \(elapsedMs)ms")
         } else {
             // 無言で原文が入ると「翻訳が効いていない」ことに気付けないので必ず知らせる
             log.notice("翻訳して入力に失敗したため原文を入力します: \(result.failureReason ?? "不明", privacy: .public)")
@@ -1496,17 +1543,16 @@ final class AppController: ObservableObject {
         // 本文は出さない（エンジン・時間・成否だけ）
         ActionLog.shared.write(
             "app",
-            "[翻訳] gen=\(DiagnosticText.gen(generation)) engine=\(DictationTranslation.engine.rawValue) "
-                + "target=\(DictationTranslation.targetLanguage) \(elapsedMs)ms "
+            "[翻訳] gen=\(DiagnosticText.gen(generation)) engine=\(context.translateEngine.rawValue) "
+                + "target=\(context.translateTarget) \(elapsedMs)ms "
                 + "結果=\(result.didTranslate ? "ok" : "失敗(\(DiagnosticText.clip(result.failureReason ?? "不明", 80)))")")
         return (result.text, elapsedMs)
     }
 
-    /// 現在の設定に合う翻訳器を返す（構成が変わらない限り使い回す）
+    /// 指定の構成に合う翻訳器を返す（構成が変わらない限り使い回す）。
+    /// 話す言語は Apple 翻訳の準備用の見込みにだけ使う（実際の翻訳元は入力から推定する）
     @available(macOS 26.0, *)
-    private func dictationTranslator() -> DictationTranslator {
-        let engine = DictationTranslation.engine
-        let target = DictationTranslation.targetLanguage
+    private func dictationTranslator(engine: DictationTranslationEngine, target: String) -> DictationTranslator {
         let source = config.language
         let key = "\(engine.rawValue)/\(source)/\(target)"
         if key == translatorKey, let existing = translatorStorage as? DictationTranslator {
@@ -1695,7 +1741,7 @@ final class AppController: ObservableObject {
                     ))
                     // 「翻訳して入力」が ON なら、この最終テキストを 1 回だけ訳す
                     // （正規化・ユーザー辞書は原文の誤認識を直すためのものなので、翻訳より前に効かせる）
-                    let (output, streamTranslateMs) = await self.translateIfEnabled(corrected, generation: generation)
+                    let (output, streamTranslateMs) = await self.translateIfEnabled(corrected, generation: generation, context: context)
                     timelines[generation]?.translateMs = streamTranslateMs
                     // 貼り付け先アプリを貼り付け直前に再取得する（録音中に切り替えた場合は今の前面が正）
                     let target = frontApp.snapshot()
@@ -1864,7 +1910,7 @@ final class AppController: ObservableObject {
                 protectWords: Set(config.numeralProtectWords)
             ))
             // 「翻訳して入力」が ON なら、この最終テキストを 1 回だけ訳す（OFF なら素通り）
-            let (output, restTranslateMs) = await self.translateIfEnabled(corrected, generation: generation)
+            let (output, restTranslateMs) = await self.translateIfEnabled(corrected, generation: generation, context: context)
             timelines[generation]?.translateMs = restTranslateMs
             // 貼り付け先アプリを貼り付け直前に再取得する（録音中に切り替えた場合は今の前面が正）
             let target = frontApp.snapshot()

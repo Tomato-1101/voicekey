@@ -919,39 +919,54 @@ private struct TranslateInputTab: View {
         Form {
             // 説明文は別の行に置かず、項目名の下に小さく添える（他の設定タブと同じ作り）
             Section {
+                // たまに 1 回だけ訳す使い方が主なので、キーを先頭に置く（常時 ON は下のトグル）
+                LabeledContent {
+                    HStack(spacing: 8) {
+                        HotkeyRecorderView(hotkey: $config.translateOnceKey)
+                            .frame(width: 180)  // 他のキー設定の欄と同じ幅
+                        if !config.translateOnceKey.isEmpty {
+                            Button("クリア") { config.translateOnceKey = [] }
+                        }
+                    }
+                } label: {
+                    SettingRowLabel(
+                        title: "この 1 回だけ翻訳するキー",
+                        detail: "録音中にこのキーを押すと（録音キーと同時でも、話している途中でも）、その回だけ翻訳して貼り付けます。"
+                            + "翻訳される回は録音中の表示に「→EN」のような印が出ます。"
+                    )
+                }
                 Toggle(isOn: $config.translateInputEnabled) {
                     SettingRowLabel(
-                        title: "翻訳して入力する",
-                        detail: "話した内容を翻訳してから貼り付けます（例: 日本語で話す → 英語が入力される）。"
-                            + "録音キー 1・2 のどちらでも、どの文字起こしエンジンでも同じように効きます。"
+                        title: "常に翻訳して入力する",
+                        detail: "話した内容を毎回翻訳してから貼り付けます（例: 日本語で話す → 英語が入力される）。"
+                            + "メニューバーの「翻訳して入力（常時）」でも切り替えられます。"
                     )
                 }
             }
 
-            if config.translateInputEnabled {
-                Section {
-                    Picker("入力する言語", selection: $config.translateInputTarget) {
-                        ForEach(DictationTranslation.targetLanguages, id: \.code) { language in
-                            Text(language.label).tag(language.code)
-                        }
+            // 言語とエンジンは 1 回翻訳でも常時翻訳でも使うので、常に出す
+            Section {
+                Picker("入力する言語", selection: $config.translateInputTarget) {
+                    ForEach(DictationTranslation.targetLanguages, id: \.code) { language in
+                        Text(language.label).tag(language.code)
                     }
-                    Picker(selection: $config.translateInputEngine) {
-                        ForEach(DictationTranslationEngine.allCases) { engine in
-                            Text(engine.label).tag(engine)
-                        }
-                    } label: {
-                        SettingRowLabel(title: "翻訳エンジン", detail: Self.engineCaption(config.translateInputEngine))
-                    }
-                } footer: {
-                    // 二重に LLM を叩くと遅くなるので、気付けるようにここで一言添える
-                    // （どちらを切るかはユーザーが決める。勝手に整形を無効化はしない）
-                    Text("「文章を自動で整える」と同時に使うと、整形と翻訳で 2 回 LLM を呼びます。"
-                        + "速さを優先するなら、録音キーの設定で整形をオフにしてください。"
-                        + "翻訳に失敗したときは原文がそのまま入力されます（文章を失いません）。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
+                Picker(selection: $config.translateInputEngine) {
+                    ForEach(DictationTranslationEngine.allCases) { engine in
+                        Text(engine.label).tag(engine)
+                    }
+                } label: {
+                    SettingRowLabel(title: "翻訳エンジン", detail: Self.engineCaption(config.translateInputEngine))
+                }
+            } footer: {
+                // 二重に LLM を叩くと遅くなるので、気付けるようにここで一言添える
+                // （どちらを切るかはユーザーが決める。勝手に整形を無効化はしない）
+                Text("「文章を自動で整える」と同時に使うと、整形と翻訳で 2 回 LLM を呼びます。"
+                    + "速さを優先するなら、録音キーの設定で整形をオフにしてください。"
+                    + "翻訳に失敗したときは原文がそのまま入力されます（文章を失いません）。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす

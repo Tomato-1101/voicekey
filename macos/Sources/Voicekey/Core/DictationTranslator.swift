@@ -15,6 +15,7 @@
 //
 
 import Foundation
+import NaturalLanguage
 import os.log
 @preconcurrency import Translation
 
@@ -90,6 +91,49 @@ enum DictationTranslation {
     static func label(for code: String) -> String {
         targetLanguages.first(where: { $0.code == code })?.label ?? code
     }
+
+    /// 録音中 HUD に出す小さな印（"en" → "→EN"）。翻訳される回だとひと目で分かるようにする
+    static func badge(for code: String) -> String {
+        "→" + (Locale.Language(identifier: code).languageCode?.identifier ?? code).uppercased()
+    }
+
+    /// 「この 1 回だけ翻訳」キーが押されているか（純関数・テスト用に切り出し）
+    ///
+    /// - Parameters:
+    ///   - key: 1 回翻訳キーの設定（空なら無効）
+    ///   - slotHotkey: 録音キー（とハンズフリーキー）の設定。1 回翻訳キーがこれに含まれていると
+    ///     録音（ハンズフリー起動）のたびに翻訳になってしまうので、その場合は押されていても翻訳扱いにしない
+    ///   - pressed: いま押されているキー
+    static func isTranslateOnceRequested(key: [String], slotHotkey: [String], pressed: Set<String>) -> Bool {
+        guard !key.isEmpty else { return false }
+        let slotNames = slotHotkey.reduce(into: Set<String>()) { $0.formUnion(KeyToken.acceptableNames(for: $1)) }
+        let coveredBySlot = key.allSatisfy { !KeyToken.acceptableNames(for: $0).isDisjoint(with: slotNames) }
+        if coveredBySlot { return false }
+        return key.allSatisfy { !KeyToken.acceptableNames(for: $0).isDisjoint(with: pressed) }
+    }
+
+    /// 押されたキーが 1 回翻訳キーの一部か（録音中に押されたキーを翻訳の指示として拾うかの判定）
+    static func isTranslateOnceToken(_ token: String, key: [String]) -> Bool {
+        key.contains { KeyToken.acceptableNames(for: $0).contains(token) }
+    }
+
+    /// テキストの言語を推定する（推定できなければ fallback）。
+    ///
+    /// 「話す言語の設定＝翻訳元」と決め打つと、英語で話したときに ja→en として扱われて
+    /// 訳せない／壊れるため、入力そのものから判定する（オフライン・数 ms）。
+    static func detectLanguageCode(_ text: String, fallback: String) -> String {
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(text)
+        guard let language = recognizer.dominantLanguage, language != .undetermined else { return fallback }
+        return language.rawValue
+    }
+
+    /// 同じ言語か（地域・字体の違いは無視して言語コードだけで比べる。"zh-Hans" と "zh" は同じ扱い）
+    static func isSameLanguage(_ a: String, _ b: String) -> Bool {
+        let codeA = Locale.Language(identifier: a).languageCode?.identifier ?? a
+        let codeB = Locale.Language(identifier: b).languageCode?.identifier ?? b
+        return codeA == codeB
+    }
 }
 
 /// 翻訳結果（原文フォールバックしたかが呼び出し側で分かるようにする）
@@ -111,9 +155,10 @@ struct DictationTranslationResult {
 actor DictationTranslator {
 
     private let engine: DictationTranslationEngine
-    /// 翻訳元＝話す言語（音声入力の言語設定と同じ。"ja" など）
-    private let source: Locale.Language
-    private let sourceCode: String
+    /// Apple 翻訳の翻訳元。初期値は話す言語の設定（準備用の見込み）で、実際の翻訳時は
+    /// 入力から推定した言語に差し替える（何語で話しても翻訳先へ訳すため）
+    private var source: Locale.Language
+    private var sourceCode: String
     /// 出力言語（"en" など）
     private let target: Locale.Language
     private let targetCode: String
@@ -167,12 +212,18 @@ actor DictationTranslator {
         guard !trimmed.isEmpty else {
             return DictationTranslationResult(text: text, didTranslate: false, failureReason: "empty")
         }
-        // 話す言語と出力言語が同じなら訳す必要が無い（Apple 翻訳は同一ペアをそもそも受け付けない）。
-        // 失敗扱いにすると入力のたびに「翻訳できなかった」通知が出てしまうので、原文をそのまま
-        // 最終テキストとして返す（実機ログで ja→ja の指定を検出したため 2026-08-23 に追加）。
-        guard sourceCode != targetCode else {
-            return DictationTranslationResult(text: text, didTranslate: true, failureReason: nil)
+        if engine == .apple {
+            // Apple は翻訳元を明示する必要があるので入力から推定する（推定できなければ設定の言語）。
+            // 既に出力言語なら訳す必要が無い（Apple 翻訳は同一ペアをそもそも受け付けない）。
+            // 失敗扱いにすると入力のたびに「翻訳できなかった」通知が出てしまうので、原文をそのまま
+            // 最終テキストとして返す（実機ログで ja→ja の指定を検出したため 2026-08-23 に追加）。
+            let detected = DictationTranslation.detectLanguageCode(trimmed, fallback: sourceCode)
+            if DictationTranslation.isSameLanguage(detected, targetCode) {
+                return DictationTranslationResult(text: text, didTranslate: true, failureReason: nil)
+            }
+            useSource(detected)
         }
+        // Groq はプロンプト側で原文の言語を推定させる（既に出力言語ならそのまま返させる）
         do {
             let translated: String
             switch engine {
@@ -228,10 +279,19 @@ actor DictationTranslator {
     static func groqSystemPrompt(targetCode: String) -> String {
         let language = DictationTranslation.label(for: targetCode)
         return """
-        あなたは音声入力の翻訳エンジンです。入力された文を\(language)へ自然に翻訳し、\
+        あなたは音声入力の翻訳エンジンです。入力された文（何語かは決まっていません）を\(language)へ自然に翻訳し、\
         訳文だけを出力してください。説明・注釈・引用符・前置きは一切付けないでください。\
         入力が既に\(language)ならそのまま出力してください。
         """
+    }
+
+    /// Apple 翻訳の翻訳元を切り替える（変わったときだけセッションを作り直す）
+    private func useSource(_ code: String) {
+        guard code != sourceCode else { return }
+        sourceCode = code
+        source = Locale.Language(identifier: code)
+        session = nil
+        isPrepared = false
     }
 
     /// 翻訳セッションを取得する（無ければ作る）

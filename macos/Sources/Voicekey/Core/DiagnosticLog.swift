@@ -373,6 +373,7 @@ enum SettingsChangeLog {
         s["translateInputEnabled"] = "\(c.translateInputEnabled)"
         s["translateInputTarget"] = c.translateInputTarget
         s["translateInputEngine"] = c.translateInputEngine.rawValue
+        s["translateOnceKey"] = c.translateOnceKey.joined(separator: "+")
         return s
     }
 

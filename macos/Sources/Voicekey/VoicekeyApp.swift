@@ -392,6 +392,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     /// 「vX に更新して再起動」（更新の準備ができたときだけ先頭に出す。メニューを開くたびに更新）
     private let updateMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let updateSeparator = NSMenuItem.separator()
+    /// 「翻訳して入力（常時）」のチェック項目（設定を開かずにオンオフできるように。開くたびに状態を反映）
+    private let translateMenuItem = NSMenuItem(title: "翻訳して入力（常時）", action: nil, keyEquivalent: "")
     private weak var controller: AppController?
     private var stateObservation: AnyCancellable?
     /// 直近にログへ出したアイコン状態（同じ状態の再通知でログを重ねないため）
@@ -472,6 +474,13 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             let bot = MeetBotMenuController(controller: controller)
             menu.addItem(bot.menuItem)
             meetBotMenu = bot
+        }
+
+        // 翻訳して入力の常時オンオフ（1 回だけ訳すときは録音キー＋1 回翻訳キー。macOS 26 以降の機能）
+        if EmbeddedKeys.isPersonal, #available(macOS 26.0, *) {
+            translateMenuItem.action = #selector(toggleTranslateInput)
+            translateMenuItem.target = self
+            menu.addItem(translateMenuItem)
         }
 
         let feedback = NSMenuItem(
@@ -576,6 +585,11 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     }
 
     /// メニューの「vX に更新して再起動」。確認なしで入れ替え＋再起動する（録音中なら終わってから）
+    @objc private func toggleTranslateInput() {
+        guard let config = controller?.config else { return }
+        config.translateInputEnabled.toggle()
+    }
+
     @objc private func installUpdate() {
         UpdaterController.shared.installUpdate()
     }
@@ -862,6 +876,7 @@ extension StatusItemController: NSMenuDelegate {
     /// メニューを開くたびに今日の API 代を数え直し、更新項目を出し入れする（常時購読して再描画するより軽い）
     func menuWillOpen(_ menu: NSMenu) {
         apiCostMenuItem.title = Self.apiCostTitle()
+        translateMenuItem.state = controller?.config.translateInputEnabled == true ? .on : .off
         let updater = UpdaterController.shared
         let ready = updater.readyVersion
         // 押した後（録音終わり待ち・再起動中）は文言を置き換え、action を外して押せなくする

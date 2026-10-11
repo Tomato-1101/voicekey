@@ -45,6 +45,8 @@ final class HudModel: ObservableObject {
     /// 録音中のライブ字幕（personal のストリーミング暫定テキスト。空なら非表示）。
     /// 録音中の波形バーの右に固定幅で表示し、tail（最新語）を出す（幅固定で横揺れを防ぐ）。
     @Published var liveText: String = ""
+    /// この録音が翻訳される回の印（"→EN" など。空なら非表示）
+    @Published var translateBadge: String = ""
 
     func pushLevel(_ value: Float) {
         levels.removeFirst()
@@ -292,6 +294,12 @@ final class HudController {
     private func clearRecordingContent() {
         model.resetLevels()
         model.liveText = ""
+        model.translateBadge = ""
+    }
+
+    /// 翻訳する録音の印を出す（録音が終わると clearRecordingContent で消える）
+    func setTranslateBadge(_ text: String) {
+        model.translateBadge = text
     }
 
     /// 一時通知を 2 秒間表示する
@@ -719,6 +727,13 @@ struct HudView: View {
                 Image(systemName: "return")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(Brand.signal)
+            }
+            // 翻訳される回の印（たまに 1 回だけ訳す使い方で、訳されるかを録音中に確かめられるように）
+            if !model.translateBadge.isEmpty {
+                Text(model.translateBadge)
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .foregroundStyle(Brand.signal)
+                    .fixedSize()
             }
             // personal のライブ字幕（ストリーミング暫定テキスト）。幅を固定して横揺れを防ぎ、
             // tail 側（最新語）を head トランケーションで見せる。空なら要素ごと出さない。
