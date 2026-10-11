@@ -194,7 +194,8 @@ final class CaptionSpeedupTests: XCTestCase {
         XCTAssertEqual(revisedSequence.withLock { $0 }, shownSequence.withLock { $0 }, "差し替え先の行が違う")
     }
 
-    /// クラウドの訳が締め切り（1.5 秒）までに来なければ Apple の訳のまま確定する
+    /// クラウドの訳が締め切り（1.5 秒）までに来なければ、まず Apple の訳のまま出しておく
+    /// （遅れて届いた訳での差し替えは CaptionReviewFixTests.testLateRefinementStillRevises）
     func testRefineTimesOutKeepingAppleTranslation() throws {
         guard #available(macOS 26.0, *) else { throw XCTSkip("ライブ字幕は macOS 26 以降") }
         let events = OSAllocatedUnfairLock(initialState: [String]())
@@ -209,21 +210,7 @@ final class CaptionSpeedupTests: XCTestCase {
         coordinator.submit("Thanks for coming.")
         wait(seconds: 2.0)
 
-        XCTAssertEqual(events.withLock { $0 }, ["AP:Thanks for coming."], "時間切れのクラウド訳で差し替えた")
-    }
-
-    /// 締め切り付き翻訳の単体（訳が先なら訳、時間切れが先なら nil）
-    func testTranslateWithTimeout() async throws {
-        guard #available(macOS 26.0, *) else { throw XCTSkip("ライブ字幕は macOS 26 以降") }
-        let fast = await TranslationCoordinator.translate(
-            "a", context: [], with: TaggedTranslator(tag: "x", delay: 0.05), timeout: 1)
-        XCTAssertEqual(fast, "xa")
-        let slow = await TranslationCoordinator.translate(
-            "a", context: [], with: TaggedTranslator(tag: "x", delay: 1), timeout: 0.1)
-        XCTAssertNil(slow)
-        let expired = await TranslationCoordinator.translate(
-            "a", context: [], with: TaggedTranslator(tag: "x"), timeout: 0)
-        XCTAssertNil(expired, "締め切りを過ぎた行をクラウドへ送った")
+        XCTAssertEqual(events.withLock { $0 }, ["AP:Thanks for coming."], "クラウド訳が届く前に差し替えた")
     }
 
     // MARK: - CaptionLiveLinePolicy

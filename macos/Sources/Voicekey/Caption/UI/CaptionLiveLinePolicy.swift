@@ -74,3 +74,49 @@ enum CaptionLiveLinePolicy {
         }
     }
 }
+
+/// 短い確定行を直前の行へまとめるかの判定（純ロジック）
+///
+/// 確定行が上限（2 行）まで出ていて、いちばん古い行がまだ読み終わる時間（`max(3秒, 文字数×0.15秒)`）を
+/// 満たしていないときに次の行が来ると、行数の上限で古い行を早く押し出すことになる。Soniox は 1 回の応答で
+/// 短い文を何行も確定させるので、相槌のような短い行が続くとこれが起きやすい。
+/// 新しい行を待たせると字幕が遅れるので、待たせずに直前の行へ足して行数を増やさない。
+/// 最低表示時間の式は変えない（まとめた行は、足した分の読む時間だけ表示を延ばす）。
+enum CaptionLineMergePolicy {
+
+    /// これより短い行はまとめる候補（日本語なら一息で読める長さ）
+    static let shortLineCharacters = 24
+    /// まとめた後の上限（字幕の幅に 1〜2 行で収まる長さ。超えるなら別の行にする）
+    static let maxMergedCharacters = 48
+
+    /// 新しい確定行を直前の行へまとめるか
+    ///
+    /// - Parameters:
+    ///   - newText: 新しい行の本文
+    ///   - lastText: 直前の確定行の本文（まとめられる行が無ければ nil）
+    ///   - activeCount: いま出ている確定行の数（消えかけを除く）
+    ///   - oldestHasMetMinimum: いちばん古い行が最低表示時間を満たしたか
+    ///   - maxLines: 確定行の上限
+    static func shouldMerge(
+        newText: String,
+        lastText: String?,
+        activeCount: Int,
+        oldestHasMetMinimum: Bool,
+        maxLines: Int
+    ) -> Bool {
+        guard let lastText, !lastText.isEmpty, !newText.isEmpty else { return false }
+        // 足しても上限に収まる、または古い行を読み終わっているなら普通に積めばよい
+        guard activeCount >= maxLines, !oldestHasMetMinimum else { return false }
+        guard newText.count < shortLineCharacters || lastText.count < shortLineCharacters else { return false }
+        return join(lastText, newText).count <= maxMergedCharacters
+    }
+
+    /// 2 つの本文をつなぐ（境目が英数字・記号なら空白を挟む。日本語どうしはそのままつなぐ）
+    static func join(_ first: String, _ second: String) -> String {
+        guard !first.isEmpty else { return second }
+        guard !second.isEmpty else { return first }
+        guard let tail = first.last, let head = second.first else { return first + second }
+        let needsSpace = (tail.isASCII && !tail.isWhitespace) || (head.isASCII && !head.isWhitespace)
+        return needsSpace ? first + " " + second : first + second
+    }
+}
