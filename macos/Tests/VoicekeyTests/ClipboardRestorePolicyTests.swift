@@ -99,8 +99,8 @@ final class ClipboardRestorePolicyTests: XCTestCase {
         XCTAssertEqual(snapshot.items.map { $0.map(\.type) }, [["public.png", text, rtf]])
     }
 
-    /// 合計が上限を超えたら重い型は 1 つも残さず、文字列・RTF だけ退避する
-    func testSelectFallsBackToLightTypesWhenTooLarge() {
+    /// 合計が上限を超えても、入る分の重い型は捨てない。入らない型だけ飛ばす
+    func testSelectKeepsHeavyTypesThatFitAndSkipsOnlyOverflow() {
         let store: [String: Data] = [
             text: Data("a".utf8), rtf: Data("r".utf8),
             "public.png": Data(count: 60), "public.tiff": Data(count: 60),
@@ -108,22 +108,67 @@ final class ClipboardRestorePolicyTests: XCTestCase {
         let (snapshot, dropped) = ClipboardSnapshot.select(
             itemTypes: [["public.tiff", "public.png", text, rtf]], read: { _, type in store[type] },
             maxTotalBytes: 100, maxTypes: 10)
-        XCTAssertEqual(snapshot.items.map { $0.map(\.type) }, [[text, rtf]])
-        XCTAssertEqual(dropped, 2)
+        XCTAssertEqual(snapshot.items.map { $0.map(\.type) }, [["public.tiff", text, rtf]])
+        XCTAssertEqual(dropped, 1)
+        XCTAssertTrue(snapshot.truncated)
     }
 
-    /// 型の数が上限を超えたら重い型は読みすらしない（読むこと自体が待ちになるため）
-    func testSelectSkipsHeavyReadsWhenTooManyTypes() {
-        var readTypes: [String] = []
+    /// 先頭の重い型が入らなくても、後ろの小さい重い型は残す（大きい tiff を飛ばして png を残すケース）
+    func testSelectSkipsOversizedTypeAndKeepsLaterSmallOne() {
+        let store: [String: Data] = ["public.tiff": Data(count: 500), "public.png": Data(count: 50)]
+        let (snapshot, dropped) = ClipboardSnapshot.select(
+            itemTypes: [["public.tiff", "public.png"]], read: { _, type in store[type] },
+            maxTotalBytes: 100, maxTypes: 10)
+        XCTAssertEqual(snapshot.items.map { $0.map(\.type) }, [["public.png"]])
+        XCTAssertEqual(dropped, 1)
+        XCTAssertFalse(snapshot.isEmpty)
+    }
+
+    /// 型の数が上限に達したら、以降の重い型は読みすらしない（読むこと自体が待ちになるため）。
+    /// 枠が残っている分の重い型は残す
+    func testSelectStopsReadingHeavyWhenTypeLimitReached() {
+        var heavyReads = 0
         let items = (0..<5).map { _ in [text, "com.example.heavy"] }
         let (snapshot, dropped) = ClipboardSnapshot.select(
             itemTypes: items,
-            read: { _, type in readTypes.append(type); return Data("x".utf8) },
+            read: { _, type in
+                if type == "com.example.heavy" { heavyReads += 1 }
+                return Data("x".utf8)
+            },
             maxTotalBytes: 1000, maxTypes: 8)
-        XCTAssertFalse(readTypes.contains("com.example.heavy"))
-        XCTAssertEqual(snapshot.items.count, 5)
-        XCTAssertEqual(snapshot.items.flatMap { $0 }.map(\.type), Array(repeating: text, count: 5))
-        XCTAssertEqual(dropped, 5)
+        XCTAssertEqual(heavyReads, 3)
+        XCTAssertEqual(snapshot.items.flatMap { $0 }.count, 8)
+        XCTAssertEqual(dropped, 2)
+    }
+
+    /// 重い型しか無く全部が上限を超えたら空になるが、truncated で「元は空」と区別できる
+    func testSelectAllOversizedIsEmptyButTruncated() {
+        let (snapshot, dropped) = ClipboardSnapshot.select(
+            itemTypes: [["public.png"]], read: { _, _ in Data(count: 500) },
+            maxTotalBytes: 100, maxTypes: 10)
+        XCTAssertTrue(snapshot.isEmpty)
+        XCTAssertTrue(snapshot.truncated)
+        XCTAssertEqual(dropped, 1)
+    }
+
+    /// 退避しきれず空になった原本は、空と取り違えて消去しない（大きな画像が消える不具合の回帰）
+    func testTruncatedEmptyOriginalIsNotCleared() {
+        let truncatedEmpty = ClipboardSnapshot(items: [], truncated: true)
+        XCTAssertEqual(ClipboardRestorePolicy.decide(currentGeneration: 1,
+                                                     taskGeneration: 1,
+                                                     clipboardIsStillOurs: true,
+                                                     original: truncatedEmpty), .leaveTruncatedOriginal)
+        // 本当に空だった原本は従来どおり消す
+        XCTAssertEqual(ClipboardRestorePolicy.decide(currentGeneration: 1,
+                                                     taskGeneration: 1,
+                                                     clipboardIsStillOurs: true,
+                                                     original: ClipboardSnapshot(items: [])), .clear)
+        // 一部を退避できていれば、それを戻す
+        let partial = ClipboardSnapshot(items: [[.init(type: text, data: Data("a".utf8))]], truncated: true)
+        XCTAssertEqual(ClipboardRestorePolicy.decide(currentGeneration: 1,
+                                                     taskGeneration: 1,
+                                                     clipboardIsStillOurs: true,
+                                                     original: partial), .restore(partial))
     }
 
     /// 中身の無い型があるだけなら、上限で削ったことにはしない

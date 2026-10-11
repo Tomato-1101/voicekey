@@ -22,15 +22,27 @@ final class MeetBotNotifier {
     ///
     /// `.app` として起動していないプロセス（`swift test` など）で `UNUserNotificationCenter` に
     /// 触ると落ちるので、アプリとして動いているときだけ使う。
-    private var isUsable: Bool {
+    private static var isUsable: Bool {
         Bundle.main.bundleURL.pathExtension == "app"
     }
+    private var isUsable: Bool { Self.isUsable }
 
     /// 通知センターの delegate（center 側は弱参照なので、ここで持ち続ける）
     ///
     /// voicekey で `UNUserNotificationCenter` を使うのはこのボットだけなので、delegate を
     /// ここで設定しても他の通知と取り合わない。
     private static let delegate = NotificationDelegate()
+
+    /// アプリ起動時に delegate だけ付ける（許可は求めない）
+    ///
+    /// delegate が `prepare()` / `post()` のときにしか付かないと、再起動後に前の議事録の通知
+    /// （通知センターに残っている）を押しても、その時点では delegate が無く何も開かない。
+    /// ボット自体は参照するまで作らない設計なので、ここは通知センターに触るだけの最小限にする。
+    static func installDelegateAtLaunch() {
+        guard isUsable else { return }
+        let center = UNUserNotificationCenter.current()
+        if center.delegate !== delegate { center.delegate = delegate }
+    }
 
     /// 通知の許可を求める（初めてボットを使うときに 1 回だけ）
     func prepare() {

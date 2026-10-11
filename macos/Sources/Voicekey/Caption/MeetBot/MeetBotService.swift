@@ -367,7 +367,13 @@ final class MeetBotService: ObservableObject {
     ///
     /// - Parameter urlString: Meet の会議 URL（`https://meet.google.com/xxx-yyyy-zzz`）
     func join(urlString: String) {
-        guard !state.isActive, !isClosing else { return }
+        guard !state.isActive else { return }
+        // 前の会議の保存中に押されたら、無言で無視せず理由を知らせる（押したのに何も起きないと壊れたように見える）
+        guard !isClosing else {
+            notifier.prepare()
+            notifier.post(MeetBotText.joinWhileClosing)
+            return
+        }
         guard ChromeDevTools.isChromeInstalled else {
             state = .failed("Google Chrome が必要です")
             return
@@ -966,11 +972,14 @@ final class MeetBotService: ObservableObject {
         let now = Date()
 
         // 字幕欄がずっと見つからない（字幕がオフ・画面が変わった）なら、0 行のまま黙らずに知らせる
-        switch captionWatch.observe(found: (payload["found"] as? Bool) ?? false, now: now) {
+        // 本文ではなく「字幕がオンか」で見る（無言の会議で、字幕が出ているのに警告しないため）
+        let captionsOn = (payload["captionsOn"] as? Bool) ?? false
+        let hasEntries = !(((payload["entries"] as? [[String: Any]]) ?? []).isEmpty)
+        switch captionWatch.observe(found: captionsOn || hasEntries, now: now) {
         case .warn?:
             captionWarning = MeetBotText.captionMissing
             logger.error("Meet の字幕が 60 秒以上読めていません")
-            notifier.post("会議の字幕が 1 分以上取れていません。Meet の字幕がオンになっているか確かめてください（このままだと議事録に何も残りません）。")
+            notifier.post(MeetBotText.captionMissingNotice)
         case .recovered?:
             captionWarning = nil
         case nil:

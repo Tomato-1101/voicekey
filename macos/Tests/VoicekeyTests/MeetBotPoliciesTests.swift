@@ -83,6 +83,24 @@ final class MeetBotPoliciesTests: XCTestCase {
         XCTAssertEqual(watch.observe(found: false, now: start.addingTimeInterval(126)), .warn)
     }
 
+    /// 回復後にまた読めなくなっても、同じ会議では 2 回目の警告を出さない（無言の時間のたびに鳴らさない）
+    func testCaptionMissingWarnsOnlyOncePerMeeting() {
+        let start = Date()
+        var watch = CaptionPresenceWatch(start: start)
+        XCTAssertEqual(watch.observe(found: false, now: start.addingTimeInterval(61)), .warn)
+        XCTAssertEqual(watch.observe(found: true, now: start.addingTimeInterval(70)), .recovered)
+        XCTAssertFalse(watch.warning)
+        XCTAssertNil(watch.observe(found: false, now: start.addingTimeInterval(80)))
+        XCTAssertNil(watch.observe(found: false, now: start.addingTimeInterval(300)), "回復後の再欠落では再通知しない")
+        // 回復の表示消去は従来どおり（再欠落では warning が立たないので recovered も出ない）
+        XCTAssertNil(watch.observe(found: true, now: start.addingTimeInterval(310)))
+    }
+
+    /// 通知文は「誰も話していないだけなら大丈夫」の旨を含む
+    func testCaptionMissingNoticeReassuresWhenNobodySpeaks() {
+        XCTAssertTrue(MeetBotText.captionMissingNotice.contains("誰も話していないだけなら"))
+    }
+
     // MARK: - 参加ボタンの押し直し
 
     /// ロビーにいる間は間隔をあけて上限回数まで押し直す

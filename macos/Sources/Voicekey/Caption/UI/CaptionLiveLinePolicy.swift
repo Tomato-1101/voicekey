@@ -111,6 +111,19 @@ enum CaptionLineMergePolicy {
         return join(lastText, newText).count <= maxMergedCharacters
     }
 
+    /// まとめた行の表示本文を、各文の (訳, 原文) から組み立てる
+    ///
+    /// 訳がまだ届いていない文は原文で埋める。訳が空のまま結合すると、結合後の行の本文が
+    /// 後から来た文の訳だけになり、前の文の原文が画面から消えていた。
+    /// 全部の文で訳が空なら空のまま返す（原文だけを出す行・`.sourceOnly` は原文側の表示を保つ）。
+    /// 訳が後から届いたら、呼び出し側がこれで組み直す（`reviseTranslation`）。
+    static func composedText(parts: [(japanese: String, source: String)]) -> String {
+        guard parts.contains(where: { !$0.japanese.isEmpty }) else { return "" }
+        return parts
+            .map { $0.japanese.isEmpty ? $0.source : $0.japanese }
+            .reduce("", join)
+    }
+
     /// 2 つの本文をつなぐ（境目が英数字・記号なら空白を挟む。日本語どうしはそのままつなぐ）
     static func join(_ first: String, _ second: String) -> String {
         guard !first.isEmpty else { return second }

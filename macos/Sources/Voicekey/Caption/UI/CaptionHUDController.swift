@@ -327,7 +327,7 @@ final class CaptionHUDController {
               line.parts[index].japanese != japanese else { return }
         // まとめた行なら、その文の部分だけを書き換えてつなぎ直す
         line.parts[index].japanese = japanese
-        line.japanese = line.parts.map(\.japanese).reduce("", CaptionLineMergePolicy.join)
+        line.japanese = CaptionLineMergePolicy.composedText(parts: line.parts.map { ($0.japanese, $0.source) })
         let needed = Self.minimumDuration(for: line.japanese)
         if needed > line.minimumDuration {
             line.minimumDuration = needed
@@ -460,7 +460,8 @@ final class CaptionHUDController {
             maxLines: Self.maxConfirmedLines
         ) else { return false }
         last.parts.append((sequence, japanese, source))
-        last.japanese = CaptionLineMergePolicy.join(last.japanese, japanese)
+        // 前の文の訳がまだ空でも、その原文が画面から消えないよう各文から組み直す
+        last.japanese = CaptionLineMergePolicy.composedText(parts: last.parts.map { ($0.japanese, $0.source) })
         last.source = CaptionLineMergePolicy.join(last.source, source)
         let merged = last.japanese.isEmpty ? last.source : last.japanese
         let elapsed = now - last.shownAt

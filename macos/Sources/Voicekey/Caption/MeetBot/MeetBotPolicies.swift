@@ -76,6 +76,7 @@ struct MeetingPresenceWatch {
 ///
 /// 字幕がオフのまま・Meet の画面が変わった、などで 1 行も取れていないのに、画面は「記録中 0 行」のままだと
 /// 本人は会議が終わるまで気づけない。参加してから一定時間ずっと読めなければ 1 回だけ知らせる。
+/// 知らせるのは 1 会議につき 1 回まで（誰も話さない時間があるたびに通知が鳴ると、本物の警告が埋もれるため）。
 struct CaptionPresenceWatch {
 
     /// 何秒続いたら知らせるか
@@ -93,6 +94,8 @@ struct CaptionPresenceWatch {
     private var missingSince: Date?
     /// いま知らせている最中か
     private(set) var warning = false
+    /// この会議で既に知らせたか（回復後にまた読めなくなっても再通知しない）
+    private var warned = false
 
     /// - Parameter start: 見張りを始めた時刻（参加した時刻）。最初から読めないときもここから数える
     init(start: Date) {
@@ -102,7 +105,8 @@ struct CaptionPresenceWatch {
     /// 1 回分の読み取り結果を取り込む
     ///
     /// - Parameters:
-    ///   - found: 字幕欄が見つかったか
+    ///   - found: 字幕がオンで読める状態か（本文の有無ではなく「字幕欄・字幕ボタンの状態」。
+    ///            誰も話していないだけで警告しないよう、呼び出し側が本文と切り離して渡す）
     ///   - now: 読み取った時刻
     /// - Returns: 知らせる・取り消す合図（何もしないなら nil）
     mutating func observe(found: Bool, now: Date) -> Event? {
@@ -114,8 +118,9 @@ struct CaptionPresenceWatch {
         }
         let since = missingSince ?? now
         missingSince = since
-        guard !warning, now.timeIntervalSince(since) >= Self.warnAfter else { return nil }
+        guard !warning, !warned, now.timeIntervalSince(since) >= Self.warnAfter else { return nil }
         warning = true
+        warned = true
         return .warn
     }
 }
@@ -201,6 +206,12 @@ enum MeetBotText {
 
     /// 字幕が取れていないときの状態行・通知
     static let captionMissing = "字幕が取れていません（Meet の字幕が ON か確認）"
+    /// 前の会議の後片付け中に参加が押されたときの案内
+    static let joinWhileClosing = "前の会議を保存中です。数秒後にもう一度お試しください。"
+    /// 字幕が取れていない通知文（誰も話していないだけの場合に慌てないよう添える）
+    static let captionMissingNotice =
+        "会議の字幕が 1 分以上取れていません。Meet の字幕がオンになっているか確かめてください"
+        + "（このままだと議事録に何も残りません）。誰も話していないだけなら気にしなくて大丈夫です。"
 }
 
 /// 音声パイプラインの停止を、上限時間つきで待つ

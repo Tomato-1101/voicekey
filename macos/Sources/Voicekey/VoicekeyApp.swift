@@ -191,6 +191,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // メニューは画面に出ないが、キーイベントのフォールバック先として機能する。
         installMainMenu()
 
+        // 議事録ボットの通知を押したら議事録を開く delegate を、ボットを使う前（再起動後）から有効にする
+        MeetBotNotifier.installDelegateAtLaunch()
+
         // API 使用量のファイル読み込みを起動時に裏で済ませる（初回の音声入力の確定直後に
         // 遅延初期化のディスク読みが走らないように。日数ぶん JSON が育つため）。
         // 続けて、計測開始前の分をログ・統計から推定して取り込む（未実施のときだけ・1 回きり）。

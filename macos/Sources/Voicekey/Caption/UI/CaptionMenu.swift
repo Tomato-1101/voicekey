@@ -59,6 +59,9 @@ final class CaptionMenuController: NSObject, NSMenuDelegate {
         if let soniox = service.sonioxStatusLine {
             menu.addItem(disabledItem(soniox))
         }
+        if let degraded = service.appleDegradedStatusLine {
+            menu.addItem(disabledItem(degraded))
+        }
         menu.addItem(disabledItem(captureTargetLine(service)))
         menu.addItem(.separator())
 

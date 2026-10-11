@@ -238,8 +238,20 @@ extension MeetBotService {
     /// どちらも取れないときは、字幕領域（aria-label に「字幕」/Captions）の生テキストで代替する。
     static let captionScript = """
         (() => {
+            \(helpers)
             const clean = (s) => (s || '').replace(/\\s+/g, ' ').trim();
             const bodies = [...document.querySelectorAll('[jsname="tgaKEf"]')];
+            // 字幕欄の枠は「字幕」「Captions」そのものを aria-label に持つ。ボタンは別物なので除く
+            // （ツールバーの「字幕をオフにする」ボタンの合字 closed_caption を本文として拾う誤一致を防ぐ）
+            const isButtonLike = (el) => !!el.closest('button,[role="button"]');
+            const regionEl = [...document.querySelectorAll('[aria-label],[jsname]')].find((el) => {
+                const text = (el.getAttribute('aria-label') || '').trim();
+                return /^(字幕|captions)$/i.test(text) && !isButtonLike(el) && el.innerText && el.offsetParent;
+            });
+            // 字幕がオンか。本文の有無とは切り離す（誰も話していない間は本文が空でも字幕はオン）
+            const pressedOn = buttons().some((b) =>
+                /字幕|caption|subtitle/i.test(label(b)) && b.getAttribute('aria-pressed') === 'true');
+            const captionsOn = bodies.some(vis) || !!regionEl || pressedOn;
             if (bodies.length) {
                 const entries = bodies.map((body) => {
                     let block = body.parentElement;
@@ -260,17 +272,13 @@ extension MeetBotService {
                     }
                     return { speaker, text: clean(body.innerText) };
                 }).filter((e) => e.text);
-                return { found: true, source: 'jsname', entries };
+                return { found: true, captionsOn, source: 'jsname', entries };
             }
 
-            const region = [...document.querySelectorAll('[aria-label],[jsname]')].find((el) => {
-                const text = el.getAttribute('aria-label') || '';
-                return /字幕|captions/i.test(text) && el.innerText && el.offsetParent;
-            });
-            if (region) {
-                return { found: true, source: 'region', entries: [{ speaker: '', text: clean(region.innerText) }] };
+            if (regionEl) {
+                return { found: true, captionsOn, source: 'region', entries: [{ speaker: '', text: clean(regionEl.innerText) }] };
             }
-            return { found: false, entries: [] };
+            return { found: false, captionsOn, entries: [] };
         })()
         """
 

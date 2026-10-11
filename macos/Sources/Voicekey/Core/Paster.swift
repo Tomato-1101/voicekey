@@ -25,14 +25,19 @@ struct ClipboardSnapshot: Equatable, ExpressibleByStringLiteral {
     }
     /// 項目ごとの (型, 中身)。型の並び順は貼り付け先が選ぶ優先順なので配列で保つ
     let items: [[Entry]]
+    /// 上限で一部の型を退避しきれなかったか。中身が空のスナップショットでこれが true のときは
+    /// 「元は空」ではなく「大きすぎて持てなかった」ので、復元側が空と取り違えて消去してはいけない
+    let truncated: Bool
 
-    init(items: [[Entry]]) {
+    init(items: [[Entry]], truncated: Bool = false) {
         self.items = items
+        self.truncated = truncated
     }
 
     /// 文字列 1 つだけの中身（テスト・比較用）
     init(stringLiteral value: String) {
         items = [[Entry(type: NSPasteboard.PasteboardType.string.rawValue, data: Data(value.utf8))]]
+        truncated = false
     }
 
     /// 戻すものが無いか（空のクリップボード・空文字だけ）
@@ -74,9 +79,10 @@ struct ClipboardSnapshot: Equatable, ExpressibleByStringLiteral {
 
     /// 退避する型を選んで読む（純ロジック・テスト対象）
     ///
-    /// 軽い型を先に読み、残りの型は合計が上限に収まる間だけ読む。型数か合計サイズが上限を超えたら
-    /// 重い型は 1 つも残さず軽い型だけにする（一部の型だけ戻すと貼り付け先で別物に見えるため）。
-    /// 上限を超えた時点で以降の重い型は読まないので、超えた分の待ちは増えない。
+    /// 軽い型を先に読み、重い型は合計サイズと型数が上限に収まる分だけ残す。入らない型だけを飛ばし、
+    /// すでに受け入れた型は捨てない（以前は 1 つ超えた時点で重い型を全部捨てたため、画像だけをコピーして
+    /// いるとスナップショットが空になり、復元側が「元は空」と見て画像を消していた）。
+    /// 型数が上限に達したら以降の重い型は読まない（読むこと自体が貼り付けの待ちになるため）。
     ///
     /// - Parameters:
     ///   - itemTypes: 項目ごとの型名（貼り付け先が選ぶ優先順）
@@ -91,6 +97,7 @@ struct ClipboardSnapshot: Equatable, ExpressibleByStringLiteral {
         var light: [Int: [String: Data]] = [:]
         var heavy: [Int: [String: Data]] = [:]
         var total = 0
+        var keptCount = 0
         var limited = false
         for (index, types) in itemTypes.enumerated() {
             for type in types where lightTypes.contains(type) {
@@ -101,23 +108,25 @@ struct ClipboardSnapshot: Equatable, ExpressibleByStringLiteral {
                 }
                 light[index, default: [:]][type] = data
                 total += data.count
+                keptCount += 1
             }
         }
-        var heavyAllowed = itemTypes.reduce(0) { $0 + $1.count } <= maxTypes
-        outer: for (index, types) in itemTypes.enumerated() where heavyAllowed {
+        // 重い型の読み取りは型数の枠が残っている間だけ
+        outer: for (index, types) in itemTypes.enumerated() {
             for type in types where !lightTypes.contains(type) {
+                if keptCount >= maxTypes {
+                    limited = true
+                    break outer
+                }
                 guard let data = read(index, type) else { continue }
                 if total + data.count > maxTotalBytes {
-                    heavyAllowed = false
-                    break outer
+                    limited = true
+                    continue
                 }
                 heavy[index, default: [:]][type] = data
                 total += data.count
+                keptCount += 1
             }
-        }
-        if !heavyAllowed {
-            heavy = [:]
-            limited = true
         }
 
         var items: [[Entry]] = []
@@ -130,7 +139,7 @@ struct ClipboardSnapshot: Equatable, ExpressibleByStringLiteral {
         // 上限で削ったときだけ件数を返す（中身の無い型があるだけのときは 0）
         let kept = items.reduce(0) { $0 + $1.count }
         let dropped = limited ? itemTypes.reduce(0) { $0 + $1.count } - kept : 0
-        return (ClipboardSnapshot(items: items), dropped)
+        return (ClipboardSnapshot(items: items, truncated: dropped > 0), dropped)
     }
 
     /// クリップボードをこの中身に置き換える
@@ -162,6 +171,8 @@ enum ClipboardRestorePolicy {
         case restore(ClipboardSnapshot)
         /// 戻せる原本が無い（元々空だった）→ 自分が入れたテキストを消す
         case clear
+        /// 元は中身があったが大きすぎて退避しきれなかった → 空と取り違えて消さず、文字起こし結果を残す
+        case leaveTruncatedOriginal
     }
 
     /// - Parameters:
@@ -179,6 +190,8 @@ enum ClipboardRestorePolicy {
         // 増えることがあり、それで復元を諦めると文字起こし結果が残ってしまう
         guard clipboardIsStillOurs else { return .leaveUserContent }
         if let original, !original.isEmpty { return .restore(original) }
+        // 中身が空でも truncated なら「元は空」ではない。消すと大きな画像などが完全に失われたように見える
+        if let original, original.truncated { return .leaveTruncatedOriginal }
         return .clear
     }
 }
@@ -353,6 +366,8 @@ enum Paster {
                 return
             case .leaveUserContent:
                 ActionLog.shared.write("paster", "クリップボード復元 スキップ（ユーザーが新しくコピー）")
+            case .leaveTruncatedOriginal:
+                ActionLog.shared.write("paster", "クリップボード復元 スキップ（原本が大きすぎて退避できなかったため消去もしない）")
             case .restore(let original):
                 original.write(to: pasteboard)
                 ActionLog.shared.write("paster", "クリップボード復元 完了")

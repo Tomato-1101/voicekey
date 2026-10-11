@@ -98,6 +98,10 @@ final class CaptionService {
     /// 言語モデルが**既に入っている場合だけ** true にする（ダウンロード承認 UI は絶対に出さない）。
     /// 部分訳ドライバ・翻訳キューから読むので unfair lock で守る。
     private let appleLiveLineReady = OSAllocatedUnfairLock(initialState: false)
+    /// Apple 先出しの連続失敗回数（翻訳器は 1 文ごとに作り直すので、数えるのはここ）
+    private let appleFailureStreak = OSAllocatedUnfairLock(initialState: AppleFailureStreak())
+    /// Apple の先出し翻訳が失敗続きでクラウド先行に格下げされているか（メニュー表示用・メインスレッド）
+    private(set) var appleDegradedNote: String?
     /// 遅延計測（実運用でも .notice で残す）
     private let latency = CaptionLatencyLog()
     /// 字幕動作中の App Nap 抑止トークン
@@ -160,6 +164,11 @@ final class CaptionService {
     ///
     /// 課金はストリームを開いている時間ぶんなので、いま繋いでいるか（＝課金中か）と、
     /// Apple に切り替わっているならその理由を、本人が見て分かるように出す。
+    /// Apple 翻訳が失敗続きでクラウドが先に訳しているときの状態行（そうでなければ nil）
+    var appleDegradedStatusLine: String? {
+        state.isActive ? appleDegradedNote : nil
+    }
+
     var sonioxStatusLine: String? {
         guard CaptionSettings.translationEngine == .soniox, state.isActive else { return nil }
         if let reason = sonioxFallbackReason {
@@ -255,6 +264,8 @@ final class CaptionService {
         pendingRestart = nil
         sessionEngineOverride.withLock { $0 = nil }
         sonioxFallbackReason = nil
+        appleDegradedNote = nil
+        appleFailureStreak.withLock { $0.reset() }
         state = .preparing("音声認識モデルを確認中…")
         // 一度でも開始したら、次回起動からは設定に従って自動開始してよい
         // （初回はシステム音声録音の許可ダイアログが出るので自動開始しない）
@@ -271,6 +282,7 @@ final class CaptionService {
         pendingRestart = nil
         sessionEngineOverride.withLock { $0 = nil }
         sonioxFallbackReason = nil
+        appleDegradedNote = nil
         teardownSession()
         state = .stopped
         endAntiNap()
@@ -741,6 +753,10 @@ final class CaptionService {
             guard let self else { return }
             let ready = await self.appleTranslator.prepareIfInstalled()
             self.appleLiveLineReady.withLock { $0 = ready }
+            if ready {
+                self.appleFailureStreak.withLock { $0.reset() }
+                DispatchQueue.main.async { self.appleDegradedNote = nil }
+            }
             let description = ready ? "利用可" : "言語モデル未導入のため原文のみ"
             self.logger.notice("ライブ行の暫定訳(Apple): \(description, privacy: .public)")
         }
@@ -762,9 +778,11 @@ final class CaptionService {
         case .gemini: cloud = geminiTranslator
         case .groq: cloud = groqTranslator
         }
-        return Self.confirmedTranslator(apple: appleTranslator, cloud: cloud, appleFirst: appleFirst) { [weak self] in
-            self?.noteAppleLiveLineFailed()
-        }
+        return Self.confirmedTranslator(
+            apple: appleTranslator, cloud: cloud, appleFirst: appleFirst,
+            onAppleFailure: { [weak self] in self?.noteAppleLiveLineFailed() },
+            onAppleSuccess: { [weak self] in self?.appleFailureStreak.withLock { $0.recordSuccess() } }
+        )
     }
 
     /// クラウド選択時の確定文の翻訳器を組む（単体テスト用に static で出している）
@@ -774,28 +792,44 @@ final class CaptionService {
     ///
     /// - Parameters:
     ///   - appleFirst: Apple の訳を先に出す構成か
-    ///   - onAppleFailure: Apple 先出しで Apple が失敗したときに呼ぶ（以後の構成を cloud→Apple に戻すため）
+    ///   - onAppleFailure: Apple 先出しで Apple が失敗したときに呼ぶ（連続失敗の判定は呼び出し側）
+    ///   - onAppleSuccess: Apple 先出しで Apple が成功したときに呼ぶ（連続失敗を数え直すため）
     static func confirmedTranslator(
         apple: Translator, cloud: Translator, appleFirst: Bool,
-        onAppleFailure: @escaping @Sendable () -> Void
+        onAppleFailure: @escaping @Sendable () -> Void,
+        onAppleSuccess: (@Sendable () -> Void)? = nil
     ) -> Translator {
         appleFirst
-            ? FallbackTranslator(primary: apple, fallback: cloud, onPrimaryFailure: onAppleFailure)
+            ? FallbackTranslator(
+                primary: apple, fallback: cloud,
+                onPrimaryFailure: onAppleFailure, onPrimarySuccess: onAppleSuccess)
             : FallbackTranslator(primary: cloud, fallback: apple)
     }
 
     /// Apple 先出しで Apple が失敗した
     ///
-    /// 以後は従来の cloud→Apple 構成に戻す（Apple を先に試して毎回失敗待ちをしない）。
-    /// 差し替え先もこれで nil になるので、Apple の代わりにクラウドで訳した文を二重に送らない。
+    /// 1 回の失敗では先出しを続ける（瞬間的なエラーで、そのセッション中ずっと遅いクラウド先行に
+    /// なるのを避けるため）。**連続 3 回**失敗したら従来の cloud→Apple 構成に格下げする
+    /// （Apple を先に試して毎回失敗待ちをしない）。失敗した文自体は `FallbackTranslator` がクラウドで訳す。
+    /// 格下げ後は差し替え先も nil になるので、Apple の代わりにクラウドで訳した文を二重に送らない。
     /// 再準備はセッション開始・エンジン切替のときの `prepareAppleLiveLineIfNeeded` だけ（ここで
     /// 準備を繰り返すと、壊れた状態で準備と失敗を往復し続けるため）。
     private func noteAppleLiveLineFailed() {
+        guard appleFailureStreak.withLock({ $0.recordFailure() }) else {
+            logger.notice("Apple の先出し翻訳が失敗しました（連続失敗がまだ上限未満のため先出しは続けます）")
+            return
+        }
         let wasReady = appleLiveLineReady.withLock { ready -> Bool in
             defer { ready = false }
             return ready
         }
-        if wasReady { logger.notice("Apple の先出し翻訳が失敗したため、このセッションはクラウドを先に使います") }
+        guard wasReady else { return }
+        logger.notice("Apple の先出し翻訳が連続で失敗したため、このセッションはクラウドを先に使います")
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.state.isActive else { return }
+            self.appleDegradedNote = "Apple 翻訳が失敗続きのためクラウドで訳しています"
+            self.hud.showNotice("Apple 翻訳が失敗続きのため、クラウドで訳しています")
+        }
     }
 
     /// 先に出した Apple の訳を差し替えるクラウドの翻訳器（差し替えないなら nil）

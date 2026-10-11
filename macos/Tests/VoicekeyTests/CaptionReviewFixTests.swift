@@ -232,6 +232,25 @@ final class CaptionReviewFixTests: XCTestCase {
             newText: "はい。", lastText: nil, activeCount: 2, oldestHasMetMinimum: false, maxLines: max))
     }
 
+    /// 前の文の訳がまだ空のまま結合しても、前の文の原文が表示本文から消えない
+    func testMergedTextKeepsUntranslatedPartAsSource() {
+        // 前の文は訳待ち（原文だけ）、後の文は訳済み
+        XCTAssertEqual(
+            CaptionLineMergePolicy.composedText(parts: [("", "Thank you."), ("はい。", "Yes.")]),
+            "Thank you. はい。")
+        // 全部訳済みなら訳だけをつなぐ（従来どおり）
+        XCTAssertEqual(
+            CaptionLineMergePolicy.composedText(parts: [("ありがとう。", "Thank you."), ("はい。", "Yes.")]),
+            "ありがとう。はい。")
+        // 訳が後から届いたら、その部分だけ訳に置き換わる
+        var parts: [(japanese: String, source: String)] = [("", "Thank you."), ("はい。", "Yes.")]
+        parts[0].japanese = "ありがとう。"
+        XCTAssertEqual(CaptionLineMergePolicy.composedText(parts: parts), "ありがとう。はい。")
+        // 全部訳が空（原文だけの行）は空のまま＝原文側の表示を保つ
+        XCTAssertEqual(CaptionLineMergePolicy.composedText(parts: [("", "a"), ("", "b")]), "")
+        XCTAssertEqual(CaptionLineMergePolicy.composedText(parts: []), "")
+    }
+
     /// つなぎ方（日本語はそのまま、英語は空白を挟む）
     func testMergeJoin() {
         XCTAssertEqual(CaptionLineMergePolicy.join("ありがとう。", "はい。"), "ありがとう。はい。")

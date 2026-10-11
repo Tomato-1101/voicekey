@@ -124,6 +124,33 @@ protocol StreamingTranslator: Translator {
     ) async throws -> String
 }
 
+/// Apple 先出しの翻訳が「連続で」何回失敗したかを数える（純ロジック・テスト対象）
+///
+/// 1 回の失敗（瞬間的な翻訳エラー）で先出しをやめると、そのセッション中ずっと遅いクラウド先行になる。
+/// 連続して失敗が続いたときだけ格下げし、成功が 1 回でもあれば数え直す。
+struct AppleFailureStreak: Equatable, Sendable {
+    /// 何回続けて失敗したら格下げするか
+    static let limit = 3
+
+    private(set) var count = 0
+
+    /// 失敗を数える。連続回数が上限に達したら true（格下げする合図）
+    mutating func recordFailure() -> Bool {
+        count += 1
+        return count >= Self.limit
+    }
+
+    /// 成功したので数え直す
+    mutating func recordSuccess() {
+        count = 0
+    }
+
+    /// 構成を戻したとき（再準備・セッション開始）の数え直し
+    mutating func reset() {
+        count = 0
+    }
+}
+
 /// 本命の翻訳器が失敗したら別の翻訳器へ落とす包み
 ///
 /// クラウドは 429（レート制限）や瞬断で普通に失敗する。そのたびに字幕が原文のままに
@@ -142,12 +169,16 @@ struct FallbackTranslator: StreamingTranslator {
     /// 呼び出し側が「以後は本命を使わない」と構成を切り替えるための口。落とし先を試す前に呼ぶのは、
     /// この後に解決される差し替え先（クラウド）が同じ文をもう一度クラウドへ送らないようにするため。
     var onPrimaryFailure: (@Sendable () -> Void)? = nil
+    /// 本命が成功した直後に呼ぶ（呼び出し側が「連続失敗」を数え直すための口）
+    var onPrimarySuccess: (@Sendable () -> Void)? = nil
 
     private var logger: Logger { makeCaptionLogger("FallbackTranslator") }
 
     func translate(_ text: String, context: [TranslationExchange]) async throws -> String {
         do {
-            return try await primary.translate(text, context: context)
+            let result = try await primary.translate(text, context: context)
+            onPrimarySuccess?()
+            return result
         } catch {
             return try await useFallback(text, context: context, reason: error)
         }
@@ -162,7 +193,9 @@ struct FallbackTranslator: StreamingTranslator {
             return try await translate(text, context: context)
         }
         do {
-            return try await streaming.translateStreaming(text, context: context, onDelta: onDelta)
+            let result = try await streaming.translateStreaming(text, context: context, onDelta: onDelta)
+            onPrimarySuccess?()
+            return result
         } catch {
             return try await useFallback(text, context: context, reason: error)
         }
