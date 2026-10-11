@@ -5,8 +5,9 @@
 //  修飾キーのみのホットキー（右⌘ 単独など）にも対応する:
 //  - 通常キーが押されたら「修飾キー + そのキー」で確定
 //  - 修飾キーだけが押されて全部離されたら「押されていた修飾キー」で確定
-//  - Esc で「割り当てなし」（空トークン）として確定する（ユーザー要望。捕捉のキャンセルは
-//    ボタン再クリックで行う）
+//  - Esc は取り消し（元の割り当てのまま捕捉をやめる）。以前は「割り当てなし」で確定していたが、
+//    やめるつもりで Esc を押すと割り当てが消えてしまうため。外すときは各行の「クリア」
+//    「割り当てを外す」ボタンを使う
 //
 
 import AppKit
@@ -30,7 +31,7 @@ struct HotkeyRecorderView: View {
                     .foregroundStyle(isRecording ? Brand.signal : Color.primary)
                 Spacer()
                 if isRecording {
-                    Text("ESC で割り当てなし")
+                    Text("ESC で取り消し")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -99,8 +100,8 @@ struct HotkeyRecorderView: View {
             }
 
         case .keyDown:
-            if event.keyCode == 53 {  // Esc は「割り当てなし」（空）として確定する
-                commit([])
+            if event.keyCode == 53 {  // Esc は取り消し（元の割り当てを残す）
+                stopRecording()
                 return
             }
             guard let token = KeyToken.token(forKeyCode: Int64(event.keyCode)) else { return }

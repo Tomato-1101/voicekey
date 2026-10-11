@@ -113,7 +113,14 @@ struct MainWindowView: View {
     /// 設定タブのナビ項目（配布ビルドでは API キーを出さない）。並び順がそのままサイドバーの表示順。
     /// ビルド種別と OS だけで決まるので static にして、ウィンドウの外（保存タブの検証など）からも引けるようにする。
     static var settingsNavItems: [SettingsNavItem] {
-        var items: [SettingsNavItem] = [
+        var items: [SettingsNavItem] = []
+        // personal は GitHub で一般配布し、利用者が各自のキーを入れて使うので API キーを出す。
+        // キーが無いと何も始まらないので、最後尾ではなく先頭に置く（初めての人が探さずに済むように）。
+        // 製品版（配布ビルド）はサーバー経由でキーを持たないため出さない（混乱防止）
+        if !EmbeddedKeys.isDist {
+            items.append(.init(id: 5, title: "API キー", icon: "key", section: "音声入力"))
+        }
+        items += [
             .init(id: 1, title: "録音キー 1（メイン）", icon: "1.circle", section: "音声入力"),
             .init(id: 2, title: "録音キー 2（サブ）", icon: "2.circle", section: "音声入力"),
             .init(id: 8, title: "ユーザー辞書", icon: "character.book.closed", section: "音声入力"),
@@ -131,11 +138,6 @@ struct MainWindowView: View {
             items.append(.init(id: 6, title: "アカウント", icon: "person.crop.circle", section: "アプリ"))
         }
         items.append(.init(id: 7, title: "バージョン情報", icon: "info.circle", section: "アプリ"))
-        // personal は GitHub で一般配布し、利用者が各自のキーを入れて使うので API キーを出す。
-        // 製品版（配布ビルド）はサーバー経由でキーを持たないため出さない（混乱防止）
-        if !EmbeddedKeys.isDist {
-            items.append(.init(id: 5, title: "API キー", icon: "key", section: "アプリ"))
-        }
         return items
     }
 
@@ -400,8 +402,8 @@ struct MainWindowView: View {
     @ViewBuilder private func settingsContent(tab: Int) -> some View {
         switch tab {
         case 0: GeneralSettingsTab(config: config, historySync: historySync)
-        case 1: SlotSettingsTab(title: "録音キー 1（メイン）", slot: $config.slot1)
-        case 2: SlotSettingsTab(title: "録音キー 2（サブ）", slot: $config.slot2)
+        case 1: SlotSettingsTab(title: "録音キー 1（メイン）", slot: $config.slot1, otherHotkey: config.slot2.hotkey)
+        case 2: SlotSettingsTab(title: "録音キー 2（サブ）", slot: $config.slot2, otherHotkey: config.slot1.hotkey)
         case 8: DictionaryTab(config: config)
         case 9:
             if #available(macOS 26.0, *) {
@@ -756,6 +758,10 @@ private struct GeneralSettingsTab: View {
 private struct SlotSettingsTab: View {
     let title: String
     @Binding var slot: SlotConfig
+    /// もう一方のスロットのキー（同じキーを選んだときに警告するため）
+    var otherHotkey: [String] = []
+    /// エンジン変更でモデルを自動で切り替えたときの、切り替え先（ユーザーが選び直すまで一言出す）
+    @State private var autoSwitchedModel: String?
 
     // 説明文は別の行に置かず、項目名の下に小さく添える（一般タブと同じ作り）。
     var body: some View {
@@ -766,7 +772,7 @@ private struct SlotSettingsTab: View {
                         // 未割り当てのスロットは録音しない。空表示は「未割り当て」と明示する
                         HotkeyRecorderView(hotkey: $slot.hotkey, emptyLabel: "未割り当て")
                             .frame(width: 180)
-                        // 捕捉を始めずに未割り当てへ戻す明示ボタン（ESC と併せて発見性を上げる）
+                        // 捕捉を始めずに未割り当てへ戻す明示ボタン（ESC は取り消しなので、外す手段はこれだけ）
                         if !slot.hotkey.isEmpty {
                             Button("割り当てを外す") { slot.hotkey = [] }
                         }
@@ -774,8 +780,14 @@ private struct SlotSettingsTab: View {
                 } label: {
                     SettingRowLabel(
                         title: "ホットキー",
-                        detail: "クリックしてキーを押すと割り当てます。ESC で割り当てなし（このキーを無効化）。"
+                        detail: "クリックしてキーを押すと割り当てます。ESC で取り消し。"
                     )
+                }
+                // 同じキーだと片方の録音しか始まらず、どちらが動くか分からなくなる
+                if KeyToken.conflicts(slot.hotkey, otherHotkey) {
+                    Label("もう一方の録音キーと同じキーです。どちらかを変えてください", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
 
                 Picker("録音のしかた", selection: $slot.mode) {
@@ -801,11 +813,14 @@ private struct SlotSettingsTab: View {
                     )
                 }
                 .onChange(of: slot.backend) { _, newBackend in
-                    // バックエンド変更時はそのバックエンドの推奨モデルに固定で切り替える
-                    slot.model = newBackend.defaultModel
-                    // 整形トグルはそのモードの既定へ追従させる（即時入力=既定 OFF・
-                    // スタンダード=既定 ON）。ユーザーはこの後トグルで自由に上書きできる。
-                    slot.formatEnabled = newBackend.defaultFormatEnabled
+                    // モデル名はエンジンごとに別物なので、そのエンジンの推奨モデルへ切り替える。
+                    // 黙って変えると気づけないので、切り替えたことを一言出す。
+                    // 整形は利用者が決めた設定なので、エンジンを変えても触らない
+                    // （以前はエンジンの既定へ黙って上書きしていた）。
+                    if slot.model != newBackend.defaultModel {
+                        slot.model = newBackend.defaultModel
+                        autoSwitchedModel = newBackend.defaultModel
+                    }
                 }
 
                 // 自分用ビルドはモデルまで自分で選べる（製品版はモデル非選択で固定）。
@@ -824,6 +839,12 @@ private struct SlotSettingsTab: View {
                             Text(slot.model).tag(slot.model)
                         }
                     }
+                }
+                // 自分で選び直したら消える（切り替え先のままの間だけ出す）
+                if let autoSwitchedModel, autoSwitchedModel == slot.model {
+                    Text("エンジンを変えたので、モデルを「\(autoSwitchedModel)」に切り替えました")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 

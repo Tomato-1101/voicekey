@@ -297,7 +297,7 @@ final class AppController: ObservableObject {
                 guard let self, self.recordingSlot != nil else { return }
                 log.warning("録音中にオーディオ構成が変化したため録音を確定します")
                 self.finishRecording()
-                self.hud.notice("マイクの構成が変わったため録音を停止しました")
+                self.hud.notice("マイクの構成が変わったため録音を停止しました", isError: true)
             }
         }
     }
@@ -985,7 +985,7 @@ final class AppController: ObservableObject {
         log.info("再貼り付けショートカット: 直近テキストを貼り付け (\(last.text.count) 文字)")
         Task {
             // ⌘V を送れなかったときは結果がクリップボードに残っているので、手で貼るよう知らせる
-            if !(await Paster.paste(last.text)) { hud.notice(Self.pasteFailedNotice) }
+            if !(await Paster.paste(last.text)) { hud.notice(Self.pasteFailedNotice, isError: true) }
         }
     }
 
@@ -1236,7 +1236,7 @@ final class AppController: ObservableObject {
             try? await Task.sleep(for: .seconds(kMaxRecordingSec))
             guard let self, !Task.isCancelled, self.recordingSlot != nil else { return }
             log.warning("録音時間が上限に達したため自動停止します")
-            self.hud.notice("録音時間の上限に達したため停止しました")
+            self.hud.notice("録音時間の上限に達したため停止しました", isError: true)
             self.finishRecording()
         }
     }
@@ -1291,7 +1291,7 @@ final class AppController: ObservableObject {
         // 世代を進めて、遅れて届くチャンク・進捗を捨てる
         recordingGeneration &+= 1
         emitState()
-        hud.notice(failure.noticeText)
+        hud.notice(failure.noticeText, isError: true)
     }
 
     /// 録音開始が期限内に返ってこなかった。録音セッションを畳んで待機へ戻す。
@@ -1345,7 +1345,7 @@ final class AppController: ObservableObject {
         // 世代を進めて、遅れて届く開始完了・チャンク・進捗を全部捨てる
         recordingGeneration &+= 1
         emitState()
-        hud.notice(message)
+        hud.notice(message, isError: true)
     }
 
     /// 詰まった制御キューへ ping を 1 つ積み、実行されたら詰まり判定を解除する。
@@ -1388,7 +1388,7 @@ final class AppController: ObservableObject {
         guard StallPolicy.shouldRelaunchForStall(relaunchTimes: ledger, now: now) else {
             log.warning("オーディオ停止からの自動再起動が上限に達しました")
             ActionLog.shared.write("audio", "自動再起動の上限に達したため再起動しません")
-            hud.notice("オーディオが復帰しません。Mac の再起動が必要です")
+            hud.notice("オーディオが復帰しません。Mac の再起動が必要です", isError: true)
             return
         }
 
@@ -1528,7 +1528,7 @@ final class AppController: ObservableObject {
             pipelineTail = nil
         }
         emitState()
-        hud.notice(notice)
+        hud.notice(notice, isError: true)
     }
 
     /// この世代の結果を今も受け取ってよいか（打ち切り済みなら false＝捨てる）
@@ -1571,7 +1571,7 @@ final class AppController: ObservableObject {
         } else {
             // 無言で原文が入ると「翻訳が効いていない」ことに気付けないので必ず知らせる
             log.notice("翻訳して入力に失敗したため原文を入力します: \(result.failureReason ?? "不明", privacy: .public)")
-            hud.notice("翻訳できなかったため原文を入力しました")
+            hud.notice("翻訳できなかったため原文を入力しました", isError: true)
         }
         // 本文は出さない（エンジン・時間・成否だけ）
         ActionLog.shared.write(
@@ -1809,20 +1809,20 @@ final class AppController: ObservableObject {
                     if !streamPasted {
                         // 結果はクリップボードに残してある。入っていないのに Enter を送ると
                         // 入力欄の別の内容を送信しかねないので、auto_enter も送らない
-                        if !isAbandoned(generation) { hud.notice(Self.pasteFailedNotice) }
+                        if !isAbandoned(generation) { hud.notice(Self.pasteFailedNotice, isError: true) }
                     } else {
                         // 接続がエラー・切断で途中で壊れたときは、入ったのが途中までかもしれないと知らせる
                         // （喋った分は捨てずに貼る）。タイムアウトは確定待ちが長引いただけなので知らせない
                         // 録音全体の再送で救えたときは全文が入っているので知らせない
                         if case .failed(let failure) = ending, failure != .timeout, !replayedAfterFailure,
                            !isAbandoned(generation) {
-                            hud.notice("接続が途中で切れたため、途中までの入力です")
+                            hud.notice("接続が途中で切れたため、途中までの入力です", isError: true)
                         }
                         if autoEnter {
                             try? await Task.sleep(for: .milliseconds(max(0, delayMs)))
                             // 待っている間に打ち切られていたら Enter は送らない（別の入力欄で送信しかねない）
                             if !isAbandoned(generation), !(await Paster.pressEnter(logGeneration: generation)) {
-                                hud.notice(Self.enterFailedNotice)
+                                hud.notice(Self.enterFailedNotice, isError: true)
                             }
                         }
                     }
@@ -1905,7 +1905,7 @@ final class AppController: ObservableObject {
                 timelines[generation]?.outcome = DictationTimeline.Outcome.transcribeFailed
                 if !isAbandoned(generation) {
                     // 応答本文は message から外したので、通知文はそのまま [HUD] 行に出してよい
-                    hud.notice(error.message)
+                    hud.notice(error.message, isError: true)
                     // HUD の通知はクリックを透過するので、入力先（設定 › API キー）は別途開いて案内する。
                     // 開くのは起動中 1 回だけ（失敗のたびに設定画面が前面に出て入力中のアプリから
                     // フォーカスを奪わないように。2 回目以降は上の HUD 通知だけ）
@@ -1916,7 +1916,7 @@ final class AppController: ObservableObject {
                 log.error("文字起こしで予期しないエラー: \(error.localizedDescription)")
                 ActionLog.shared.write("transcriber", "文字起こしエラー(想定外): \(error.localizedDescription)")
                 timelines[generation]?.outcome = DictationTimeline.Outcome.transcribeFailed
-                if !isAbandoned(generation) { hud.notice("文字起こしに失敗しました") }
+                if !isAbandoned(generation) { hud.notice("文字起こしに失敗しました", isError: true) }
                 return
             }
             let sttMs = Int((ProcessInfo.processInfo.systemUptime - sttStart) * 1000)
@@ -1981,7 +1981,7 @@ final class AppController: ObservableObject {
             timelines[generation]?.outcome = pasted
                 ? DictationTimeline.Outcome.pasted : DictationTimeline.Outcome.pasteFailed
             // 結果はクリップボードに残してあるので、手で貼るよう知らせる
-            if !pasted, !isAbandoned(generation) { hud.notice(Self.pasteFailedNotice) }
+            if !pasted, !isAbandoned(generation) { hud.notice(Self.pasteFailedNotice, isError: true) }
             let totalMs = Int((ProcessInfo.processInfo.systemUptime - restT0) * 1000)
             // 統合時は整形を STT と一緒に済ませたことが分かるよう「整形 サーバー統合」と表記する
             let fmtDesc = didServerFormat ? "整形 サーバー統合" : "整形 \(fmtMs)"
@@ -1991,7 +1991,7 @@ final class AppController: ObservableObject {
                 try? await Task.sleep(for: .milliseconds(max(0, delayMs)))
                 // 待っている間に打ち切られていたら Enter は送らない（別の入力欄で送信しかねない）
                 if !isAbandoned(generation), !(await Paster.pressEnter(logGeneration: generation)) {
-                    hud.notice(Self.enterFailedNotice)
+                    hud.notice(Self.enterFailedNotice, isError: true)
                 }
             }
             // 実績の集計（JSON 書き出しを含む）は貼り付けに関係しないので、貼り付け・Enter の後に回す
