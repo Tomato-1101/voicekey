@@ -53,7 +53,20 @@ final class GeminiTranslator: Translator {
     func translate(_ text: String, context: [TranslationExchange]) async throws -> String {
         guard let key = keyProvider(), !key.isEmpty else { throw TranslationError.missingAPIKey }
         let body = requestBody(text: text, context: context, maxOutputTokens: 512)
-        return try await send(body: body, model: modelProvider(), key: key, allowRetry: true)
+        let model = modelProvider()
+        do {
+            return try await send(body: body, model: model, key: key, allowRetry: true)
+        } catch let unavailable as ModelUnavailable {
+            // モデルの提供終了だけは、その 1 回をおすすめで取り直して設定も書き換える
+            guard let replacement = LLMModelCatalog.replaceUnavailable(.captionGemini, failedModel: model) else {
+                throw unavailable.error
+            }
+            do {
+                return try await send(body: body, model: replacement, key: key, allowRetry: true)
+            } catch let again as ModelUnavailable {
+                throw again.error
+            }
+        }
     }
 
     /// キーが有効かどうかを最小のリクエストで確かめる
@@ -69,7 +82,16 @@ final class GeminiTranslator: Translator {
             "generationConfig": ["maxOutputTokens": 8],
         ]
         // 検証はユーザーを待たせるので再試行しない（結果をすぐ返す）
-        _ = try await send(body: body, model: modelProvider(), key: key, allowRetry: false)
+        do {
+            _ = try await send(body: body, model: modelProvider(), key: key, allowRetry: false)
+        } catch let unavailable as ModelUnavailable {
+            throw unavailable.error
+        }
+    }
+
+    /// モデルが提供終了／存在しないことによる失敗（呼び出し側でおすすめへの差し替えを判断する）
+    private struct ModelUnavailable: Error {
+        let error: TranslationError
     }
 
     // MARK: - 内部処理
@@ -165,6 +187,9 @@ final class GeminiTranslator: Translator {
         case 429:
             throw TranslationError.rateLimited(retryAfter: retryAfterSeconds(http: http, data: data))
         case 400...499:
+            if LLMModelCatalog.isModelUnavailable(status: http.statusCode, data: data) {
+                throw ModelUnavailable(error: .badRequest(message: errorMessage(from: data)))
+            }
             throw TranslationError.badRequest(message: errorMessage(from: data))
         default:
             throw TranslationError.serverError(status: http.statusCode, message: errorMessage(from: data))

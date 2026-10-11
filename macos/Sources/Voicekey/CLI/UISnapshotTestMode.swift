@@ -171,7 +171,7 @@ enum UISnapshotTestMode {
             store.recordAudio(provider: .groq, model: "whisper-large-v3-turbo", seconds: 4, date: date)
             store.recordTokens(provider: .groq, model: "openai/gpt-oss-20b", purpose: .translation,
                                inputTokens: 1_800 + offset * 30, outputTokens: 600, date: date)
-            store.recordTokens(provider: .groq, model: "llama-3.1-8b-instant", purpose: .formatting,
+            store.recordTokens(provider: .groq, model: LLMModelCatalog.recommendedGroq, purpose: .formatting,
                                inputTokens: 2_400, outputTokens: 900, date: date)
         }
         // 無料枠の見え方（実払いモードで「無料枠」になる）を撮るため ElevenLabs の実測も 1 行

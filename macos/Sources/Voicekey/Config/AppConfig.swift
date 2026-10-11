@@ -358,6 +358,8 @@ final class ConfigStore: ObservableObject {
     @Published var translateInputTarget: String
     /// 翻訳に使うエンジン（既定 Apple のオンデバイス）
     @Published var translateInputEngine: DictationTranslationEngine
+    /// Groq エンジンで使うモデル（字幕とは独立。既定はおすすめ）
+    @Published var translateInputGroqModel: String
 
     /// 保護リストの既定シード（一人／二人＝ひとり・ふたり、十分＝じゅうぶん 等の誤変換を守る）
     static let defaultNumeralProtectWords = [
@@ -431,7 +433,10 @@ final class ConfigStore: ObservableObject {
         streamingEnabled = true
         autoEnterDelayMs = defaults.object(forKey: Keys.autoEnterDelayMs) as? Int ?? 50
         inputDeviceUID = defaults.string(forKey: Keys.inputDeviceUID) ?? ""
-        formatModel = defaults.string(forKey: Keys.formatModel) ?? "llama-3.1-8b-instant"
+        // 廃止された LLM モデル（2026-10 の Groq llama 廃止など）の保存値を一度だけおすすめへ直す。
+        // 下で整形・字幕・翻訳入力のモデルを写し取る前にやる（写しに古い値が残らないように）
+        LLMModelCatalog.migrateStoredModelsIfNeeded(defaults: defaults)
+        formatModel = defaults.string(forKey: Keys.formatModel) ?? LLMModelCatalog.recommendedGroq
         // 既定値はそのまま編集できるよう実テキストを初期表示する（空欄なら実行時に既定へフォールバック）。
         // 保存されるのはユーザーが編集した場合のみ（下の保存処理参照）なので、
         // 未編集なら常に最新の既定文が使われる
@@ -467,6 +472,7 @@ final class ConfigStore: ObservableObject {
         translateInputEnabled = DictationTranslation.isEnabled
         translateInputTarget = DictationTranslation.targetLanguage
         translateInputEngine = DictationTranslation.engine
+        translateInputGroqModel = DictationTranslation.groqModelID
         sideNotchEnabled = defaults.object(forKey: Keys.sideNotchEnabled) as? Bool ?? true
         historyEnabled = defaults.object(forKey: Keys.historyEnabled) as? Bool ?? true
         historySyncEnabled = defaults.object(forKey: Keys.historySyncEnabled) as? Bool ?? false
@@ -556,6 +562,7 @@ final class ConfigStore: ObservableObject {
         $translateInputEnabled.dropFirst().sink { DictationTranslation.isEnabled = $0 }.store(in: &cancellables)
         $translateInputTarget.dropFirst().sink { DictationTranslation.targetLanguage = $0 }.store(in: &cancellables)
         $translateInputEngine.dropFirst().sink { DictationTranslation.engine = $0 }.store(in: &cancellables)
+        $translateInputGroqModel.dropFirst().sink { DictationTranslation.groqModelID = $0 }.store(in: &cancellables)
     }
 
     /// ユーザー辞書の確定置換を最終テキストに適用する。

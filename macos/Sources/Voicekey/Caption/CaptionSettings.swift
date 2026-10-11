@@ -273,11 +273,11 @@ enum CaptionSettings {
         set { UserDefaults.standard.set(newValue.rawValue, forKey: Key.engine) }
     }
 
-    /// 既定の Gemini モデル
+    /// 既定の Gemini モデル（おすすめは `LLMModelCatalog` に集約）
     ///
     /// 6 エンジンのベンチ（2026-08-10）で、聞き間違いの修復 7/7・中央値 739ms・
     /// 10 文 0.163 円と質/速度/費用の釣り合いが最良だった。
-    static let defaultGeminiModelID = "gemini-3.5-flash-lite"
+    static let defaultGeminiModelID = LLMModelCatalog.recommendedGemini
 
     /// Gemini エンジンで使うモデル ID
     static var geminiModelID: String {
@@ -285,8 +285,8 @@ enum CaptionSettings {
         set { storeModelID(newValue, key: Key.geminiModel, fallback: defaultGeminiModelID) }
     }
 
-    /// 既定の Groq モデル（production ラインナップから質と速度の釣り合いで選定）
-    static let defaultGroqModelID = "llama-3.3-70b-versatile"
+    /// 既定の Groq モデル（おすすめは `LLMModelCatalog` に集約。旧既定の llama-3.3-70b は 2026-10 に廃止）
+    static let defaultGroqModelID = LLMModelCatalog.recommendedGroq
 
     /// Groq エンジンで使うモデル ID
     static var groqModelID: String {

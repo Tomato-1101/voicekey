@@ -198,31 +198,13 @@ struct CaptionSettingsTab: View {
                 )
             }
 
+            // 自由入力欄だったが、廃止モデル名を打ったまま気付けなかったので一覧から選ぶ形にした
             if config.captionEngine == .gemini {
-                modelField(
-                    title: "Gemini のモデル ID",
-                    text: $config.captionGeminiModel,
-                    placeholder: CaptionSettings.defaultGeminiModelID
-                )
+                LLMModelPicker(title: "Gemini のモデル", provider: .gemini, selection: $config.captionGeminiModel)
             }
             if config.captionEngine == .groq {
-                modelField(
-                    title: "Groq のモデル ID",
-                    text: $config.captionGroqModel,
-                    placeholder: CaptionSettings.defaultGroqModelID
-                )
+                LLMModelPicker(title: "Groq のモデル", provider: .groq, selection: $config.captionGroqModel)
             }
-        }
-    }
-
-    /// モデル ID の入力欄（空欄にすると既定へ戻る）
-    private func modelField(title: String, text: Binding<String>, placeholder: String) -> some View {
-        LabeledContent {
-            TextField("", text: text, prompt: Text(placeholder))
-                .textFieldStyle(.roundedBorder)
-                .frame(minWidth: 220)
-        } label: {
-            SettingRowLabel(title: title, detail: "空欄にすると既定（\(placeholder)）に戻ります。")
         }
     }
 

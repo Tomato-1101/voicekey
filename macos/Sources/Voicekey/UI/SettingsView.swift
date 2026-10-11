@@ -547,17 +547,8 @@ private struct GeneralSettingsTab: View {
             // 自分用ビルドは整形のモデル・指示文まで自分で選べる（何が動いているか隠さない方針）。
             // オンオフは録音キー各タブの「文章を自動で整える」トグルで切り替える。
             Section {
-                Picker("整形モデル", selection: $config.formatModel) {
-                    // 表示は推奨モデル（リスト先頭）に「（推奨）」を付け、tag はモデル識別子のまま
-                    ForEach(TextFormatter.knownModels, id: \.self) { model in
-                        Text(model == TextFormatter.knownModels[0] ? "\(model)（推奨）" : model)
-                            .tag(model)
-                    }
-                    // 保存済みモデルがリスト外でも選択を保持して表示する
-                    if !TextFormatter.knownModels.contains(config.formatModel) {
-                        Text(config.formatModel).tag(config.formatModel)
-                    }
-                }
+                // 選択肢はモデルカタログ（おすすめが先頭・保存値が一覧外でも「利用不可」付きで残る）
+                LLMModelPicker(title: "整形モデル", provider: .groq, selection: $config.formatModel)
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Text("整形の指示")
@@ -941,6 +932,10 @@ private struct TranslateInputTab: View {
                         }
                     } label: {
                         SettingRowLabel(title: "翻訳エンジン", detail: Self.engineCaption(config.translateInputEngine))
+                    }
+                    // 字幕とは別に選べる（音声入力と字幕で向いているモデルが違いうるため）
+                    if config.translateInputEngine == .groq {
+                        LLMModelPicker(title: "Groq のモデル", provider: .groq, selection: $config.translateInputGroqModel)
                     }
                 } footer: {
                     // 二重に LLM を叩くと遅くなるので、気付けるようにここで一言添える

@@ -26,22 +26,27 @@ struct GroqTranslator: StreamingTranslator {
     private let systemPromptProvider: @Sendable () -> String
     /// API 使用量の内訳に出す用途（字幕の翻訳 / 音声入力の「翻訳して入力」）
     private let usagePurpose: ApiUsagePurpose
+    /// モデルが提供終了だったときに書き換える設定（nil なら差し替えずに失敗を返す）
+    private let modelSetting: LLMModelSetting?
 
     /// - Parameters:
     ///   - keyProvider: API キーを返すクロージャ（未設定なら nil）
     ///   - modelProvider: 使用するモデル ID を返すクロージャ
     ///   - systemPromptProvider: システムプロンプトを返すクロージャ（既定は字幕の英→日）
     ///   - usagePurpose: 使用量を記録するときの用途（既定は字幕の翻訳）
+    ///   - modelSetting: モデルが提供終了だったときにおすすめへ書き換える設定（既定は字幕の Groq モデル）
     init(
         keyProvider: @escaping @Sendable () -> String? = { APIKeyStore.load(.groq)?.key },
         modelProvider: @escaping @Sendable () -> String = { CaptionSettings.groqModelID },
         systemPromptProvider: @escaping @Sendable () -> String = { GeminiTranslator.systemPrompt },
-        usagePurpose: ApiUsagePurpose = .captionTranslation
+        usagePurpose: ApiUsagePurpose = .captionTranslation,
+        modelSetting: LLMModelSetting? = .captionGroq
     ) {
         self.keyProvider = keyProvider
         self.modelProvider = modelProvider
         self.systemPromptProvider = systemPromptProvider
         self.usagePurpose = usagePurpose
+        self.modelSetting = modelSetting
 
         let configuration = URLSessionConfiguration.ephemeral
         // 字幕が数十秒固まるより、早く諦めて Apple 翻訳へ落ちる方がよい
@@ -72,32 +77,28 @@ struct GroqTranslator: StreamingTranslator {
         guard let key = keyProvider(), !key.isEmpty else { throw TranslationError.missingAPIKey }
 
         // 使用量の記録に同じモデル名を使うため 1 回だけ取り出す
-        let model = modelProvider()
-        let request = try Self.makeChatRequest(
-            endpointBase: Self.endpointBase,
-            model: model,
-            key: key,
-            text: trimmed,
-            context: context,
-            stream: true,
-            systemPrompt: systemPromptProvider()
-        )
+        var model = modelProvider()
+        let systemPrompt = systemPromptProvider()
 
         let stream: URLSession.AsyncBytes
-        let response: URLResponse
-        do {
-            (stream, response) = try await session.bytes(for: request)
-        } catch {
-            throw TranslationError.network((error as NSError).localizedDescription)
-        }
-        guard let http = response as? HTTPURLResponse else {
-            throw TranslationError.badResponse("HTTP レスポンスではありません")
-        }
-        guard http.statusCode == 200 else {
-            // 本文はエラーのときだけ読む（成功時に読むと本編のストリームを食ってしまう）
-            var body = Data()
-            for try await byte in stream { body.append(byte) }
-            throw Self.mapError(status: http.statusCode, http: http, data: body)
+        switch try await openStream(model: model, key: key, text: trimmed, context: context, systemPrompt: systemPrompt) {
+        case .ok(let opened):
+            stream = opened
+        case let .failed(http, body):
+            // モデルの提供終了だけは、その 1 回をおすすめで取り直して設定も書き換える
+            // （放置すると以後ずっと同じ理由で失敗し続ける。2026-10 の llama 廃止で実際に起きた）
+            guard LLMModelCatalog.isModelUnavailable(status: http.statusCode, data: body),
+                  let setting = modelSetting,
+                  let replacement = LLMModelCatalog.replaceUnavailable(setting, failedModel: model) else {
+                throw Self.mapError(status: http.statusCode, http: http, data: body)
+            }
+            model = replacement
+            switch try await openStream(model: model, key: key, text: trimmed, context: context, systemPrompt: systemPrompt) {
+            case .ok(let opened):
+                stream = opened
+            case let .failed(http, body):
+                throw Self.mapError(status: http.statusCode, http: http, data: body)
+            }
         }
 
         var accumulated = ""
@@ -127,6 +128,44 @@ struct GroqTranslator: StreamingTranslator {
         let result = accumulated.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !result.isEmpty else { throw TranslationError.badResponse("訳文が空でした") }
         return result
+    }
+
+    /// ストリームを開いた結果（失敗時は本文まで読み切って返す）
+    private enum OpenResult {
+        case ok(URLSession.AsyncBytes)
+        case failed(HTTPURLResponse, Data)
+    }
+
+    /// 1 回分のリクエストを送ってストリームを開く
+    private func openStream(
+        model: String, key: String, text: String, context: [TranslationExchange], systemPrompt: String
+    ) async throws -> OpenResult {
+        let request = try Self.makeChatRequest(
+            endpointBase: Self.endpointBase,
+            model: model,
+            key: key,
+            text: text,
+            context: context,
+            stream: true,
+            systemPrompt: systemPrompt
+        )
+        let stream: URLSession.AsyncBytes
+        let response: URLResponse
+        do {
+            (stream, response) = try await session.bytes(for: request)
+        } catch {
+            throw TranslationError.network((error as NSError).localizedDescription)
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw TranslationError.badResponse("HTTP レスポンスではありません")
+        }
+        guard http.statusCode == 200 else {
+            // 本文はエラーのときだけ読む（成功時に読むと本編のストリームを食ってしまう）
+            var body = Data()
+            for try await byte in stream { body.append(byte) }
+            return .failed(http, body)
+        }
+        return .ok(stream)
     }
 
     // MARK: - OpenAI 互換の共通処理（ベンチからも使う）
@@ -167,6 +206,8 @@ struct GroqTranslator: StreamingTranslator {
             "messages": messages,
             "max_completion_tokens": 512,
         ]
+        // 推論モデルの思考を抑える等、モデル別の指定を足す（整形・翻訳とも同じ表を使う）
+        body.merge(LLMModelCatalog.extraParameters(model: model)) { _, new in new }
         if stream {
             body["stream"] = true
             // 最終チャンクにトークン数（usage）を載せてもらう＝ API 使用量の記録に使う（OpenAI 互換の指定）

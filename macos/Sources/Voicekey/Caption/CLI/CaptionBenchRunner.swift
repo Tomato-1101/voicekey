@@ -65,17 +65,24 @@ enum CaptionBenchRunner {
 
     /// 比較するエンジン
     ///
-    /// Groq のモデルは設定値（既定 `llama-3.3-70b-versatile`）。
+    /// Groq のモデルは設定値（既定はおすすめ `qwen/qwen3.8-27b`）。単価は料金表から引く。
     /// OpenAI は「安価・低遅延」で `gpt-4.1-mini` を選んだ（gpt-5 系は推論トークンが乗って
     /// 遅延が読めないため、字幕用途の比較には非推論モデルを使う）。
     private static func engines() -> [Engine] {
-        [
+        // 設定中の Groq モデルの単価（料金表に無ければ 0＝費用欄が 0 になるだけ）
+        let groqPrice: (input: Double, output: Double) = {
+            if case let .perMillionTokens(input, output) = ApiPricing.price(provider: .groq, model: CaptionSettings.groqModelID) {
+                return (input, output)
+            }
+            return (0, 0)
+        }()
+        return [
             Engine(label: "apple", kind: .apple, modelID: "(オンデバイス)", priceIn: 0, priceOut: 0),
             Engine(
                 label: "groq",
                 kind: .openAICompatible(base: GroqTranslator.endpointBase, provider: .groq),
                 modelID: CaptionSettings.groqModelID,
-                priceIn: 0.59, priceOut: 0.79
+                priceIn: groqPrice.input, priceOut: groqPrice.output
             ),
             Engine(label: "gemini-lite", kind: .gemini, modelID: "gemini-3.5-flash-lite", priceIn: 0.30, priceOut: 2.50),
             Engine(label: "gemini-flash", kind: .gemini, modelID: "gemini-3.5-flash", priceIn: 1.50, priceOut: 9.00),
@@ -210,8 +217,8 @@ enum CaptionBenchRunner {
         }
         writer.write("[GROQ-MODELS] 一覧=\(available.joined(separator: ", "))")
 
-        // 候補（存在するものだけ試す）。1 候補につき 3 文なので最大 9 リクエスト。
-        let candidates = ["llama-3.3-70b-versatile", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+        // 候補＝カタログの既知モデル（存在するものだけ試す）。1 候補につき 3 文なので最大 12 リクエスト。
+        let candidates = LLMModelCatalog.groqModels.map(\.id)
             .filter { available.contains($0) }
         writer.write("[GROQ-MODELS] 候補=\(candidates.joined(separator: ", "))")
 

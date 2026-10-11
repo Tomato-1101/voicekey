@@ -48,6 +48,7 @@ enum DictationTranslation {
         static let enabled = "translateInputEnabled"
         static let target = "translateInputTarget"
         static let engine = "translateInputEngine"
+        static let groqModel = "translateInputGroqModel"
     }
 
     /// 出力言語の選択肢（Apple のオンデバイス翻訳が対応する主要言語から絞る）
@@ -84,6 +85,19 @@ enum DictationTranslation {
             return value
         }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: Key.engine) }
+    }
+
+    /// Groq エンジンで使うモデル（未設定ならおすすめ）
+    ///
+    /// 以前は字幕の `CaptionSettings.groqModelID` を流用していたが、字幕と音声入力では向いている
+    /// モデルが違いうるので用途ごとに独立させた（2026-10-11 ユーザー指示「全部モデルを選べるように」）。
+    static var groqModelID: String {
+        get {
+            let stored = UserDefaults.standard.string(forKey: Key.groqModel)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return stored.isEmpty ? LLMModelCatalog.recommendedGroq : stored
+        }
+        set { UserDefaults.standard.set(newValue, forKey: Key.groqModel) }
     }
 
     /// 出力言語コードの表示名（設定 UI・ログ用）
@@ -217,9 +231,10 @@ actor DictationTranslator {
         let target = targetCode
         let translator = GroqTranslator(
             keyProvider: { Keychain.apiKey(for: .groq) },
-            modelProvider: { CaptionSettings.groqModelID },
+            modelProvider: { DictationTranslation.groqModelID },
             systemPromptProvider: { Self.groqSystemPrompt(targetCode: target) },
-            usagePurpose: .translation
+            usagePurpose: .translation,
+            modelSetting: .dictationGroq
         )
         return try await translator.translate(text, context: [])
     }

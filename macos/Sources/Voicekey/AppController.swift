@@ -241,6 +241,17 @@ final class AppController: ObservableObject {
         hud.enabled = config.hudEnabled
         hud.alwaysVisible = config.hudAlwaysVisible
         hud.logGeneration = { [weak self] in self?.recordingGeneration ?? 0 }
+        // LLM のモデルが提供終了で自動差し替えされたら、設定画面の写しを直して 1 回だけ知らせる。
+        // 差し替えは翻訳キュー等どのスレッドからも起きるのでメインへ戻してから触る
+        LLMModelCatalog.onModelReplaced = { [weak self] replacement in
+            Task { @MainActor in self?.applyModelReplacement(replacement) }
+        }
+        // 選べるモデルの実在一覧を 1 日 1 回取り直す（無料の一覧 GET のみ。キーが無ければ何もしない）
+        Task.detached(priority: .utility) {
+            for provider in LLMProvider.allCases {
+                await LLMModelCatalog.refreshAvailable(provider, force: false)
+            }
+        }
         lastSettingsSnapshot = SettingsChangeLog.snapshot(config)
         // 音声入力中（録音・変換中・通知）はライブ字幕を隠す。字幕を一度も使っていなければ何もしない。
         hud.model.onModeChanged = { [weak self] mode in
@@ -1468,6 +1479,22 @@ final class AppController: ObservableObject {
     /// この世代の結果を今も受け取ってよいか（打ち切り済みなら false＝捨てる）
     private func isAbandoned(_ generation: Int) -> Bool {
         abandonedSessions.contains(generation)
+    }
+
+    // MARK: - LLM モデルの自動差し替え
+
+    /// 提供終了で差し替えたモデルを ConfigStore の写しへ反映し、通知を出す
+    ///
+    /// 正本（UserDefaults）は差し替え時に書き換え済み。整形は録音ごとに `config.formatModel` を
+    /// 読むので、写しを直さないと次の録音も古いモデルで失敗する。
+    private func applyModelReplacement(_ replacement: LLMModelReplacement) {
+        switch replacement.setting {
+        case .formatting: config.formatModel = replacement.newModel
+        case .dictationGroq: config.translateInputGroqModel = replacement.newModel
+        case .captionGroq: config.captionGroqModel = replacement.newModel
+        case .captionGemini: config.captionGeminiModel = replacement.newModel
+        }
+        hud.notice(replacement.noticeText)
     }
 
     // MARK: - 翻訳して入力

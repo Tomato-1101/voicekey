@@ -109,7 +109,7 @@ enum ApiPricing {
         // Groq whisper-large-v3-turbo $0.04/時間・1 リクエスト最低 10 秒課金
         // 出典 https://console.groq.com/docs/speech-to-text / https://console.groq.com/docs/models（2026-10-02 確認）
         "groq/whisper-large-v3-turbo": .perAudioHour(usd: 0.04, minimumBilledSeconds: 10),
-        // Groq LLM（llama-3.1-8b-instant / llama-3.3-70b-versatile は「Contact Sales」表記＝単価未確認）
+        // Groq LLM（llama 系は 2026-10 に API から廃止＝表に載せない。過去の使用量は「単価未確認」で出る）
         // 出典 https://console.groq.com/docs/models（2026-10-02 確認）
         "groq/openai/gpt-oss-20b": .perMillionTokens(input: 0.075, output: 0.30),
         "groq/openai/gpt-oss-120b": .perMillionTokens(input: 0.15, output: 0.60),
