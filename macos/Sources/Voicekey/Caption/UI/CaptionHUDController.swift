@@ -30,10 +30,12 @@ private final class CaptionHUDLine {
     var kind: CaptionLineKind
     var japanese: String
     var source: String
+    /// 翻訳の採番（クラウドの訳で差し替えるときに同じ行を探すのに使う。無ければ nil）
+    var sequence: Int?
     /// 画面に出た時刻（最低表示時間の判定に使う）
     let shownAt: CFAbsoluteTime
-    /// この行を消してよくなるまでの秒数
-    let minimumDuration: TimeInterval
+    /// この行を消してよくなるまでの秒数（差し替えで文が伸びたら延ばす）
+    var minimumDuration: TimeInterval
     /// フェードアウト中（二重に消さないための印）
     var isRemoving = false
     /// 読み終わり時刻に自分から退場するためのタイマー
@@ -64,10 +66,6 @@ final class CaptionHUDController {
     private static let verticalPadding: CGFloat = 6
     /// 行と行の間隔
     private static let lineSpacing: CGFloat = 4
-    /// パネルの最小幅（ホバー操作バーが収まる幅）
-    ///
-    /// 短い訳文では文字幅まで縮めるが、これを下回ると「⏸ 停止 ⚙ 設定」がはみ出す。
-    private static let minimumWidth: CGFloat = 190
     /// 新しい字幕が来ないまま消えるまでの秒数
     private static let autoHideDelay: TimeInterval = 8.0
 
@@ -134,8 +132,6 @@ final class CaptionHUDController {
     private let container: HUDContainerView
     private let glass: CaptionGlassBackground
     private let rim: GlassRimView
-    private let hoverBar: HUDHoverBarView
-    private let resizeHandle: HUDResizeHandleView
 
     /// 確定した行（古い順）。新しいものほど下に出す。
     private var confirmedLines: [CaptionHUDLine] = []
@@ -146,6 +142,8 @@ final class CaptionHUDController {
     private var scale: CGFloat = CaptionSettings.hudScale
 
     private var hideTimer: Timer?
+    /// 3 行目に残った確定行が最低表示時間を満たした時点で追い出すタイマー
+    private var overflowTimer: Timer?
     private var isVisible = false
 
     /// 音声入力（録音・変換中・通知）の最中は字幕を隠す
@@ -169,23 +167,16 @@ final class CaptionHUDController {
     /// 隠す直前に表示されていたか（音声入力が終わったときに戻すかの判断に使う）
     private var wasVisibleBeforeSuppression = false
 
-    /// マウス移動の監視（ホバー操作バーの出し入れ用）
-    private var globalMouseMonitor: Any?
-    private var localMouseMonitor: Any?
-    private var isHovering = false
-
-    /// ホバーで操作バーを出すか（字幕が動作中のときだけ有効にする）
-    var hoverControlsEnabled: Bool = false {
+    /// ライブ行を確定行と同じ見た目で出すか（文字起こしモード）
+    ///
+    /// 文字起こしモードは訳を待たないので、認識途中の本文がそのまま字幕になる。
+    /// 薄い字で出すと「まだ途中」に見えて読みにくいため、確定行と同じ字体・濃さにする。
+    var liveLooksConfirmed = false {
         didSet {
-            guard hoverControlsEnabled != oldValue else { return }
-            hoverControlsEnabled ? startHoverTracking() : stopHoverTracking()
+            guard liveLooksConfirmed != oldValue else { return }
+            relayout()
         }
     }
-
-    /// 操作バーの「停止」が押されたとき
-    var onStopRequested: (() -> Void)?
-    /// 操作バーの「設定」が押されたとき（基準ビューを渡してメニューを出させる）
-    var onMenuRequested: ((NSView, NSPoint) -> Void)?
 
     /// 字幕パネルの表示/非表示が変わったときに呼ばれる（メインスレッド）
     ///
@@ -218,9 +209,10 @@ final class CaptionHUDController {
         // フルスクリーンの YouTube の上にも出す。ignoresCycle で Cmd+` の巡回に混ざらないようにする。
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle, .stationary]
         panel.alphaValue = 0
-        // 表示専用だが、ホバー操作バーとリサイズグリップはクリックを受けたいので false のままにし、
-        // hitTest 側でそれ以外を透過させる（ignoresMouseEvents=true だと押せなくなる）。
-        panel.ignoresMouseEvents = false
+        // 常にクリックを下のアプリへ通す（2026-10-12 ユーザー指摘「ライブ字幕は邪魔」）。
+        // 以前はホバーで操作バーとリサイズグリップを出すために受けていたが、字幕の上で
+        // 動画のシークバーや字幕の下の文字が押せなくなるのが邪魔だった。操作はメニューと設定だけ。
+        panel.ignoresMouseEvents = true
 
         container = HUDContainerView(frame: initialFrame)
         // 映像を隠しすぎないよう、字幕 HUD だけ既定より透けさせる（2026-08-09 ユーザー指示）。
@@ -230,27 +222,9 @@ final class CaptionHUDController {
         rim = GlassRimView(frame: initialFrame)
         rim.autoresizingMask = [.width, .height]
 
-        hoverBar = HUDHoverBarView(frame: .zero)
-        hoverBar.isHidden = true
-        resizeHandle = HUDResizeHandleView(frame: .zero)
-        resizeHandle.isHidden = true
-
         container.addSubview(glass)
         container.addSubview(rim)
-        container.addSubview(hoverBar)
-        container.addSubview(resizeHandle)
-        container.hoverBar = hoverBar
-        container.resizeHandle = resizeHandle
         panel.contentView = container
-
-        hoverBar.onStop = { [weak self] in self?.onStopRequested?() }
-        hoverBar.onMenu = { [weak self] view in
-            guard let self else { return }
-            self.onMenuRequested?(view, NSPoint(x: 0, y: 0))
-        }
-        resizeHandle.onScaleDelta = { [weak self] delta in
-            self?.applyScaleDelta(delta)
-        }
 
         // 画面構成が変わったら位置を取り直す（Dock 出没・解像度変更・外部ディスプレイの抜き差し）
         NotificationCenter.default.addObserver(
@@ -270,60 +244,6 @@ final class CaptionHUDController {
     deinit {
         NotificationCenter.default.removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
-        stopHoverTracking()
-    }
-
-    // MARK: - ホバー操作バー
-
-    /// マウス位置の監視を始める
-    ///
-    /// HUD はハンドル以外のクリックを `hitTest` で落としているため NSTrackingArea は発火しない。
-    /// そこでマウス移動をグローバルに監視して、フレーム内に入ったら操作バーを出す。
-    /// `.mouseMoved` の監視はアクセシビリティ許可が不要（許可が要るのはキーボード系）。
-    private func startHoverTracking() {
-        guard globalMouseMonitor == nil else { return }
-        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
-            self?.updateHover()
-        }
-        // 自アプリがアクティブな間はグローバル監視に届かないのでローカルも張る
-        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
-            self?.updateHover()
-            return event
-        }
-    }
-
-    /// マウス位置の監視をやめる
-    private func stopHoverTracking() {
-        if let globalMouseMonitor { NSEvent.removeMonitor(globalMouseMonitor) }
-        if let localMouseMonitor { NSEvent.removeMonitor(localMouseMonitor) }
-        globalMouseMonitor = nil
-        localMouseMonitor = nil
-        setHovering(false)
-    }
-
-    /// いまカーソルが HUD の上にあるかを見て操作バーを出し入れする
-    private func updateHover() {
-        guard isVisible, hoverControlsEnabled else {
-            setHovering(false)
-            return
-        }
-        setHovering(panel.frame.contains(NSEvent.mouseLocation))
-    }
-
-    /// 操作バーの表示状態を切り替える
-    private func setHovering(_ hovering: Bool) {
-        guard hovering != isHovering else { return }
-        isHovering = hovering
-        hoverBar.isHidden = !hovering
-        resizeHandle.isHidden = !hovering
-        // 操作バーが出ている間は自動で消さない（押そうとした瞬間に消えると操作できない）
-        if hovering {
-            hideTimer?.invalidate()
-            hideTimer = nil
-        } else {
-            scheduleAutoHide()
-        }
-        layoutOverlayControls()
     }
 
     // MARK: - 大きさ
@@ -331,13 +251,6 @@ final class CaptionHUDController {
     /// 倍率を掛けたフォントサイズ
     private func scaled(_ size: CGFloat) -> CGFloat {
         (size * scale).rounded()
-    }
-
-    /// ドラッグ量に応じて大きさを変える
-    ///
-    /// - Parameter delta: 右下ハンドルの移動量から作った増減値
-    func applyScaleDelta(_ delta: CGFloat) {
-        setScale(scale + delta)
     }
 
     /// 大きさ倍率を設定して即座に反映する
@@ -348,26 +261,12 @@ final class CaptionHUDController {
         guard abs(clamped - scale) > 0.001 else { return }
         scale = clamped
         CaptionSettings.hudScale = clamped
-        // 幅・高さ・はみ出しの調整はすべて relayout が内容から決める
+        // 幅・高さ・はみ出しの調整はすべて relayout が決める
         relayout()
     }
 
-    /// 操作バーとリサイズハンドルを HUD の角に置く
-    ///
-    /// 字幕の高さ計算には混ぜず重ねるだけにしている（バーの出入りで字幕が動かないように）。
-    private func layoutOverlayControls() {
-        let size = hoverBar.intrinsicContentSize
-        hoverBar.frame = NSRect(
-            x: panel.frame.width - size.width - 8,
-            y: panel.frame.height - size.height - 6,
-            width: size.width,
-            height: size.height
-        )
-        let resizeSize: CGFloat = 16
-        resizeHandle.frame = NSRect(
-            x: panel.frame.width - resizeSize - 3, y: 3, width: resizeSize, height: resizeSize
-        )
-    }
+    /// いまの大きさ倍率
+    var currentScale: CGFloat { scale }
 
     // MARK: - 表示更新
 
@@ -376,16 +275,21 @@ final class CaptionHUDController {
     /// - Parameter text: ボラタイルな認識結果
     func showListening(_ text: String) {
         guard !text.isEmpty else { return }
-        // 暫定訳が出ている間は生の英語で上書きしない（訳→原文→訳 とちらつくため）
-        if let live = liveLine, !live.japanese.isEmpty { return }
-        updateLiveLine(japanese: "", source: text)
+        updateLiveLine(.listening(text), japanese: "", source: text)
     }
 
     /// 原文が確定した（翻訳待ち）
     ///
-    /// 訳が届くまでの数十 ms を空白で待たせないために、ライブ行へ原文を出しておく。
+    /// 訳が届くまでの数十 ms を空白で待たせないために、ライブ行が空のときだけ原文を出しておく
+    /// （新しい話が出ているところへ古い原文を出すと巻き戻って見える）。
     func showPendingSource(_ text: String) {
-        updateLiveLine(japanese: "", source: text)
+        updateLiveLine(.pendingSource(text), japanese: "", source: text)
+    }
+
+    /// 文字起こしモードの認識途中を出す（確定行と同じ見た目・`liveLooksConfirmed`）
+    func showLiveTranscript(_ text: String) {
+        guard !text.isEmpty else { return }
+        updateLiveLine(.transcript(text), japanese: text, source: "")
     }
 
     /// 訳文が届いた
@@ -394,13 +298,37 @@ final class CaptionHUDController {
     ///   - source: 原文
     ///   - japanese: 訳文
     ///   - isPartial: 認識途中の暫定訳なら true（ライブ行を更新するだけ）
-    func showTranslation(source: String, japanese: String, isPartial: Bool = false) {
+    ///   - sequence: 確定訳の採番（後でクラウドの訳に差し替えるときの目印）
+    func showTranslation(source: String, japanese: String, isPartial: Bool = false, sequence: Int? = nil) {
         if isPartial {
-            updateLiveLine(japanese: japanese, source: source)
+            updateLiveLine(.partial(source: source, japanese: japanese), japanese: japanese, source: source)
         } else {
             // 確定した文は行として積み上げる。ライブ行は役目を終えるので畳む。
-            appendConfirmedLine(kind: .confirmed, japanese: japanese, source: source)
+            appendConfirmedLine(kind: .confirmed, japanese: japanese, source: source, sequence: sequence)
         }
+    }
+
+    /// 先に出した確定訳を、より良い訳（クラウド）で書き換える
+    ///
+    /// 行の位置も表示開始時刻も変えない（読んでいる行が飛ばないように）。訳が長くなったら
+    /// 読む時間の見積りだけ延ばす（最低表示時間の恒久要件を守るため）。
+    /// 該当行がもう消えていたら何もしない。
+    ///
+    /// - Parameters:
+    ///   - sequence: `showTranslation` で渡した採番
+    ///   - japanese: 差し替える訳文
+    func reviseTranslation(sequence: Int, japanese: String) {
+        guard let line = confirmedLines.first(where: { $0.sequence == sequence && !$0.isRemoving }),
+              line.japanese != japanese else { return }
+        line.japanese = japanese
+        let needed = Self.minimumDuration(for: japanese)
+        if needed > line.minimumDuration {
+            line.minimumDuration = needed
+            // 退場タイマーは表示開始からの残り時間で張り直す
+            line.retireTimer?.invalidate()
+            scheduleSelfRetire(line)
+        }
+        relayout()
     }
 
     /// 文字起こしモード（訳さない）の確定文を積む
@@ -409,12 +337,12 @@ final class CaptionHUDController {
     /// 原文が空なら併記ラベルは出ない（`CaptionLineView` の `showsSecondary` 判定）ので、
     /// 「翻訳できなかった原文」の小さい表示（`.sourceOnly`）とは見た目が別になる。
     func showTranscript(_ text: String) {
-        appendConfirmedLine(kind: .confirmed, japanese: text, source: "")
+        appendConfirmedLine(kind: .confirmed, japanese: text, source: "", sequence: nil)
     }
 
     /// 翻訳できないので原文のみ確定行として積む
     func showSourceOnly(_ text: String) {
-        appendConfirmedLine(kind: .sourceOnly, japanese: "", source: text)
+        appendConfirmedLine(kind: .sourceOnly, japanese: "", source: text, sequence: nil)
     }
 
     /// 字幕以外のお知らせを出す
@@ -435,6 +363,8 @@ final class CaptionHUDController {
     func clear() {
         hideTimer?.invalidate()
         hideTimer = nil
+        overflowTimer?.invalidate()
+        overflowTimer = nil
         fadeOut()
     }
 
@@ -442,23 +372,20 @@ final class CaptionHUDController {
     ///
     /// 位置はピルに固定なので動かせない。小さくしすぎた／大きくしすぎたときの復帰用。
     func resetSize() {
-        CaptionSettings.hudScale = 1.0
-        scale = 1.0
-        applyPillAnchoredPosition()
+        // 幅も倍率で決まるので、位置合わせを含めて relayout に任せる
+        setScale(1.0)
     }
 
     // MARK: - 行の管理
 
     /// ライブ行（最下段）を作る／更新する
     ///
-    /// ここだけは「常に最新で上書き」でよい（部分訳の latest-wins はライブ行の中に閉じる）。
-    private func updateLiveLine(japanese: String, source: String) {
-        // 確定した直後に同じ発話の途中結果が届くことがあり、そのままだと同じ文が
-        // 確定行とライブ行に 2 行並んで見える。直前の確定行と同じ内容なら出さない。
-        if let last = confirmedLines.last(where: { !$0.isRemoving }) {
-            if !japanese.isEmpty, japanese == last.japanese { return }
-            if japanese.isEmpty, !source.isEmpty, source == last.source { return }
-        }
+    /// 反映してよいかの判定は `CaptionLiveLinePolicy`（巻き戻り・重複の防止）。
+    private func updateLiveLine(_ update: CaptionLiveUpdate, japanese: String, source: String) {
+        let current = liveLine.map { CaptionLiveLineText(japanese: $0.japanese, source: $0.source) }
+        let last = confirmedLines.last(where: { !$0.isRemoving })
+            .map { CaptionLiveLineText(japanese: $0.japanese, source: $0.source) }
+        guard CaptionLiveLinePolicy.accepts(update, current: current, lastConfirmed: last) else { return }
         if let live = liveLine {
             live.japanese = japanese
             live.source = source
@@ -473,7 +400,7 @@ final class CaptionHUDController {
     /// 確定行を積む
     ///
     /// 新しい行は下に足す。溢れた古い行は、最低表示時間を満たしていれば消す。
-    private func appendConfirmedLine(kind: CaptionLineKind, japanese: String, source: String) {
+    private func appendConfirmedLine(kind: CaptionLineKind, japanese: String, source: String, sequence: Int?) {
         // お知らせだけが出ている状態から字幕に戻るときは、お知らせを片付ける
         confirmedLines.removeAll { line in
             guard line.kind == .notice else { return false }
@@ -493,6 +420,7 @@ final class CaptionHUDController {
             source: source,
             minimumDuration: Self.minimumDuration(for: text)
         )
+        line.sequence = sequence
         container.addSubview(line.view)
         confirmedLines.append(line)
         scheduleSelfRetire(line)
@@ -504,7 +432,8 @@ final class CaptionHUDController {
     ///
     /// 押し出されるまで残すと 1 行が 10 秒以上映像を覆う。読める時間＋余韻で消す。
     private func scheduleSelfRetire(_ line: CaptionHUDLine) {
-        let delay = line.minimumDuration + Self.selfRetireGrace
+        let elapsed = CFAbsoluteTimeGetCurrent() - line.shownAt
+        let delay = max(0, line.minimumDuration + Self.selfRetireGrace - elapsed)
         line.retireTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self, weak line] _ in
             guard let self, let line, !line.isRemoving else { return }
             let shown = CFAbsoluteTimeGetCurrent() - line.shownAt
@@ -532,13 +461,24 @@ final class CaptionHUDController {
     ///
     /// 最低表示時間に満たない行は 1 行だけ上限を超えて残す（読む前に消さないため）。
     private func evictOverflowingLines() {
+        overflowTimer?.invalidate()
+        overflowTimer = nil
         while true {
             let active = confirmedLines.filter { !$0.isRemoving }
             guard active.count > Self.maxConfirmedLines, let oldest = active.first else { return }
             let shown = CFAbsoluteTimeGetCurrent() - oldest.shownAt
             let metMinimum = shown >= oldest.minimumDuration
-            // まだ読む時間が残っている行は、上限を 1 行だけ超えて待つ
-            if !metMinimum, active.count <= Self.hardMaxConfirmedLines { return }
+            // まだ読む時間が残っている行は、上限を 1 行だけ超えて待つ。
+            // その間はライブ行を隠して 3 段に収め、読み終わった瞬間に追い出す
+            // （以前は次の確定が来るまで 3 行目が居座り、ライブ行と合わせて 4 段になっていた）。
+            if !metMinimum, active.count <= Self.hardMaxConfirmedLines {
+                let wait = oldest.minimumDuration - shown
+                overflowTimer = Timer.scheduledTimer(withTimeInterval: wait, repeats: false) { [weak self] _ in
+                    self?.evictOverflowingLines()
+                    self?.relayout()
+                }
+                return
+            }
             logger.notice(
                 """
                 字幕行を消しました 表示=\(String(format: "%.2f", shown), privacy: .public)s \
@@ -570,6 +510,8 @@ final class CaptionHUDController {
 
     /// 全部の行を即座に取り除く
     private func removeAllLines() {
+        overflowTimer?.invalidate()
+        overflowTimer = nil
         for line in confirmedLines {
             line.retireTimer?.invalidate()
             line.retireTimer = nil
@@ -590,36 +532,28 @@ final class CaptionHUDController {
     }
 
     /// 下から順に並ぶ行（最後の要素が最下段）
+    ///
+    /// 確定行が 3 行残っている間はライブ行を出さない（最大 3 段）。
     private var orderedLines: [CaptionHUDLine] {
-        confirmedLines + (liveLine.map { [$0] } ?? [])
+        guard let liveLine, CaptionLiveLinePolicy.showsLiveLine(confirmedCount: confirmedLines.count) else {
+            liveLine?.view.isHidden = true
+            return confirmedLines
+        }
+        liveLine.view.isHidden = false
+        return confirmedLines + [liveLine]
     }
 
-    /// 表示中のテキストの実寸にパネルを合わせ、各行を配置する
+    /// パネルの大きさを決め、各行を配置する
     ///
-    /// - 幅は「いちばん広い行の文字幅」に合わせて縮める（タイトフィット）。
-    ///   ただし倍率から決まる上限幅を超えない＝長文はパネルを広げずに**折り返す**。
-    /// - 高さは内容ぶんだけ。**下端を固定して上へ伸ばす**（字幕が下から積み上がる
-    ///   見え方になり、行数が変わっても読んでいる行が動かない）。
-    /// - 幅が変わっても字幕が横へ飛ばないよう、**下辺の中心を固定**して伸縮させる。
+    /// - 幅は倍率から決まる値で**固定**（2026-10-12 ユーザー指摘「ライブ字幕は邪魔」）。
+    ///   以前は文字幅に合わせて毎回伸縮させていたため、更新のたびにパネルが横へ揺れて目障りだった。
+    /// - 高さは行ごとの高さの合計。ライブ行は常に 1 行ぶんの固定の高さにしてあるので、
+    ///   途中経過が伸びても訳が届いても高さは変わらず、変わるのは行が増減したときだけ。
+    /// - **下端を固定して上へ伸ばす**（字幕が下から積み上がる見え方になり、読んでいる行が動かない）。
     private func relayout() {
-        let maximumContentWidth = Self.preferredWidth(scale: scale) - Self.horizontalPadding * 2
+        let width = Self.preferredWidth(scale: scale)
+        let contentWidth = width - Self.horizontalPadding * 2
         let lines = orderedLines
-
-        // いちばん広い行に合わせる。長い行は上限で頭打ちになり、そこで折り返る。
-        var contentWidth: CGFloat = 0
-        for line in lines {
-            contentWidth = max(contentWidth, line.view.naturalWidth(
-                japanese: line.japanese,
-                source: line.source,
-                kind: line.kind,
-                japaneseFontSize: scaled(Self.japaneseFontSize(for: line)),
-                sourceFontSize: scaled(13),
-                showsSource: showsSourceText
-            ))
-        }
-        contentWidth = min(contentWidth, maximumContentWidth)
-        contentWidth = max(contentWidth, Self.minimumWidth - Self.horizontalPadding * 2)
-        let width = contentWidth + Self.horizontalPadding * 2
 
         // 折り返した結果の高さを測る
         var heights: [CGFloat] = []
@@ -632,7 +566,9 @@ final class CaptionHUDController {
                     width: contentWidth,
                     japaneseFontSize: scaled(Self.japaneseFontSize(for: line)),
                     sourceFontSize: scaled(13),
-                    showsSource: showsSourceText
+                    showsSource: showsSourceText,
+                    liveLooksConfirmed: liveLooksConfirmed,
+                    fixedHeight: line.kind == .live ? Self.liveLineHeight(fontSize: scaled(26)) : nil
                 )
             )
         }
@@ -666,13 +602,22 @@ final class CaptionHUDController {
             y += heights[index] + Self.lineSpacing
         }
 
-        layoutOverlayControls()
         container.needsDisplay = true
+    }
+
+    /// ライブ行の固定の高さ（確定行の 1 行ぶん）
+    ///
+    /// 原文だけの間（小さい字）も暫定訳が出たとき（大きい字）も同じ高さにして、
+    /// 途中経過のたびに字幕全体の高さが揺れないようにする。
+    private static func liveLineHeight(fontSize: CGFloat) -> CGFloat {
+        let font = NSFont.systemFont(ofSize: fontSize, weight: .semibold)
+        return ceil(font.ascender - font.descender + font.leading)
     }
 
     /// 行の種類ごとの訳文フォントサイズ
     private static func japaneseFontSize(for line: CaptionHUDLine) -> CGFloat {
         switch line.kind {
+        // 原文だけの間は小さめの字（高さはライブ行の固定値なので揺れない）
         case .live: return line.japanese.isEmpty ? 20 : 26
         case .confirmed: return 26
         case .sourceOnly, .notice: return 22
@@ -857,35 +802,6 @@ final class CaptionLineView: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) は使わない") }
 
-    /// 折り返さずに書いた場合の文字幅を返す
-    ///
-    /// パネルを文字にぴったり合わせるために使う。`intrinsicContentSize` は
-    /// `preferredMaxLayoutWidth` をそのまま幅として返すので、実寸の測定には使えない。
-    func naturalWidth(
-        japanese: String,
-        source: String,
-        kind: CaptionLineKind,
-        japaneseFontSize: CGFloat,
-        sourceFontSize: CGFloat,
-        showsSource: Bool
-    ) -> CGFloat {
-        let primary = japanese.isEmpty ? source : japanese
-        let hasTranslation = !japanese.isEmpty
-        var width = Self.textWidth(
-            primary, font: Self.primaryFont(size: japaneseFontSize, kind: kind, hasTranslation: hasTranslation)
-        )
-        if showsSource, hasTranslation, !source.isEmpty {
-            width = max(width, Self.textWidth(source, font: .systemFont(ofSize: sourceFontSize, weight: .regular)))
-        }
-        return width
-    }
-
-    /// 1 行に収めた場合の描画幅
-    private static func textWidth(_ text: String, font: NSFont) -> CGFloat {
-        guard !text.isEmpty else { return 0 }
-        return ceil((text as NSString).size(withAttributes: [.font: font]).width)
-    }
-
     /// 主役テキストの字体（訳が入っている行だけ太くする）
     private static func primaryFont(size: CGFloat, kind: CaptionLineKind, hasTranslation: Bool) -> NSFont {
         .systemFont(ofSize: size, weight: hasTranslation && kind != .notice ? .semibold : .regular)
@@ -901,6 +817,8 @@ final class CaptionLineView: NSView {
     ///   - japaneseFontSize: 主役テキストの字の大きさ
     ///   - sourceFontSize: 併記する原文の字の大きさ
     ///   - showsSource: 原文を併記するか
+    ///   - liveLooksConfirmed: ライブ行を確定行と同じ見た目にするか（文字起こしモード）
+    ///   - fixedHeight: 行の高さを固定する場合の値（ライブ行）。nil なら内容ぶん
     /// - Returns: この行に要る高さ
     @discardableResult
     func apply(
@@ -910,24 +828,44 @@ final class CaptionLineView: NSView {
         width: CGFloat,
         japaneseFontSize: CGFloat,
         sourceFontSize: CGFloat,
-        showsSource: Bool
+        showsSource: Bool,
+        liveLooksConfirmed: Bool = false,
+        fixedHeight: CGFloat? = nil
     ) -> CGFloat {
         // 訳がまだ無い行は原文そのものを主役として出す（空白で待たせない）
         let primary = japanese.isEmpty ? source : japanese
         let hasTranslation = !japanese.isEmpty
+        // 文字起こしモードのライブ行は確定行と同じ字体・濃さで描く
+        let styleKind: CaptionLineKind = (kind == .live && liveLooksConfirmed) ? .confirmed : kind
+
+        // ライブ行は 1 行に収め、はみ出したら**先頭**を省く（いま喋っている末尾を見せるため）
+        let isLive = kind == .live
+        japaneseLabel.maximumNumberOfLines = isLive ? 1 : 3
+        japaneseLabel.lineBreakMode = isLive ? .byTruncatingHead : .byWordWrapping
+        japaneseLabel.cell?.wraps = !isLive
 
         japaneseLabel.stringValue = primary
-        japaneseLabel.font = Self.primaryFont(size: japaneseFontSize, kind: kind, hasTranslation: hasTranslation)
-        japaneseLabel.textColor = NSColor.labelColor.withAlphaComponent(Self.primaryAlpha(kind: kind, hasTranslation: hasTranslation))
-        japaneseLabel.preferredMaxLayoutWidth = width
+        japaneseLabel.font = Self.primaryFont(size: japaneseFontSize, kind: styleKind, hasTranslation: hasTranslation)
+        japaneseLabel.textColor = NSColor.labelColor.withAlphaComponent(Self.primaryAlpha(kind: styleKind, hasTranslation: hasTranslation))
+        japaneseLabel.preferredMaxLayoutWidth = isLive ? 0 : width
 
-        let showsSecondary = showsSource && hasTranslation && !source.isEmpty
+        // ライブ行には原文を併記しない（訳が届いた瞬間に 2 段へ伸びて高さが揺れるため）
+        let showsSecondary = !isLive && showsSource && hasTranslation && !source.isEmpty
         sourceLabel.isHidden = !showsSecondary
         if showsSecondary {
             sourceLabel.stringValue = source
             sourceLabel.font = .systemFont(ofSize: sourceFontSize, weight: .regular)
             sourceLabel.textColor = NSColor.secondaryLabelColor.withAlphaComponent(0.85)
             sourceLabel.preferredMaxLayoutWidth = width
+        }
+
+        if let fixedHeight {
+            // 固定の高さの中で縦中央に置く（字の大きさが変わっても行の位置は動かない）
+            let textHeight = min(ceil(japaneseLabel.intrinsicContentSize.height), fixedHeight)
+            japaneseLabel.frame = NSRect(
+                x: 0, y: floor((fixedHeight - textHeight) / 2), width: width, height: textHeight
+            )
+            return fixedHeight
         }
 
         let japaneseHeight = ceil(japaneseLabel.intrinsicContentSize.height)
@@ -975,109 +913,13 @@ final class CaptionLineView: NSView {
 
 /// HUD の中身を載せるビュー
 ///
-/// ホバー中の操作バーとリサイズグリップ以外のクリックを下のアプリへ通す。macOS は透明ピクセルを
-/// 自動で透過させるが、ガラス背景は不透明なピクセルなので hitTest で明示的に落とす必要がある。
+/// クリックはすべて下のアプリへ通す（パネル側も `ignoresMouseEvents = true`）。
+/// macOS は透明ピクセルを自動で透過させるが、ガラス背景は不透明なピクセルなので
+/// hitTest でも明示的に落としておく。
 @available(macOS 26.0, *)
 final class HUDContainerView: NSView {
 
-    /// ホバー中だけクリックを受け付ける操作バー
-    weak var hoverBar: NSView?
-    /// ホバー中だけクリックを受け付けるリサイズハンドル
-    weak var resizeHandle: NSView?
-
     override func hitTest(_ point: NSPoint) -> NSView? {
-        let local = convert(point, from: nil)
-        if let hoverBar, !hoverBar.isHidden, hoverBar.frame.contains(local) {
-            return super.hitTest(point)
-        }
-        if let resizeHandle, !resizeHandle.isHidden, resizeHandle.frame.contains(local) {
-            return super.hitTest(point)
-        }
-        return nil
-    }
-}
-
-/// HUD にホバーしたときだけ出る操作バー
-///
-/// 「✕（終了）」は置かない。字幕を見ている最中の誤爆が痛すぎるため、終了はメニュー内だけにする。
-@available(macOS 26.0, *)
-final class HUDHoverBarView: NSView {
-
-    /// 停止ボタンが押された
-    var onStop: (() -> Void)?
-    /// 設定ボタンが押された（メニューの基準ビューを渡す）
-    var onMenu: ((NSView) -> Void)?
-
-    private let stopButton = NSButton()
-    private let menuButton = NSButton()
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        configure(stopButton, title: "⏸ 停止", action: #selector(stopTapped))
-        configure(menuButton, title: "⚙ 設定", action: #selector(menuTapped))
-        addSubview(stopButton)
-        addSubview(menuButton)
-        layoutButtons()
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) は使わない") }
-
-    override var intrinsicContentSize: NSSize {
-        NSSize(width: stopButton.frame.width + menuButton.frame.width + 6, height: 22)
-    }
-
-    private func configure(_ button: NSButton, title: String, action: Selector) {
-        button.title = title
-        button.bezelStyle = .rounded
-        button.controlSize = .small
-        button.font = .systemFont(ofSize: 11)
-        button.target = self
-        button.action = action
-        button.sizeToFit()
-        button.setFrameSize(NSSize(width: ceil(button.frame.width) + 4, height: 22))
-    }
-
-    private func layoutButtons() {
-        stopButton.setFrameOrigin(NSPoint(x: 0, y: 0))
-        menuButton.setFrameOrigin(NSPoint(x: stopButton.frame.width + 6, y: 0))
-        setFrameSize(intrinsicContentSize)
-    }
-
-    @objc private func stopTapped() { onStop?() }
-
-    @objc private func menuTapped() { onMenu?(menuButton) }
-}
-
-/// HUD の大きさを変える右下のハンドル
-///
-/// ホバー時だけ現れる。上下左右のどちらへ引いても「大きさ」1 つが変わる方式にしている
-/// （幅・高さ・文字サイズを別々のつまみにすると、ドラッグの意味が分かりにくくなるため）。
-@available(macOS 26.0, *)
-final class HUDResizeHandleView: NSView {
-
-    /// ドラッグ量から作った倍率の増減
-    var onScaleDelta: ((CGFloat) -> Void)?
-
-    override func draw(_ dirtyRect: NSRect) {
-        NSColor.labelColor.withAlphaComponent(0.32).setStroke()
-        let path = NSBezierPath()
-        path.lineWidth = 1.2
-        // 右下向きの斜線を 3 本（macOS の伝統的なリサイズグリップ）
-        for offset in stride(from: CGFloat(3), through: 11, by: 4) {
-            path.move(to: NSPoint(x: bounds.maxX - offset, y: bounds.minY + 2))
-            path.line(to: NSPoint(x: bounds.maxX - 2, y: bounds.minY + offset))
-        }
-        path.stroke()
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        // 右または下へ引いたら大きく。係数は「画面幅の数%動かして 1 段階」程度の感触。
-        let delta = (event.deltaX + event.deltaY) * 0.004
-        guard delta != 0 else { return }
-        onScaleDelta?(delta)
-    }
-
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .crosshair)
+        nil
     }
 }

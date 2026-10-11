@@ -6,6 +6,7 @@ import AVFoundation
 import CoreMedia
 import Foundation
 import OSLog
+import os
 import Speech
 
 /// 音声認識器のエラー
@@ -97,9 +98,22 @@ final class SpeechRecognizer: @unchecked Sendable {
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
     private var resultsTask: Task<Void, Never>?
 
-    /// - Parameter locale: 認識対象の言語（既定 en-US）
-    init(locale: Locale = Locale(identifier: "en-US")) {
+    /// 解析の優先度（nil なら OS の既定。音声入力側は nil のまま＝挙動を変えない）
+    private let analyzerPriority: TaskPriority?
+
+    /// 確定の前倒し（`finalizeNow()`）用に解析器を守るロック
+    ///
+    /// `finalizeNow()` は音声 IO スレッドから呼ばれ、`analyzer` は開始・終了で書き換わるため。
+    private let finalizeLock = OSAllocatedUnfairLock<(analyzer: SpeechAnalyzer?, inFlight: Bool)>(
+        initialState: (nil, false)
+    )
+
+    /// - Parameters:
+    ///   - locale: 認識対象の言語（既定 en-US）
+    ///   - analyzerPriority: 解析の優先度。字幕は `.userInitiated` を渡して確定を急がせる
+    init(locale: Locale = Locale(identifier: "en-US"), analyzerPriority: TaskPriority? = nil) {
         self.locale = locale
+        self.analyzerPriority = analyzerPriority
         var continuation: AsyncStream<Segment>.Continuation!
         self.segments = AsyncStream<Segment> { continuation = $0 }
         self.segmentContinuation = continuation
@@ -151,13 +165,23 @@ final class SpeechRecognizer: @unchecked Sendable {
         let (inputStream, inputContinuation) = AsyncStream<AnalyzerInput>.makeStream()
         self.inputContinuation = inputContinuation
 
-        let analyzer = SpeechAnalyzer(modules: [transcriber])
+        // 字幕は優先度を上げて確定を急がせる（音声入力側は options なし＝従来どおり）
+        let analyzer: SpeechAnalyzer
+        if let analyzerPriority {
+            analyzer = SpeechAnalyzer(
+                modules: [transcriber],
+                options: SpeechAnalyzer.Options(priority: analyzerPriority, modelRetention: .whileInUse)
+            )
+        } else {
+            analyzer = SpeechAnalyzer(modules: [transcriber])
+        }
         self.analyzer = analyzer
         // モデルの初期化コストを先払いして、最初の発話を取りこぼさないようにする
         try await analyzer.prepareToAnalyze(in: format)
         try await analyzer.start(inputSequence: inputStream)
+        finalizeLock.withLock { $0 = (analyzer, false) }
 
-        resultsTask = Task { [weak self] in
+        resultsTask = Task(priority: analyzerPriority) { [weak self] in
             await self?.consumeResults(from: transcriber)
         }
 
@@ -175,8 +199,28 @@ final class SpeechRecognizer: @unchecked Sendable {
         inputContinuation?.yield(AnalyzerInput(buffer: buffer))
     }
 
+    /// ここまでに渡した音声を今すぐ確定させる（発話の切れ目で呼ぶ）
+    ///
+    /// SpeechTranscriber は自分では確定を出すのが遅い（実測で発話終わりから中央値 4.3 秒）。
+    /// 無音を検知した側から「ここまでで確定して」と頼むことで、字幕の確定行を早く出す。
+    /// 前の依頼が終わっていなければ重ねない（音声 IO スレッドから毎回呼ばれても詰まらないように）。
+    func finalizeNow() {
+        let target = finalizeLock.withLock { state -> SpeechAnalyzer? in
+            guard let analyzer = state.analyzer, !state.inFlight else { return nil }
+            state.inFlight = true
+            return analyzer
+        }
+        guard let target else { return }
+        Task(priority: analyzerPriority) { [weak self] in
+            // 失敗しても次の無音でまた頼めばよい（確定は SpeechTranscriber 自身でもいずれ出る）
+            try? await target.finalize(through: nil)
+            self?.finalizeLock.withLock { $0.inFlight = false }
+        }
+    }
+
     /// 入力を打ち切り、残りを確定させてから終了する
     func finish() async {
+        finalizeLock.withLock { $0 = (nil, false) }
         inputContinuation?.finish()
         inputContinuation = nil
         if let analyzer {
@@ -259,7 +303,8 @@ final class SpeechRecognizer: @unchecked Sendable {
                 guard !text.isEmpty else { continue }
                 let segment = Segment(text: text, isFinal: result.isFinal, range: result.range)
                 if result.isFinal {
-                    logger.notice("確定: \(text, privacy: .public)")
+                    // 本文は会話の中身なので OS ログには伏せて残す（長さだけ見えれば診断できる）
+                    logger.notice("確定: \(text, privacy: .private) 長さ=\(text.count, privacy: .public)")
                 }
                 segmentContinuation.yield(segment)
             }

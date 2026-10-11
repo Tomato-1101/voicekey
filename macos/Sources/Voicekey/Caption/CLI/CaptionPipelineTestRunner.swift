@@ -231,7 +231,8 @@ enum CaptionPipelineTestRunner {
     private static func makeTranslator(apple: AppleTranslator) -> Translator {
         if CaptionService.usesMockTranslator { return MockTranslator() }
         switch CaptionSettings.translationEngine {
-        case .apple: return apple
+        // Soniox は認識ごと別経路でこのハーネスの対象外（課金 API なので回さない）。Apple で代替する
+        case .apple, .soniox: return apple
         case .gemini: return FallbackTranslator(primary: GeminiTranslator(), fallback: apple)
         case .groq: return FallbackTranslator(primary: GroqTranslator(), fallback: apple)
         }

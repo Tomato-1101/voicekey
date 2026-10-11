@@ -37,7 +37,7 @@ final class TranslationBreakPolicyTests: XCTestCase {
 
         XCTAssertGreaterThanOrEqual(chunks.count, 4, "長文が刻まれていない: \(chunks)")
         for chunk in chunks {
-            XCTAssertLessThanOrEqual(chunk.count, 48, "1 行が長すぎる: \(chunk)")
+            XCTAssertLessThanOrEqual(chunk.count, TranslationCoordinator.maxBufferedCharacters, "1 行が長すぎる: \(chunk)")
         }
         // 全文保証（[COVERAGE] と同じ観点）。刻んでも 1 文字も落とさない
         XCTAssertEqual(normalize(chunks.joined(separator: " ")), normalize(longSentence))

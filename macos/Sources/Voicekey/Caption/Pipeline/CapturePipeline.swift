@@ -44,9 +44,10 @@ final class CapturePipeline: @unchecked Sendable {
     /// 変換器はスレッド安全でないが、この値は必ず `session` ロックの中でしか触らないので
     /// `@unchecked Sendable` としている。
     private struct Session: @unchecked Sendable {
-        let recognizer: SpeechRecognizer
+        /// 端末内の認識器（Soniox のように外部へ音声を渡す構成では nil）
+        let recognizer: SpeechRecognizer?
         let converter: AudioFormatConverter
-        let segmentTask: Task<Void, Never>
+        let segmentTask: Task<Void, Never>?
         /// このセッションを用意した時刻（リサイクル判定の基準）
         let startedAt: CFAbsoluteTime
     }
@@ -85,6 +86,28 @@ final class CapturePipeline: @unchecked Sendable {
     /// パイプライン開始時刻を基準にすると、対象の再生を待っていた時間まで
     /// 遅延に混ざる（実測で 35 秒という実態とかけ離れた値になった）。
     var onFirstAudio: (@Sendable (CFAbsoluteTime) -> Void)?
+    /// 変換済みの音声（16kHz モノラル Float32）の通知
+    ///
+    /// 端末内の認識器を使わない構成（`usesOnDeviceRecognizer: false`）でだけ流れる。
+    /// Soniox のように音声を外部の認識へ渡す経路のための口。
+    var onAudio: (@Sendable (AVAudioPCMBuffer) -> Void)?
+
+    /// 端末内の認識（SpeechAnalyzer）を使うか
+    private let usesOnDeviceRecognizer: Bool
+    /// 認識の優先度（nil なら OS の既定）
+    private let recognitionPriority: TaskPriority?
+    /// 発話の切れ目で確定を前倒しするか（字幕だけが true。Meet ボット等は従来どおり）
+    private let finalizesOnPause: Bool
+    /// 切れ目の判定（IO キューとタイマーの両方から触るのでロックで守る）
+    private let pauseTrigger = OSAllocatedUnfairLock(initialState: PauseFinalizeTrigger())
+    /// フレーム途絶を見るためのタイマー（切れ目の前倒しを使うときだけ）
+    private var pauseTimer: DispatchSourceTimer?
+    /// 途絶を見る間隔（秒）。切れ目 0.3 秒の判定を 0.1 秒刻みで拾う
+    private static let pauseTickInterval: Double = 0.1
+    /// 外部の認識へ渡すときの音声形式（Soniox の pcm_s16le 16kHz モノラルへそのまま詰められる）
+    private static let externalFormat = AVAudioFormat(
+        commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false
+    )!
 
     /// 直近 1 秒の集計。IO キューが加算し、レベルタイマーが読み出してリセットする。
     private struct LevelAccumulator {
@@ -117,13 +140,22 @@ final class CapturePipeline: @unchecked Sendable {
     ///     指定すると最前面の追従をやめ、そのアプリ（と責任 PID が一致する子プロセス）の音だけを拾う。
     ///   - processTreeOnly: 固定 PID の子孫プロセスだけを拾う（同じバンドル ID の別プロセスを拾わない）。
     ///     Meet ボットが普段使いの Chrome の音を拾わないために使う。
+    ///   - recognitionPriority: 認識の優先度（字幕は `.userInitiated`。nil なら既定）
+    ///   - finalizesOnPause: 発話の切れ目で確定を前倒しするか
+    ///   - usesOnDeviceRecognizer: false なら端末内の認識をせず、変換した音声を `onAudio` へ流す
     init(
         locale: Locale = Locale(identifier: "en-US"),
         scopeMode: CaptureScopeMode = CaptionSettings.effectiveCaptureScopeMode,
         fixedPID: pid_t? = nil,
-        processTreeOnly: Bool = false
+        processTreeOnly: Bool = false,
+        recognitionPriority: TaskPriority? = nil,
+        finalizesOnPause: Bool = false,
+        usesOnDeviceRecognizer: Bool = true
     ) {
         self.locale = locale
+        self.recognitionPriority = recognitionPriority
+        self.finalizesOnPause = finalizesOnPause && usesOnDeviceRecognizer
+        self.usesOnDeviceRecognizer = usesOnDeviceRecognizer
         // PID を固定するときは、対象を追いかける必要があるので frontmost 側の経路に載せる
         // （CaptureScopeTracker が固定 PID を見て、そのプロセスの音声だけを拾う）。
         self.scopeMode = fixedPID == nil ? scopeMode : .frontmost
@@ -174,12 +206,14 @@ final class CapturePipeline: @unchecked Sendable {
         tap.start()
 
         startLevelTimer()
+        if finalizesOnPause { startPauseTimer() }
         logger.notice("パイプラインを開始しました 対象モード=\(self.scopeMode.rawValue, privacy: .public)")
     }
 
     /// パイプラインを停止する
     func stop() async {
         stopLevelTimer()
+        stopPauseTimer()
         scopeTracker?.stop()
         scopeTracker = nil
         tap?.stop()
@@ -189,8 +223,10 @@ final class CapturePipeline: @unchecked Sendable {
             current = nil
             return previous
         }
-        await previous?.recognizer.finish()
-        previous?.segmentTask.cancel()
+        await previous?.recognizer?.finish()
+        // 打ち切らずに最後まで読み切る（finish() が結果ストリームを閉じるので必ず終わる）。
+        // 以前は cancel していたため、停止の瞬間に確定した最後の 1 文が後段へ届かずに落ちていた。
+        await previous?.segmentTask?.value
         logger.notice("パイプラインを停止しました")
     }
 
@@ -201,10 +237,19 @@ final class CapturePipeline: @unchecked Sendable {
     /// - Returns: 差し替えにそのまま使えるセッション
     /// - Throws: 音声認識の準備に失敗した場合
     private func makeSession() async throws -> Session {
-        let recognizer = SpeechRecognizer(locale: locale)
+        guard usesOnDeviceRecognizer else {
+            // 外部の認識へ渡す構成では SpeechAnalyzer を起動しない（モデルのロードも CPU も使わない）
+            return Session(
+                recognizer: nil,
+                converter: AudioFormatConverter(outputFormat: Self.externalFormat),
+                segmentTask: nil,
+                startedAt: CFAbsoluteTimeGetCurrent()
+            )
+        }
+        let recognizer = SpeechRecognizer(locale: locale, analyzerPriority: recognitionPriority)
         let analyzerFormat = try await recognizer.start()
         // 結果ストリームは認識器ごとに別物なので、受け口もセッションと寿命を揃える
-        let segmentTask = Task { [weak self] in
+        let segmentTask = Task(priority: recognitionPriority) { [weak self] in
             for await segment in recognizer.segments {
                 self?.onSegment?(segment)
             }
@@ -230,7 +275,20 @@ final class CapturePipeline: @unchecked Sendable {
                 state.peak = max(state.peak, measurement.peak)
                 state.frames += measurement.frames
             }
-            current.recognizer.feed(converted)
+            guard let recognizer = current.recognizer else {
+                onAudio?(converted)
+                return true
+            }
+            recognizer.feed(converted)
+            // 計算済みの RMS で発話の切れ目を見て、確定を前倒しする（HAL には触れない）
+            if finalizesOnPause, measurement.frames > 0 {
+                let rms = Float((measurement.sumOfSquares / Double(measurement.frames)).squareRoot())
+                let duration = Double(converted.frameLength) / converted.format.sampleRate
+                let now = CFAbsoluteTimeGetCurrent()
+                if pauseTrigger.withLock({ $0.observeAudio(rms: rms, duration: duration, now: now) }) {
+                    recognizer.finalizeNow()
+                }
+            }
             return true
         }
         guard didFeed else { return }
@@ -262,6 +320,31 @@ final class CapturePipeline: @unchecked Sendable {
         levelTimer = nil
     }
 
+    /// フレーム途絶を見るタイマーを起動する
+    ///
+    /// タップは対象が黙るとフレームを配らないので、IO 側の判定だけでは切れ目を拾えない。
+    /// 読むのはロック内の時刻だけで、HAL には触れない（軽い・上限を気にする再試行も無い）。
+    private func startPauseTimer() {
+        let timer = DispatchSource.makeTimerSource(queue: levelQueue)
+        timer.schedule(deadline: .now() + Self.pauseTickInterval, repeating: Self.pauseTickInterval)
+        timer.setEventHandler { [weak self] in self?.checkPause() }
+        timer.resume()
+        pauseTimer = timer
+    }
+
+    /// 途絶タイマーを止める
+    private func stopPauseTimer() {
+        pauseTimer?.cancel()
+        pauseTimer = nil
+    }
+
+    /// 最後のフレームから切れ目ぶん経っていれば確定を頼む
+    private func checkPause() {
+        let now = CFAbsoluteTimeGetCurrent()
+        guard pauseTrigger.withLock({ $0.observeTick(now: now) }) else { return }
+        session.withLock { $0?.recognizer }?.finalizeNow()
+    }
+
     /// 集計値を RMS に均して通知し、カウンタをリセットする
     private func emitLevel() {
         let snapshot = accumulator.withLock { state -> LevelAccumulator in
@@ -283,7 +366,9 @@ final class CapturePipeline: @unchecked Sendable {
     private func checkRecycle(rms: Float) {
         silentSeconds = rms < Self.recycleSilenceRMS ? silentSeconds + 1 : 0
 
-        guard let startedAt = session.withLock({ $0?.startedAt }), startedAt > 0 else { return }
+        // 端末内の認識器を持たない構成（Soniox）は太る物が無いので作り直さない
+        guard usesOnDeviceRecognizer,
+              let startedAt = session.withLock({ $0?.startedAt }), startedAt > 0 else { return }
         let elapsed = CFAbsoluteTimeGetCurrent() - startedAt
         let thresholds = Self.recycleThresholds
 
@@ -349,14 +434,15 @@ final class CapturePipeline: @unchecked Sendable {
             return previous
         }
         guard let previous else {
-            await fresh.recognizer.finish()
-            fresh.segmentTask.cancel()
+            await fresh.recognizer?.finish()
+            fresh.segmentTask?.cancel()
             return
         }
 
-        // 旧セッションには最後の確定を吐き切らせてから畳む（作り直しで 1 文落とさないため）
-        await previous.recognizer.finish()
-        previous.segmentTask.cancel()
+        // 旧セッションには最後の確定を吐き切らせてから畳む（作り直しで 1 文落とさないため）。
+        // 結果の受け口も打ち切らずに読み切らせる（cancel すると吐き切った最後の 1 文が落ちる）。
+        await previous.recognizer?.finish()
+        await previous.segmentTask?.value
         logger.notice("認識セッションの再作成が完了しました")
     }
 }

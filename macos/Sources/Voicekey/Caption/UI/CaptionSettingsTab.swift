@@ -78,6 +78,8 @@ struct CaptionSettingsTab: View {
     /// `APIKeyStore.load` は `/usr/bin/security` を子プロセスで起動するため、
     /// body から毎回呼ぶとスクロールのたびにプロセスが 3 つ立ち上がる。
     @State private var keyStatuses: [(provider: APIProvider, status: String)] = []
+    /// 字幕の大きさ倍率（スライダーの表示用。正本は CaptionSettings.hudScale）
+    @State private var hudScale = Double(CaptionSettings.hudScale)
 
     // 他の設定タブと同じ grouped Form に揃える（見出しと説明文の置き方がこのタブだけ違い、押せる場所も狭かった）。
     var body: some View {
@@ -194,8 +196,16 @@ struct CaptionSettingsTab: View {
                 SettingRowLabel(
                     title: "翻訳エンジン",
                     detail: "Apple はキー不要・端末内で完結。Gemini / Groq は確定した文だけを送り、"
-                        + "混雑や失敗のときは自動で Apple 翻訳に戻ります。"
+                        + "Apple の訳を先に出してから差し替えます（混雑や失敗のときは Apple のまま）。"
                 )
+            }
+
+            if config.captionEngine == .soniox {
+                // 課金があるので、選んだときに何が起きるかをはっきり出す
+                Text("Soniox は音声を送り続けて認識と翻訳を同時に行います（最速）。字幕を動かしている間ずっと"
+                     + "課金されます（約 $0.12/時）。キーは「設定 › API キー」の Soniox を使い、"
+                     + "未設定や接続できないときは Apple で表示します。")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             // 自由入力欄だったが、廃止モデル名を打ったまま気付けなかったので一覧から選ぶ形にした
@@ -221,11 +231,18 @@ struct CaptionSettingsTab: View {
             Toggle("英語の原文も表示", isOn: showSourceBinding)
             Toggle("訳文を読み上げる", isOn: speakBinding)
 
+            // 字幕の上でのドラッグ操作は撤去した（常にクリック透過で、下のアプリの操作を邪魔しない）。
+            // 大きさはここで変える。
             LabeledContent {
-                Button("大きさをリセット") { controller?.caption.resetHUDSize() }
+                Slider(value: $hudScale, in: 0.7...2.0, step: 0.1)
+                    .frame(width: 180)
+                    // ドラッグ中も字幕に即反映する（見ながら合わせられるように）
+                    .onChange(of: hudScale) { _, newValue in
+                        controller?.caption.hudScale = CGFloat(newValue)
+                    }
             } label: {
                 SettingRowLabel(
-                    title: "字幕の大きさ",
+                    title: "字幕の大きさ（\(Int((hudScale * 100).rounded()))%）",
                     detail: "位置は録音ピルの真上に固定です（大きさだけ変えられます）。"
                 )
             }
@@ -304,19 +321,14 @@ struct CaptionSettingsTab: View {
 
     /// 最前面のアプリだけを対象にするか
     ///
-    /// 動作中に変えたときは、認識をきれいに作り直すために字幕を張り替える
-    /// （メニューバーから変えたときと同じ挙動）。
+    /// 動作中に変えたときの張り直しは CaptionService 側が受け持つ（メニューバーから変えたときと同じ）。
+    /// ここで stop → start すると、張り直しの待ち時間を置かずにタップを作り直してしまう。
     private var frontmostBinding: Binding<Bool> {
         Binding(
             get: { config.captionFrontmostOnly },
             set: { newValue in
                 config.captionFrontmostOnly = newValue
-                guard let service = controller?.caption else { return }
-                let wasActive = service.state.isActive
-                service.capturesFrontmostOnly = newValue
-                guard wasActive else { return }
-                service.stop()
-                service.start()
+                controller?.caption.capturesFrontmostOnly = newValue
             }
         )
     }
