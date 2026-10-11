@@ -32,6 +32,13 @@ enum StallPolicy {
     /// 正常時は実測で数十 ms なので 5 秒あれば誤発火しない。
     static let recordStartTimeout: TimeInterval = 5
 
+    /// 録音開始の完了が届いたとき、開始の見張りを解いてよいか。
+    /// 見張っている世代と完了した世代が一致したときだけ解く（古い録音の開始完了が遅れて届いても、
+    /// 次の録音の見張りを消さないため）
+    static func startCompletionDisarms(pendingGeneration: Int?, completedGeneration: Int) -> Bool {
+        pendingGeneration == completedGeneration
+    }
+
     /// 文字起こしが返るまでの上限（秒）。長い録音の分割並列送信やリトライを含めても
     /// 正当に 60 秒を超えることはない。
     static let transcribeTimeout: TimeInterval = 60

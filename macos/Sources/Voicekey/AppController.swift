@@ -1241,11 +1241,15 @@ final class AppController: ObservableObject {
     private func handleRecordStartResult(
         _ failure: AudioRecorder.StartFailure?, slotId: Int, generation: Int, requestedAt: TimeInterval
     ) {
-        // 返ってきた＝キューは生きている。見張りを解く
-        if pendingStartGeneration == generation { pendingStartGeneration = nil }
-        let watchdog = recordStartWatchdog
-        recordStartWatchdog = nil
-        watchdog?.cancel()
+        // 返ってきた＝キューは生きている。見張りを解く。
+        // ただし見張っているのがこの世代のときだけ（古い録音の開始完了が遅れて届いたときに、
+        // 次の録音の見張りまで解いてしまうと、その録音が詰まっても誰も気付けなくなる）
+        if StallPolicy.startCompletionDisarms(pendingGeneration: pendingStartGeneration, completedGeneration: generation) {
+            pendingStartGeneration = nil
+            let watchdog = recordStartWatchdog
+            recordStartWatchdog = nil
+            watchdog?.cancel()
+        }
 
         guard recordingGeneration == generation, recordingSlot == slotId else {
             // 打ち切ったあとにブロックが解けて遅れて届いた完了。ここで UI を触ると
@@ -1267,6 +1271,16 @@ final class AppController: ObservableObject {
         recordContext = nil
         recorder.chunkHandler = nil
         recordingSlot = nil
+        // 録音中にだけ意味を持つ状態も畳む（abortStalledRecordStart と同じ後始末）。
+        // 以前はここが抜けていて、開始に失敗するとメディア音量が下がったまま戻らなかった
+        autoEnter = false
+        pendingFinishTask?.cancel()
+        pendingFinishTask = nil
+        pendingDoubleTap = nil
+        failsafeTask?.cancel()
+        MediaDucker.restore()
+        // 世代を進めて、遅れて届くチャンク・進捗を捨てる
+        recordingGeneration &+= 1
         emitState()
         hud.notice(failure.noticeText)
     }
@@ -1513,6 +1527,16 @@ final class AppController: ObservableObject {
         abandonedSessions.contains(generation)
     }
 
+    /// 打ち切り済みなら結果を捨てた記録を残して true（呼び出し側は貼り付けずに戻る）。
+    /// 整形・翻訳の await の後にも見るため（確定直後だけ見ていると、その後の待ちの間に
+    /// 打ち切られた入力が、ユーザーが別の作業を始めた後に貼られていた）
+    private func discardIfAbandoned(_ generation: Int) -> Bool {
+        guard isAbandoned(generation) else { return false }
+        ActionLog.shared.write("app", "打ち切り済みセッションの確定文字を破棄 gen=\(generation)")
+        timelines[generation]?.outcome = DictationTimeline.Outcome.abandoned
+        return true
+    }
+
     // MARK: - 翻訳して入力
 
     /// 「翻訳して入力」が ON なら最終テキストを訳す（OFF なら経路に一切触れない）。
@@ -1743,6 +1767,8 @@ final class AppController: ObservableObject {
                     // （正規化・ユーザー辞書は原文の誤認識を直すためのものなので、翻訳より前に効かせる）
                     let (output, streamTranslateMs) = await self.translateIfEnabled(corrected, generation: generation, context: context)
                     timelines[generation]?.translateMs = streamTranslateMs
+                    // 整形・翻訳を待っている間に打ち切られていたら貼り付けない（打ち切った入力が後から入るのを防ぐ）
+                    if discardIfAbandoned(generation) { return }
                     // 貼り付け先アプリを貼り付け直前に再取得する（録音中に切り替えた場合は今の前面が正）
                     let target = frontApp.snapshot()
                     // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する（履歴保存 OFF はスキップ）
@@ -1770,7 +1796,8 @@ final class AppController: ObservableObject {
                         }
                         if autoEnter {
                             try? await Task.sleep(for: .milliseconds(max(0, delayMs)))
-                            if !(await Paster.pressEnter(logGeneration: generation)), !isAbandoned(generation) {
+                            // 待っている間に打ち切られていたら Enter は送らない（別の入力欄で送信しかねない）
+                            if !isAbandoned(generation), !(await Paster.pressEnter(logGeneration: generation)) {
                                 hud.notice(Self.enterFailedNotice)
                             }
                         }
@@ -1912,6 +1939,8 @@ final class AppController: ObservableObject {
             // 「翻訳して入力」が ON なら、この最終テキストを 1 回だけ訳す（OFF なら素通り）
             let (output, restTranslateMs) = await self.translateIfEnabled(corrected, generation: generation, context: context)
             timelines[generation]?.translateMs = restTranslateMs
+            // 整形・翻訳を待っている間に打ち切られていたら貼り付けない（打ち切った入力が後から入るのを防ぐ）
+            if discardIfAbandoned(generation) { return }
             // 貼り付け先アプリを貼り付け直前に再取得する（録音中に切り替えた場合は今の前面が正）
             let target = frontApp.snapshot()
             // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する（履歴保存 OFF はスキップ）
@@ -1936,7 +1965,8 @@ final class AppController: ObservableObject {
             // 入っていないのに Enter を送ると入力欄の別の内容を送信しかねないので、貼れたときだけ送る
             if autoEnter, pasted {
                 try? await Task.sleep(for: .milliseconds(max(0, delayMs)))
-                if !(await Paster.pressEnter(logGeneration: generation)), !isAbandoned(generation) {
+                // 待っている間に打ち切られていたら Enter は送らない（別の入力欄で送信しかねない）
+                if !isAbandoned(generation), !(await Paster.pressEnter(logGeneration: generation)) {
                     hud.notice(Self.enterFailedNotice)
                 }
             }
@@ -2077,11 +2107,12 @@ final class AppController: ObservableObject {
         for slotId in [1, 2] {
             let slot = config.slot(slotId)
             let existing = transcribers[slotId]
-            // 同一バックエンドなら設定だけ更新（URLSession の接続を維持）
-            if let existing, existing.backend == slot.backend {
-                existing.model = slot.model
-                existing.language = config.language
-                existing.prompt = slot.prompt
+            // 設定が変わっていなければそのまま使う（URLSession の接続を維持）。
+            // 変わったときは書き換えずに新しく作る。録音中・処理中の録音は開始時の Transcriber を
+            // 握っているので、書き換えると進行中の録音にまで新しいモデル・言語・プロンプトが効いてしまう
+            if let existing, existing.hasSameConfig(
+                backend: slot.backend, model: slot.model, language: config.language, prompt: slot.prompt) {
+                continue
             } else {
                 transcribers[slotId] = Transcriber(
                     backend: slot.backend,
@@ -2096,10 +2127,9 @@ final class AppController: ObservableObject {
         if [1, 2].contains(where: { config.slot($0).backend == .groq }) {
             Self.warmHandsfreeELKey()
         }
-        if let existing = handsfreeTranscriber, existing.backend == .elevenlabs {
-            existing.model = Self.handsfreeELModel
-            existing.language = config.language
-            existing.prompt = ""
+        if let existing = handsfreeTranscriber, existing.hasSameConfig(
+            backend: .elevenlabs, model: Self.handsfreeELModel, language: config.language, prompt: "") {
+            // 変化なし（上のスロットと同じく、変わったときは書き換えずに作り直す）
         } else {
             handsfreeTranscriber = Transcriber(
                 backend: .elevenlabs,

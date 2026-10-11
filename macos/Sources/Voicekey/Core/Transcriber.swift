@@ -136,6 +136,11 @@ final class Transcriber: @unchecked Sendable {
         set { configLock.lock(); _prompt = newValue; configLock.unlock() }
     }
 
+    /// 指定の構成と同じか（設定変更時に作り直すかの判定。同じなら接続を維持して使い回す）
+    func hasSameConfig(backend: Backend, model: String, language: String, prompt: String) -> Bool {
+        self.backend == backend && self.model == model && self.language == language && self.prompt == prompt
+    }
+
     private let configLock = NSLock()
     private var _model: String
     private var _language: String
