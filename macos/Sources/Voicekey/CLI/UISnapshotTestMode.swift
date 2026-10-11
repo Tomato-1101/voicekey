@@ -37,7 +37,7 @@ enum UISnapshotTestMode {
     /// ファイル名に使う英字のタブ名（日本語のタブ名はファイル名に向かないため。未知のタグは tab<番号>）
     private static let tabSlugs: [Int: String] = [
         0: "general", 1: "slot1", 2: "slot2", 8: "dictionary", 9: "caption",
-        10: "translate-input", 6: "account", 7: "about", 5: "api-keys",
+        10: "translate-input", 11: "meeting", 6: "account", 7: "about", 5: "api-keys",
     ]
 
     /// 標準出力と --log-file の両方へ書く（字幕側の writer は macOS 26 限定なので使わない）

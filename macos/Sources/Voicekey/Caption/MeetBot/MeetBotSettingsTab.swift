@@ -16,12 +16,12 @@ struct MeetBotSettingsTab: View {
     @ObservedObject var config: ConfigStore
     var controller: AppController?
 
+    /// controller が無いのは `--ui-snapshot`（見た目の確認）のときだけ。画面を空にすると
+    /// 見た目を確かめられないので、どこにも結線されない表示専用のボットで中身を描く
+    @MainActor private static let snapshotBot = MeetBotService()
+
     var body: some View {
-        if let controller {
-            MeetBotSettingsContent(config: config, bot: controller.meetBot)
-        } else {
-            Text("アプリの準備ができていません").foregroundStyle(.secondary)
-        }
+        MeetBotSettingsContent(config: config, bot: controller?.meetBot ?? Self.snapshotBot)
     }
 }
 
