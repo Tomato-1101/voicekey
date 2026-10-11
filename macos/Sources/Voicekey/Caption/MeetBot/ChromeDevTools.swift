@@ -8,6 +8,7 @@
 /// - HTTP `/json/version`（起動待ち）・`/json/new`（タブを開く）・`/json/list`（タブを探す）
 /// - WebSocket の `Runtime.evaluate`（ページ内で JS を実行）
 /// - WebSocket の `Page.navigate`（URL を開き直す）
+/// - ブラウザ全体への `Storage.getCookies`（ログイン済みかの確認）・`Browser.setPermission`（カメラ・マイクを拒否）
 import Foundation
 import OSLog
 
@@ -59,6 +60,14 @@ final class ChromeDevTools: @unchecked Sendable {
     private let lock = NSLock()
     private var nextID = 1
     private var pending: [Int: CheckedContinuation<[String: Any], Error>] = [:]
+    /// 自分で閉じたか（自分で閉じたときは「切れた」と知らせない）
+    private var closedByUs = false
+
+    /// 接続が向こうから切れたときに呼ばれる（受信スレッドから呼ぶ）
+    ///
+    /// Chrome が落ちた・タブが閉じられたことに気づけるようにするため。以前は切れても
+    /// 誰にも知らされず、ボットは「記録中」のまま何も書かなくなっていた。
+    var onDisconnect: (@Sendable () -> Void)?
 
     // MARK: - Chrome の起動
 
@@ -73,9 +82,10 @@ final class ChromeDevTools: @unchecked Sendable {
     ///   - profileDirectory: プロファイルの置き場所
     ///   - headless: 画面に出さずに動かすか
     ///   - initialURL: 起動と同時に開く URL（DevTools を待たずに最初のタブへ出したいとき）
+    ///   - muteAudio: 会議の音を Mac のスピーカーに出さない（Meet の字幕を読むときだけ使う）
     /// - Returns: 起動した Chrome のプロセス
     static func launchChrome(
-        port: Int, profileDirectory: URL, headless: Bool, initialURL: String? = nil
+        port: Int, profileDirectory: URL, headless: Bool, initialURL: String? = nil, muteAudio: Bool = false
     ) throws -> Process {
         guard isChromeInstalled else { throw ChromeDevToolsError.chromeNotFound }
         try? FileManager.default.createDirectory(at: profileDirectory, withIntermediateDirectories: true)
@@ -88,15 +98,19 @@ final class ChromeDevTools: @unchecked Sendable {
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-session-crashed-bubble",
-            // 会議のカメラ・マイクの許可ダイアログで止まらないようにする。
-            // ボットは黙って聞くだけなので、入力デバイスは偽物で十分（実マイクも使わない）。
-            "--use-fake-ui-for-media-capture",
-            "--use-fake-device-for-media-stream",
+            // カメラ・マイクの許可は「出さずに拒否」にする。ボットは聞くだけなので、
+            // 以前のように偽のカメラ・マイクを自動許可すると、会議に偽映像・偽音声を流してしまう。
+            "--deny-permission-prompts",
             "--autoplay-policy=no-user-gesture-required",
         ]
         if headless {
             // 画面に出さない。Meet は headless=new なら通常どおり動く。
             arguments.append("--headless=new")
+        }
+        if muteAudio {
+            // 字幕を読むだけなら音は要らない。付けないと会議の音が Mac のスピーカーから流れる。
+            // （端末内認識の経路は Chrome の音をタップで拾うので付けない）
+            arguments.append("--mute-audio")
         }
         if let initialURL {
             arguments.append(initialURL)
@@ -138,11 +152,97 @@ final class ChromeDevTools: @unchecked Sendable {
         return socketURL
     }
 
-    /// 開いているページの URL 一覧（ハーネスの判定用）
+    /// 開いているページの URL 一覧（ハーネスの判定・ログイン窓が閉じられたかの判定に使う）
     static func listPageURLs(port: Int) async throws -> [String] {
         let json = try await httpJSON(path: "/json", port: port)
         guard let list = json as? [[String: Any]] else { throw ChromeDevToolsError.malformedResponse }
         return list.filter { ($0["type"] as? String) == "page" }.compactMap { $0["url"] as? String }
+    }
+
+    /// ブラウザ全体（タブではない）を操作する WebSocket の URL
+    ///
+    /// Cookie の読み出しや権限の設定はタブではなくブラウザに対して行う。
+    static func browserSocketURL(port: Int) async throws -> URL {
+        let json = try await httpJSON(path: "/json/version", port: port)
+        guard let socket = (json as? [String: Any])?["webSocketDebuggerUrl"] as? String,
+              let url = URL(string: socket) else {
+            throw ChromeDevToolsError.malformedResponse
+        }
+        return url
+    }
+
+    /// そのポートで DevTools が応答しているか（別のアプリがポートを使っていないかの確認）
+    static func isAnswering(port: Int) async -> Bool {
+        (try? await httpJSON(path: "/json/version", port: port)) != nil
+    }
+
+    // MARK: - 取り残された Chrome の片付け
+
+    /// ボット用プロファイルを掴んだまま残っている Chrome を終わらせる
+    ///
+    /// 前回の voicekey が落ちた等で残っていると、新しく起こした Chrome はそちらへ処理を渡して
+    /// すぐ終了し、ボットは何もできなくなる。**同じプロファイルを使っているものだけ**を対象にし、
+    /// 普段使いの Chrome（別のプロファイル）には絶対に触らない。
+    ///
+    /// - Parameter profileDirectory: ボット用プロファイル
+    /// - Returns: 終わらせたプロセスの数
+    @discardableResult
+    static func terminateStaleChrome(profileDirectory: URL) async -> Int {
+        let output = await Task.detached { runPS() }.value
+        let pids = staleChromePIDs(psOutput: output, profilePath: profileDirectory.path)
+            .filter { $0 != getpid() }
+        guard !pids.isEmpty else { return 0 }
+        for pid in pids { kill(pid, SIGTERM) }
+        // 普通に終わるのを少し待ち、残ったものだけ強制終了する（待ち時間には上限を置く）
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline, pids.contains(where: { kill($0, 0) == 0 }) {
+            try? await Task.sleep(for: .milliseconds(150))
+        }
+        for pid in pids where kill(pid, 0) == 0 { kill(pid, SIGKILL) }
+        return pids.count
+    }
+
+    /// `ps` の出力から、指定プロファイルを使っている Chrome の PID を拾う（純粋関数・テスト対象）
+    ///
+    /// `--user-data-dir=<パス>` が**完全一致**するものだけ（`meetbot-profile2` のような
+    /// 似た名前や、プロファイル指定の無い普段の Chrome は拾わない）。パスに空白が入るので
+    /// 引数の区切りでは切らず、直後が空白か行末であることで一致を確かめる。
+    ///
+    /// - Parameters:
+    ///   - psOutput: `ps -axww -o pid=,args=` の出力
+    ///   - profilePath: ボット用プロファイルのパス
+    static func staleChromePIDs(psOutput: String, profilePath: String) -> [pid_t] {
+        let needle = "--user-data-dir=\(profilePath)"
+        return psOutput.split(separator: "\n").compactMap { rawLine in
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            guard let space = line.firstIndex(of: " "), let pid = pid_t(line[..<space]) else { return nil }
+            let args = line[line.index(after: space)...]
+            guard args.contains("Google Chrome") else { return nil }
+            var searchStart = args.startIndex
+            while let range = args.range(of: needle, range: searchStart..<args.endIndex) {
+                if range.upperBound == args.endIndex || args[range.upperBound] == " " { return pid }
+                searchStart = range.upperBound
+            }
+            return nil
+        }
+    }
+
+    /// 全プロセスの PID と引数を読む
+    private static func runPS() -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-axww", "-o", "pid=,args="]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return ""
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(decoding: data, as: UTF8.self)
     }
 
     /// DevTools の HTTP エンドポイントを叩く
@@ -169,6 +269,7 @@ final class ChromeDevTools: @unchecked Sendable {
 
     /// 接続を閉じる（待ち中のコマンドはすべて失敗させる）
     func close() {
+        lock.withLock { closedByUs = true }
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
         let waiting = lock.withLock { () -> [CheckedContinuation<[String: Any], Error>] in
@@ -257,12 +358,13 @@ final class ChromeDevTools: @unchecked Sendable {
                 self.receiveLoop()
             case let .failure(error):
                 self.logger.notice("DevTools の接続が切れました: \(String(describing: error), privacy: .public)")
-                let waiting = self.lock.withLock { () -> [CheckedContinuation<[String: Any], Error>] in
+                let (waiting, byUs) = self.lock.withLock { () -> ([CheckedContinuation<[String: Any], Error>], Bool) in
                     let values = Array(self.pending.values)
                     self.pending.removeAll()
-                    return values
+                    return (values, self.closedByUs)
                 }
                 for continuation in waiting { continuation.resume(throwing: error) }
+                if !byUs { self.onDisconnect?() }
             }
         }
     }

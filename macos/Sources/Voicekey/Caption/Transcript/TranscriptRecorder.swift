@@ -5,6 +5,11 @@
 ///
 /// 追記型にしている理由: 会議は数十分〜数時間続き、途中でアプリが落ちたり Mac が
 /// スリープしたりする。メモリに貯めて終了時に一括保存する作りだと、その 1 回で全部消える。
+///
+/// ファイルの区切り方は 2 通り:
+/// - ライブ字幕（手動）: 5 分以上あいたら別の会議とみなして新しいファイルにする。
+/// - Meet ボット: `beginMeeting` から `endSession` まで（参加から退出まで）を必ず 1 ファイルにする。
+///   会議中に 5 分黙っていても分けない。ファイル名に会議コードを入れて、どの会議か分かるようにする。
 import Foundation
 import OSLog
 
@@ -13,16 +18,29 @@ import OSLog
 /// 認識コールバック（音声スレッド）から呼ばれるので、書き込みは専用の直列キューで行う。
 final class TranscriptRecorder {
 
+    /// 書き込み 1 回の結果（呼び出し側が「記録中 n 行」「保存に失敗」を正しく出すため）
+    enum WriteOutcome: Equatable {
+        /// 書けた（ファイルと、そのファイルに書いた行数）
+        case written(URL, lines: Int)
+        /// 書けなかった（理由）
+        case failed(String)
+    }
+
     private let logger = makeCaptionLogger("TranscriptRecorder")
 
     /// 書き込みを直列化するキュー（ファイル追記は I/O なのでメインから外す）
     private let queue = DispatchQueue(label: "com.voicekey.transcript", qos: .utility)
 
-    /// この間隔以上あいたら「別の会議」とみなして新しいファイルにする
+    /// この間隔以上あいたら「別の会議」とみなして新しいファイルにする（ライブ字幕のときだけ）
     ///
     /// 5 分にしているのは、会議の合間の休憩（1〜2 分）では分けたくない一方、
     /// 「昼の打ち合わせ」と「夕方の打ち合わせ」が 1 ファイルに混ざると議事録として使えないため。
     private static let sessionGap: TimeInterval = 5 * 60
+
+    /// 書き込みのたびに呼ばれる（**記録用の直列キューの上で**呼ぶので、UI へはメインへ戻して使う）
+    ///
+    /// 以前は失敗を `try?` で握り潰していたため、保存先に書けなくても画面は「記録中」のままだった。
+    var onWrite: ((WriteOutcome) -> Void)?
 
     /// 現在書き込み中のファイル（nil なら次の追記で新規作成）
     private var currentURL: URL?
@@ -30,6 +48,14 @@ final class TranscriptRecorder {
     private var lastWriteAt: Date?
     /// 直前に書いた本文（同じ確定文が二重に届いたときに弾く）
     private var lastText: String?
+    /// 現在のファイルに書いた行数
+    private var linesInFile = 0
+    /// 直近の書き込み失敗（成功したら消える）
+    private var lastError: String?
+    /// 会議（Meet ボット）として記録中なら、その情報
+    ///
+    /// 入っている間は 5 分ルールで分けず、`endSession` まで同じファイルに書く。
+    private var meeting: (code: String?, context: String, language: String)?
 
     /// 保存先ディレクトリ（~/Documents/voicekey/transcripts）
     static var directory: URL {
@@ -48,6 +74,37 @@ final class TranscriptRecorder {
     /// 現在のファイル（まだ 1 行も書いていなければ nil）
     var currentFileURL: URL? { queue.sync { currentURL } }
 
+    /// 現在のファイルに書いた行数
+    var lineCount: Int { queue.sync { linesInFile } }
+
+    /// 直近の書き込み失敗の理由（成功していれば nil）
+    var lastErrorMessage: String? { queue.sync { lastError } }
+
+    /// 会議（Meet ボット）の記録を始める
+    ///
+    /// その場でヘッダ付きのファイルを作る（「最新の議事録を開く」ですぐ開けるように）。
+    /// 以後は `endSession` まで、間隔が何分あいても同じファイルに追記する。
+    ///
+    /// - Parameters:
+    ///   - code: 会議コード（`abc-defg-hij`。ファイル名に入れる）
+    ///   - context: 見出しに残す記録元（「Google Meet abc-defg-hij」など）
+    ///   - language: 認識言語の表示名
+    ///   - now: 開始時刻（ファイル名・見出しに使う）
+    func beginMeeting(code: String?, context: String, language: String, now: Date = Date()) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.closeCurrent()
+            self.meeting = (code, context, language)
+            do {
+                let url = try self.createFile(at: now, code: code, context: context, language: language)
+                self.lastError = nil
+                self.onWrite?(.written(url, lines: 0))
+            } catch {
+                self.reportFailure(error)
+            }
+        }
+    }
+
     /// 確定文を 1 件記録する
     ///
     /// - Parameters:
@@ -65,50 +122,131 @@ final class TranscriptRecorder {
             if self.lastText == trimmed, let last = self.lastWriteAt, now.timeIntervalSince(last) < 10 {
                 return
             }
-            let url = self.fileURL(at: now, context: context, language: language)
-            let line = Self.formatLine(text: trimmed, speaker: speaker, at: now)
-            self.append(line, to: url)
-            self.lastWriteAt = now
-            self.lastText = trimmed
+            do {
+                let url = try self.fileURL(at: now, context: context, language: language)
+                let line = Self.formatLine(text: trimmed, speaker: speaker, at: now)
+                try self.append(line, to: url)
+                self.lastWriteAt = now
+                self.lastText = trimmed
+                self.linesInFile += 1
+                self.lastError = nil
+                self.onWrite?(.written(url, lines: self.linesInFile))
+            } catch {
+                self.reportFailure(error)
+            }
         }
     }
 
-    /// 記録を区切る（字幕を止めたときなど。次の追記は新しいファイルになる）
+    /// 記録を区切る（字幕を止めた・会議を出たときなど。次の追記は新しいファイルになる）
     func endSession() {
         queue.async { [weak self] in
-            guard let self, let url = self.currentURL else { return }
-            self.logger.notice("議事録を閉じました: \(url.lastPathComponent, privacy: .public)")
-            self.currentURL = nil
-            self.lastWriteAt = nil
-            self.lastText = nil
+            self?.closeCurrent()
+            self?.meeting = nil
         }
+    }
+
+    /// ここまでに頼んだ書き込みが全部終わるまで待つ
+    ///
+    /// アプリ終了の直前に呼ぶ。キューに残った追記はプロセスと一緒に消えるため。
+    func waitUntilWritten() {
+        queue.sync {}
+    }
+
+    /// 保存先にある一番新しい議事録（無ければ nil）
+    ///
+    /// - Parameter directory: 探す場所（既定は ~/Documents/voicekey/transcripts）
+    static func latestFile(in directory: URL = TranscriptRecorder.directory) -> URL? {
+        let keys: Set<URLResourceKey> = [.contentModificationDateKey]
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles]
+        ) else { return nil }
+        let modified = { (url: URL) -> Date in
+            (try? url.resourceValues(forKeys: keys).contentModificationDate) ?? .distantPast
+        }
+        return files.filter { $0.pathExtension == "md" }.max { modified($0) < modified($1) }
+    }
+
+    /// ファイル名の本体（`2026-10-11_140512` / 会議なら `2026-10-11_140512-abc-defg-hij`）
+    static func fileBaseName(at date: Date, code: String?) -> String {
+        let stamp = fileStampFormatter.string(from: date)
+        // 会議コードは URL から来るので、ファイル名に使えない文字を落として長さも抑える
+        var safe = ""
+        safe.unicodeScalars.append(
+            contentsOf: (code ?? "").unicodeScalars.filter {
+                $0.isASCII && (CharacterSet.alphanumerics.contains($0) || $0 == "-")
+            }
+        )
+        safe = String(safe.prefix(40))
+        return safe.isEmpty ? stamp : "\(stamp)-\(safe)"
     }
 
     // MARK: - 内部処理
 
-    /// 追記先のファイルを決める（間隔が空いていれば新規作成してヘッダを書く）
-    private func fileURL(at now: Date, context: String?, language: String) -> URL {
+    /// 今のファイルを閉じる（次の追記は新しいファイルになる）
+    private func closeCurrent() {
+        if let url = currentURL {
+            logger.notice("議事録を閉じました: \(url.lastPathComponent, privacy: .public)")
+        }
+        currentURL = nil
+        lastWriteAt = nil
+        lastText = nil
+        linesInFile = 0
+    }
+
+    /// 失敗を記録して呼び出し側へ知らせる
+    private func reportFailure(_ error: Error) {
+        let message = error.localizedDescription
+        lastError = message
+        logger.error("議事録を保存できません: \(message, privacy: .public)")
+        onWrite?(.failed(message))
+    }
+
+    /// 追記先のファイルを決める（必要なら新規作成してヘッダを書く）
+    ///
+    /// 会議の記録中は間隔に関係なく同じファイル。ライブ字幕は 5 分あいたら新しいファイル。
+    private func fileURL(at now: Date, context: String?, language: String) throws -> URL {
+        if let meeting {
+            if let url = currentURL { return url }
+            // 開始時のファイル作成に失敗していたときだけここへ来る（書けるようになったら作る）
+            return try createFile(at: now, code: meeting.code, context: meeting.context, language: meeting.language)
+        }
         if let url = currentURL, let last = lastWriteAt, now.timeIntervalSince(last) < Self.sessionGap {
             return url
         }
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        closeCurrent()
+        return try createFile(at: now, code: nil, context: context, language: language)
+    }
 
-        let stamp = Self.fileStampFormatter.string(from: now)
-        let url = directory.appendingPathComponent("\(stamp).md")
-        currentURL = url
+    /// 新しいファイルを作ってヘッダを書く
+    ///
+    /// 名前は秒まで入れ、それでも同名があれば `-2` `-3` と付ける。以前は分単位の名前で、
+    /// 同じ分に始まった別の記録が既存ファイルの続きに混ざっていた。
+    private func createFile(at now: Date, code: String?, context: String?, language: String) throws -> URL {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let header = Data("""
+            # 議事録 \(Self.headerFormatter.string(from: now))
 
-        if !FileManager.default.fileExists(atPath: url.path) {
-            let header = """
-                # 議事録 \(Self.headerFormatter.string(from: now))
+            - 記録元: \(context ?? "システム音声")
+            - 言語: \(language)
 
-                - 記録元: \(context ?? "システム音声")
-                - 言語: \(language)
-
-                """
-            try? header.write(to: url, atomically: true, encoding: .utf8)
+            """.utf8)
+        let baseName = Self.fileBaseName(at: now, code: code)
+        // ライブ字幕とボットは別々の記録係（別キュー）なので、「無ければ作る」を 1 回の操作で行う
+        // （存在確認と書き込みを分けると、同じ秒に始まった 2 つが同じファイルを掴む）
+        for attempt in 1...100 {
+            let name = attempt == 1 ? baseName : "\(baseName)-\(attempt)"
+            let url = directory.appendingPathComponent("\(name).md")
+            do {
+                try header.write(to: url, options: .withoutOverwriting)
+            } catch where FileManager.default.fileExists(atPath: url.path) {
+                continue
+            }
+            currentURL = url
+            linesInFile = 0
             logger.notice("議事録を開始しました: \(url.lastPathComponent, privacy: .public)")
+            return url
         }
-        return url
+        throw CocoaError(.fileWriteFileExists)
     }
 
     /// 1 行分の Markdown を作る
@@ -121,22 +259,25 @@ final class TranscriptRecorder {
     }
 
     /// ファイル末尾へ 1 行追記する
-    private func append(_ line: String, to url: URL) {
-        guard let data = line.data(using: .utf8) else { return }
-        if let handle = try? FileHandle(forWritingTo: url) {
-            defer { try? handle.close() }
-            try? handle.seekToEnd()
-            try? handle.write(contentsOf: data)
-        } else {
-            // ヘッダ作成に失敗していた場合の保険（ここで作れば以降の追記は通る）
-            try? data.write(to: url, options: .atomic)
+    ///
+    /// 記録中にファイルが消された（Finder で捨てた等）ときは作り直して書く。
+    private func append(_ line: String, to url: URL) throws {
+        let data = Data(line.utf8)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            try data.write(to: url, options: .atomic)
+            return
         }
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: data)
     }
 
-    /// ファイル名用（2026-08-28_1432）
+    /// ファイル名用（2026-08-28_143205）
     private static let fileStampFormatter: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd_HHmm"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd_HHmmss"
         return formatter
     }()
 

@@ -123,6 +123,8 @@ struct MainWindowView: View {
             // 「翻訳して入力」も personal 限定・macOS 26 以降（Apple のオンデバイス翻訳が要る）
             items.append(.init(id: 10, title: "翻訳して入力", icon: "character.bubble", section: "音声入力"))
             items.append(.init(id: 9, title: "ライブ字幕", icon: "captions.bubble", section: "字幕と議事録"))
+            // Meet ボットの参加・ログイン・議事録を 1 画面で（メニューだけでは状態が見えなかった）
+            items.append(.init(id: 11, title: "議事録・会議", icon: "person.2.wave.2", section: "字幕と議事録"))
         }
         items.append(.init(id: 0, title: "一般", icon: "gearshape", section: "アプリ"))
         // personal（個人用最速版）は埋め込みキーで常に利用可＝ログイン/アカウントの概念が無いので
@@ -412,6 +414,12 @@ struct MainWindowView: View {
         case 10:
             if #available(macOS 26.0, *) {
                 TranslateInputTab(config: config)
+            } else {
+                GeneralSettingsTab(config: config, historySync: historySync)
+            }
+        case 11:
+            if #available(macOS 26.0, *) {
+                MeetBotSettingsTab(config: config, controller: controller)
             } else {
                 GeneralSettingsTab(config: config, historySync: historySync)
             }

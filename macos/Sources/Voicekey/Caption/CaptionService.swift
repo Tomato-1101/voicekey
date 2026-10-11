@@ -387,6 +387,8 @@ final class CaptionService {
     /// タップと Aggregate Device を残すと HAL 側にゴーストデバイスが溜まるため、
     /// 終了処理は同期的に待つ。
     func shutdown() {
+        // 議事録の追記はキューで非同期に書くので、終了前に書き切る（プロセスと一緒に消さない）
+        defer { recorder.waitUntilWritten() }
         narrator.stop()
         // HUD を捨てる経路でもピルを戻せるようにしておく（畳みアニメの完了通知は届かない）
         onHUDVisibilityChanged?(false)

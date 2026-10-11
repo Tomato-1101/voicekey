@@ -111,6 +111,43 @@ final class CaptionSettleTrackerTests: XCTestCase {
         XCTAssertTrue(tracker.flush().isEmpty)
     }
 
+    /// 同じ話者の字幕ブロックが 2 つ同時に見えていても、各発言は 1 回しか書かない（B1 の回帰）
+    ///
+    /// Meet は話者が続けて話すと、言い終わった前のブロックを残したまま次のブロックを足す。
+    /// 以前は 2 つのブロックを交互に「別の発言に切り替わった」と判定し、ポーリングのたびに
+    /// 2 行ずつ議事録へ重複して書いていた。
+    func testTwoBlocksOfSameSpeakerDoNotDuplicate() {
+        var tracker = CaptionSettleTracker(settleSeconds: 2.5)
+        let start = Date()
+        let screen: [CaptionSettleTracker.Entry] = [
+            .init(speaker: "山田", text: "前の発言です"), .init(speaker: "山田", text: "次の話に移ります"),
+        ]
+        var emitted: [CaptionSettleTracker.Line] = []
+        for second in 0..<12 {
+            emitted += tracker.ingest(screen, now: start.addingTimeInterval(Double(second)))
+        }
+        emitted += tracker.flush()
+        XCTAssertEqual(
+            emitted,
+            [.init(speaker: "山田", text: "前の発言です"), .init(speaker: "山田", text: "次の話に移ります")]
+        )
+    }
+
+    /// 確定後に同じブロックが伸びたら、伸びた分だけを書く（同じ文頭を二重に書かない）
+    func testGrowthAfterSettleEmitsOnlyTheRest() {
+        var tracker = CaptionSettleTracker(settleSeconds: 2.5)
+        let start = Date()
+        _ = tracker.ingest([.init(speaker: "山田", text: "まず予算です")], now: start)
+        let first = tracker.ingest([.init(speaker: "山田", text: "まず予算です")], now: start.addingTimeInterval(3))
+        XCTAssertEqual(first, [.init(speaker: "山田", text: "まず予算です")])
+
+        _ = tracker.ingest([.init(speaker: "山田", text: "まず予算です 次に日程です")], now: start.addingTimeInterval(4))
+        let second = tracker.ingest(
+            [.init(speaker: "山田", text: "まず予算です 次に日程です")], now: start.addingTimeInterval(7)
+        )
+        XCTAssertEqual(second, [.init(speaker: "山田", text: "次に日程です")])
+    }
+
     /// 退出時は書きかけも取りこぼさない
     func testFlushEmitsPending() {
         var tracker = CaptionSettleTracker(settleSeconds: 2.5)

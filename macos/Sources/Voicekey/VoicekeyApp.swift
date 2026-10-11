@@ -467,9 +467,11 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             captionMenu = caption
         }
 
-        // Google Meet 議事録ボット（Chrome が入っているときだけ出す）
-        if #available(macOS 26.0, *), MeetBotService.isAvailable {
-            let bot = MeetBotMenuController(controller: controller)
+        // Google Meet 議事録ボット（Chrome が無いときも項目は出し、中で「Chrome が必要です」と見せる）
+        if #available(macOS 26.0, *) {
+            let bot = MeetBotMenuController(controller: controller) { [weak self] in
+                self?.showSettings(initialTab: 11)
+            }
             menu.addItem(bot.menuItem)
             meetBotMenu = bot
         }
