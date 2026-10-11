@@ -55,6 +55,10 @@ final class CaptionMenuController: NSObject, NSMenuDelegate {
         // 2. 状態（読み取り専用）
         menu.addItem(disabledItem(service.state.menuTitle))
         menu.addItem(disabledItem(translationStatusLine(service)))
+        // Soniox は繋いでいる時間で課金されるので、いま繋いでいるか・Apple に切り替わった理由を出す
+        if let soniox = service.sonioxStatusLine {
+            menu.addItem(disabledItem(soniox))
+        }
         menu.addItem(disabledItem(captureTargetLine(service)))
         menu.addItem(.separator())
 

@@ -30,8 +30,10 @@ private final class CaptionHUDLine {
     var kind: CaptionLineKind
     var japanese: String
     var source: String
-    /// 翻訳の採番（クラウドの訳で差し替えるときに同じ行を探すのに使う。無ければ nil）
-    var sequence: Int?
+    /// この行を構成する確定文（短い行をまとめると複数になる）
+    ///
+    /// 採番（無ければ nil）はクラウドの訳で差し替えるときに同じ文を探すのに使う。
+    var parts: [(sequence: Int?, japanese: String, source: String)] = []
     /// 画面に出た時刻（最低表示時間の判定に使う）
     let shownAt: CFAbsoluteTime
     /// この行を消してよくなるまでの秒数（差し替えで文が伸びたら延ばす）
@@ -318,10 +320,15 @@ final class CaptionHUDController {
     ///   - sequence: `showTranslation` で渡した採番
     ///   - japanese: 差し替える訳文
     func reviseTranslation(sequence: Int, japanese: String) {
-        guard let line = confirmedLines.first(where: { $0.sequence == sequence && !$0.isRemoving }),
-              line.japanese != japanese else { return }
-        line.japanese = japanese
-        let needed = Self.minimumDuration(for: japanese)
+        guard let line = confirmedLines.first(where: { line in
+                  !line.isRemoving && line.parts.contains { $0.sequence == sequence }
+              }),
+              let index = line.parts.firstIndex(where: { $0.sequence == sequence }),
+              line.parts[index].japanese != japanese else { return }
+        // まとめた行なら、その文の部分だけを書き換えてつなぎ直す
+        line.parts[index].japanese = japanese
+        line.japanese = line.parts.map(\.japanese).reduce("", CaptionLineMergePolicy.join)
+        let needed = Self.minimumDuration(for: line.japanese)
         if needed > line.minimumDuration {
             line.minimumDuration = needed
             // 退場タイマーは表示開始からの残り時間で張り直す
@@ -414,18 +421,58 @@ final class CaptionHUDController {
         }
 
         let text = japanese.isEmpty ? source : japanese
+        if mergeIntoLastLine(kind: kind, japanese: japanese, source: source, sequence: sequence, text: text) {
+            refresh()
+            return
+        }
         let line = CaptionHUDLine(
             kind: kind,
             japanese: japanese,
             source: source,
             minimumDuration: Self.minimumDuration(for: text)
         )
-        line.sequence = sequence
+        line.parts = [(sequence, japanese, source)]
         container.addSubview(line.view)
         confirmedLines.append(line)
         scheduleSelfRetire(line)
         evictOverflowingLines()
         refresh()
+    }
+
+    /// 短い確定行を直前の行へまとめる（判定は `CaptionLineMergePolicy`）
+    ///
+    /// 行数の上限で読み終わっていない行を早く押し出さないための処置。まとめた行は、足した文を
+    /// 今から読むのに要る時間（最低表示時間の式そのまま）まで表示を延ばす。
+    ///
+    /// - Returns: まとめたら true（新しい行は作らない）
+    private func mergeIntoLastLine(
+        kind: CaptionLineKind, japanese: String, source: String, sequence: Int?, text: String
+    ) -> Bool {
+        let active = confirmedLines.filter { !$0.isRemoving }
+        guard let last = active.last, last.kind == kind, kind != .notice, let oldest = active.first else { return false }
+        let lastText = last.japanese.isEmpty ? last.source : last.japanese
+        let now = CFAbsoluteTimeGetCurrent()
+        guard CaptionLineMergePolicy.shouldMerge(
+            newText: text,
+            lastText: lastText,
+            activeCount: active.count,
+            oldestHasMetMinimum: now - oldest.shownAt >= oldest.minimumDuration,
+            maxLines: Self.maxConfirmedLines
+        ) else { return false }
+        last.parts.append((sequence, japanese, source))
+        last.japanese = CaptionLineMergePolicy.join(last.japanese, japanese)
+        last.source = CaptionLineMergePolicy.join(last.source, source)
+        let merged = last.japanese.isEmpty ? last.source : last.japanese
+        let elapsed = now - last.shownAt
+        last.minimumDuration = max(
+            last.minimumDuration,
+            elapsed + Self.minimumDuration(for: text),
+            Self.minimumDuration(for: merged)
+        )
+        last.retireTimer?.invalidate()
+        scheduleSelfRetire(last)
+        logger.notice("短い確定行を直前の行へまとめました 文字数=\(merged.count, privacy: .public)")
+        return true
     }
 
     /// 読み終わる頃に自分から退場させる

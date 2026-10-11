@@ -47,6 +47,11 @@ final class CaptionService {
     private let narrator = SpeechNarrator()
     /// 翻訳器は使い回す（Apple 側はセッションとモデルのロードを保持するため作り直さない）
     private let appleTranslator = AppleTranslator()
+    /// ライブ行（部分訳）用の Apple 翻訳の入口
+    ///
+    /// 同じ AppleTranslator を使うが、失敗しても復旧の回数を使わず・セッションも捨てない。
+    /// 部分訳は 0.18 秒間隔で大量に呼ぶので、その失敗で確定文の復旧の余地を食い潰さないため。
+    private lazy var appleLivePartialTranslator = AppleLiveLineTranslator(base: appleTranslator)
     private let geminiTranslator = GeminiTranslator()
     private let groqTranslator = GroqTranslator()
     private let mockTranslator = MockTranslator()
@@ -146,6 +151,23 @@ final class CaptionService {
     /// いま対象にしているアプリ名（すべてモード・未確定なら nil）
     private(set) var captureTargetName: String?
 
+    /// Soniox の接続状態（Soniox で動いていないときは nil。メニュー表示用・メインスレッド）
+    private(set) var sonioxLinkState: SonioxCaptionLinkState?
+    /// Soniox を諦めてこのセッションだけ Apple で出している理由（メニュー表示用・メインスレッド）
+    private(set) var sonioxFallbackReason: String?
+
+    /// メニューに出す Soniox の状態行（Soniox を選んでいないときは nil）
+    ///
+    /// 課金はストリームを開いている時間ぶんなので、いま繋いでいるか（＝課金中か）と、
+    /// Apple に切り替わっているならその理由を、本人が見て分かるように出す。
+    var sonioxStatusLine: String? {
+        guard CaptionSettings.translationEngine == .soniox, state.isActive else { return nil }
+        if let reason = sonioxFallbackReason {
+            return SonioxCaptionLinkState.fallbackMenuText(reason: reason)
+        }
+        return sonioxLinkState?.menuText
+    }
+
     /// 原文（英語）を併記するか
     var showsSourceText: Bool {
         get { CaptionSettings.showSourceText }
@@ -205,6 +227,7 @@ final class CaptionService {
             CaptionSettings.translationEngine = newValue
             // ユーザーが選び直したら、Soniox が使えなかったときの代替は解除する（もう一度試す）
             sessionEngineOverride.withLock { $0 = nil }
+            sonioxFallbackReason = nil
             logger.notice("翻訳エンジンを切り替えました: \(newValue.rawValue, privacy: .public)")
             if restartIfSessionOutdated() { return }
             // Apple へ切り替えたら、その場でモデルの準備状況を確かめて画面に出す
@@ -231,6 +254,7 @@ final class CaptionService {
         pendingRestart?.cancel()
         pendingRestart = nil
         sessionEngineOverride.withLock { $0 = nil }
+        sonioxFallbackReason = nil
         state = .preparing("音声認識モデルを確認中…")
         // 一度でも開始したら、次回起動からは設定に従って自動開始してよい
         // （初回はシステム音声録音の許可ダイアログが出るので自動開始しない）
@@ -246,6 +270,7 @@ final class CaptionService {
         pendingRestart?.cancel()
         pendingRestart = nil
         sessionEngineOverride.withLock { $0 = nil }
+        sonioxFallbackReason = nil
         teardownSession()
         state = .stopped
         endAntiNap()
@@ -285,15 +310,14 @@ final class CaptionService {
         endAntiNap()
         let stream = sonioxStream
         sonioxStream = nil
-        guard let pipeline else {
-            stream?.stop()
-            return
-        }
+        let pipeline = self.pipeline
         self.pipeline = nil
+        guard pipeline != nil || stream != nil else { return }
+        // Soniox の停止は終端への返事を最大 1.5 秒待つので、パイプラインと同じ 3 秒の枠の中で待つ
         let semaphore = DispatchSemaphore(value: 0)
         Task {
-            await pipeline.stop()
-            stream?.stop()
+            await pipeline?.stop()
+            await stream?.stop()
             semaphore.signal()
         }
         _ = semaphore.wait(timeout: .now() + 3.0)
@@ -399,6 +423,7 @@ final class CaptionService {
             if config.usesSoniox {
                 // キー未設定など。保存済みの設定は変えず、このセッションだけ Apple で出す
                 sessionEngineOverride.withLock { $0 = .apple }
+                sonioxFallbackReason = "APIキー未設定"
                 sessionConfig = desiredSessionConfig()
                 logger.notice("Soniox の API キーが無いため Apple で字幕を出します")
                 hud.showNotice("Soniox の API キーが未設定のため Apple で表示します")
@@ -611,8 +636,15 @@ final class CaptionService {
                 // 保存済みの設定は変えず、このセッションだけ Apple に切り替えて続ける
                 self.logger.error("Soniox が使えないため Apple に切り替えます: \(reason, privacy: .public)")
                 self.sessionEngineOverride.withLock { $0 = .apple }
+                self.sonioxFallbackReason = reason
                 self.restartSession()
                 self.hud.showNotice("\(reason) — Apple に切り替えました")
+            }
+        }
+        stream.onLinkStateChange = { [weak self] linkState in
+            DispatchQueue.main.async {
+                guard let self, self.generation.isCurrent(gen) else { return }
+                self.sonioxLinkState = linkState
             }
         }
         return stream.start() ? stream : nil
@@ -629,6 +661,7 @@ final class CaptionService {
         self.pipeline = nil
         let stream = sonioxStream
         sonioxStream = nil
+        sonioxLinkState = nil
         coordinator?.reset()
         coordinator = nil
         partialDriver?.reset()
@@ -642,8 +675,8 @@ final class CaptionService {
 
         Task { [weak self] in
             await pipeline?.stop()
-            // 音声を送り切ってから閉じる（未確定分は 1 行に確定して議事録へ届く）
-            stream?.stop()
+            // 音声を送り切ってから終端を送って閉じる（未確定分も確定させて議事録へ届ける）
+            await stream?.stop()
             // 議事録はここで閉じる（次に開始したときは別ファイルになる）。
             // 張り直しで新しいセッションが既に始まっていたら、そちらの記録を切らない
             guard let self, self.generation.isCurrent(ended) else { return }
@@ -692,8 +725,8 @@ final class CaptionService {
     /// Apple の言語モデルが入っていない環境では nil を返し、従来どおり原文だけのライブ行にする。
     private func partialTranslator() -> Translator? {
         if Self.usesMockTranslator { return mockTranslator }
-        guard effectiveEngine.isCloud else { return appleTranslator }
-        return appleLiveLineReady.withLock { $0 } ? appleTranslator : nil
+        guard effectiveEngine.isCloud else { return appleLivePartialTranslator }
+        return appleLiveLineReady.withLock { $0 } ? appleLivePartialTranslator : nil
     }
 
     /// クラウドエンジンのときに、先出し用の Apple 翻訳を裏で用意する
@@ -723,13 +756,46 @@ final class CaptionService {
     private func currentTranslator() -> Translator {
         if Self.usesMockTranslator { return mockTranslator }
         let appleFirst = appleLiveLineReady.withLock { $0 }
+        let cloud: Translator
         switch effectiveEngine {
         case .apple, .soniox: return appleTranslator
-        case .gemini:
-            return appleFirst ? appleTranslator : FallbackTranslator(primary: geminiTranslator, fallback: appleTranslator)
-        case .groq:
-            return appleFirst ? appleTranslator : FallbackTranslator(primary: groqTranslator, fallback: appleTranslator)
+        case .gemini: cloud = geminiTranslator
+        case .groq: cloud = groqTranslator
         }
+        return Self.confirmedTranslator(apple: appleTranslator, cloud: cloud, appleFirst: appleFirst) { [weak self] in
+            self?.noteAppleLiveLineFailed()
+        }
+    }
+
+    /// クラウド選択時の確定文の翻訳器を組む（単体テスト用に static で出している）
+    ///
+    /// Apple 先出しのときも Apple 単体にはしない。Apple が落ちたら確定文がクラウドにも渡らず
+    /// 原文のまま流れてしまい「確定文は全部訳す」恒久要件を破るため、落とし先にクラウドを置く。
+    ///
+    /// - Parameters:
+    ///   - appleFirst: Apple の訳を先に出す構成か
+    ///   - onAppleFailure: Apple 先出しで Apple が失敗したときに呼ぶ（以後の構成を cloud→Apple に戻すため）
+    static func confirmedTranslator(
+        apple: Translator, cloud: Translator, appleFirst: Bool,
+        onAppleFailure: @escaping @Sendable () -> Void
+    ) -> Translator {
+        appleFirst
+            ? FallbackTranslator(primary: apple, fallback: cloud, onPrimaryFailure: onAppleFailure)
+            : FallbackTranslator(primary: cloud, fallback: apple)
+    }
+
+    /// Apple 先出しで Apple が失敗した
+    ///
+    /// 以後は従来の cloud→Apple 構成に戻す（Apple を先に試して毎回失敗待ちをしない）。
+    /// 差し替え先もこれで nil になるので、Apple の代わりにクラウドで訳した文を二重に送らない。
+    /// 再準備はセッション開始・エンジン切替のときの `prepareAppleLiveLineIfNeeded` だけ（ここで
+    /// 準備を繰り返すと、壊れた状態で準備と失敗を往復し続けるため）。
+    private func noteAppleLiveLineFailed() {
+        let wasReady = appleLiveLineReady.withLock { ready -> Bool in
+            defer { ready = false }
+            return ready
+        }
+        if wasReady { logger.notice("Apple の先出し翻訳が失敗したため、このセッションはクラウドを先に使います") }
     }
 
     /// 先に出した Apple の訳を差し替えるクラウドの翻訳器（差し替えないなら nil）
@@ -742,10 +808,11 @@ final class CaptionService {
         }
     }
 
-    /// 現在の構成で実際に翻訳できるか
+    /// 選んでいる翻訳エンジン（Gemini / Groq）のキーが設定済みか
     ///
-    /// Apple エンジンはキー不要なので常に true。クラウドはキーが要る。
-    /// Soniox はキーが無ければ Apple で代替するので、字幕としては常に出せる。
+    /// 「実際に訳を出せるか」ではない。Gemini / Groq はキーが無くても Apple へ落ちて訳が出るが、
+    /// ここはキーが無ければ false を返す。キーの判定を持たない Apple と Soniox
+    /// （`apiProvider` が nil）は常に true（Soniox はキーが無ければ Apple で代替する）。
     var canTranslate: Bool {
         if Self.usesMockTranslator { return true }
         guard let provider = CaptionSettings.translationEngine.apiProvider else { return true }

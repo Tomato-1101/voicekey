@@ -140,12 +140,24 @@ actor AppleTranslator: Translator {
     ///     （LLM エンジンと同じ `Translator` で扱うためにシグネチャだけ合わせている）
     /// - Returns: 訳文（日本語）
     func translate(_ text: String, context: [TranslationExchange]) async throws -> String {
+        try await translate(text, context: context, recoversIfNeeded: true)
+    }
+
+    /// 英文を日本語へ訳す（復旧の扱いを選べる版）
+    ///
+    /// - Parameter recoversIfNeeded: false なら、準備切れでも再準備を試さず（回数を使わず）、
+    ///   失敗してもセッションを捨てない。ライブ行の部分訳は 0.18 秒間隔で大量に呼ぶので、
+    ///   その失敗で確定文用の復旧の余地（`maxRecoveryAttempts`）を食い潰さないため。
+    ///   壊れたセッションの作り直しは、確定文（true で呼ぶ側）の失敗が担う。
+    func translate(
+        _ text: String, context: [TranslationExchange], recoversIfNeeded: Bool
+    ) async throws -> String {
         // ここでは準備（＝承認 UI 待ちで戻ってこない可能性がある処理）を起動しない。
         // 起動すると翻訳キューが承認待ちで詰まり、字幕が丸ごと止まってしまう。
         // 準備は開始時とエンジン切替時の `prepare(report:)` だけが行う。
         // ただし導入済みモデルの「承認なし」の再準備だけは、上限付きでここから試す
         // （一度の失敗で翻訳が戻らなくなるのを防ぐ。承認 UI は出さないので詰まらない）。
-        if !isPrepared, recoveryAttemptsLeft > 0 {
+        if recoversIfNeeded, !isPrepared, recoveryAttemptsLeft > 0 {
             recoveryAttemptsLeft -= 1
             let recovered = await prepareIfInstalled()
             logger.notice("Apple 翻訳の再準備: \(recovered ? "成功" : "失敗", privacy: .public) 残り=\(self.recoveryAttemptsLeft, privacy: .public)")
@@ -162,8 +174,10 @@ actor AppleTranslator: Translator {
             return translated
         } catch {
             // モデルが消えた・セッションが無効化された場合に備え、次回作り直す
-            self.session = nil
-            isPrepared = false
+            if recoversIfNeeded {
+                self.session = nil
+                isPrepared = false
+            }
             throw TranslationError.translationUnavailable(String(describing: error))
         }
     }
@@ -188,5 +202,18 @@ actor AppleTranslator: Translator {
         )
         session = created
         return created
+    }
+}
+
+/// ライブ行（部分訳）用の Apple 翻訳の入口
+///
+/// 中身は同じ `AppleTranslator`（モデルとセッションを共有する）。部分訳の失敗では復旧の回数を使わず、
+/// セッションも捨てない（`translate(_:context:recoversIfNeeded:)` の false）。
+@available(macOS 26.0, *)
+struct AppleLiveLineTranslator: Translator {
+    let base: AppleTranslator
+
+    func translate(_ text: String, context: [TranslationExchange]) async throws -> String {
+        try await base.translate(text, context: context, recoversIfNeeded: false)
     }
 }

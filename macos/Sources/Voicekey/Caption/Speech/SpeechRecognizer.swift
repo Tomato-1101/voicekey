@@ -104,8 +104,8 @@ final class SpeechRecognizer: @unchecked Sendable {
     /// 確定の前倒し（`finalizeNow()`）用に解析器を守るロック
     ///
     /// `finalizeNow()` は音声 IO スレッドから呼ばれ、`analyzer` は開始・終了で書き換わるため。
-    private let finalizeLock = OSAllocatedUnfairLock<(analyzer: SpeechAnalyzer?, inFlight: Bool)>(
-        initialState: (nil, false)
+    private let finalizeLock = OSAllocatedUnfairLock<(analyzer: SpeechAnalyzer?, gate: FinalizeRequestGate)>(
+        initialState: (nil, FinalizeRequestGate())
     )
 
     /// - Parameters:
@@ -179,7 +179,7 @@ final class SpeechRecognizer: @unchecked Sendable {
         // モデルの初期化コストを先払いして、最初の発話を取りこぼさないようにする
         try await analyzer.prepareToAnalyze(in: format)
         try await analyzer.start(inputSequence: inputStream)
-        finalizeLock.withLock { $0 = (analyzer, false) }
+        finalizeLock.withLock { $0 = (analyzer, FinalizeRequestGate()) }
 
         resultsTask = Task(priority: analyzerPriority) { [weak self] in
             await self?.consumeResults(from: transcriber)
@@ -205,22 +205,22 @@ final class SpeechRecognizer: @unchecked Sendable {
     /// 無音を検知した側から「ここまでで確定して」と頼むことで、字幕の確定行を早く出す。
     /// 前の依頼が終わっていなければ重ねない（音声 IO スレッドから毎回呼ばれても詰まらないように）。
     func finalizeNow() {
-        let target = finalizeLock.withLock { state -> SpeechAnalyzer? in
-            guard let analyzer = state.analyzer, !state.inFlight else { return nil }
-            state.inFlight = true
-            return analyzer
+        let request = finalizeLock.withLock { state -> (analyzer: SpeechAnalyzer, id: Int)? in
+            guard let analyzer = state.analyzer,
+                  let id = state.gate.begin(now: CFAbsoluteTimeGetCurrent()) else { return nil }
+            return (analyzer, id)
         }
-        guard let target else { return }
+        guard let request else { return }
         Task(priority: analyzerPriority) { [weak self] in
             // 失敗しても次の無音でまた頼めばよい（確定は SpeechTranscriber 自身でもいずれ出る）
-            try? await target.finalize(through: nil)
-            self?.finalizeLock.withLock { $0.inFlight = false }
+            try? await request.analyzer.finalize(through: nil)
+            self?.finalizeLock.withLock { $0.gate.end(id: request.id) }
         }
     }
 
     /// 入力を打ち切り、残りを確定させてから終了する
     func finish() async {
-        finalizeLock.withLock { $0 = (nil, false) }
+        finalizeLock.withLock { $0 = (nil, FinalizeRequestGate()) }
         inputContinuation?.finish()
         inputContinuation = nil
         if let analyzer {
@@ -311,5 +311,48 @@ final class SpeechRecognizer: @unchecked Sendable {
         } catch {
             logger.error("認識結果の受信が中断: \(String(describing: error), privacy: .public)")
         }
+    }
+}
+
+/// 確定の前倒し（`finalizeNow`）を重ねないための門（純ロジック・単体テスト用に分けている）
+///
+/// 以前は「依頼中」の印だけで、`finalize` が返ってこないと印が立ったままになり、
+/// 以後の前倒しが一切効かなくなっていた（字幕の確定が SpeechTranscriber 任せの数秒遅れに戻る）。
+/// 一定時間返ってこない依頼は見捨てて次を出せるようにし、見捨てる数にも上限を置く。
+struct FinalizeRequestGate {
+
+    /// これだけ返ってこなければ、その依頼は詰まったとみなす（秒）
+    ///
+    /// ふだんの前倒しは数十〜数百 ms で返る。2 秒は「確実に詰まっている」と言える長さ。
+    static let timeout: TimeInterval = 2.0
+    /// 詰まった依頼を見捨ててよい数（解析器そのものが固まっているときに依頼を積み上げないため）
+    static let maxAbandoned = 3
+
+    /// 返事を待っている依頼の番号
+    private(set) var inFlightID: Int?
+    /// 続けて見捨てた依頼の数（返事が来たら 0 に戻す）
+    private(set) var abandoned = 0
+    private var startedAt: CFAbsoluteTime = 0
+    private var nextID = 0
+
+    /// 依頼を出してよければ番号を払い出す
+    ///
+    /// - Returns: 出してよいなら番号。前の依頼を待つなら nil
+    mutating func begin(now: CFAbsoluteTime) -> Int? {
+        if inFlightID != nil {
+            guard now - startedAt >= Self.timeout, abandoned < Self.maxAbandoned else { return nil }
+            abandoned += 1
+        }
+        nextID += 1
+        inFlightID = nextID
+        startedAt = now
+        return nextID
+    }
+
+    /// 依頼の返事が来た（見捨てた古い依頼の返事は無視する）
+    mutating func end(id: Int) {
+        guard id == inFlightID else { return }
+        inFlightID = nil
+        abandoned = 0
     }
 }

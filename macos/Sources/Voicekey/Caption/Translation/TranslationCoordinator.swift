@@ -61,11 +61,17 @@ final class TranslationCoordinator: @unchecked Sendable {
     /// クラウドが詰まったとき用の安全弁。**溢れた行も捨てない**（確定文は全部訳す恒久要件）。
     /// 溢れた分は `overflowTranslatorProvider`（Apple）で別に訳す。
     static let maxPendingCount = 10
-    /// クラウドの訳で差し替えるのを待つ上限（秒）
+    /// クラウドの訳を待って次の差し替えへ進むまでの上限（秒）
     ///
-    /// これを過ぎたら先に出した Apple の訳で確定とする。字幕は話に追いついていないと
-    /// 意味が無いので、上の行を何秒も後から書き換えるより、早めに諦めるほうが読みやすい。
+    /// これを過ぎたら待つのをやめて次の行の差し替えへ進む（クラウドの遅れで後続の行が詰まらないように）。
+    /// ただし投げた呼び出しは止めず、遅れて届いた訳も、その行がまだ画面か文脈に残っていれば差し替える
+    /// （課金済みの訳を捨てない）。締め切り前に投げられなかった行だけは、送らずに Apple の訳で確定する。
     static let refineTimeout: TimeInterval = 1.5
+    /// 締め切りを過ぎても結果を待っている差し替えの同時数の上限
+    ///
+    /// 遅れている呼び出しを止めずに次へ進むので、クラウドが詰まると呼び出しが積み上がる。
+    /// 2 本までにして、それ以上は先の呼び出しが返るまで新しく投げない（429 の連鎖と課金の膨張を防ぐ）。
+    static let maxRefinesInFlight = 2
     /// 文脈として持たせる直近ペア数
     private static let contextPairCount = 4
 
@@ -84,7 +90,12 @@ final class TranslationCoordinator: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.voicekey.caption.translation")
     /// 差し替え待ちの行（クラウドは同時 1 本に絞る。古い順）
     private var refinePending: [RefineRequest] = []
+    /// 締め切りまで結果を待っている差し替えがある（この間は次を投げない＝順番どおりに差し替える）
     private var isRefining = false
+    /// 投げて結果がまだ返っていない差し替えの数（締め切りを過ぎたものも含む）
+    private var refinesInFlight = 0
+    /// 差し替えの枠の世代（締め切りと結果のどちらが先に枠を空けたかを見分ける）
+    private var refineSlotID = 0
 
     private var buffer = ""
     /// 翻訳待ちの行（本文と採番）
@@ -365,8 +376,13 @@ final class TranslationCoordinator: @unchecked Sendable {
     ///
     /// 締め切り（Apple の訳を出してから `refineTimeout`）を過ぎた行は投げずに諦める。
     /// 待ち行列で古くなった行までクラウドへ送ると、課金だけ増えて画面は変わらないため。
+    ///
+    /// 投げた呼び出しは締め切りで打ち切らない。締め切りで「待つのをやめて次へ進む」だけにし、
+    /// 遅れて届いた訳も `onRevised` で渡す（表示側は同じ採番の行がまだあれば書き換える）。
+    /// 以前は締め切りで結果を捨てていたため、課金済みのクラウドの訳が画面にも文脈にも残らなかった。
+    /// 429 などの失敗は従来どおり Apple の訳のまま確定する。
     private func dispatchNextRefineLocked() {
-        guard !isRefining else { return }
+        guard !isRefining, refinesInFlight < Self.maxRefinesInFlight else { return }
         let now = CFAbsoluteTimeGetCurrent()
         while let first = refinePending.first, first.deadline <= now {
             refinePending.removeFirst()
@@ -375,46 +391,40 @@ final class TranslationCoordinator: @unchecked Sendable {
         guard !refinePending.isEmpty else { return }
         let request = refinePending.removeFirst()
         isRefining = true
+        refinesInFlight += 1
+        refineSlotID += 1
+        let slot = refineSlotID
         Task { [self] in
-            let refined = await Self.translate(
-                request.text, context: request.context, with: request.translator,
-                timeout: request.deadline - CFAbsoluteTimeGetCurrent()
-            )
+            let refined: String?
+            do {
+                refined = try await request.translator.translate(request.text, context: request.context)
+            } catch {
+                refined = nil
+                logger.notice("クラウドの訳に失敗したため Apple の訳で確定 長さ=\(request.text.count, privacy: .public)")
+            }
             if let refined {
                 onRevised?(request.text, refined, request.sequence)
             }
             queue.async { [self] in
                 if let refined {
-                    // 文脈にはクラウドの訳を残す（次の文の訳の質を上げるため）
+                    // 文脈にはクラウドの訳を残す（次の文の訳の質を上げるため）。
+                    // 遅れて届いたときも、まだ文脈に残っていれば差し替える
                     if let index = history.lastIndex(where: { $0.source == request.text }) {
                         history[index] = TranslationExchange(source: request.text, translated: refined)
                     }
-                } else {
-                    logger.notice("クラウドの訳が締め切りまでに来ないため Apple の訳で確定 長さ=\(request.text.count, privacy: .public)")
                 }
-                isRefining = false
+                refinesInFlight -= 1
+                // 締め切り前に返ったなら、この呼び出しが持っていた枠を空ける
+                if slot == refineSlotID { isRefining = false }
                 dispatchNextRefineLocked()
             }
         }
-    }
-
-    /// 締め切り付きで 1 文を訳す
-    ///
-    /// - Returns: 締め切りまでに訳せたら訳文。時間切れ・失敗なら nil（呼び出し側は先の訳を残す）
-    static func translate(
-        _ text: String, context: [TranslationExchange], with translator: Translator, timeout: TimeInterval
-    ) async -> String? {
-        guard timeout > 0 else { return nil }
-        return await withTaskGroup(of: String?.self) { group in
-            group.addTask { try? await translator.translate(text, context: context) }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                return nil
-            }
-            // 先に終わった方を採る。訳が先なら訳、時間切れ（や失敗）が先なら nil
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
+        // 締め切りが来たら、結果を待たずに次の行の差し替えへ進む（呼び出し自体は続ける）
+        queue.asyncAfter(deadline: .now() + max(0, request.deadline - now)) { [self] in
+            guard isRefining, slot == refineSlotID else { return }
+            isRefining = false
+            logger.notice("クラウドの訳が締め切りまでに来ないため次へ進む（届けば差し替える） 長さ=\(request.text.count, privacy: .public)")
+            dispatchNextRefineLocked()
         }
     }
 

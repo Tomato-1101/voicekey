@@ -50,6 +50,8 @@ struct SonioxCaptionAssembler {
 
     /// 発話の切れ目を表す特別なトークン
     static let endToken = "<end>"
+    /// 停止時に送る finalize の完了印（本文ではないので字幕・議事録に出さない）
+    static let finToken = "<fin>"
 
     /// 文末が来ないまま喋り続けたときに、確定分だけで行を切る長さ（原文の文字数）
     ///
@@ -87,7 +89,8 @@ struct SonioxCaptionAssembler {
         pendingSource = ""
         pendingTranslation = ""
         for token in response.tokens {
-            if token.text == Self.endToken {
+            // <fin> は「送った音声はすべて確定した」印なので、切れ目と同じく訳が揃いしだい確定させる
+            if token.text == Self.endToken || token.text == Self.finToken {
                 if token.isFinal { endReached = true }
                 continue
             }
@@ -101,11 +104,26 @@ struct SonioxCaptionAssembler {
             }
         }
 
-        var events: [Event] = []
-        if let line = takeConfirmedLine() { events.append(line) }
+        // 訳がまとめて届いたときは 1 回で複数行が確定する（文ごとに原文と組にする）
+        var events = takeConfirmedLines()
         events.append(.live(source: Self.clean(finalSource + pendingSource),
                             translation: Self.clean(finalTranslation + pendingTranslation)))
         return events
+    }
+
+    /// 確定済みの分だけを 1 行に確定する（訳待ちの時間切れ用）
+    ///
+    /// 未確定（`is_final=false`）の分は残す。接続は続いているので、未確定分は後で確定トークンとして
+    /// 改めて届く。ここで行にすると、その確定トークンが届いたときに同じ文がもう一度記録される（二重記録）。
+    mutating func flushConfirmed() -> Event? {
+        let source = Self.clean(finalSource)
+        let translation = Self.clean(finalTranslation)
+        finalSource = ""
+        finalTranslation = ""
+        endReached = false
+        finalSourceAwaitsTranslation = false
+        guard !source.isEmpty || !translation.isEmpty else { return nil }
+        return .confirmed(source: source, translation: translation)
     }
 
     /// 残っている分を全部 1 行に確定する（停止・切断時）
@@ -125,61 +143,100 @@ struct SonioxCaptionAssembler {
     // MARK: - 内部処理
 
     /// 確定してよい行があれば取り出す
-    private mutating func takeConfirmedLine() -> Event? {
+    private mutating func takeConfirmedLines() -> [Event] {
         let source = Self.clean(finalSource)
         guard !source.isEmpty else {
             // 原文が無いのに切れ目だけ来た（無音の区切り）ときは何もしない
             if Self.clean(finalTranslation).isEmpty { endReached = false }
-            return nil
+            return []
         }
         if translates {
-            return takeTranslatedLine()
+            return takeTranslatedLines()
         }
         // 文字起こし: 切れ目・文末・長さのどれかで確定する
         let endsSentence = source.last.map { Self.sentenceEndings.contains($0) } ?? false
-        guard endReached || endsSentence || source.count >= Self.maxConfirmedSourceCharacters else { return nil }
+        guard endReached || endsSentence || source.count >= Self.maxConfirmedSourceCharacters else { return [] }
         finalSource = ""
         endReached = false
-        return .confirmed(source: source, translation: "")
+        return [.confirmed(source: source, translation: "")]
     }
 
-    /// 翻訳モード: 訳が文末まで確定したら、対応する原文と組にして確定する
+    /// 翻訳モード: 訳が文末まで確定した分だけ、原文と**文ごとに**組にして確定する
     ///
     /// 訳は原文より後に届くので、原文が文末まで確定していても訳を待つ。
-    /// 原文の確定分に次の文の頭が入っていたら（"Hello there. How"）、文末までを行にして残りは持ち越す。
-    private mutating func takeTranslatedLine() -> Event? {
+    /// 訳の n 文目は原文の n 文目と組にする。以前は「原文の最後の文末まで」を 1 行にしていたため、
+    /// 原文 2 文が確定した後に訳が 1 文ずつ届くと、1 文目の訳に原文 2 文が付き、
+    /// 2 文目の訳が次の原文と組になって 1 文ずつずれていった（2026-10-12 レビュー指摘）。
+    /// 切れ目（`<end>`）まで訳が揃ったら、文の数が合わなくても残りを全部最後の行に寄せる（落とさない）。
+    private mutating func takeTranslatedLines() -> [Event] {
         let translation = Self.clean(finalTranslation)
         // 訳されない言語（日本語など）だけの発話は、訳を待たずに原文だけで確定する
         if !finalSourceAwaitsTranslation, translation.isEmpty, pendingTranslation.isEmpty {
             let source = Self.clean(finalSource)
             let endsSentence = source.last.map { Self.sentenceEndings.contains($0) } ?? false
-            guard endReached || endsSentence else { return nil }
+            guard endReached || endsSentence else { return [] }
             finalSource = ""
             endReached = false
-            return .confirmed(source: source, translation: "")
+            return [.confirmed(source: source, translation: "")]
         }
-        let translationDone = !translation.isEmpty && pendingTranslation.isEmpty
-            && (translation.last.map { Self.sentenceEndings.contains($0) } ?? false || endReached)
-        guard translationDone else { return nil }
 
-        var source = finalSource
-        var carry = ""
-        if !endReached, let cut = Self.lastSentenceEnd(in: finalSource) {
-            source = String(finalSource[..<cut])
-            carry = String(finalSource[cut...])
+        let (sources, sourceTail) = Self.splitSentences(finalSource)
+        let (translations, translationTail) = Self.splitSentences(finalTranslation)
+        var lines = zip(sources, translations).map { (source: $0, translation: $1) }
+        let restSources = Array(sources.dropFirst(lines.count))
+        var restTranslations = Array(translations.dropFirst(lines.count))
+
+        let restSource = (restSources + [sourceTail]).joined()
+        let restTranslation = (restTranslations + [translationTail]).joined()
+        // 切れ目まで訳が揃った（残りの原文が無いか、残りの訳がある）: 組にならなかった残りを
+        // 全部 1 行にまとめる。残りの原文に訳がまだ 1 文字も無いなら、その訳を待つ（下の else）
+        if endReached, pendingTranslation.isEmpty,
+           Self.clean(restSource).isEmpty || !Self.clean(restTranslation).isEmpty {
+            if Self.clean(restSource).isEmpty, !lines.isEmpty {
+                lines[lines.count - 1].translation += restTranslation
+            } else if !Self.clean(restSource).isEmpty || !Self.clean(restTranslation).isEmpty {
+                lines.append((source: restSource, translation: restTranslation))
+            }
+            finalSource = ""
+            finalTranslation = ""
+            endReached = false
+            finalSourceAwaitsTranslation = false
+        } else {
+            // 原文の文が尽きたのに訳の文が余った（1 文が 2 文に訳された）。訳は原文より先に
+            // 来ないので、余りは直前の原文の訳として扱う（次の文へずれ込ませない）
+            if restSources.isEmpty, Self.clean(sourceTail).isEmpty, !restTranslations.isEmpty, !lines.isEmpty {
+                lines[lines.count - 1].translation += restTranslations.joined()
+                restTranslations = []
+            }
+            guard !lines.isEmpty else { return [] }
+            finalSource = restSource
+            finalTranslation = (restTranslations + [translationTail]).joined()
+            // 持ち越した文は、まだ訳が届いていない前提で扱う
+            finalSourceAwaitsTranslation = !Self.clean(finalSource).isEmpty
         }
-        finalSource = carry
-        finalTranslation = ""
-        endReached = false
-        // 持ち越した次の文の頭は、まだ訳が届いていない前提で扱う
-        finalSourceAwaitsTranslation = !Self.clean(carry).isEmpty
-        return .confirmed(source: Self.clean(source), translation: translation)
+        return lines.map { .confirmed(source: Self.clean($0.source), translation: Self.clean($0.translation)) }
     }
 
-    /// 最後の文末記号の直後の位置（無ければ nil）
-    private static func lastSentenceEnd(in text: String) -> String.Index? {
-        guard let index = text.lastIndex(where: { sentenceEndings.contains($0) }) else { return nil }
-        return text.index(after: index)
+    /// 文末で区切る（区切った文の並びと、文末まで来ていない残り）
+    ///
+    /// 英語の "." は直後が空白か末尾のときだけ文末とみなす（"3.5" や "U.S" の途中で切らない）。
+    /// 全角の「。！？」は直後に空白が来ないので常に文末とみなす。
+    static func splitSentences(_ text: String) -> (sentences: [String], tail: String) {
+        var sentences: [String] = []
+        var current = ""
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            current.append(character)
+            let next = text.index(after: index)
+            if sentenceEndings.contains(character),
+               next == text.endIndex || text[next].isWhitespace || !character.isASCII {
+                sentences.append(current)
+                current = ""
+            }
+            index = next
+        }
+        return (sentences, current)
     }
 
     /// 前後の空白を落とす（Soniox のトークンは先頭に空白を含む）

@@ -124,17 +124,24 @@ protocol StreamingTranslator: Translator {
     ) async throws -> String
 }
 
-/// クラウド翻訳が失敗したら別の翻訳器へ落とす包み
+/// 本命の翻訳器が失敗したら別の翻訳器へ落とす包み
 ///
 /// クラウドは 429（レート制限）や瞬断で普通に失敗する。そのたびに字幕が原文のままに
 /// なると使い物にならないので、Apple のオンデバイス翻訳へ落として必ず訳を出す
 /// （恒久方針: クラウドは任意・既定は Apple・失敗時は Apple にフォールバック）。
+/// クラウド選択時に Apple の訳を先に出す構成では逆向き（本命 Apple → 落とし先クラウド）にも使う。
+/// Apple が落ちても確定文を原文のまま流さないため。
 @available(macOS 26.0, *)
 struct FallbackTranslator: StreamingTranslator {
-    /// 本命（クラウド）
+    /// 本命
     let primary: Translator
-    /// 落とし先（Apple のオンデバイス翻訳）
+    /// 落とし先
     let fallback: Translator
+    /// 本命が失敗した直後（落とし先を試す前）に呼ぶ
+    ///
+    /// 呼び出し側が「以後は本命を使わない」と構成を切り替えるための口。落とし先を試す前に呼ぶのは、
+    /// この後に解決される差し替え先（クラウド）が同じ文をもう一度クラウドへ送らないようにするため。
+    var onPrimaryFailure: (@Sendable () -> Void)? = nil
 
     private var logger: Logger { makeCaptionLogger("FallbackTranslator") }
 
@@ -168,7 +175,8 @@ struct FallbackTranslator: StreamingTranslator {
         _ text: String, context: [TranslationExchange], reason: Error
     ) async throws -> String {
         let detail = (reason as? TranslationError)?.description ?? String(describing: reason)
-        logger.notice("クラウド翻訳に失敗したため Apple 翻訳へ切り替えます 理由=\(detail, privacy: .public)")
+        logger.notice("本命の翻訳に失敗したため代わりの翻訳器へ切り替えます 理由=\(detail, privacy: .public)")
+        onPrimaryFailure?()
         do {
             return try await fallback.translate(text, context: context)
         } catch {
