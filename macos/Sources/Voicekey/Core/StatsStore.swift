@@ -145,6 +145,9 @@ final class StatsStore: ObservableObject {
             decoder.dateDecodingStrategy = .iso8601
             if let loaded = try? decoder.decode(StatsData.self, from: raw) {
                 data = loaded
+            } else {
+                // 壊れたまま空で開始すると次の保存で元の実績を上書きして消すので退避する
+                CorruptFileQuarantine.quarantine(fileURL)
             }
         }
 

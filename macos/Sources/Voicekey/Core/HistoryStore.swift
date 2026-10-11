@@ -107,6 +107,8 @@ final class HistoryStore: ObservableObject {
             }
             return Array(items)
         }
+        // どちらでも読めない＝壊れている。空で開始すると次の保存で元の履歴を上書きして消すので退避する
+        CorruptFileQuarantine.quarantine(fileURL)
         return []
     }
 
