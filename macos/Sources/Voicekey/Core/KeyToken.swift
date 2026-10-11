@@ -86,6 +86,16 @@ enum KeyToken {
         return [token]
     }
 
+    /// 2 つのホットキーが同じキーの組み合わせとして発火するか（設定画面の重複警告用）。
+    /// 順序は問わず、汎用修飾（⌘）は左右どちらの指定（右⌘）とも重なるとみなす。未割り当て（空）は重ならない。
+    static func conflicts(_ a: [String], _ b: [String]) -> Bool {
+        guard !a.isEmpty, a.count == b.count else { return false }
+        func covered(_ xs: [String], by ys: [String]) -> Bool {
+            xs.allSatisfy { x in ys.contains { !acceptableNames(for: x).isDisjoint(with: acceptableNames(for: $0)) } }
+        }
+        return covered(a, by: b) && covered(b, by: a)
+    }
+
     /// 人間が読める表示名
     static func displayName(_ token: String) -> String {
         switch token {

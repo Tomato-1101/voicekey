@@ -141,15 +141,18 @@ final class LocalSpeechTranscriber: LiveTranscribing, @unchecked Sendable {
             return
         }
         self.recognizer = recognizer
-        self.converter = AudioFormatConverter(outputFormat: format)
-        let buffered = pending
+        let converter = AudioFormatConverter(outputFormat: format)
+        self.converter = converter
+        // 退避分は同じロックの中で流し切る。ロックを外してから流すと、その隙に処理キューから
+        // 届いた新しいチャンクが先に解析器へ入り、声の順序が入れ替わる（チャンクは処理キュー
+        // から届くので、ここで待たせても録音そのものは止まらない）
+        for chunk in pending { Self.convertAndFeed(chunk, converter: converter, recognizer: recognizer) }
         pending = []
         lock.unlock()
 
         consumeTask = Task { [weak self] in
             for await segment in recognizer.segments { self?.handle(segment) }
         }
-        for chunk in buffered { feed(chunk) }
     }
 
     /// チャンクを解析器のフォーマットへ変換して投入する。
@@ -165,7 +168,14 @@ final class LocalSpeechTranscriber: LiveTranscribing, @unchecked Sendable {
             pending.append(samples)
             return
         }
-        guard let input = Self.makeBuffer(samples),
+        Self.convertAndFeed(samples, converter: converter, recognizer: recognizer)
+    }
+
+    /// 変換して投入する（呼び出し側が lock を持っていること）
+    private static func convertAndFeed(
+        _ samples: [Float], converter: AudioFormatConverter, recognizer: SpeechRecognizer
+    ) {
+        guard let input = makeBuffer(samples),
               let converted = converter.convert(input) else { return }
         recognizer.feed(converted)
     }

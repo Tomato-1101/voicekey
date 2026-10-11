@@ -216,6 +216,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.controller = controller
         let statusBar = StatusItemController(controller: controller)
         self.statusBar = statusBar
+        // オンボーディング経由の起動では下の startNow 分岐を通らないため、⌥⌘S（ライブ字幕）が
+        // 次の起動まで登録されなかった。本体を開始したタイミングで同じ準備をする
+        statusBar.onStartedAfterOnboarding = { [weak self, weak controller] in
+            guard let self, let controller, self.captionHotKey == nil else { return }
+            self.setUpCaption(controller: controller)
+        }
 
         // Dock 常時表示が ON なら起動時から Dock にアイコンを出す（既定 OFF は従来どおり動的表示）
         if controller.config.dockIconAlwaysVisible {
@@ -392,6 +398,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     /// 「vX に更新して再起動」（更新の準備ができたときだけ先頭に出す。メニューを開くたびに更新）
     private let updateMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let updateSeparator = NSMenuItem.separator()
+    /// 「翻訳して入力（常時）」のチェック項目（設定を開かずにオンオフできるように。開くたびに状態を反映）
+    private let translateMenuItem = NSMenuItem(title: "翻訳して入力（常時）", action: nil, keyEquivalent: "")
     private weak var controller: AppController?
     private var stateObservation: AnyCancellable?
     /// 直近にログへ出したアイコン状態（同じ状態の再通知でログを重ねないため）
@@ -405,6 +413,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private var sideNotch: SideNotchController?
     /// オンボーディングを完了/再起動処理済みか（クローズでの二重処理を防ぐ）
     private var onboardingFinished = false
+    /// オンボーディングの完了・× 閉じで本体を開始した直後に呼ぶ（AppDelegate がライブ字幕の準備を結線する）
+    var onStartedAfterOnboarding: (() -> Void)?
     /// 「ライブ字幕」サブメニュー（macOS 26 以降のみ。型を直接持てないので AnyObject で保持）
     private var captionMenu: AnyObject?
     /// 「Meet 議事録ボット」サブメニュー（macOS 26 限定型なので AnyObject で保持）
@@ -459,6 +469,10 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         // ここで shared に触れて起動時に Sparkle を始動させる（以前はメインウィンドウを開くまで
         // 生成されず、窓を開かない人には更新が届かなかった）。録音中・変換中は再起動しないよう状態を渡す。
         UpdaterController.shared.observeBusy(controller.$state.map { $0 != .idle })
+        // 会議の記録中（ライブ字幕・Meet ボット）も再起動しない（記録が途中で切れるため）
+        UpdaterController.shared.isRecordingMeeting = { [weak controller] in
+            controller?.isRecordingMeeting ?? false
+        }
 
         // ライブ字幕（personal・macOS 26 以降）。中身はサブメニューを開くたびに作り直す
         if #available(macOS 26.0, *), !CaptionSettings.isDisabledByEnvironment {
@@ -474,6 +488,13 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             }
             menu.addItem(bot.menuItem)
             meetBotMenu = bot
+        }
+
+        // 翻訳して入力の常時オンオフ（1 回だけ訳すときは録音キー＋1 回翻訳キー。macOS 26 以降の機能）
+        if EmbeddedKeys.isPersonal, #available(macOS 26.0, *) {
+            translateMenuItem.action = #selector(toggleTranslateInput)
+            translateMenuItem.target = self
+            menu.addItem(translateMenuItem)
         }
 
         let feedback = NSMenuItem(
@@ -577,9 +598,21 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         showHome()
     }
 
+    /// メニューの「翻訳して入力（常時）」。設定を開かずにオンオフする
+    @objc private func toggleTranslateInput() {
+        guard let config = controller?.config else { return }
+        config.translateInputEnabled.toggle()
+    }
+
     /// メニューの「vX に更新して再起動」。確認なしで入れ替え＋再起動する（録音中なら終わってから）
     @objc private func installUpdate() {
         UpdaterController.shared.installUpdate()
+    }
+
+    /// メニューの「アップデートに失敗しました — 押して再試行」。Sparkle の対話フローで確認し直す
+    /// （失敗すれば Sparkle が理由をダイアログで出す）
+    @objc private func retryUpdateCheck() {
+        UpdaterController.shared.checkForUpdates()
     }
 
     /// 前回選んでいた設定タブで開く（初回は一般タブ）。毎回「一般」に戻されると、
@@ -669,6 +702,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         presentMainWindow(onboarding: false)
         // 権限案内は済んでいるので NSAlert を二重に出さない
         controller?.startup(showPermissionAlert: false)
+        onStartedAfterOnboarding?()
     }
 
     /// 入力監視の反映にプロセス再起動が必要なとき: 現在ステップを保存して再起動する。
@@ -714,7 +748,10 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             markOnboardingComplete()
             controller?.teardownOnboardingTestModes()
             mainWindowModel?.onboarding = nil
-            controller?.startup(showPermissionAlert: false)
+            // × は途中で飛ばした＝権限の案内を最後まで見ていないことがある。抑止すると権限が無いまま
+            // 黙ってホットキーも貼り付けも効かないので、不足していれば警告を出す（揃っていれば何も出ない）
+            controller?.startup(showPermissionAlert: true)
+            onStartedAfterOnboarding?()
         }
 
         // ユーザー向けウィンドウがどれも可視でなくなったら Dock アイコンを引っ込める
@@ -864,14 +901,23 @@ extension StatusItemController: NSMenuDelegate {
     /// メニューを開くたびに今日の API 代を数え直し、更新項目を出し入れする（常時購読して再描画するより軽い）
     func menuWillOpen(_ menu: NSMenu) {
         apiCostMenuItem.title = Self.apiCostTitle()
+        translateMenuItem.state = controller?.config.translateInputEnabled == true ? .on : .off
         let updater = UpdaterController.shared
         let ready = updater.readyVersion
         // 押した後（録音終わり待ち・再起動中）は文言を置き換え、action を外して押せなくする
         let pending = updater.pendingInstallMessage
-        updateMenuItem.title = pending ?? ready.map { "v\($0) に更新して再起動" } ?? ""
-        updateMenuItem.action = pending == nil ? #selector(installUpdate) : nil
-        updateMenuItem.isHidden = ready == nil
-        updateSeparator.isHidden = ready == nil
+        // 裏の確認・ダウンロードの失敗は Sparkle が何も出さないので、ここで知らせて再試行させる
+        let failure = ready == nil ? updater.lastUpdateError : nil
+        updateMenuItem.title = pending ?? ready.map { "v\($0) に更新して再起動" }
+            ?? (failure != nil ? "アップデートに失敗しました — 押して再試行" : "")
+        updateMenuItem.toolTip = failure
+        if pending != nil {
+            updateMenuItem.action = nil
+        } else {
+            updateMenuItem.action = ready != nil ? #selector(installUpdate) : #selector(retryUpdateCheck)
+        }
+        updateMenuItem.isHidden = ready == nil && failure == nil
+        updateSeparator.isHidden = updateMenuItem.isHidden
     }
 }
 

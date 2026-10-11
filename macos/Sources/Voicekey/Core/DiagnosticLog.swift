@@ -374,6 +374,7 @@ enum SettingsChangeLog {
         s["translateInputTarget"] = c.translateInputTarget
         s["translateInputEngine"] = c.translateInputEngine.rawValue
         s["translateInputGroqModel"] = c.translateInputGroqModel
+        s["translateOnceKey"] = c.translateOnceKey.joined(separator: "+")
         return s
     }
 

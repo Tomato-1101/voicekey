@@ -139,9 +139,13 @@ final class ApiUsageStore: ObservableObject, @unchecked Sendable {
         }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         fileURL = dir.appendingPathComponent("api-usage.json")
-        if let raw = try? Data(contentsOf: fileURL),
-           let loaded = try? JSONDecoder().decode(ApiUsageData.self, from: raw) {
-            data = loaded
+        if let raw = try? Data(contentsOf: fileURL) {
+            if let loaded = try? JSONDecoder().decode(ApiUsageData.self, from: raw) {
+                data = loaded
+            } else {
+                // 壊れたまま空で開始すると次の保存で元の記録を上書きして消すので退避する
+                CorruptFileQuarantine.quarantine(fileURL)
+            }
         }
     }
 

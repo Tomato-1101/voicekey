@@ -157,7 +157,9 @@ final class HistorySync: ObservableObject, @unchecked Sendable {
     @MainActor
     func enqueue(_ item: HistoryItem) {
         queue.async { [weak self] in
-            guard let self, !self.stopped else { return }
+            // 同期 OFF のまま積み続けると、送られない送信待ちがディスクに際限なく溜まる
+            // （OFF の間の入力は同期しない。設定は起動時の applyConfig が同じキューで先に反映済み）
+            guard let self, !self.stopped, self.configuration.enabled else { return }
             self.outbox.append(OutboundItem(item: item))
             self.saveOutbox()
             self.publishState()
@@ -462,8 +464,12 @@ final class HistorySync: ObservableObject, @unchecked Sendable {
     // MARK: - 永続化・UI 反映
 
     private static func loadOutbox(from url: URL) -> [OutboundItem] {
-        guard let data = try? Data(contentsOf: url),
-              let items = try? JSONDecoder().decode([OutboundItem].self, from: data) else { return [] }
+        guard let data = try? Data(contentsOf: url) else { return [] }
+        guard let items = try? JSONDecoder().decode([OutboundItem].self, from: data) else {
+            // 壊れたまま空で開始すると次の保存で未送信分を上書きして消すので退避する
+            CorruptFileQuarantine.quarantine(url)
+            return []
+        }
         return items.filter { !$0.id.isEmpty }
     }
 

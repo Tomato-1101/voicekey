@@ -308,7 +308,7 @@ final class AppController: ObservableObject {
                 guard let self, self.recordingSlot != nil else { return }
                 log.warning("録音中にオーディオ構成が変化したため録音を確定します")
                 self.finishRecording()
-                self.hud.notice("マイクの構成が変わったため録音を停止しました")
+                self.hud.notice("マイクの構成が変わったため録音を停止しました", isError: true)
             }
         }
     }
@@ -520,6 +520,15 @@ final class AppController: ObservableObject {
     /// ボットが既に生成されているか（終了処理で「作っていなければ触らない」ために使う）
     var hasMeetBot: Bool { meetBotStorage != nil }
 
+    /// ライブ字幕か Meet ボットが動いているか（更新の再起動で会議の記録を途中で切らないために使う）。
+    /// どちらも参照するまで作らないので、生成済みのものだけを見る（ここで生成しない）
+    var isRecordingMeeting: Bool {
+        guard #available(macOS 26.0, *) else { return false }
+        let captionActive = (captionStorage as? CaptionService)?.state.isActive ?? false
+        let botActive = (meetBotStorage as? MeetBotService)?.state.isActive ?? false
+        return captionActive || botActive
+    }
+
     /// 行動ログ用の HUD 状態名（通知の本文は残さない＝状態遷移だけを追う）
     private static func hudModeLabel(_ mode: HudModel.Mode) -> String {
         switch mode {
@@ -653,6 +662,18 @@ final class AppController: ObservableObject {
             return
         }
 
+        // 録音中（2 打目待ちの保留中も含む）に「この 1 回だけ翻訳」キーが押されたら、この録音を翻訳対象にする。
+        // 離鍵の直前まで受け付ける。保留分岐より先に見て return するのは、2 打目待ちの間に押した
+        // 修飾キーが「無関係なキー」扱いになって 1 打目が単発で確定してしまうのを防ぐため。
+        if let slotId = recordingSlot, recordContext != nil,
+           DictationTranslation.isTranslateOnceToken(token, key: config.translateOnceKey),
+           DictationTranslation.isTranslateOnceRequested(
+               key: config.translateOnceKey, slotHotkey: config.slot(slotId).hotkey + config.handsfreeKey,
+               pressed: pressed) {
+            markTranslateOnce()
+            return
+        }
+
         // 1 打目を離した後、録音を止めずに 2 打目を待っている状態。
         // 下の「録音中」分岐より先に見る（recordingSlot は入ったままなので、
         // ここで拾わないと 2 打目が「録音中の再押下」に食われて無視される）。
@@ -712,11 +733,16 @@ final class AppController: ObservableObject {
             // （切替キーは空でなく全キーが押されていること。スロット設定が hold でも toggle になる）
             let handsfree = !config.handsfreeKey.isEmpty && handsfreeKeyPressed(pressed)
             let effectiveMode: HotkeyMode = handsfree ? .toggle : slot.mode
+            // 録音キーと一緒に 1 回翻訳キーが押されていれば、この録音だけ翻訳する。
+            // ハンズフリーキーと同じキーにしてある場合はハンズフリーを優先する（既存の使い方を変えない）
+            let translateOnce = DictationTranslation.isTranslateOnceRequested(
+                key: config.translateOnceKey, slotHotkey: slot.hotkey + config.handsfreeKey, pressed: pressed)
             // ダブルタップ（auto_enter）はここでは決めない。1 打目の離鍵で「保留」に入り、
             // 2 打目の押下で **同じ録音を auto_enter に切り替える**方式にしたため。
             // 録音を作り直さないので、1 打目に入った声が消えず、録音の開始タイミングも
             // auto_enter かどうかで変わらない（どちらも最初の押下が開始点）。
-            beginRecording(slotId: slotId, autoEnter: false, effectiveMode: effectiveMode, event: event)
+            beginRecording(slotId: slotId, autoEnter: false, effectiveMode: effectiveMode,
+                           translateOnce: translateOnce, event: event)
             break
         }
     }
@@ -970,7 +996,7 @@ final class AppController: ObservableObject {
         log.info("再貼り付けショートカット: 直近テキストを貼り付け (\(last.text.count) 文字)")
         Task {
             // ⌘V を送れなかったときは結果がクリップボードに残っているので、手で貼るよう知らせる
-            if !(await Paster.paste(last.text)) { hud.notice(Self.pasteFailedNotice) }
+            if !(await Paster.paste(last.text)) { hud.notice(Self.pasteFailedNotice, isError: true) }
         }
     }
 
@@ -999,10 +1025,36 @@ final class AppController: ObservableObject {
         /// groq スロット × 整形 ON × ログイン済み × ハンズフリー EL 差し替えでない、が条件。
         /// 単発送信のときだけこれを見て serverFormat=true にし、後段のクライアント整形をスキップする。
         let serverFormatEligible: Bool
+        /// この録音を翻訳してから貼り付けるか。常時 ON の設定か、1 回翻訳キーの押下で true になる
+        /// （1 回翻訳キーは録音中にも押せるので、ここだけ var）
+        var translate: Bool
+        /// 翻訳エンジンと出力言語（録音開始時に固定。録音中に設定を変えても進行中の録音は変わらない）
+        let translateEngine: DictationTranslationEngine
+        let translateTarget: String
+    }
+
+    /// 録音中に 1 回翻訳キーが押された。この録音を翻訳対象にし、HUD に印を出す
+    private func markTranslateOnce() {
+        guard var context = recordContext, !context.translate else { return }
+        context.translate = true
+        recordContext = context
+        ActionLog.shared.write("app", "[翻訳] gen=\(DiagnosticText.gen(recordingGeneration)) 1回翻訳キー(録音中)")
+        prepareTranslation(for: context)
+    }
+
+    /// 翻訳する録音の下準備（HUD の印と、Apple 翻訳セッションの温め）。録音経路は待たせない
+    private func prepareTranslation(for context: RecordContext) {
+        guard context.translate else { return }
+        hud.setTranslateBadge(DictationTranslation.badge(for: context.translateTarget))
+        if #available(macOS 26.0, *) {
+            let translator = dictationTranslator(engine: context.translateEngine, target: context.translateTarget)
+            Task { await translator.prepare() }
+        }
     }
 
     private func beginRecording(
-        slotId: Int, autoEnter: Bool, effectiveMode: HotkeyMode = .hold, event: HotkeyEventTime? = nil
+        slotId: Int, autoEnter: Bool, effectiveMode: HotkeyMode = .hold, translateOnce: Bool = false,
+        event: HotkeyEventTime? = nil
     ) {
         guard recordingSlot == nil else { return }
         // ログ用: メインで押下を受け取った時刻（行の書き出しは録音を仕掛けた後に回す）
@@ -1090,7 +1142,10 @@ final class AppController: ObservableObject {
             formatPrompt: config.autoFormatPrompt,
             formatModel: config.formatModel,
             formatPresetId: slot.formatPresetId,
-            serverFormatEligible: serverFormatEligible
+            serverFormatEligible: serverFormatEligible,
+            translate: DictationTranslation.isEnabled || translateOnce,
+            translateEngine: DictationTranslation.engine,
+            translateTarget: DictationTranslation.targetLanguage
         )
 
         // 設定された入力デバイスを反映（変更がなければ recorder 側では何もしない）
@@ -1180,12 +1235,9 @@ final class AppController: ObservableObject {
         if effectiveFormatEnabled {
             formatter.prewarm()
         }
-        // 「翻訳して入力」が ON なら翻訳セッションも録音中に温める（初回のモデルロードを隠す）。
-        // OFF のときは何も生成しない＝他バックエンドのクリティカルパスに一切足さない。
-        if DictationTranslation.isEnabled, #available(macOS 26.0, *) {
-            let translator = dictationTranslator()
-            Task { await translator.prepare() }
-        }
+        // 翻訳する録音なら翻訳セッションも録音中に温める（初回のモデルロードを隠す）。
+        // 訳さないときは何も生成しない＝他バックエンドのクリティカルパスに一切足さない。
+        if let recordContext { prepareTranslation(for: recordContext) }
 
         logHotkey("押下", slot: slotId, generation: generation, event: event, handledAt: handledAt)
 
@@ -1195,7 +1247,7 @@ final class AppController: ObservableObject {
             try? await Task.sleep(for: .seconds(kMaxRecordingSec))
             guard let self, !Task.isCancelled, self.recordingSlot != nil else { return }
             log.warning("録音時間が上限に達したため自動停止します")
-            self.hud.notice("録音時間の上限に達したため停止しました")
+            self.hud.notice("録音時間の上限に達したため停止しました", isError: true)
             self.finishRecording()
         }
     }
@@ -1209,11 +1261,15 @@ final class AppController: ObservableObject {
     private func handleRecordStartResult(
         _ failure: AudioRecorder.StartFailure?, slotId: Int, generation: Int, requestedAt: TimeInterval
     ) {
-        // 返ってきた＝キューは生きている。見張りを解く
-        if pendingStartGeneration == generation { pendingStartGeneration = nil }
-        let watchdog = recordStartWatchdog
-        recordStartWatchdog = nil
-        watchdog?.cancel()
+        // 返ってきた＝キューは生きている。見張りを解く。
+        // ただし見張っているのがこの世代のときだけ（古い録音の開始完了が遅れて届いたときに、
+        // 次の録音の見張りまで解いてしまうと、その録音が詰まっても誰も気付けなくなる）
+        if StallPolicy.startCompletionDisarms(pendingGeneration: pendingStartGeneration, completedGeneration: generation) {
+            pendingStartGeneration = nil
+            let watchdog = recordStartWatchdog
+            recordStartWatchdog = nil
+            watchdog?.cancel()
+        }
 
         guard recordingGeneration == generation, recordingSlot == slotId else {
             // 打ち切ったあとにブロックが解けて遅れて届いた完了。ここで UI を触ると
@@ -1235,8 +1291,18 @@ final class AppController: ObservableObject {
         recordContext = nil
         recorder.chunkHandler = nil
         recordingSlot = nil
+        // 録音中にだけ意味を持つ状態も畳む（abortStalledRecordStart と同じ後始末）。
+        // 以前はここが抜けていて、開始に失敗するとメディア音量が下がったまま戻らなかった
+        autoEnter = false
+        pendingFinishTask?.cancel()
+        pendingFinishTask = nil
+        pendingDoubleTap = nil
+        failsafeTask?.cancel()
+        MediaDucker.restore()
+        // 世代を進めて、遅れて届くチャンク・進捗を捨てる
+        recordingGeneration &+= 1
         emitState()
-        hud.notice(failure.noticeText)
+        hud.notice(failure.noticeText, isError: true)
     }
 
     /// 録音開始が期限内に返ってこなかった。録音セッションを畳んで待機へ戻す。
@@ -1290,7 +1356,7 @@ final class AppController: ObservableObject {
         // 世代を進めて、遅れて届く開始完了・チャンク・進捗を全部捨てる
         recordingGeneration &+= 1
         emitState()
-        hud.notice(message)
+        hud.notice(message, isError: true)
     }
 
     /// 詰まった制御キューへ ping を 1 つ積み、実行されたら詰まり判定を解除する。
@@ -1333,7 +1399,7 @@ final class AppController: ObservableObject {
         guard StallPolicy.shouldRelaunchForStall(relaunchTimes: ledger, now: now) else {
             log.warning("オーディオ停止からの自動再起動が上限に達しました")
             ActionLog.shared.write("audio", "自動再起動の上限に達したため再起動しません")
-            hud.notice("オーディオが復帰しません。Mac の再起動が必要です")
+            hud.notice("オーディオが復帰しません。Mac の再起動が必要です", isError: true)
             return
         }
 
@@ -1473,7 +1539,7 @@ final class AppController: ObservableObject {
             pipelineTail = nil
         }
         emitState()
-        hud.notice(notice)
+        hud.notice(notice, isError: true)
     }
 
     /// この世代の結果を今も受け取ってよいか（打ち切り済みなら false＝捨てる）
@@ -1497,6 +1563,16 @@ final class AppController: ObservableObject {
         hud.notice(replacement.noticeText)
     }
 
+    /// 打ち切り済みなら結果を捨てた記録を残して true（呼び出し側は貼り付けずに戻る）。
+    /// 整形・翻訳の await の後にも見るため（確定直後だけ見ていると、その後の待ちの間に
+    /// 打ち切られた入力が、ユーザーが別の作業を始めた後に貼られていた）
+    private func discardIfAbandoned(_ generation: Int) -> Bool {
+        guard isAbandoned(generation) else { return false }
+        ActionLog.shared.write("app", "打ち切り済みセッションの確定文字を破棄 gen=\(generation)")
+        timelines[generation]?.outcome = DictationTimeline.Outcome.abandoned
+        return true
+    }
+
     // MARK: - 翻訳して入力
 
     /// 「翻訳して入力」が ON なら最終テキストを訳す（OFF なら経路に一切触れない）。
@@ -1505,35 +1581,38 @@ final class AppController: ObservableObject {
     ///
     /// - Parameter text: 整形・数字正規化・ユーザー辞書まで済んだ最終テキスト
     /// - Returns: 貼り付けるテキストと、翻訳にかかった時間（訳さなかったときは nil。計測ログ用）
-    private func translateIfEnabled(_ text: String, generation: Int) async -> (text: String, ms: Int?) {
-        guard DictationTranslation.isEnabled, !text.isEmpty else { return (text, nil) }
+    private func translateIfEnabled(
+        _ text: String, generation: Int, context: RecordContext?
+    ) async -> (text: String, ms: Int?) {
+        // 訳すかどうか・エンジン・出力言語は録音開始時のスナップショットで決める
+        // （貼り付け直前に設定を読むと、録音中の設定変更や 1 回翻訳キーが正しく効かない）
+        guard let context, context.translate, !text.isEmpty else { return (text, nil) }
         guard #available(macOS 26.0, *) else { return (text, nil) }
 
-        let translator = dictationTranslator()
+        let translator = dictationTranslator(engine: context.translateEngine, target: context.translateTarget)
         let started = ProcessInfo.processInfo.systemUptime
         let result = await translator.translate(text)
         let elapsedMs = Int((ProcessInfo.processInfo.systemUptime - started) * 1000)
         if result.didTranslate {
-            log.info("翻訳して入力: \(DictationTranslation.engine.rawValue, privacy: .public) → \(DictationTranslation.targetLanguage, privacy: .public) \(elapsedMs)ms")
+            log.info("翻訳して入力: \(context.translateEngine.rawValue, privacy: .public) → \(context.translateTarget, privacy: .public) \(elapsedMs)ms")
         } else {
             // 無言で原文が入ると「翻訳が効いていない」ことに気付けないので必ず知らせる
             log.notice("翻訳して入力に失敗したため原文を入力します: \(result.failureReason ?? "不明", privacy: .public)")
-            hud.notice("翻訳できなかったため原文を入力しました")
+            hud.notice("翻訳できなかったため原文を入力しました", isError: true)
         }
         // 本文は出さない（エンジン・時間・成否だけ）
         ActionLog.shared.write(
             "app",
-            "[翻訳] gen=\(DiagnosticText.gen(generation)) engine=\(DictationTranslation.engine.rawValue) "
-                + "target=\(DictationTranslation.targetLanguage) \(elapsedMs)ms "
+            "[翻訳] gen=\(DiagnosticText.gen(generation)) engine=\(context.translateEngine.rawValue) "
+                + "target=\(context.translateTarget) \(elapsedMs)ms "
                 + "結果=\(result.didTranslate ? "ok" : "失敗(\(DiagnosticText.clip(result.failureReason ?? "不明", 80)))")")
         return (result.text, elapsedMs)
     }
 
-    /// 現在の設定に合う翻訳器を返す（構成が変わらない限り使い回す）
+    /// 指定の構成に合う翻訳器を返す（構成が変わらない限り使い回す）。
+    /// 話す言語は Apple 翻訳の準備用の見込みにだけ使う（実際の翻訳元は入力から推定する）
     @available(macOS 26.0, *)
-    private func dictationTranslator() -> DictationTranslator {
-        let engine = DictationTranslation.engine
-        let target = DictationTranslation.targetLanguage
+    private func dictationTranslator(engine: DictationTranslationEngine, target: String) -> DictationTranslator {
         let source = config.language
         let key = "\(engine.rawValue)/\(source)/\(target)"
         if key == translatorKey, let existing = translatorStorage as? DictationTranslator {
@@ -1676,7 +1755,7 @@ final class AppController: ObservableObject {
                     "文字起こし要求 経路=streaming backend=\(transcriber.backend.rawValue) "
                         + "model=\(transcriber.model) 音声=\(secText(Double(samples.count) / AudioRecorder.sampleRate))s"
                 )
-                let streamed = await streamer.finish()
+                var streamed = await streamer.finish()
                 // 終わり方（Soniox だけが区別する。他のライブ型は unknown＝従来どおりの扱い）
                 let ending = streamer.ending
                 let finalizedAt = ProcessInfo.processInfo.systemUptime
@@ -1701,6 +1780,19 @@ final class AppController: ObservableObject {
                     timelines[generation]?.outcome = DictationTimeline.Outcome.abandoned
                     return
                 }
+                // Soniox の接続が途中で切れると、取れているのは切れるまでの前半だけ。録音全体を新しい
+                // セッションへ流し直して後半も救う（既存の REST 救済と同じ再送）。再送が失敗・空なら
+                // ライブで取れた分をそのまま使う（喋った内容を捨てない）
+                var replayedAfterFailure = false
+                if Transcriber.shouldReplayAfterLiveFailure(
+                    backend: transcriber.backend, ending: ending, streamedIsEmpty: streamed.isEmpty) {
+                    ActionLog.shared.write("transcriber", "ライブが途中で切れたため録音全体を再送 取れた分=\(streamed.count) 文字")
+                    if let replayed = try? await transcriber.transcribe(samples: samples), !replayed.isEmpty {
+                        streamed = replayed
+                        replayedAfterFailure = true
+                    }
+                    if discardIfAbandoned(generation) { return }
+                }
                 if !streamed.isEmpty {
                     // 整形が有効なら貼り付け前に LLM で整形（失敗時は原文が返る）
                     let streamFmtStart = ProcessInfo.processInfo.systemUptime
@@ -1722,8 +1814,10 @@ final class AppController: ObservableObject {
                     ))
                     // 「翻訳して入力」が ON なら、この最終テキストを 1 回だけ訳す
                     // （正規化・ユーザー辞書は原文の誤認識を直すためのものなので、翻訳より前に効かせる）
-                    let (output, streamTranslateMs) = await self.translateIfEnabled(corrected, generation: generation)
+                    let (output, streamTranslateMs) = await self.translateIfEnabled(corrected, generation: generation, context: context)
                     timelines[generation]?.translateMs = streamTranslateMs
+                    // 整形・翻訳を待っている間に打ち切られていたら貼り付けない（打ち切った入力が後から入るのを防ぐ）
+                    if discardIfAbandoned(generation) { return }
                     // 貼り付け先アプリを貼り付け直前に再取得する（録音中に切り替えた場合は今の前面が正）
                     let target = frontApp.snapshot()
                     // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する（履歴保存 OFF はスキップ）
@@ -1742,17 +1836,20 @@ final class AppController: ObservableObject {
                     if !streamPasted {
                         // 結果はクリップボードに残してある。入っていないのに Enter を送ると
                         // 入力欄の別の内容を送信しかねないので、auto_enter も送らない
-                        if !isAbandoned(generation) { hud.notice(Self.pasteFailedNotice) }
+                        if !isAbandoned(generation) { hud.notice(Self.pasteFailedNotice, isError: true) }
                     } else {
                         // 接続がエラー・切断で途中で壊れたときは、入ったのが途中までかもしれないと知らせる
                         // （喋った分は捨てずに貼る）。タイムアウトは確定待ちが長引いただけなので知らせない
-                        if case .failed(let failure) = ending, failure != .timeout, !isAbandoned(generation) {
-                            hud.notice("接続が途中で切れたため、途中までの入力です")
+                        // 録音全体の再送で救えたときは全文が入っているので知らせない
+                        if case .failed(let failure) = ending, failure != .timeout, !replayedAfterFailure,
+                           !isAbandoned(generation) {
+                            hud.notice("接続が途中で切れたため、途中までの入力です", isError: true)
                         }
                         if autoEnter {
                             try? await Task.sleep(for: .milliseconds(max(0, delayMs)))
-                            if !(await Paster.pressEnter(logGeneration: generation)), !isAbandoned(generation) {
-                                hud.notice(Self.enterFailedNotice)
+                            // 待っている間に打ち切られていたら Enter は送らない（別の入力欄で送信しかねない）
+                            if !isAbandoned(generation), !(await Paster.pressEnter(logGeneration: generation)) {
+                                hud.notice(Self.enterFailedNotice, isError: true)
                             }
                         }
                     }
@@ -1835,7 +1932,7 @@ final class AppController: ObservableObject {
                 timelines[generation]?.outcome = DictationTimeline.Outcome.transcribeFailed
                 if !isAbandoned(generation) {
                     // 応答本文は message から外したので、通知文はそのまま [HUD] 行に出してよい
-                    hud.notice(error.message)
+                    hud.notice(error.message, isError: true)
                     // HUD の通知はクリックを透過するので、入力先（設定 › API キー）は別途開いて案内する。
                     // 開くのは起動中 1 回だけ（失敗のたびに設定画面が前面に出て入力中のアプリから
                     // フォーカスを奪わないように。2 回目以降は上の HUD 通知だけ）
@@ -1846,7 +1943,7 @@ final class AppController: ObservableObject {
                 log.error("文字起こしで予期しないエラー: \(error.localizedDescription)")
                 ActionLog.shared.write("transcriber", "文字起こしエラー(想定外): \(error.localizedDescription)")
                 timelines[generation]?.outcome = DictationTimeline.Outcome.transcribeFailed
-                if !isAbandoned(generation) { hud.notice("文字起こしに失敗しました") }
+                if !isAbandoned(generation) { hud.notice("文字起こしに失敗しました", isError: true) }
                 return
             }
             let sttMs = Int((ProcessInfo.processInfo.systemUptime - sttStart) * 1000)
@@ -1891,8 +1988,10 @@ final class AppController: ObservableObject {
                 protectWords: Set(config.numeralProtectWords)
             ))
             // 「翻訳して入力」が ON なら、この最終テキストを 1 回だけ訳す（OFF なら素通り）
-            let (output, restTranslateMs) = await self.translateIfEnabled(corrected, generation: generation)
+            let (output, restTranslateMs) = await self.translateIfEnabled(corrected, generation: generation, context: context)
             timelines[generation]?.translateMs = restTranslateMs
+            // 整形・翻訳を待っている間に打ち切られていたら貼り付けない（打ち切った入力が後から入るのを防ぐ）
+            if discardIfAbandoned(generation) { return }
             // 貼り付け先アプリを貼り付け直前に再取得する（録音中に切り替えた場合は今の前面が正）
             let target = frontApp.snapshot()
             // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する（履歴保存 OFF はスキップ）
@@ -1909,7 +2008,7 @@ final class AppController: ObservableObject {
             timelines[generation]?.outcome = pasted
                 ? DictationTimeline.Outcome.pasted : DictationTimeline.Outcome.pasteFailed
             // 結果はクリップボードに残してあるので、手で貼るよう知らせる
-            if !pasted, !isAbandoned(generation) { hud.notice(Self.pasteFailedNotice) }
+            if !pasted, !isAbandoned(generation) { hud.notice(Self.pasteFailedNotice, isError: true) }
             let totalMs = Int((ProcessInfo.processInfo.systemUptime - restT0) * 1000)
             // 統合時は整形を STT と一緒に済ませたことが分かるよう「整形 サーバー統合」と表記する
             let fmtDesc = didServerFormat ? "整形 サーバー統合" : "整形 \(fmtMs)"
@@ -1917,8 +2016,9 @@ final class AppController: ObservableObject {
             // 入っていないのに Enter を送ると入力欄の別の内容を送信しかねないので、貼れたときだけ送る
             if autoEnter, pasted {
                 try? await Task.sleep(for: .milliseconds(max(0, delayMs)))
-                if !(await Paster.pressEnter(logGeneration: generation)), !isAbandoned(generation) {
-                    hud.notice(Self.enterFailedNotice)
+                // 待っている間に打ち切られていたら Enter は送らない（別の入力欄で送信しかねない）
+                if !isAbandoned(generation), !(await Paster.pressEnter(logGeneration: generation)) {
+                    hud.notice(Self.enterFailedNotice, isError: true)
                 }
             }
             // 実績の集計（JSON 書き出しを含む）は貼り付けに関係しないので、貼り付け・Enter の後に回す
@@ -2058,11 +2158,12 @@ final class AppController: ObservableObject {
         for slotId in [1, 2] {
             let slot = config.slot(slotId)
             let existing = transcribers[slotId]
-            // 同一バックエンドなら設定だけ更新（URLSession の接続を維持）
-            if let existing, existing.backend == slot.backend {
-                existing.model = slot.model
-                existing.language = config.language
-                existing.prompt = slot.prompt
+            // 設定が変わっていなければそのまま使う（URLSession の接続を維持）。
+            // 変わったときは書き換えずに新しく作る。録音中・処理中の録音は開始時の Transcriber を
+            // 握っているので、書き換えると進行中の録音にまで新しいモデル・言語・プロンプトが効いてしまう
+            if let existing, existing.hasSameConfig(
+                backend: slot.backend, model: slot.model, language: config.language, prompt: slot.prompt) {
+                continue
             } else {
                 transcribers[slotId] = Transcriber(
                     backend: slot.backend,
@@ -2077,10 +2178,9 @@ final class AppController: ObservableObject {
         if [1, 2].contains(where: { config.slot($0).backend == .groq }) {
             Self.warmHandsfreeELKey()
         }
-        if let existing = handsfreeTranscriber, existing.backend == .elevenlabs {
-            existing.model = Self.handsfreeELModel
-            existing.language = config.language
-            existing.prompt = ""
+        if let existing = handsfreeTranscriber, existing.hasSameConfig(
+            backend: .elevenlabs, model: Self.handsfreeELModel, language: config.language, prompt: "") {
+            // 変化なし（上のスロットと同じく、変わったときは書き換えずに作り直す）
         } else {
             handsfreeTranscriber = Transcriber(
                 backend: .elevenlabs,

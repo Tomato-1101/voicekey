@@ -275,10 +275,8 @@ final class HistorySyncTests: XCTestCase {
     func testOutboxAndCacheRestoreAfterRestart() throws {
         let dir = makeTempDir(); defer { try? FileManager.default.removeItem(at: dir) }
         let firstHistory = HistoryStore(directory: dir)
-        let disabled: @MainActor () -> HistorySync.Configuration = {
-            .init(enabled: false, url: "")
-        }
-        let first = makeSync(directory: dir, history: firstHistory, configuration: disabled)
+        // 自動送信しない設定（automaticScheduling: false）なので、有効でも送信待ちに残る
+        let first = makeSync(directory: dir, history: firstHistory)
         apply(first)
         first.enqueue(makeItem(text: "pending")); first.waitForIdleForTesting(); first.shutdown()
         let cache = #"{"since":"cursor-1","items":[{"id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","text":"from windows","date":"2026-09-03T12:34:56+09:00","device":"windows","app_name":null,"characters":12,"received_at":"cursor-1"}]}"#
@@ -362,5 +360,23 @@ final class HistorySyncTests: XCTestCase {
         let history = HistoryStore(directory: dir)
 
         XCTAssertNil(history.items[0].device)
+    }
+
+    // 同期 OFF の間の入力は送信待ちに積まない（ディスクに際限なく溜まっていた）
+    func testDisabledSyncDoesNotPersistOutbox() throws {
+        let dir = makeTempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let history = HistoryStore(directory: dir)
+        let disabled: @MainActor () -> HistorySync.Configuration = {
+            .init(enabled: false, url: "")
+        }
+        let sync = makeSync(directory: dir, history: history, configuration: disabled)
+        defer { sync.shutdown() }
+        apply(sync)
+        sync.enqueue(makeItem(text: "offline"))
+        sync.waitForIdleForTesting()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        XCTAssertEqual(sync.pendingCount, 0)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: dir.appendingPathComponent("sync_outbox.json").path))
     }
 }

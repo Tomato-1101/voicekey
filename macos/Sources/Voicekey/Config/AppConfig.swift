@@ -360,6 +360,10 @@ final class ConfigStore: ObservableObject {
     @Published var translateInputEngine: DictationTranslationEngine
     /// Groq エンジンで使うモデル（字幕とは独立。既定はおすすめ）
     @Published var translateInputGroqModel: String
+    /// 「この 1 回だけ翻訳」キー（録音キーと一緒に押した録音だけ訳す。空＝無効。既定 右⇧）
+    ///
+    /// 翻訳はたまに 1 回だけ使う用途が多く、常時 ON のトグルを毎回切り替えるのが手間なため。
+    @Published var translateOnceKey: [String]
 
     /// 保護リストの既定シード（一人／二人＝ひとり・ふたり、十分＝じゅうぶん 等の誤変換を守る）
     static let defaultNumeralProtectWords = [
@@ -387,6 +391,7 @@ final class ConfigStore: ObservableObject {
         static let soundEffectsEnabled = "soundEffectsEnabled"
         static let duckMediaEnabled = "duckMediaEnabled"
         static let repasteKey = "repasteKey"
+        static let translateOnceKey = "translateOnceKey"
         static let hudAlwaysVisible = "hudAlwaysVisible"
         static let dockIconAlwaysVisible = "dockIconAlwaysVisible"
         static let sideNotchEnabled = "sideNotchEnabled"
@@ -473,6 +478,10 @@ final class ConfigStore: ObservableObject {
         translateInputTarget = DictationTranslation.targetLanguage
         translateInputEngine = DictationTranslation.engine
         translateInputGroqModel = DictationTranslation.groqModelID
+        // 未保存なら既定 右⇧（空配列は「ユーザーが明示的に無効化した」を表すので repasteKey と同じく区別する）
+        translateOnceKey = defaults.object(forKey: Keys.translateOnceKey) == nil
+            ? ["shift_r"]
+            : ((defaults.array(forKey: Keys.translateOnceKey) as? [String]) ?? [])
         sideNotchEnabled = defaults.object(forKey: Keys.sideNotchEnabled) as? Bool ?? true
         historyEnabled = defaults.object(forKey: Keys.historyEnabled) as? Bool ?? true
         historySyncEnabled = defaults.object(forKey: Keys.historySyncEnabled) as? Bool ?? false
@@ -563,6 +572,7 @@ final class ConfigStore: ObservableObject {
         $translateInputTarget.dropFirst().sink { DictationTranslation.targetLanguage = $0 }.store(in: &cancellables)
         $translateInputEngine.dropFirst().sink { DictationTranslation.engine = $0 }.store(in: &cancellables)
         $translateInputGroqModel.dropFirst().sink { DictationTranslation.groqModelID = $0 }.store(in: &cancellables)
+        $translateOnceKey.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.translateOnceKey) }.store(in: &cancellables)
     }
 
     /// ユーザー辞書の確定置換を最終テキストに適用する。

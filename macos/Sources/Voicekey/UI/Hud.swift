@@ -45,6 +45,8 @@ final class HudModel: ObservableObject {
     /// 録音中のライブ字幕（personal のストリーミング暫定テキスト。空なら非表示）。
     /// 録音中の波形バーの右に固定幅で表示し、tail（最新語）を出す（幅固定で横揺れを防ぐ）。
     @Published var liveText: String = ""
+    /// この録音が翻訳される回の印（"→EN" など。空なら非表示）
+    @Published var translateBadge: String = ""
 
     func pushLevel(_ value: Float) {
         levels.removeFirst()
@@ -292,10 +294,26 @@ final class HudController {
     private func clearRecordingContent() {
         model.resetLevels()
         model.liveText = ""
+        model.translateBadge = ""
     }
 
-    /// 一時通知を 2 秒間表示する
-    func notice(_ text: String) {
+    /// 翻訳する録音の印を出す（録音が終わると clearRecordingContent で消える）
+    func setTranslateBadge(_ text: String) {
+        model.translateBadge = text
+    }
+
+    /// エラー通知の表示時間。2 秒では読み切る前に消え、何が起きたか分からなかった
+    static let errorNoticeSeconds: Double = 5
+    /// 情報通知（復帰しました・音声なし等）の表示時間。次の操作を邪魔しないよう短いまま
+    static let infoNoticeSeconds: Double = 2
+
+    /// 通知の表示時間（秒）。エラーだけ長く出す
+    static func noticeDuration(isError: Bool) -> Double {
+        isError ? errorNoticeSeconds : infoNoticeSeconds
+    }
+
+    /// 一時通知を表示する（エラーは 5 秒・それ以外は 2 秒）
+    func notice(_ text: String, isError: Bool = false) {
         // 何を知らせたか（＝ユーザーに何が見えたか）を後から追えるようにする。
         // 文字起こし・翻訳の本文や API の応答本文は通知に載せない（応答本文は TranscriptionError.detail 側）
         ActionLog.shared.write(
@@ -308,7 +326,7 @@ final class HudController {
         if !enabled { lastSkippedShowLabel = Self.modeKind(model.mode) }
         show()
         noticeTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(2))
+            try? await Task.sleep(for: .seconds(Self.noticeDuration(isError: isError)))
             guard let self, !Task.isCancelled else { return }
             self.restoreAfterNotice()
         }
@@ -719,6 +737,13 @@ struct HudView: View {
                 Image(systemName: "return")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(Brand.signal)
+            }
+            // 翻訳される回の印（たまに 1 回だけ訳す使い方で、訳されるかを録音中に確かめられるように）
+            if !model.translateBadge.isEmpty {
+                Text(model.translateBadge)
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .foregroundStyle(Brand.signal)
+                    .fixedSize()
             }
             // personal のライブ字幕（ストリーミング暫定テキスト）。幅を固定して横揺れを防ぎ、
             // tail 側（最新語）を head トランケーションで見せる。空なら要素ごと出さない。

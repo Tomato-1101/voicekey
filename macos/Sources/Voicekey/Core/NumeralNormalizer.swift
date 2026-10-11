@@ -189,24 +189,41 @@ enum NumeralNormalizer {
         var section = 0  // 現在のグループ（万未満）の値
         var number = 0   // 直前に読んだ裸数字（十百千 の係数）
 
+        // 長い読み上げ数字列＋位取り（例: 二〇個以上の裸数字の後に「十」）や「兆」の重ね掛けで
+        // Int を超えると、通常の演算子はトラップしてアプリごと落ちる。溢れたらパース不能（nil）
+        // 扱いにして原文のまま出す（安全側）。
+        func mul(_ a: Int, _ b: Int) -> Int? {
+            let r = a.multipliedReportingOverflow(by: b)
+            return r.overflow ? nil : r.partialValue
+        }
+        func add(_ a: Int, _ b: Int) -> Int? {
+            let r = a.addingReportingOverflow(b)
+            return r.overflow ? nil : r.partialValue
+        }
+
         for c in run {
             if let d = bareDigits[c] {
-                number = number * 10 + d
+                guard let shifted = mul(number, 10), let next = add(shifted, d) else { return nil }
+                number = next
             } else if let unit = smallUnits[c] {
                 // 十/百/千: 直前の裸数字が無ければ 1（十＝10）
-                section += (number == 0 ? 1 : number) * unit
+                guard let part = mul(number == 0 ? 1 : number, unit),
+                      let next = add(section, part) else { return nil }
+                section = next
                 number = 0
             } else if let unit = bigUnits[c] {
                 // 万/億/兆: グループを確定して乗じる（単独なら万＝10000）
-                section += number
-                total += (section == 0 ? 1 : section) * unit
+                guard let grouped = add(section, number),
+                      let part = mul(grouped == 0 ? 1 : grouped, unit),
+                      let next = add(total, part) else { return nil }
+                total = next
                 section = 0
                 number = 0
             } else {
                 return nil  // N 以外は来ない想定だが安全側
             }
         }
-        let result = total + section + number
+        guard let partial = add(total, section), let result = add(partial, number) else { return nil }
         return result == 0 ? nil : result
     }
 
