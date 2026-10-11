@@ -349,6 +349,8 @@ enum MeetPageStatus: Equatable {
     case removed
     /// 会議が終わった・退出した画面になった
     case ended
+    /// 会議コードが無効（存在しない会議・URL の打ち間違い）
+    case notFound
     /// どれでもない（ロビー・読み込み中など）
     case other
 }
@@ -393,10 +395,18 @@ enum MeetBotRules {
         ]) {
             return .denied
         }
+        // 「削除されました」だけだと、チャットのメッセージ削除など会議と関係ない表示でも当たる。
+        // 会議・通話から外されたことを言う文言だけに絞る（確定は呼び出し側で 2 回連続を見る）。
         if matches(text, [
-            "削除されました", "退出させられました", "You've been removed", "removed you from", "You have been removed",
+            "通話から削除されました", "会議から削除されました", "退出させられました",
+            "You've been removed from", "You have been removed from", "removed you from the",
         ]) {
             return .removed
+        }
+        if matches(text, [
+            "会議コードを確認", "無効なビデオ通話名", "Check your meeting code", "Invalid video call name",
+        ]) {
+            return .notFound
         }
         if matches(text, [
             "通話は終了しました", "会議は終了しました", "通話から退出しました", "通話を終了しました",

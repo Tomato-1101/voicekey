@@ -4,6 +4,7 @@
 /// 本人が気づける手段が通知しかない。メニューを開かないと分からない状態を無くすために出す。
 ///
 /// **会議の発言（文字起こし本文）は通知に載せない**（通知センターに残り、画面共有で見えるため）。
+import AppKit
 import Foundation
 import OSLog
 import UserNotifications
@@ -25,9 +26,17 @@ final class MeetBotNotifier {
         Bundle.main.bundleURL.pathExtension == "app"
     }
 
+    /// 通知センターの delegate（center 側は弱参照なので、ここで持ち続ける）
+    ///
+    /// voicekey で `UNUserNotificationCenter` を使うのはこのボットだけなので、delegate を
+    /// ここで設定しても他の通知と取り合わない。
+    private static let delegate = NotificationDelegate()
+
     /// 通知の許可を求める（初めてボットを使うときに 1 回だけ）
     func prepare() {
-        guard isUsable, !authorizationRequested else { return }
+        guard isUsable else { return }
+        installDelegate()
+        guard !authorizationRequested else { return }
         authorizationRequested = true
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { [logger] granted, error in
             if let error {
@@ -40,17 +49,71 @@ final class MeetBotNotifier {
 
     /// 1 件通知する
     ///
-    /// - Parameter body: 本文（会議の発言は入れないこと）
-    func post(_ body: String) {
+    /// - Parameters:
+    ///   - body: 本文（会議の発言は入れないこと）
+    ///   - transcript: 押したときに開く議事録。`opensTranscript` が true で、これが無い・消えていれば保存フォルダを開く
+    ///   - opensTranscript: 押したときに議事録（かフォルダ）を開くか（参加・承認待ちなどの通知では開かない）
+    func post(_ body: String, transcript: URL? = nil, opensTranscript: Bool = false) {
         guard isUsable else { return }
+        installDelegate()
         let content = UNMutableNotificationContent()
         content.title = "議事録ボット"
         content.body = body
+        if opensTranscript {
+            var info: [String: Any] = [NotificationDelegate.opensTranscriptKey: true]
+            if let transcript { info[NotificationDelegate.transcriptPathKey] = transcript.path }
+            content.userInfo = info
+        }
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request) { [logger] error in
             if let error {
                 logger.error("通知を出せません: \(error.localizedDescription, privacy: .public)")
             }
         }
+    }
+
+    /// 通知センターに delegate を付ける（前面でもバナーを出し、押されたら議事録を開くため）
+    private func installDelegate() {
+        let center = UNUserNotificationCenter.current()
+        if center.delegate !== Self.delegate { center.delegate = Self.delegate }
+    }
+}
+
+/// 通知の表示と、押されたときの動作
+///
+/// 既定では、アプリが前面にいる間は通知が出ない（メニューバーのアプリはほぼ常に「前面扱い」になり得る）。
+/// ボットの通知は見えない Chrome の唯一の知らせなので、前面でもバナーを出す。
+final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
+
+    /// 通知の userInfo に入れる「押したら議事録を開く」の印
+    static let opensTranscriptKey = "voicekeyOpensTranscript"
+    /// 通知の userInfo に入れる議事録のパス
+    static let transcriptPathKey = "voicekeyTranscriptPath"
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .list])
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let info = response.notification.request.content.userInfo
+        if response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+           info[Self.opensTranscriptKey] as? Bool == true,
+           let target = Self.target(path: info[Self.transcriptPathKey] as? String) {
+            DispatchQueue.main.async { NSWorkspace.shared.open(target) }
+        }
+        completionHandler()
+    }
+
+    /// 開く先を決める（議事録が残っていればそれ、無ければ保存フォルダ、フォルダも無ければ nil）
+    static func target(path: String?, directory: URL = TranscriptRecorder.directory) -> URL? {
+        let manager = FileManager.default
+        if let path, manager.fileExists(atPath: path) { return URL(fileURLWithPath: path) }
+        return manager.fileExists(atPath: directory.path) ? directory : nil
     }
 }
