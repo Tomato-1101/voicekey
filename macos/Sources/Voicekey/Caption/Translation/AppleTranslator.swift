@@ -51,6 +51,13 @@ actor AppleTranslator: Translator {
     private var session: TranslationSession?
     /// 準備完了を確認済みか（毎回 isReady を待つと 1 文ごとに余計な往復が入る）
     private var isPrepared = false
+    /// 翻訳の失敗後に、承認なしの再準備を試してよい残り回数
+    ///
+    /// 以前は 1 回失敗すると `isPrepared` が false のまま戻らず、字幕を止めて開き直すまで
+    /// 訳が一切出なくなっていた。かといって失敗のたびに無制限に作り直すと、モデルが本当に
+    /// 消えている場合に 1 文ごとに無駄な準備が走る。上限付きで自動復帰させる。
+    static let maxRecoveryAttempts = 3
+    private var recoveryAttemptsLeft = maxRecoveryAttempts
 
     /// 既に導入済みの場合だけ準備する（ダウンロード承認 UI を絶対に出さない）
     ///
@@ -94,6 +101,7 @@ actor AppleTranslator: Translator {
         let session = await currentSession()
         if await session.isReady {
             isPrepared = true
+            recoveryAttemptsLeft = Self.maxRecoveryAttempts
             return .ready
         }
 
@@ -115,6 +123,7 @@ actor AppleTranslator: Translator {
         do {
             try await session.prepareTranslation()
             isPrepared = true
+            recoveryAttemptsLeft = Self.maxRecoveryAttempts
             logger.notice("英→日の翻訳モデルの準備が完了しました")
             return .ready
         } catch {
@@ -134,13 +143,23 @@ actor AppleTranslator: Translator {
         // ここでは準備（＝承認 UI 待ちで戻ってこない可能性がある処理）を起動しない。
         // 起動すると翻訳キューが承認待ちで詰まり、字幕が丸ごと止まってしまう。
         // 準備は開始時とエンジン切替時の `prepare(report:)` だけが行う。
+        // ただし導入済みモデルの「承認なし」の再準備だけは、上限付きでここから試す
+        // （一度の失敗で翻訳が戻らなくなるのを防ぐ。承認 UI は出さないので詰まらない）。
+        if !isPrepared, recoveryAttemptsLeft > 0 {
+            recoveryAttemptsLeft -= 1
+            let recovered = await prepareIfInstalled()
+            logger.notice("Apple 翻訳の再準備: \(recovered ? "成功" : "失敗", privacy: .public) 残り=\(self.recoveryAttemptsLeft, privacy: .public)")
+        }
         guard isPrepared else {
             throw TranslationError.translationUnavailable("翻訳モデルの準備が完了していません")
         }
         let session = await currentSession()
 
         do {
-            return try await session.translate(text).targetText
+            let translated = try await session.translate(text).targetText
+            // 実際に訳せたときだけ回数を戻す（準備だけ通って訳せない状態で回り続けないように）
+            recoveryAttemptsLeft = Self.maxRecoveryAttempts
+            return translated
         } catch {
             // モデルが消えた・セッションが無効化された場合に備え、次回作り直す
             self.session = nil

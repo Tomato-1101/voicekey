@@ -126,7 +126,9 @@ final class CaptionMenuController: NSObject, NSMenuDelegate {
     private func translationStatusLine(_ service: CaptionService) -> String {
         // 文字起こしモードでは翻訳器を一切使わないので、翻訳の構成ではなく認識言語を出す
         if service.mode == .transcribe {
-            return "文字起こし: \(service.language.displayName)（端末内・Apple）"
+            // Soniox は文字起こしモードでも Soniox が認識する（端末内ではない）
+            let engine = service.translationEngine == .soniox ? "Soniox・リアルタイム" : "端末内・Apple"
+            return "文字起こし: \(service.language.displayName)（\(engine)）"
         }
         if CaptionService.usesMockTranslator {
             return "翻訳: モック（検証用・APIは呼ばれません）"
@@ -147,6 +149,11 @@ final class CaptionMenuController: NSObject, NSMenuDelegate {
                 return "翻訳: Groq — APIキー未設定のため Apple 翻訳で代替中"
             }
             return "翻訳: Groq \(CaptionSettings.groqModelID)（\(found.source.displayName)・\(APIKeyStore.masked(found.key))）"
+        case .soniox:
+            // キーは値も伏せ字も出さない（あるかどうかだけ）
+            return Keychain.apiKey(for: .soniox) == nil
+                ? "翻訳: Soniox — APIキー未設定のため Apple 翻訳で代替します"
+                : "翻訳: Soniox リアルタイム（認識と翻訳を Soniox が同時に行う）"
         }
     }
 
@@ -192,14 +199,10 @@ final class CaptionMenuController: NSObject, NSMenuDelegate {
 
     /// 「最前面のアプリだけを翻訳」を切り替える
     ///
-    /// 動作中に切り替えたときは、認識をきれいに作り直すために字幕を張り替える。
+    /// 動作中に切り替えたときの張り替えはサービス側の setter が行う（停止→開始をここで重ねない）。
     @objc private func toggleFrontmostOnly() {
         guard let service = controller?.caption else { return }
-        let wasActive = service.state.isActive
         service.capturesFrontmostOnly.toggle()
-        guard wasActive else { return }
-        service.stop()
-        service.start()
     }
 
     @objc private func toggleAutoStart() {

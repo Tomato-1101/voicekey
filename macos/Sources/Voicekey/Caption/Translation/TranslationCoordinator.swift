@@ -29,15 +29,16 @@ final class TranslationCoordinator: @unchecked Sendable {
 
     /// 文末が来なくてもこの文字数を超えたら送る（ハード上限）
     ///
-    /// 英語 48 字 ≒ 日本語 25 字前後 ≒ 1 行で読み切れる量。以前は 80 字だったが、
-    /// 接続詞で延々と続く話し方（実測の配信音声）では 1 行が出るまで数秒待たされていた。
-    private static let maxBufferedCharacters = 48
+    /// 英語 40 字 ≒ 日本語 20 字前後 ≒ 字幕 1 行に収まる量。80 字 → 48 字 → 40 字と詰めてきた。
+    /// 40 字にしたのは 2026-10-12 ユーザー指示「精度が落ちてもいいから速さ重視」と、
+    /// 字幕の幅を固定したこと（訳が 1 行に収まれば高さが揺れない）の両方のため。
+    static let maxBufferedCharacters = 40
 
     /// 節区切りを探し始める長さ
     ///
     /// これ未満で切ると「単語だけの行」が並んで逆に読みにくい。
-    /// 32 字あれば 1 つの節として意味が通る。
-    private static let clauseBreakMinimumCharacters = 32
+    /// 24 字（英語 5〜6 語）あれば 1 つの節として意味が通る。32 字から詰めた（速さ重視）。
+    static let clauseBreakMinimumCharacters = 24
 
     /// 節の切れ目とみなす目印（見つけた目印の**直後**で切る）
     ///
@@ -49,15 +50,22 @@ final class TranslationCoordinator: @unchecked Sendable {
 
     /// 新しい確定が来ないまま経過したら送る（言い切りで止まった時に字幕が出ないのを防ぐ）
     ///
-    /// 0.7 秒だと「言い切って黙った」ときの空白が体感ではっきり分かるため詰めた。
-    /// これ以上短くすると、単に息継ぎしただけの間で切れて行が細切れになる。
-    private static let idleFlushInterval: TimeInterval = 0.45
+    /// 0.7 秒 → 0.45 秒 → 0.25 秒と詰めた。認識側が 0.3 秒の切れ目で確定を前倒しするように
+    /// なったので（PauseFinalizeTrigger）、確定が来た時点で話はもう途切れている。ここで
+    /// さらに長く待つ理由が無い。息継ぎで細切れになるのは 24 字未満の端切れだけで、
+    /// それも 1 文字も落とさずに出る。
+    static let idleFlushInterval: TimeInterval = 0.25
     /// 翻訳待ちキューの上限
     ///
     /// 翻訳は実測 1 文 30ms なので、喋る速さ（数秒に 1 文）に対して実質詰まらない。
-    /// ここは「異常時に無限に溜めない」ためだけの安全弁で、通常は 1 件も溢れない。
-    /// 溢れたときだけ notice を残す。
-    private static let maxPendingCount = 10
+    /// クラウドが詰まったとき用の安全弁。**溢れた行も捨てない**（確定文は全部訳す恒久要件）。
+    /// 溢れた分は `overflowTranslatorProvider`（Apple）で別に訳す。
+    static let maxPendingCount = 10
+    /// クラウドの訳で差し替えるのを待つ上限（秒）
+    ///
+    /// これを過ぎたら先に出した Apple の訳で確定とする。字幕は話に追いついていないと
+    /// 意味が無いので、上の行を何秒も後から書き換えるより、早めに諦めるほうが読みやすい。
+    static let refineTimeout: TimeInterval = 1.5
     /// 文脈として持たせる直近ペア数
     private static let contextPairCount = 4
 
@@ -66,7 +74,17 @@ final class TranslationCoordinator: @unchecked Sendable {
     private let translatorProvider: @Sendable () -> Translator
     /// 表示順の採番（部分訳と共通の連番。古い結果を捨てる判定に使う）
     private let sequenceProvider: @Sendable () -> Int
+    /// 溢れた行を訳す翻訳器（nil なら溢れても捨てずにキューに残す）
+    private let overflowTranslatorProvider: (@Sendable () -> Translator)?
+    /// 先に出した訳を差し替える翻訳器（クラウド）。nil なら差し替えない
+    ///
+    /// 確定行には `translatorProvider`（Apple）の訳をまず出し、こちらの訳が
+    /// `refineTimeout` 以内に届いたら同じ行を差し替える。クラウドへ送るのは確定文だけ。
+    private let refinerProvider: (@Sendable () -> Translator?)?
     private let queue = DispatchQueue(label: "com.voicekey.caption.translation")
+    /// 差し替え待ちの行（クラウドは同時 1 本に絞る。古い順）
+    private var refinePending: [RefineRequest] = []
+    private var isRefining = false
 
     private var buffer = ""
     /// 翻訳待ちの行（本文と採番）
@@ -86,16 +104,36 @@ final class TranslationCoordinator: @unchecked Sendable {
     var onStreamingDelta: (@Sendable (String, String, Int) -> Void)?
     /// 翻訳が失敗したときに呼ばれる（原文, ユーザー向け説明）
     var onFailed: (@Sendable (String, String) -> Void)?
+    /// 先に出した訳がクラウドの訳で差し替わったときに呼ばれる（原文, 訳文, 採番）
+    ///
+    /// 採番は `onTranslated` で渡したものと同じ。表示側はこれで同じ行を探して書き換える。
+    var onRevised: (@Sendable (String, String, Int) -> Void)?
+
+    /// 差し替え待ちの 1 行
+    private struct RefineRequest {
+        let text: String
+        let sequence: Int
+        let context: [TranslationExchange]
+        /// これを過ぎたら差し替えを諦める時刻
+        let deadline: CFAbsoluteTime
+        let translator: Translator
+    }
 
     /// - Parameters:
     ///   - translatorProvider: 実際に翻訳する実装を返すクロージャ（毎回呼ばれる）
     ///   - sequenceProvider: 表示順の採番（既定は単調増加のみで良い場面向け）
+    ///   - overflowTranslatorProvider: キューが溢れたときに使う翻訳器（Apple）
+    ///   - refinerProvider: 先に出した訳を差し替える翻訳器（クラウド）。1 文ごとに呼ぶ
     init(
         translatorProvider: @escaping @Sendable () -> Translator,
-        sequenceProvider: @escaping @Sendable () -> Int
+        sequenceProvider: @escaping @Sendable () -> Int,
+        overflowTranslatorProvider: (@Sendable () -> Translator)? = nil,
+        refinerProvider: (@Sendable () -> Translator?)? = nil
     ) {
         self.translatorProvider = translatorProvider
         self.sequenceProvider = sequenceProvider
+        self.overflowTranslatorProvider = overflowTranslatorProvider
+        self.refinerProvider = refinerProvider
     }
 
     /// 確定した認識テキストを渡す
@@ -121,6 +159,7 @@ final class TranslationCoordinator: @unchecked Sendable {
             cancelIdleFlush()
             buffer = ""
             pending.removeAll()
+            refinePending.removeAll()
             history.removeAll()
         }
     }
@@ -248,11 +287,28 @@ final class TranslationCoordinator: @unchecked Sendable {
         onSourceReady?(text)
 
         pending.append((text, sequenceProvider()))
-        if pending.count > Self.maxPendingCount {
-            let dropped = pending.removeFirst()
-            logger.notice("翻訳キューが溢れたため古い行を破棄しました 長さ=\(dropped.text.count, privacy: .public)")
+        if pending.count > Self.maxPendingCount, let overflowTranslatorProvider {
+            // 確定文は捨てない。いちばん古い行を、詰まっている翻訳器とは別に Apple で訳す
+            let overflow = pending.removeFirst()
+            logger.notice("翻訳キューが溢れたため Apple で訳します 長さ=\(overflow.text.count, privacy: .public)")
+            translateOverflow(overflow, with: overflowTranslatorProvider())
         }
         dispatchNextLocked()
+    }
+
+    /// 溢れた 1 行を、キューとは別に訳して出す
+    ///
+    /// 順番はキューの行より先に出ることがあるが、捨てるよりは良い（全文翻訳保証が優先）。
+    private func translateOverflow(_ line: (text: String, sequence: Int), with translator: Translator) {
+        Task { [self] in
+            do {
+                let translated = try await translator.translate(line.text, context: [])
+                onTranslated?(line.text, translated, line.sequence)
+            } catch {
+                let message = (error as? TranslationError)?.userMessage ?? String(describing: error)
+                onFailed?(line.text, message)
+            }
+        }
     }
 
     /// キューの先頭を 1 本だけ翻訳する
@@ -267,12 +323,18 @@ final class TranslationCoordinator: @unchecked Sendable {
         Task { [self] in
             do {
                 let translated = try await translate(text, context: context, with: translator, sequence: line.sequence)
+                // 差し替え先はここで解決しておく（エンジンを切り替えたら次の文から効く）
+                let refiner = refinerProvider?()
                 queue.async { [self] in
-                    history.append(TranslationExchange(source: text, translated: translated))
-                    if history.count > Self.contextPairCount * 2 {
-                        history.removeFirst(history.count - Self.contextPairCount * 2)
-                    }
+                    appendHistoryLocked(TranslationExchange(source: text, translated: translated))
                     isTranslating = false
+                    if let refiner {
+                        refinePending.append(RefineRequest(
+                            text: text, sequence: line.sequence, context: context,
+                            deadline: CFAbsoluteTimeGetCurrent() + Self.refineTimeout, translator: refiner
+                        ))
+                        dispatchNextRefineLocked()
+                    }
                     dispatchNextLocked()
                 }
                 // 確定した文の訳は必ず出す。次の行が来ていても捨てない
@@ -288,6 +350,71 @@ final class TranslationCoordinator: @unchecked Sendable {
                 // 失敗しても止めない。原文だけ出し続ける。
                 onFailed?(text, message)
             }
+        }
+    }
+
+    /// 文脈の履歴に足す（長くなりすぎた古い分は落とす）
+    private func appendHistoryLocked(_ exchange: TranslationExchange) {
+        history.append(exchange)
+        if history.count > Self.contextPairCount * 2 {
+            history.removeFirst(history.count - Self.contextPairCount * 2)
+        }
+    }
+
+    /// 差し替え待ちの先頭を 1 本だけクラウドで訳す
+    ///
+    /// 締め切り（Apple の訳を出してから `refineTimeout`）を過ぎた行は投げずに諦める。
+    /// 待ち行列で古くなった行までクラウドへ送ると、課金だけ増えて画面は変わらないため。
+    private func dispatchNextRefineLocked() {
+        guard !isRefining else { return }
+        let now = CFAbsoluteTimeGetCurrent()
+        while let first = refinePending.first, first.deadline <= now {
+            refinePending.removeFirst()
+            logger.notice("クラウドへ送る前に締め切りを過ぎたため Apple の訳で確定 長さ=\(first.text.count, privacy: .public)")
+        }
+        guard !refinePending.isEmpty else { return }
+        let request = refinePending.removeFirst()
+        isRefining = true
+        Task { [self] in
+            let refined = await Self.translate(
+                request.text, context: request.context, with: request.translator,
+                timeout: request.deadline - CFAbsoluteTimeGetCurrent()
+            )
+            if let refined {
+                onRevised?(request.text, refined, request.sequence)
+            }
+            queue.async { [self] in
+                if let refined {
+                    // 文脈にはクラウドの訳を残す（次の文の訳の質を上げるため）
+                    if let index = history.lastIndex(where: { $0.source == request.text }) {
+                        history[index] = TranslationExchange(source: request.text, translated: refined)
+                    }
+                } else {
+                    logger.notice("クラウドの訳が締め切りまでに来ないため Apple の訳で確定 長さ=\(request.text.count, privacy: .public)")
+                }
+                isRefining = false
+                dispatchNextRefineLocked()
+            }
+        }
+    }
+
+    /// 締め切り付きで 1 文を訳す
+    ///
+    /// - Returns: 締め切りまでに訳せたら訳文。時間切れ・失敗なら nil（呼び出し側は先の訳を残す）
+    static func translate(
+        _ text: String, context: [TranslationExchange], with translator: Translator, timeout: TimeInterval
+    ) async -> String? {
+        guard timeout > 0 else { return nil }
+        return await withTaskGroup(of: String?.self) { group in
+            group.addTask { try? await translator.translate(text, context: context) }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                return nil
+            }
+            // 先に終わった方を採る。訳が先なら訳、時間切れ（や失敗）が先なら nil
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
         }
     }
 

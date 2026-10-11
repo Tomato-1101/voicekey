@@ -7,7 +7,9 @@
 /// そこで途中経過（ボラタイル）を先に訳して出し、確定訳で差し替える。
 ///
 /// 方針:
-/// - 約 500ms のスロットル。認識途中は毎秒何度も更新されるので、そのまま訳すと無駄が多い。
+/// - 約 180ms のスロットル。認識途中は毎秒何度も更新されるので、毎回は訳さない。
+///   以前は 500ms だったが、2026-10-12 ユーザー指示「精度が落ちてもいいから速さ重視」で詰めた
+///   （Apple のオンデバイス翻訳は 1 文 30ms なので 180ms 間隔でも詰まらない）。
 /// - latest-wins。実行中 1 件＋待機は最新 1 件だけ。古い待機は捨てる（鮮度優先）。
 /// - クラウドエンジン（Gemini）では使わない。高頻度呼び出しは恒久方針で禁止しているため、
 ///   呼び出し側が翻訳器を渡さないことで無効化する。
@@ -19,9 +21,14 @@ import OSLog
 final class PartialTranslationDriver: @unchecked Sendable {
 
     /// 部分訳を投げる最短間隔
-    private static let throttleInterval: TimeInterval = 0.5
-    /// これより短い断片は訳さない（"So," 程度では意味のある訳にならない）
-    private static let minimumCharacters = 6
+    ///
+    /// 0.18 秒＝ほぼ 1 語ごと。これより短くしても認識の更新間隔（実測 0.1〜0.3 秒）を超えて
+    /// 速くはならず、訳が細かく揺れて読みにくくなるだけ。
+    static let throttleInterval: TimeInterval = 0.18
+    /// これより短い断片は訳さない
+    ///
+    /// 3 字（"I'm" 程度）から訳す。6 字だと最初の 1〜2 語が訳されず、話し始めの反応が鈍く見えた。
+    static let minimumCharacters = 3
 
     private let logger = makeCaptionLogger("PartialTranslation")
     private let queue = DispatchQueue(label: "com.voicekey.caption.partial")
@@ -35,6 +42,11 @@ final class PartialTranslationDriver: @unchecked Sendable {
     private var pendingText: String?
     private var lastRequestedText = ""
     private var scheduledTimer: DispatchSourceTimer?
+    /// 区切りの世代。確定が来たら進め、それより前に投げた部分訳の結果は捨てる
+    ///
+    /// 確定した文の部分訳が、確定訳を出した後から届いてライブ行に再表示されるのを防ぐ
+    /// （確定訳の後に古い途中経過が出ると、同じ文が 2 回流れて見える）。
+    private var epoch = 0
 
     /// 部分訳ができたときに呼ばれる（原文, 訳文, 採番）
     var onPartial: (@Sendable (String, String, Int) -> Void)?
@@ -61,8 +73,11 @@ final class PartialTranslationDriver: @unchecked Sendable {
     }
 
     /// 状態を捨てる（字幕の停止・再開で前の発話を引きずらないように）
+    ///
+    /// 認識が確定したときにも呼ぶ。待機中の途中経過も、実行中の部分訳の結果も捨てる。
     func reset() {
         queue.async { [self] in
+            epoch += 1
             scheduledTimer?.cancel()
             scheduledTimer = nil
             pendingText = nil
@@ -100,11 +115,14 @@ final class PartialTranslationDriver: @unchecked Sendable {
         pendingText = nil
         // 採番は「投げた瞬間」に取る。後から来た確定訳の方が新しいと判定できるようにするため。
         let sequence = sequenceProvider()
+        let requestedEpoch = epoch
 
         Task { [self] in
             do {
                 let translated = try await translator.translate(text, context: [])
-                onPartial?(text, translated, sequence)
+                // 訳している間に確定が来ていたら、この途中経過はもう古いので出さない
+                let isCurrent = queue.sync { requestedEpoch == epoch }
+                if isCurrent { onPartial?(text, translated, sequence) }
             } catch {
                 // 部分訳は best effort。失敗しても確定訳で出るので黙って捨てる。
                 logger.notice("部分訳に失敗（無視）: \(String(describing: error), privacy: .public)")

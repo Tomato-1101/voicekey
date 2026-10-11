@@ -18,6 +18,12 @@ enum TranslationEngine: String, CaseIterable {
     case gemini
     /// Groq API（OpenAI 互換・SSE ストリーミング対応・非常に高速）
     case groq
+    /// Soniox のリアルタイム認識＋翻訳（WebSocket・有料）
+    ///
+    /// 他の 3 つと違い**認識ごと置き換える**（Apple の音声認識を使わず、音声を Soniox へ流して
+    /// 原文と訳文の両方を受け取る）。確定待ちが無いぶん最も速い（2026-10-12 ユーザー指示
+    /// 「精度が落ちてもいいから速さ重視・リアルタイムがいい」「これも全部選べ」）。
+    case soniox
 
     /// メニューに出す表示名
     var displayName: String {
@@ -25,16 +31,24 @@ enum TranslationEngine: String, CaseIterable {
         case .apple: return "Apple 翻訳（オンデバイス・無料）"
         case .gemini: return "Gemini API"
         case .groq: return "Groq API"
+        case .soniox: return "Soniox（リアルタイム・有料 約 $0.12/時）"
         }
     }
 
-    /// クラウド（API キーが要る・部分訳では呼ばない）か
-    var isCloud: Bool { self != .apple }
+    /// 確定文だけをクラウドの LLM で訳すエンジンか（Apple の訳を先に出して差し替える対象）
+    ///
+    /// Soniox は認識ごと別経路なので含めない（翻訳コーディネータを通らない）。
+    var isCloud: Bool { self == .gemini || self == .groq }
+
+    /// 音声を Soniox へ流して認識・翻訳まで任せるか
+    var usesSonioxStream: Bool { self == .soniox }
 
     /// このエンジンが使う API キーのプロバイダー（Apple は不要なので nil）
+    ///
+    /// Soniox のキーは音声入力と同じ `Keychain.apiKey(for: .soniox)` で読むので、ここでは nil。
     var apiProvider: APIProvider? {
         switch self {
-        case .apple: return nil
+        case .apple, .soniox: return nil
         case .gemini: return .gemini
         case .groq: return .groq
         }
