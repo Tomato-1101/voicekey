@@ -353,10 +353,9 @@ final class MeetBotService: ObservableObject {
         }
     }
 
-    /// 状態を 1 行で（保存オフ・保存失敗・記録行数も含めて出す）
+    /// 状態を 1 行で（保存失敗・記録行数も含めて出す）
     var statusLine: String {
         guard case let .recording(name) = state else { return state.menuTitle }
-        if !CaptionSettings.savesTranscript { return "参加中（議事録の保存はオフ） — \(name)" }
         if let saveError { return "議事録を保存できません — \(saveError)" }
         if let captionWarning { return "\(captionWarning) — \(name)" }
         return "記録中 \(recordedLines) 行 — \(name)"
@@ -616,9 +615,7 @@ final class MeetBotService: ObservableObject {
         startStatusPolling()
         ActionLog.shared.write("caption.MeetBot", "Meet ボット入室・記録開始")
 
-        if !CaptionSettings.savesTranscript {
-            notifier.post("会議に参加しました。議事録の保存はオフなので、何も保存しません。")
-        } else if !captionsOn {
+        if !captionsOn {
             notifier.post("会議に参加しましたが、Meet の字幕をオンにできませんでした。議事録に何も残らない可能性があります。")
         } else {
             notifier.post("会議に参加しました（\(meetingName)）。議事録を記録しています。")
@@ -929,13 +926,13 @@ final class MeetBotService: ObservableObject {
     ///
     /// 行数と失敗は、記録係が書き込みをすべて終えた時点の集計を使う（書きかけの行を数え漏らさない）。
     private func notifyClosed(
-        reason: String, summary: TranscriptRecorder.SessionSummary, savesTranscript: Bool, fileStarted: Bool
+        reason: String, summary: TranscriptRecorder.SessionSummary, fileStarted: Bool
     ) {
         let message = MeetBotText.closingMessage(
-            reason: reason, savesTranscript: savesTranscript, fileStarted: fileStarted,
+            reason: reason, savesTranscript: true, fileStarted: fileStarted,
             lines: summary.lines, saveError: summary.error
         )
-        notifier.post(message, transcript: summary.url, opensTranscript: savesTranscript && fileStarted)
+        notifier.post(message, transcript: summary.url, opensTranscript: fileStarted)
     }
 
     // MARK: - Meet の内蔵字幕を読む（既定）
@@ -1002,7 +999,6 @@ final class MeetBotService: ObservableObject {
 
     /// 字幕 1 件を議事録へ書く（本文はログに出さない）
     private func recordCaption(_ line: CaptionSettleTracker.Line) {
-        guard CaptionSettings.savesTranscript else { return }
         startMeetingFileIfNeeded()
         recorder.record(
             text: line.text,
@@ -1012,11 +1008,11 @@ final class MeetBotService: ObservableObject {
         )
     }
 
-    /// この会議の議事録ファイルを作る（保存オンのときだけ・1 会議 1 回）
+    /// この会議の議事録ファイルを作る（1 会議 1 回）
     ///
-    /// 保存オフで入った後でオンにしたときも、ここで会議用のファイルが作られる。
+    /// ボットの役目は議事録なので、ライブ字幕の「保存する」スイッチ（`CaptionSettings.savesTranscript`）には関係なく常に作る。
     private func startMeetingFileIfNeeded() {
-        guard CaptionSettings.savesTranscript, !meetingFileStarted else { return }
+        guard !meetingFileStarted else { return }
         meetingFileStarted = true
         recorder.beginMeeting(
             code: meetingCode, context: "Google Meet / \(meetingName)", language: transcriptLanguageLabel,
@@ -1104,13 +1100,12 @@ final class MeetBotService: ObservableObject {
         } ?? speakerNow.withLock { $0 }
         // 会議の議事録ファイルを作った後なら、その場で記録係へ渡す（退出の後片付け中に届いた最後の 1 文も残す）
         if let target = finalTarget.withLock({ $0 }) {
-            guard CaptionSettings.savesTranscript else { return }
             recorder.record(text: text, speaker: speaker, context: target.context, language: target.language)
             return
         }
-        // まだファイルを作っていない（保存オフで入って途中でオンにした）ときは、メインでファイルを作ってから書く
+        // まだファイルを作っていない（参加直後の最初の 1 文など）ときは、メインでファイルを作ってから書く
         Task { @MainActor [weak self] in
-            guard let self, case .recording = self.state, CaptionSettings.savesTranscript else { return }
+            guard let self, case .recording = self.state else { return }
             self.startMeetingFileIfNeeded()
             self.recorder.record(
                 text: text,
@@ -1186,14 +1181,13 @@ final class MeetBotService: ObservableObject {
         speakerForCurrentSegment.withLock { $0 = nil }
         let tag = meetingTag
         let fileStarted = meetingFileStarted
-        let savesTranscript = CaptionSettings.savesTranscript
         recorder.endSession { [weak self] summary in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if tag == self.meetingTag { self.recordedLines = summary.lines }
                 if let closingReason {
                     self.notifyClosed(
-                        reason: closingReason, summary: summary, savesTranscript: savesTranscript, fileStarted: fileStarted
+                        reason: closingReason, summary: summary, fileStarted: fileStarted
                     )
                 }
             }

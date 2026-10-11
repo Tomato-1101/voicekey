@@ -186,7 +186,7 @@ enum MeetBotText {
     ///
     /// - Parameters:
     ///   - reason: 閉じた理由（「会議から退出しました」など）
-    ///   - savesTranscript: 議事録の保存がオンか
+    ///   - savesTranscript: 議事録の保存がオンか（ボットは常に true を渡す）
     ///   - fileStarted: この会議の議事録ファイルを作ろうとしたか
     ///   - lines: 書き込みがすべて終わった時点の行数
     ///   - saveError: 最後の書き込みが失敗していれば、その理由

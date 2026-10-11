@@ -1001,6 +1001,9 @@ private struct TranslateInputTab: View {
                     + "翻訳に失敗したときは原文がそのまま入力されます（文章を失いません）。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    // footer は既定で 2 行目が右寄せになることがあるので、左寄せを明示する
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -1202,6 +1205,8 @@ private struct AccountTab: View {
                 Text("アカウント")
             } footer: {
                 Text("ログインすると無料体験で文字起こし（即時入力／正確性）が使えます。無料体験を使い切ったら、アクティベーションキーを登録すると続けて使えます。ログインはブラウザで行います。")
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             // ログイン済みのときだけライセンス（アクティベーションキー）欄を出す
@@ -1215,6 +1220,8 @@ private struct AccountTab: View {
                     Text("ライセンス（アクティベーションキー）")
                 } footer: {
                     Text("配布されたアクティベーションキーを入力して登録してください。一度登録するとアカウントに紐付き、別の端末でもログインすれば使えます。")
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
@@ -1340,6 +1347,8 @@ private struct AboutTab: View {
                 Text("バージョン情報")
             } footer: {
                 Text("新しいバージョンは 6 時間ごとに確認し、裏でダウンロードしておきます。準備ができたら「更新して再起動」を押すとすぐ入れ替わります。押さなくても、次に voicekey を終了したときに自動で入ります。")
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             Section {

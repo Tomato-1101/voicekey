@@ -152,9 +152,6 @@ private struct MeetBotSettingsContent: View {
         case .waitingForApproval:
             return "会議の画面でホストが「承認」を押すと記録が始まります（最大 10 分待ちます）。"
         case .recording:
-            if !CaptionSettings.savesTranscript {
-                return "議事録の保存がオフなので、何も保存していません。下の「議事録」でオンにできます。"
-            }
             if let file = bot.currentTranscript {
                 return "保存先: \(file.lastPathComponent)"
             }
@@ -234,17 +231,11 @@ private struct MeetBotSettingsContent: View {
 
     private var transcriptSection: some View {
         Section("議事録") {
-            Toggle(isOn: $config.captionSaveTranscript) {
-                SettingRowLabel(
-                    title: "議事録を保存する",
-                    detail: "ボットの議事録は会議ごとに 1 ファイル（参加から退出まで）。"
-                        + "ライブ字幕の文字起こしもここで保存されます。"
-                )
-            }
-            if !config.captionSaveTranscript {
-                Label("オフのあいだは、ボットが会議に入っても何も保存しません。", systemImage: "exclamationmark.triangle")
-                    .font(.caption).foregroundStyle(.orange)
-            }
+            // ライブ字幕の保存スイッチとは独立（ボットの役目は議事録なので、スイッチに関係なく必ず保存する）
+            Text("ボットの議事録は会議ごとに 1 ファイルで必ず保存されます（参加から退出まで）。")
+                .font(.caption).foregroundStyle(.secondary)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
             if let saveError = bot.saveError {
                 Label("保存に失敗しています: \(saveError)", systemImage: "exclamationmark.triangle")
                     .font(.caption).foregroundStyle(.orange)

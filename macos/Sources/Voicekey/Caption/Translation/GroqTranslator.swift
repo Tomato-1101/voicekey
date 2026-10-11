@@ -213,7 +213,8 @@ struct GroqTranslator: StreamingTranslator {
         var body: [String: Any] = [
             "model": model,
             "messages": messages,
-            "max_completion_tokens": 512,
+            // 固定 512 だと推論モデル（gpt-oss 等）は思考で使い切って途中で切れるので、音声入力と同じ式で確保する
+            "max_completion_tokens": LLMModelCatalog.maxCompletionTokens(inputCharacters: text.count),
         ]
         // 推論モデルの思考を抑える等、モデル別の指定を足す（整形・翻訳とも同じ表を使う）
         body.merge(LLMModelCatalog.extraParameters(model: model)) { _, new in new }

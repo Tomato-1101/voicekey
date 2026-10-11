@@ -91,7 +91,7 @@ final class CaptionMenuController: NSObject, NSMenuDelegate {
             menu.addItem(languageItem)
         }
 
-        menu.addItem(checkItem("文字起こしを保存（議事録）", #selector(toggleSaveTranscript), service.savesTranscript))
+        menu.addItem(checkItem("字幕の文字起こしを保存", #selector(toggleSaveTranscript), service.savesTranscript))
         let openTranscripts = NSMenuItem(
             title: "議事録フォルダを開く", action: #selector(openTranscriptFolder), keyEquivalent: ""
         )
