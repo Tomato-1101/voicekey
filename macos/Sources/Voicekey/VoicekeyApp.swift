@@ -461,6 +461,10 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         // ここで shared に触れて起動時に Sparkle を始動させる（以前はメインウィンドウを開くまで
         // 生成されず、窓を開かない人には更新が届かなかった）。録音中・変換中は再起動しないよう状態を渡す。
         UpdaterController.shared.observeBusy(controller.$state.map { $0 != .idle })
+        // 会議の記録中（ライブ字幕・Meet ボット）も再起動しない（記録が途中で切れるため）
+        UpdaterController.shared.isRecordingMeeting = { [weak controller] in
+            controller?.isRecordingMeeting ?? false
+        }
 
         // ライブ字幕（personal・macOS 26 以降）。中身はサブメニューを開くたびに作り直す
         if #available(macOS 26.0, *), !CaptionSettings.isDisabledByEnvironment {
@@ -584,14 +588,21 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         showHome()
     }
 
-    /// メニューの「vX に更新して再起動」。確認なしで入れ替え＋再起動する（録音中なら終わってから）
+    /// メニューの「翻訳して入力（常時）」。設定を開かずにオンオフする
     @objc private func toggleTranslateInput() {
         guard let config = controller?.config else { return }
         config.translateInputEnabled.toggle()
     }
 
+    /// メニューの「vX に更新して再起動」。確認なしで入れ替え＋再起動する（録音中なら終わってから）
     @objc private func installUpdate() {
         UpdaterController.shared.installUpdate()
+    }
+
+    /// メニューの「アップデートに失敗しました — 押して再試行」。Sparkle の対話フローで確認し直す
+    /// （失敗すれば Sparkle が理由をダイアログで出す）
+    @objc private func retryUpdateCheck() {
+        UpdaterController.shared.checkForUpdates()
     }
 
     /// 前回選んでいた設定タブで開く（初回は一般タブ）。毎回「一般」に戻されると、
@@ -881,10 +892,18 @@ extension StatusItemController: NSMenuDelegate {
         let ready = updater.readyVersion
         // 押した後（録音終わり待ち・再起動中）は文言を置き換え、action を外して押せなくする
         let pending = updater.pendingInstallMessage
-        updateMenuItem.title = pending ?? ready.map { "v\($0) に更新して再起動" } ?? ""
-        updateMenuItem.action = pending == nil ? #selector(installUpdate) : nil
-        updateMenuItem.isHidden = ready == nil
-        updateSeparator.isHidden = ready == nil
+        // 裏の確認・ダウンロードの失敗は Sparkle が何も出さないので、ここで知らせて再試行させる
+        let failure = ready == nil ? updater.lastUpdateError : nil
+        updateMenuItem.title = pending ?? ready.map { "v\($0) に更新して再起動" }
+            ?? (failure != nil ? "アップデートに失敗しました — 押して再試行" : "")
+        updateMenuItem.toolTip = failure
+        if pending != nil {
+            updateMenuItem.action = nil
+        } else {
+            updateMenuItem.action = ready != nil ? #selector(installUpdate) : #selector(retryUpdateCheck)
+        }
+        updateMenuItem.isHidden = ready == nil && failure == nil
+        updateSeparator.isHidden = updateMenuItem.isHidden
     }
 }
 

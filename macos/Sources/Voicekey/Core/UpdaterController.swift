@@ -44,6 +44,9 @@ final class UpdaterController: NSObject, ObservableObject, SPUUpdaterDelegate {
     /// 待機に戻ってから入れ替えるまでの猶予。貼り付け後のクリップボード復元（Paster.restoreDelay＝1 秒）を
     /// 終えてから終了させないと、利用者のクリップボードが文字起こし結果のまま残るため
     private static let idleGraceBeforeInstall: TimeInterval = 2.0
+    /// 会議の記録（ライブ字幕・Meet ボット）が終わったかを見直す間隔。状態の変化通知は字幕・ボットの
+    /// メニューが使っていて横取りできないので、待っている間だけ軽く問い合わせる（HAL には触れない）
+    private static let meetingRecheckInterval: TimeInterval = 30.0
 
     // controller は super.init() 後に self を delegate として渡すため var にする
     private var controller: SPUStandardUpdaterController?
@@ -58,6 +61,9 @@ final class UpdaterController: NSObject, ObservableObject, SPUUpdaterDelegate {
     private var immediateInstall: (() -> Void)?
     /// 録音中・変換中か（AppController の状態から結線する。未結線なら常に暇とみなす）
     private var isBusy = false
+    /// ライブ字幕・Meet ボットで会議を記録中か（StatusItemController が結線する。未結線なら常に暇）。
+    /// 再起動すると記録が途中で切れ、議事録の後半が残らないので、録音中と同じく終わるまで待つ
+    var isRecordingMeeting: () -> Bool = { false }
     private var busyObservation: AnyCancellable?
 
     /// 録音中・変換中なので待機に戻るまで預かっている入れ替え。ボタンの即時インストールと
@@ -75,9 +81,15 @@ final class UpdaterController: NSObject, ObservableObject, SPUUpdaterDelegate {
     /// 即時インストールのブロックを呼んだ（Sparkle が入れ替え＋再起動を進めている）
     @Published private(set) var installStarted = false
 
+    /// 直近の自動アップデートの失敗理由（成功・新版なしで消える）。裏の確認・ダウンロードが
+    /// 失敗しても Sparkle は何も出さないので、メニューの先頭で知らせて再試行できるようにする
+    @Published private(set) var lastUpdateError: String?
+
     /// 押した後の手応え（nil なら押せる状態）。ボタンはこの文言に置き換えて押せなくする
     var pendingInstallMessage: String? {
-        if waitingForIdle { return "録音が終わったら更新します" }
+        if waitingForIdle {
+            return isRecordingMeeting() ? "会議の記録が終わったら更新します" : "録音が終わったら更新します"
+        }
         if installStarted { return "更新して再起動しています…" }
         if installWhenReady { return "ダウンロード中… 終わったら再起動します" }
         return nil
@@ -131,22 +143,54 @@ final class UpdaterController: NSObject, ObservableObject, SPUUpdaterDelegate {
 
     /// 預かっている入れ替えを、待機に戻ってから idleGraceBeforeInstall 後に呼ぶ予約を積み直す。
     /// 待機に戻った直後はクリップボードの復元が残っているので、すぐには呼ばない。
-    private func scheduleDeferredInstall() {
+    private func scheduleDeferredInstall(after delay: TimeInterval? = nil) {
         guard deferredInstall != nil, !isBusy else { return }
         idleInstallWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, !self.isBusy else { return }
             self.idleInstallWork = nil
+            // 会議の記録中はまだ入れない（終わったかは通知が来ないので、間隔をあけて見直す）
+            if self.isRecordingMeeting() {
+                self.scheduleDeferredInstall(after: Self.meetingRecheckInterval)
+                return
+            }
             self.takeDeferredInstall()?()
         }
         idleInstallWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.idleGraceBeforeInstall, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + (delay ?? Self.idleGraceBeforeInstall), execute: work)
     }
 
-    /// 録音中・変換中なら待機に戻るまで預ける（予約は待機に戻ったときに observeBusy が積む）。
+    /// 録音中・変換中・会議の記録中なら終わるまで預ける。録音中の分は待機に戻ったときに observeBusy が
+    /// 予約を積む。会議だけで待つ場合は録音の状態が変わらないので、ここで見直しの予約を積む。
     private func deferUntilIdle(_ install: @escaping () -> Void) {
         deferredInstall = install
         waitingForIdle = true
+        scheduleDeferredInstall()
+    }
+
+    /// 入れ替え（再起動）を今は避けるべきか（純関数・テスト対象）。
+    /// アプリ自前の再起動を肩代わりしているとき（bypass）は、もう再起動すると決まっているので待たない。
+    static func shouldDeferRelaunch(dictationBusy: Bool, recordingMeeting: Bool, bypass: Bool) -> Bool {
+        guard !bypass else { return false }
+        return dictationBusy || recordingMeeting
+    }
+
+    /// 更新サイクルの結果を、利用者に見せる失敗理由へ写す（純関数・テスト対象）。
+    /// 新版なし・利用者の取り消し・「あとで」は失敗ではないので nil。
+    nonisolated static func failureMessage(for error: (any Error)?) -> String? {
+        guard let error else { return nil }
+        let nsError = error as NSError
+        if nsError.domain == SUSparkleErrorDomain {
+            switch Int32(nsError.code) {
+            case SUError.noUpdateError.rawValue,
+                 SUError.installationCanceledError.rawValue,
+                 SUError.installationAuthorizeLaterError.rawValue:
+                return nil
+            default:
+                break
+            }
+        }
+        return nsError.localizedDescription
     }
 
     /// 預かっている入れ替えを取り出す（同じブロックを二度呼ばないよう、取り出したら空にする）
@@ -175,8 +219,8 @@ final class UpdaterController: NSObject, ObservableObject, SPUUpdaterDelegate {
             return
         }
         guard !installStarted, deferredInstall == nil else { return }
-        if isBusy {
-            log.notice("録音中・変換中のため、終わってから更新します")
+        if Self.shouldDeferRelaunch(dictationBusy: isBusy, recordingMeeting: isRecordingMeeting(), bypass: false) {
+            log.notice("録音中・変換中・会議の記録中のため、終わってから更新します")
             deferUntilIdle { [weak self] in self?.startImmediateInstall() }
             return
         }
@@ -241,6 +285,7 @@ final class UpdaterController: NSObject, ObservableObject, SPUUpdaterDelegate {
             log.notice("更新の準備ができました (version=\(version, privacy: .public))")
             self.immediateInstall = immediateInstallHandler
             self.availableVersion = version
+            self.lastUpdateError = nil
             self.readyVersion = version
             // ダウンロード中に押されていたら、そのまま入れ替える（録音中なら終わってから）。
             // ブロック自体がメインへ非同期に積むので、ここで呼んでも YES を返す前に入れ替えは始まらない
@@ -260,7 +305,9 @@ final class UpdaterController: NSObject, ObservableObject, SPUUpdaterDelegate {
         untilInvokingBlock installHandler: @escaping () -> Void
     ) -> Bool {
         MainActor.assumeIsolated {
-            guard self.isBusy, !self.bypassBusy else { return false }
+            guard Self.shouldDeferRelaunch(
+                dictationBusy: self.isBusy, recordingMeeting: self.isRecordingMeeting(), bypass: self.bypassBusy
+            ) else { return false }
             // ボタン経由は即時インストールを呼ぶ前に待機を確かめているので、ここで待つのは
             // 呼んだ直後に録音が始まった場合か、Sparkle 標準 UI からの再起動の場合だけ（二重には待たない）
             log.notice("録音中・変換中のため、終わってから再起動します")
@@ -277,7 +324,12 @@ final class UpdaterController: NSObject, ObservableObject, SPUUpdaterDelegate {
         didFinishUpdateCycleFor updateCheck: SPUUpdateCheck,
         error: (any Error)?
     ) {
+        let failure = Self.failureMessage(for: error)
         MainActor.assumeIsolated {
+            if let failure {
+                log.error("自動アップデートに失敗しました: \(failure, privacy: .public)")
+            }
+            self.lastUpdateError = failure
             self.installWhenReady = false
             self.installStarted = false
             self.immediateInstall = nil

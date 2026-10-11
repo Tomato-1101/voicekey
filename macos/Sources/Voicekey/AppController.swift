@@ -509,6 +509,15 @@ final class AppController: ObservableObject {
     /// ボットが既に生成されているか（終了処理で「作っていなければ触らない」ために使う）
     var hasMeetBot: Bool { meetBotStorage != nil }
 
+    /// ライブ字幕か Meet ボットが動いているか（更新の再起動で会議の記録を途中で切らないために使う）。
+    /// どちらも参照するまで作らないので、生成済みのものだけを見る（ここで生成しない）
+    var isRecordingMeeting: Bool {
+        guard #available(macOS 26.0, *) else { return false }
+        let captionActive = (captionStorage as? CaptionService)?.state.isActive ?? false
+        let botActive = (meetBotStorage as? MeetBotService)?.state.isActive ?? false
+        return captionActive || botActive
+    }
+
     /// 行動ログ用の HUD 状態名（通知の本文は残さない＝状態遷移だけを追う）
     private static func hudModeLabel(_ mode: HudModel.Mode) -> String {
         switch mode {
