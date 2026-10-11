@@ -379,6 +379,14 @@ final class Transcriber: @unchecked Sendable {
         return "Soniox に接続できませんでした（ネットワークを確認してください）"
     }
 
+    /// ライブ（Soniox）が途中で切れて前半しか取れていないとき、録音全体を再送して救うか。
+    /// 空のときは従来どおり REST 経路が再送するのでここでは扱わない。タイムアウトは確定待ちが
+    /// 長引いただけで後半も届いている見込みが高く、再送の待ちを足す価値が無いので対象外
+    static func shouldReplayAfterLiveFailure(backend: Backend, ending: LiveEnding, streamedIsEmpty: Bool) -> Bool {
+        guard backend == .soniox, !streamedIsEmpty, case .failed(let failure) = ending else { return false }
+        return failure != .timeout
+    }
+
     /// Soniox の失敗がキーの無効（401/403）か。設定 › API キー へ案内するかの判定に使う
     static func isInvalidKeyFailure(_ failure: LiveFailure) -> Bool {
         if case .error(let code?, _) = failure { return code == "401" || code == "403" }

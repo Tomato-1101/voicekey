@@ -53,4 +53,24 @@ final class RecordingLifecycleTests: XCTestCase {
         XCTAssertTrue(sessions.contains(3))  // Enter の前
         XCTAssertFalse(sessions.contains(4), "次の録音まで巻き込んではいけない")
     }
+
+    // Soniox が途中で切れて前半だけ取れたときは録音全体を再送して後半も救う
+    func testSonioxDisconnectWithPartialTextIsReplayed() {
+        XCTAssertTrue(Transcriber.shouldReplayAfterLiveFailure(
+            backend: .soniox, ending: .failed(.disconnect), streamedIsEmpty: false))
+        XCTAssertTrue(Transcriber.shouldReplayAfterLiveFailure(
+            backend: .soniox, ending: .failed(.error(code: "500", type: nil)), streamedIsEmpty: false))
+    }
+
+    // 正常終了・タイムアウト・空（従来の REST 救済が担当）・他プロバイダーは再送しない
+    func testReplayIsLimitedToSonioxFailures() {
+        XCTAssertFalse(Transcriber.shouldReplayAfterLiveFailure(
+            backend: .soniox, ending: .completed, streamedIsEmpty: false))
+        XCTAssertFalse(Transcriber.shouldReplayAfterLiveFailure(
+            backend: .soniox, ending: .failed(.timeout), streamedIsEmpty: false))
+        XCTAssertFalse(Transcriber.shouldReplayAfterLiveFailure(
+            backend: .soniox, ending: .failed(.disconnect), streamedIsEmpty: true))
+        XCTAssertFalse(Transcriber.shouldReplayAfterLiveFailure(
+            backend: .openaiLive, ending: .failed(.disconnect), streamedIsEmpty: false))
+    }
 }

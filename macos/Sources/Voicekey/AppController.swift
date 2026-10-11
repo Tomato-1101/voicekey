@@ -1719,7 +1719,7 @@ final class AppController: ObservableObject {
                     "文字起こし要求 経路=streaming backend=\(transcriber.backend.rawValue) "
                         + "model=\(transcriber.model) 音声=\(secText(Double(samples.count) / AudioRecorder.sampleRate))s"
                 )
-                let streamed = await streamer.finish()
+                var streamed = await streamer.finish()
                 // 終わり方（Soniox だけが区別する。他のライブ型は unknown＝従来どおりの扱い）
                 let ending = streamer.ending
                 let finalizedAt = ProcessInfo.processInfo.systemUptime
@@ -1743,6 +1743,19 @@ final class AppController: ObservableObject {
                     ActionLog.shared.write("app", "打ち切り済みセッションの確定文字を破棄 gen=\(generation)")
                     timelines[generation]?.outcome = DictationTimeline.Outcome.abandoned
                     return
+                }
+                // Soniox の接続が途中で切れると、取れているのは切れるまでの前半だけ。録音全体を新しい
+                // セッションへ流し直して後半も救う（既存の REST 救済と同じ再送）。再送が失敗・空なら
+                // ライブで取れた分をそのまま使う（喋った内容を捨てない）
+                var replayedAfterFailure = false
+                if Transcriber.shouldReplayAfterLiveFailure(
+                    backend: transcriber.backend, ending: ending, streamedIsEmpty: streamed.isEmpty) {
+                    ActionLog.shared.write("transcriber", "ライブが途中で切れたため録音全体を再送 取れた分=\(streamed.count) 文字")
+                    if let replayed = try? await transcriber.transcribe(samples: samples), !replayed.isEmpty {
+                        streamed = replayed
+                        replayedAfterFailure = true
+                    }
+                    if discardIfAbandoned(generation) { return }
                 }
                 if !streamed.isEmpty {
                     // 整形が有効なら貼り付け前に LLM で整形（失敗時は原文が返る）
@@ -1791,7 +1804,9 @@ final class AppController: ObservableObject {
                     } else {
                         // 接続がエラー・切断で途中で壊れたときは、入ったのが途中までかもしれないと知らせる
                         // （喋った分は捨てずに貼る）。タイムアウトは確定待ちが長引いただけなので知らせない
-                        if case .failed(let failure) = ending, failure != .timeout, !isAbandoned(generation) {
+                        // 録音全体の再送で救えたときは全文が入っているので知らせない
+                        if case .failed(let failure) = ending, failure != .timeout, !replayedAfterFailure,
+                           !isAbandoned(generation) {
                             hud.notice("接続が途中で切れたため、途中までの入力です")
                         }
                         if autoEnter {
