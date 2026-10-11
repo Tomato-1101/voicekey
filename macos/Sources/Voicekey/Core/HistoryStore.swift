@@ -75,6 +75,8 @@ final class HistoryStore: ObservableObject {
     var onAdd: ((HistoryItem) -> Void)?
 
     private let fileURL: URL
+    /// 壊れたファイルを退避できなかった（＝元ファイルが残っている）ので保存しない
+    private var saveBlocked = false
 
     /// - Parameter directory: 保存先ディレクトリ（テスト時に一時ディレクトリを注入する）。
     ///   nil なら本番の ~/Library/Application Support/voicekey を使う。
@@ -84,20 +86,22 @@ final class HistoryStore: ObservableObject {
             .appendingPathComponent("voicekey", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         fileURL = dir.appendingPathComponent("history.json")
-        items = Self.load(from: fileURL)
+        let loaded = Self.load(from: fileURL)
+        items = loaded.items
+        saveBlocked = loaded.saveBlocked
         // 自身の init 内の代入では didSet が走らないため、表示用一覧をここで一度作る
         recomputeAllItems()
     }
 
     /// 保存済み JSON を読み込む。新形式（構造体配列）を第一に試し、読めなければ
     /// 旧・単純な文字列配列としても試す。どちらでも読めなければ空で開始（クラッシュしない）。
-    private static func load(from fileURL: URL) -> [HistoryItem] {
-        guard let data = try? Data(contentsOf: fileURL) else { return [] }
+    private static func load(from fileURL: URL) -> (items: [HistoryItem], saveBlocked: Bool) {
+        guard let data = try? Data(contentsOf: fileURL) else { return ([], false) }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         // 新形式（[HistoryItem]）。HistoryItem.init(from:) が旧「id/text/date のみ」も吸収する
         if let loaded = try? decoder.decode([HistoryItem].self, from: data) {
-            return Array(loaded.prefix(maxItems))
+            return (Array(loaded.prefix(maxItems)), false)
         }
         // さらに古い「文字列配列」形式のフォールバック（Windows 版由来の互換）
         if let strings = try? decoder.decode([String].self, from: data) {
@@ -105,11 +109,12 @@ final class HistoryStore: ObservableObject {
                 HistoryItem(id: UUID(), text: $0, date: Date(),
                             device: nil, appBundleID: nil, appName: nil, characters: $0.count)
             }
-            return Array(items)
+            return (Array(items), false)
         }
-        // どちらでも読めない＝壊れている。空で開始すると次の保存で元の履歴を上書きして消すので退避する
-        CorruptFileQuarantine.quarantine(fileURL)
-        return []
+        // どちらでも読めない＝壊れている。空で開始すると次の保存で元の履歴を上書きして消すので退避する。
+        // 退避できなければ元ファイルを守るため、このあと保存しない
+        let moved = CorruptFileQuarantine.quarantine(fileURL, label: "履歴ファイル")
+        return ([], moved == nil)
     }
 
     /// 履歴に 1 件追加する（空テキストは無視）。貼り付け先アプリのメタデータを付ける。
@@ -133,6 +138,7 @@ final class HistoryStore: ObservableObject {
     }
 
     private func save() {
+        guard !saveBlocked else { return }
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         do {

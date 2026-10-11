@@ -246,6 +246,11 @@ final class AppController: ObservableObject {
         LLMModelCatalog.onModelReplaced = { [weak self] replacement in
             Task { @MainActor in self?.applyModelReplacement(replacement) }
         }
+        // 壊れた保存ファイルを退避した（またはできなかった）ことを 1 回だけ知らせる。
+        // 履歴・統計はこのクラスより先に作られるので、それまでの分は溜まっていてここで届く
+        CorruptFileQuarantine.setNoticeHandler { [weak self] message in
+            Task { @MainActor in self?.hud.notice(message, isError: true) }
+        }
         // 選べるモデルの実在一覧を 1 日 1 回取り直す（無料の一覧 GET のみ。キーが無ければ何もしない）
         Task.detached(priority: .utility) {
             for provider in LLMProvider.allCases {
@@ -520,13 +525,22 @@ final class AppController: ObservableObject {
     /// ボットが既に生成されているか（終了処理で「作っていなければ触らない」ために使う）
     var hasMeetBot: Bool { meetBotStorage != nil }
 
-    /// ライブ字幕か Meet ボットが動いているか（更新の再起動で会議の記録を途中で切らないために使う）。
+    /// 議事録を記録中か（更新の再起動で会議の記録を途中で切らないために使う）。
     /// どちらも参照するまで作らないので、生成済みのものだけを見る（ここで生成しない）
     var isRecordingMeeting: Bool {
         guard #available(macOS 26.0, *) else { return false }
         let captionActive = (captionStorage as? CaptionService)?.state.isActive ?? false
         let botActive = (meetBotStorage as? MeetBotService)?.state.isActive ?? false
-        return captionActive || botActive
+        return Self.isMeetingBeingRecorded(
+            captionActive: captionActive, savesTranscript: CaptionSettings.savesTranscript, botActive: botActive)
+    }
+
+    /// 更新の再起動を待たせるべき「会議の記録中」か（純関数・テスト対象）
+    ///
+    /// 字幕は表示しているだけなら再起動で失うものが無い。字幕を出しっぱなしにしていると更新が
+    /// いつまでも入らないので、議事録へ保存しているときだけ数える。ボットは議事録を取るのが役目なので常に数える。
+    nonisolated static func isMeetingBeingRecorded(captionActive: Bool, savesTranscript: Bool, botActive: Bool) -> Bool {
+        (captionActive && savesTranscript) || botActive
     }
 
     /// 行動ログ用の HUD 状態名（通知の本文は残さない＝状態遷移だけを追う）
@@ -662,15 +676,15 @@ final class AppController: ObservableObject {
             return
         }
 
-        // 録音中（2 打目待ちの保留中も含む）に「この 1 回だけ翻訳」キーが押されたら、この録音を翻訳対象にする。
+        // 録音中（2 打目待ちの保留中も含む）に「この 1 回だけ翻訳」キーが押されたら、この録音の翻訳を付け外しする。
         // 離鍵の直前まで受け付ける。保留分岐より先に見て return するのは、2 打目待ちの間に押した
         // 修飾キーが「無関係なキー」扱いになって 1 打目が単発で確定してしまうのを防ぐため。
         if let slotId = recordingSlot, recordContext != nil,
-           DictationTranslation.isTranslateOnceToken(token, key: config.translateOnceKey),
+           DictationTranslation.isTranslateOnceToken(token, key: translateOnceKey),
            DictationTranslation.isTranslateOnceRequested(
-               key: config.translateOnceKey, slotHotkey: config.slot(slotId).hotkey + config.handsfreeKey,
+               key: translateOnceKey, slotHotkey: config.slot(slotId).hotkey + config.handsfreeKey,
                pressed: pressed) {
-            markTranslateOnce()
+            toggleTranslateOnce()
             return
         }
 
@@ -736,7 +750,7 @@ final class AppController: ObservableObject {
             // 録音キーと一緒に 1 回翻訳キーが押されていれば、この録音だけ翻訳する。
             // ハンズフリーキーと同じキーにしてある場合はハンズフリーを優先する（既存の使い方を変えない）
             let translateOnce = DictationTranslation.isTranslateOnceRequested(
-                key: config.translateOnceKey, slotHotkey: slot.hotkey + config.handsfreeKey, pressed: pressed)
+                key: translateOnceKey, slotHotkey: slot.hotkey + config.handsfreeKey, pressed: pressed)
             // ダブルタップ（auto_enter）はここでは決めない。1 打目の離鍵で「保留」に入り、
             // 2 打目の押下で **同じ録音を auto_enter に切り替える**方式にしたため。
             // 録音を作り直さないので、1 打目に入った声が消えず、録音の開始タイミングも
@@ -1025,21 +1039,38 @@ final class AppController: ObservableObject {
         /// groq スロット × 整形 ON × ログイン済み × ハンズフリー EL 差し替えでない、が条件。
         /// 単発送信のときだけこれを見て serverFormat=true にし、後段のクライアント整形をスキップする。
         let serverFormatEligible: Bool
-        /// この録音を翻訳してから貼り付けるか。常時 ON の設定か、1 回翻訳キーの押下で true になる
+        /// この録音を翻訳してから貼り付けるか。常時 ON の設定か、1 回翻訳キーの押下で付け外しされる
         /// （1 回翻訳キーは録音中にも押せるので、ここだけ var）
         var translate: Bool
+        /// 常時 ON の設定で翻訳しているか（1 回翻訳キーで外せるのは、キーで付けた翻訳だけにするため）
+        let translateAlways: Bool
         /// 翻訳エンジンと出力言語（録音開始時に固定。録音中に設定を変えても進行中の録音は変わらない）
         let translateEngine: DictationTranslationEngine
         let translateTarget: String
     }
 
-    /// 録音中に 1 回翻訳キーが押された。この録音を翻訳対象にし、HUD に印を出す
-    private func markTranslateOnce() {
-        guard var context = recordContext, !context.translate else { return }
-        context.translate = true
+    /// 判定に使う 1 回翻訳キー。macOS 26 未満は翻訳できないので空（＝押しても何も起きない）にする
+    private var translateOnceKey: [String] {
+        DictationTranslation.effectiveTranslateOnceKey(
+            config.translateOnceKey, supported: DictationTranslation.isSupported)
+    }
+
+    /// 録音中に 1 回翻訳キーが押された。押すたびにこの録音の翻訳を付け外しし、HUD の印も合わせる
+    /// （押し間違えたときに取り消せるように。常時 ON の翻訳はここでは外さない）
+    private func toggleTranslateOnce() {
+        guard var context = recordContext else { return }
+        let next = DictationTranslation.toggledTranslate(current: context.translate, alwaysOn: context.translateAlways)
+        guard next != context.translate else { return }
+        context.translate = next
         recordContext = context
-        ActionLog.shared.write("app", "[翻訳] gen=\(DiagnosticText.gen(recordingGeneration)) 1回翻訳キー(録音中)")
-        prepareTranslation(for: context)
+        let gen = DiagnosticText.gen(recordingGeneration)
+        if next {
+            ActionLog.shared.write("app", "[翻訳] gen=\(gen) 1回翻訳キー(録音中)")
+            prepareTranslation(for: context)
+        } else {
+            ActionLog.shared.write("app", "[翻訳] gen=\(gen) 1回翻訳キーで取り消し(録音中)")
+            hud.setTranslateBadge("")
+        }
     }
 
     /// 翻訳する録音の下準備（HUD の印と、Apple 翻訳セッションの温め）。録音経路は待たせない
@@ -1143,7 +1174,10 @@ final class AppController: ObservableObject {
             formatModel: config.formatModel,
             formatPresetId: slot.formatPresetId,
             serverFormatEligible: serverFormatEligible,
-            translate: DictationTranslation.isEnabled || translateOnce,
+            translate: DictationTranslation.shouldTranslate(
+                alwaysOn: DictationTranslation.isEnabled, translateOnce: translateOnce,
+                supported: DictationTranslation.isSupported),
+            translateAlways: DictationTranslation.isEnabled,
             translateEngine: DictationTranslation.engine,
             translateTarget: DictationTranslation.targetLanguage
         )

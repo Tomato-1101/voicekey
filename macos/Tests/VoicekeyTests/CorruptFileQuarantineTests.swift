@@ -70,4 +70,58 @@ final class CorruptFileQuarantineTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: second!), Data("b".utf8))
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
     }
+
+    // MARK: - 退避できなかったとき
+
+    /// ファイル移動を失敗させて本体を実行し、終わったら元に戻す
+    private func withFailingMove(_ body: () throws -> Void) rethrows {
+        let original = CorruptFileQuarantine.moveItem
+        CorruptFileQuarantine.moveItem = { _, _ in throw CocoaError(.fileWriteNoPermission) }
+        defer { CorruptFileQuarantine.moveItem = original }
+        try body()
+    }
+
+    // 退避できなければ、追加・記録しても壊れた元ファイルを空の内容で上書きしない
+    func testFailedQuarantineNeverOverwritesOriginal() throws {
+        let dir = makeTempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let broken = Data("{broken".utf8)
+        let history = dir.appendingPathComponent("history.json")
+        let stats = dir.appendingPathComponent("stats.json")
+        let usage = dir.appendingPathComponent("api-usage.json")
+        for url in [history, stats, usage] { try broken.write(to: url) }
+
+        try withFailingMove {
+            let historyStore = HistoryStore(directory: dir)
+            historyStore.add("新しい発話")
+            let statsStore = StatsStore(directory: dir)
+            statsStore.recordSession(characters: 5, recordingSeconds: 1)
+            let usageStore = ApiUsageStore(directory: dir)
+            usageStore.recordTokens(provider: .groq, model: "m", purpose: .formatting, inputTokens: 1, outputTokens: 1)
+            usageStore.flush()
+        }
+        for url in [history, stats, usage] {
+            XCTAssertEqual(try Data(contentsOf: url), broken, url.lastPathComponent)
+        }
+    }
+
+    // 退避した・できなかったことを、呼び名とパス付きで 1 回ずつ知らせる
+    func testQuarantineNotifiesOnce() throws {
+        final class Box: @unchecked Sendable { var messages: [String] = [] }
+        let box = Box()
+        CorruptFileQuarantine.setNoticeHandler { box.messages.append($0) }
+        box.messages = []  // 他のテストで溜まっていた分は捨てる
+
+        let dir = makeTempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("history.json")
+        try Data("x".utf8).write(to: url)
+        let moved = try XCTUnwrap(CorruptFileQuarantine.quarantine(url, label: "履歴ファイル"))
+        XCTAssertEqual(box.messages.count, 1)
+        XCTAssertTrue(box.messages[0].hasPrefix("履歴ファイルが壊れていたので退避しました: "))
+        XCTAssertTrue(box.messages[0].hasSuffix(moved.lastPathComponent))
+
+        try Data("y".utf8).write(to: url)
+        withFailingMove { XCTAssertNil(CorruptFileQuarantine.quarantine(url, label: "履歴ファイル")) }
+        XCTAssertEqual(box.messages.count, 2)
+        XCTAssertTrue(box.messages[1].contains("上書きせずに残しています"))
+    }
 }

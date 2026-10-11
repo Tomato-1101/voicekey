@@ -122,6 +122,8 @@ final class ApiUsageStore: ObservableObject, @unchecked Sendable {
     private var data = ApiUsageData()
     /// ファイル保存は直列で後回しにする（記録した側を待たせない）
     private let saveQueue = DispatchQueue(label: "com.voicekey.api-usage.save", qos: .utility)
+    /// 壊れたファイルを退避できなかった（＝元ファイルが残っている）ので保存しない。init でだけ決まる
+    private var saveBlocked = false
 
     /// - Parameter directory: 保存先（テストで一時ディレクトリを注入する）。nil なら
     ///   ~/Library/Application Support/voicekey。テスト実行中は本人の実ファイルを汚さないよう一時ディレクトリにする。
@@ -143,8 +145,9 @@ final class ApiUsageStore: ObservableObject, @unchecked Sendable {
             if let loaded = try? JSONDecoder().decode(ApiUsageData.self, from: raw) {
                 data = loaded
             } else {
-                // 壊れたまま空で開始すると次の保存で元の記録を上書きして消すので退避する
-                CorruptFileQuarantine.quarantine(fileURL)
+                // 壊れたまま空で開始すると次の保存で元の記録を上書きして消すので退避する。
+                // 退避できなければ元ファイルを守るため、このあと保存しない
+                saveBlocked = CorruptFileQuarantine.quarantine(fileURL, label: "API 使用量ファイル") == nil
             }
         }
     }
@@ -284,6 +287,7 @@ final class ApiUsageStore: ObservableObject, @unchecked Sendable {
 
     /// 保存は書き込む時点の最新内容を使う（記録が前後しても古い内容で上書きしない）
     private func scheduleSave() {
+        guard !saveBlocked else { return }
         saveQueue.async { [weak self] in
             guard let self else { return }
             self.lock.lock()

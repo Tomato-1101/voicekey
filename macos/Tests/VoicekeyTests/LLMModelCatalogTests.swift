@@ -241,4 +241,63 @@ final class LLMModelCatalogTests: XCTestCase {
         XCTAssertNil(LLMModelCatalog.replaceUnavailable(.captionGroq, failedModel: LLMModelCatalog.recommendedGroq,
                                                         defaults: defaults))
     }
+
+    // MARK: - 利用不可の判定（取得一覧より静的な廃止リストを優先しない）
+
+    // Gemini の取得一覧は flash 系に絞っているので、一覧に無い pro 系でも利用不可にしない
+    func testGeminiNotInFetchedListIsStillAvailable() {
+        XCTAssertFalse(LLMModelCatalog.isUnavailable("gemini-3.8-pro", provider: .gemini, available: ["gemini-3.8-flash"]))
+        XCTAssertFalse(LLMModelCatalog.isUnavailable("gemini-3.8-pro", provider: .gemini, available: nil))
+    }
+
+    // Groq は取得一覧にあれば、静的な廃止リスト（llama 系）に当たっても利用可
+    func testGroqInFetchedListIsAvailableEvenIfKnownRetired() {
+        let llama = "llama-3.3-70b-versatile"
+        XCTAssertFalse(LLMModelCatalog.isUnavailable(llama, provider: .groq, available: [llama]))
+        XCTAssertNil(LLMModelCatalog.migratedModel(llama, provider: .groq, available: [llama]))
+        // 一覧が無い・一覧に無いときは従来どおり廃止扱い
+        XCTAssertTrue(LLMModelCatalog.isUnavailable(llama, provider: .groq, available: nil))
+        XCTAssertTrue(LLMModelCatalog.isUnavailable(llama, provider: .groq, available: ["openai/gpt-oss-20b"]))
+        XCTAssertTrue(LLMModelCatalog.isUnavailable("some/gone-model", provider: .groq, available: ["openai/gpt-oss-20b"]))
+    }
+
+    // MARK: - 出力の長さ
+
+    // 入力が長いほど出力上限を広げ、天井で止める
+    func testMaxCompletionTokensScalesWithInput() {
+        XCTAssertEqual(LLMModelCatalog.maxCompletionTokens(inputCharacters: 0), 512)
+        XCTAssertEqual(LLMModelCatalog.maxCompletionTokens(inputCharacters: 100), 812)
+        XCTAssertEqual(LLMModelCatalog.maxCompletionTokens(inputCharacters: 100_000), LLMModelCatalog.maxCompletionTokensCeiling)
+    }
+
+    // 整形のリクエストも入力長に応じた上限を送る
+    func testTextFormatterRequestBodyCarriesMaxTokens() {
+        let text = String(repeating: "あ", count: 1000)
+        let body = TextFormatter.requestBody(model: "openai/gpt-oss-20b", prompt: "", text: text)
+        XCTAssertEqual(body["max_completion_tokens"] as? Int, 3512)
+    }
+
+    // finish_reason が length なら途中で切れた扱い
+    func testIsTruncated() {
+        XCTAssertTrue(LLMModelCatalog.isTruncated(responseJSON: json(
+            ["choices": [["message": ["content": "途中"], "finish_reason": "length"]]])))
+        XCTAssertFalse(LLMModelCatalog.isTruncated(responseJSON: json(
+            ["choices": [["message": ["content": "全部"], "finish_reason": "stop"]]])))
+        XCTAssertFalse(LLMModelCatalog.isTruncated(responseJSON: Data("not json".utf8)))
+    }
+
+    // 音声入力の翻訳（Groq）も入力長に応じた上限を送り、切れた訳は失敗扱い（＝原文を入力）にする
+    func testDictationGroqTranslationBodyAndTruncation() throws {
+        guard #available(macOS 26.0, *) else { throw XCTSkip("翻訳は macOS 26 以降") }
+        let text = String(repeating: "あ", count: 200)
+        let body = DictationTranslator.groqRequestBody(model: "openai/gpt-oss-20b", systemPrompt: "訳して", text: text)
+        XCTAssertEqual(body["max_completion_tokens"] as? Int, 1112)
+        XCTAssertEqual(body["reasoning_effort"] as? String, "low")
+        XCTAssertEqual((body["messages"] as? [[String: String]])?.last?["content"], text)
+
+        let truncated = json(["choices": [["message": ["content": "Half"], "finish_reason": "length"]]])
+        XCTAssertThrowsError(try DictationTranslator.groqTranslatedText(from: truncated))
+        let complete = json(["choices": [["message": ["content": " Done "], "finish_reason": "stop"]]])
+        XCTAssertEqual(try DictationTranslator.groqTranslatedText(from: complete), "Done")
+    }
 }

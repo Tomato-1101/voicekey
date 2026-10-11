@@ -12,6 +12,7 @@
 //      その経路が .clear（明示的に空にする）へ変わったことを機械的に示す。
 //
 
+import AppKit
 import XCTest
 
 @testable import voicekey
@@ -81,5 +82,56 @@ final class ClipboardRestorePolicyTests: XCTestCase {
                                                      taskGeneration: 1,
                                                      clipboardIsStillOurs: false,
                                                      original: nil), .skip)
+    }
+
+    // MARK: - 退避の上限
+
+    private let text = NSPasteboard.PasteboardType.string.rawValue
+    private let rtf = NSPasteboard.PasteboardType.rtf.rawValue
+
+    /// 上限内なら全項目・全型を元の並び順のまま退避する
+    func testSelectKeepsEverythingWithinLimits() {
+        let store: [String: Data] = [text: Data("a".utf8), "public.png": Data(count: 10), rtf: Data("r".utf8)]
+        let (snapshot, dropped) = ClipboardSnapshot.select(
+            itemTypes: [["public.png", text, rtf]], read: { _, type in store[type] },
+            maxTotalBytes: 100, maxTypes: 10)
+        XCTAssertEqual(dropped, 0)
+        XCTAssertEqual(snapshot.items.map { $0.map(\.type) }, [["public.png", text, rtf]])
+    }
+
+    /// 合計が上限を超えたら重い型は 1 つも残さず、文字列・RTF だけ退避する
+    func testSelectFallsBackToLightTypesWhenTooLarge() {
+        let store: [String: Data] = [
+            text: Data("a".utf8), rtf: Data("r".utf8),
+            "public.png": Data(count: 60), "public.tiff": Data(count: 60),
+        ]
+        let (snapshot, dropped) = ClipboardSnapshot.select(
+            itemTypes: [["public.tiff", "public.png", text, rtf]], read: { _, type in store[type] },
+            maxTotalBytes: 100, maxTypes: 10)
+        XCTAssertEqual(snapshot.items.map { $0.map(\.type) }, [[text, rtf]])
+        XCTAssertEqual(dropped, 2)
+    }
+
+    /// 型の数が上限を超えたら重い型は読みすらしない（読むこと自体が待ちになるため）
+    func testSelectSkipsHeavyReadsWhenTooManyTypes() {
+        var readTypes: [String] = []
+        let items = (0..<5).map { _ in [text, "com.example.heavy"] }
+        let (snapshot, dropped) = ClipboardSnapshot.select(
+            itemTypes: items,
+            read: { _, type in readTypes.append(type); return Data("x".utf8) },
+            maxTotalBytes: 1000, maxTypes: 8)
+        XCTAssertFalse(readTypes.contains("com.example.heavy"))
+        XCTAssertEqual(snapshot.items.count, 5)
+        XCTAssertEqual(snapshot.items.flatMap { $0 }.map(\.type), Array(repeating: text, count: 5))
+        XCTAssertEqual(dropped, 5)
+    }
+
+    /// 中身の無い型があるだけなら、上限で削ったことにはしない
+    func testSelectDoesNotCountUnreadableTypes() {
+        let (snapshot, dropped) = ClipboardSnapshot.select(
+            itemTypes: [[text, "public.png"]], read: { _, type in type == text ? Data("a".utf8) : nil },
+            maxTotalBytes: 100, maxTypes: 10)
+        XCTAssertEqual(dropped, 0)
+        XCTAssertEqual(snapshot, "a")
     }
 }

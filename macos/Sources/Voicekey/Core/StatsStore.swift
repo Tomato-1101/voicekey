@@ -129,6 +129,8 @@ final class StatsStore: ObservableObject {
     @Published private(set) var data = StatsData()
 
     private let fileURL: URL
+    /// 壊れたファイルを退避できなかった（＝元ファイルが残っている）ので保存しない
+    private var saveBlocked = false
 
     /// - Parameter directory: 保存先ディレクトリ（テスト時に一時ディレクトリを注入する）。
     ///   nil なら本番の ~/Library/Application Support/voicekey を使う。
@@ -146,8 +148,9 @@ final class StatsStore: ObservableObject {
             if let loaded = try? decoder.decode(StatsData.self, from: raw) {
                 data = loaded
             } else {
-                // 壊れたまま空で開始すると次の保存で元の実績を上書きして消すので退避する
-                CorruptFileQuarantine.quarantine(fileURL)
+                // 壊れたまま空で開始すると次の保存で元の実績を上書きして消すので退避する。
+                // 退避できなければ元ファイルを守るため、このあと保存しない
+                saveBlocked = CorruptFileQuarantine.quarantine(fileURL, label: "統計ファイル") == nil
             }
         }
 
@@ -571,6 +574,7 @@ final class StatsStore: ObservableObject {
     }
 
     private func save() {
+        guard !saveBlocked else { return }
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         do {

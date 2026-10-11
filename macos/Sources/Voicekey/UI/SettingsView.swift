@@ -952,8 +952,19 @@ private struct TranslateInputTab: View {
                     SettingRowLabel(
                         title: "この 1 回だけ翻訳するキー",
                         detail: "録音中にこのキーを押すと（録音キーと同時でも、話している途中でも）、その回だけ翻訳して貼り付けます。"
-                            + "翻訳される回は録音中の表示に「→EN」のような印が出ます。"
+                            + "翻訳される回は録音中の表示に「→EN」のような印が出ます。録音中にもう一度押すと取り消せます。"
                     )
+                }
+                // 録音キー・ハンズフリーキー・再貼り付けキーと重なると黙って効かなくなるので、ここで知らせる
+                ForEach(DictationTranslation.translateOnceKeyWarnings(
+                    key: config.translateOnceKey,
+                    slotHotkeys: [config.slot(1).hotkey, config.slot(2).hotkey],
+                    handsfreeKey: config.handsfreeKey,
+                    repasteKey: config.repasteKey
+                ), id: \.self) { warning in
+                    Label(warning, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
                 Toggle(isOn: $config.translateInputEnabled) {
                     SettingRowLabel(

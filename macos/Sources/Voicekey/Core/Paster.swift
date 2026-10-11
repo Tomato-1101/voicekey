@@ -40,13 +40,97 @@ struct ClipboardSnapshot: Equatable, ExpressibleByStringLiteral {
         items.allSatisfy { $0.allSatisfy { $0.data.isEmpty } }
     }
 
-    /// いまのクリップボードの全項目・全型を読み取る
+    /// 退避する中身の合計上限（バイト）。巨大な画像・動画をコピーしていると、全型を同期で読むだけで
+    /// 貼り付けが目に見えて遅れ、メモリも膨らむため
+    static let maxTotalBytes = 32 * 1024 * 1024
+    /// 退避する型の数の上限（全項目の合計）。Finder で大量のファイルを選んでコピーした時など
+    static let maxTypes = 64
+    /// 上限を超えたときにも退避する軽い型（文字列・リッチテキスト・URL）
+    static let lightTypes: Set<String> = [
+        NSPasteboard.PasteboardType.string.rawValue,
+        "public.utf16-plain-text",
+        "public.utf16-external-plain-text",
+        NSPasteboard.PasteboardType.rtf.rawValue,
+        NSPasteboard.PasteboardType.html.rawValue,
+        NSPasteboard.PasteboardType.URL.rawValue,
+        NSPasteboard.PasteboardType.fileURL.rawValue,
+        "public.url-name",
+    ]
+
+    /// いまのクリップボードを読み取る（上限内なら全項目・全型、超えたら軽い型だけ）
     @MainActor
     static func capture(_ pasteboard: NSPasteboard) -> ClipboardSnapshot {
-        let items = (pasteboard.pasteboardItems ?? []).map { item in
-            item.types.compactMap { type in item.data(forType: type).map { Entry(type: type.rawValue, data: $0) } }
+        let pasteboardItems = pasteboard.pasteboardItems ?? []
+        let (snapshot, dropped) = select(
+            itemTypes: pasteboardItems.map { $0.types.map(\.rawValue) },
+            read: { index, type in pasteboardItems[index].data(forType: NSPasteboard.PasteboardType(type)) }
+        )
+        if dropped > 0 {
+            // 中身は残さない（コピーした内容は個人の情報）。件数だけ
+            log.notice("クリップボードが大きいため軽い型だけ退避しました（退避しなかった型: \(dropped) 件）")
         }
-        return ClipboardSnapshot(items: items.filter { !$0.isEmpty })
+        return snapshot
+    }
+
+    /// 退避する型を選んで読む（純ロジック・テスト対象）
+    ///
+    /// 軽い型を先に読み、残りの型は合計が上限に収まる間だけ読む。型数か合計サイズが上限を超えたら
+    /// 重い型は 1 つも残さず軽い型だけにする（一部の型だけ戻すと貼り付け先で別物に見えるため）。
+    /// 上限を超えた時点で以降の重い型は読まないので、超えた分の待ちは増えない。
+    ///
+    /// - Parameters:
+    ///   - itemTypes: 項目ごとの型名（貼り付け先が選ぶ優先順）
+    ///   - read: (項目番号, 型名) の中身を読む
+    /// - Returns: 退避する中身と、退避しなかった型の数
+    static func select(
+        itemTypes: [[String]],
+        read: (Int, String) -> Data?,
+        maxTotalBytes: Int = ClipboardSnapshot.maxTotalBytes,
+        maxTypes: Int = ClipboardSnapshot.maxTypes
+    ) -> (snapshot: ClipboardSnapshot, dropped: Int) {
+        var light: [Int: [String: Data]] = [:]
+        var heavy: [Int: [String: Data]] = [:]
+        var total = 0
+        var limited = false
+        for (index, types) in itemTypes.enumerated() {
+            for type in types where lightTypes.contains(type) {
+                guard let data = read(index, type) else { continue }
+                guard total + data.count <= maxTotalBytes else {
+                    limited = true
+                    continue
+                }
+                light[index, default: [:]][type] = data
+                total += data.count
+            }
+        }
+        var heavyAllowed = itemTypes.reduce(0) { $0 + $1.count } <= maxTypes
+        outer: for (index, types) in itemTypes.enumerated() where heavyAllowed {
+            for type in types where !lightTypes.contains(type) {
+                guard let data = read(index, type) else { continue }
+                if total + data.count > maxTotalBytes {
+                    heavyAllowed = false
+                    break outer
+                }
+                heavy[index, default: [:]][type] = data
+                total += data.count
+            }
+        }
+        if !heavyAllowed {
+            heavy = [:]
+            limited = true
+        }
+
+        var items: [[Entry]] = []
+        for (index, types) in itemTypes.enumerated() {
+            let entries = types.compactMap { type in
+                (light[index]?[type] ?? heavy[index]?[type]).map { Entry(type: type, data: $0) }
+            }
+            if !entries.isEmpty { items.append(entries) }
+        }
+        // 上限で削ったときだけ件数を返す（中身の無い型があるだけのときは 0）
+        let kept = items.reduce(0) { $0 + $1.count }
+        let dropped = limited ? itemTypes.reduce(0) { $0 + $1.count } - kept : 0
+        return (ClipboardSnapshot(items: items), dropped)
     }
 
     /// クリップボードをこの中身に置き換える

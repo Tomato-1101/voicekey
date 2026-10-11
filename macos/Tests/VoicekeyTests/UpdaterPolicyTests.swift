@@ -9,6 +9,7 @@
 //  Sparkle 本体は動かさない（判定は純関数にしてある）。
 //
 
+import Sparkle
 import XCTest
 
 @testable import voicekey
@@ -54,5 +55,51 @@ final class UpdaterPolicyTests: XCTestCase {
         XCTAssertEqual(UpdaterController.failureMessage(for: error), "ダウンロードに失敗しました")
         let network = NSError(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet)
         XCTAssertNotNil(UpdaterController.failureMessage(for: network))
+    }
+
+    // MARK: - 自動の裏確認のネット断
+
+    /// Sparkle は appcast の取得失敗を SUDownloadError で 2 段包み、URL エラーを奥に入れて渡す
+    private func wrappedOfflineError() -> NSError {
+        let url = NSError(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet)
+        let inner = NSError(domain: "SUSparkleErrorDomain", code: 2001, userInfo: [NSUnderlyingErrorKey: url])
+        return NSError(domain: "SUSparkleErrorDomain", code: 2001,
+                       userInfo: [NSLocalizedDescriptionKey: "更新情報を取得できませんでした", NSUnderlyingErrorKey: inner])
+    }
+
+    // 自動の裏確認でのネット断は失敗として出さない
+    func testBackgroundCheckOfflineIsSilent() {
+        XCTAssertNil(UpdaterController.failureMessage(for: wrappedOfflineError(), isBackgroundCheck: true))
+        let timeout = NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut)
+        XCTAssertNil(UpdaterController.failureMessage(for: timeout, isBackgroundCheck: true))
+    }
+
+    // 手動確認・ダウンロード中（裏確認ではない）のネット断は出す
+    func testManualOrDownloadOfflineIsReported() {
+        XCTAssertEqual(UpdaterController.failureMessage(for: wrappedOfflineError(), isBackgroundCheck: false),
+                       "更新情報を取得できませんでした")
+    }
+
+    // 裏確認でも、ネット断以外の失敗（署名不一致など）は出す
+    func testBackgroundCheckRealFailureIsReported() {
+        let signature = NSError(domain: "SUSparkleErrorDomain", code: 3001,
+                                userInfo: [NSLocalizedDescriptionKey: "署名が一致しません"])
+        XCTAssertEqual(UpdaterController.failureMessage(for: signature, isBackgroundCheck: true), "署名が一致しません")
+    }
+
+    // 確認の開始で前回の失敗表示を消すデリゲートが、Sparkle の名前どおりに実装されている
+    func testClearsFailureWhenCheckStarts() {
+        let selector = #selector(SPUUpdaterDelegate.updater(_:mayPerform:))
+        XCTAssertTrue(UpdaterController.instancesRespond(to: selector))
+    }
+
+    // MARK: - 更新を待たせる「会議の記録中」
+
+    // 字幕を表示しているだけ（議事録を保存しない）なら更新を待たせない
+    func testCaptionWithoutTranscriptDoesNotCountAsMeeting() {
+        XCTAssertFalse(AppController.isMeetingBeingRecorded(captionActive: true, savesTranscript: false, botActive: false))
+        XCTAssertTrue(AppController.isMeetingBeingRecorded(captionActive: true, savesTranscript: true, botActive: false))
+        XCTAssertFalse(AppController.isMeetingBeingRecorded(captionActive: false, savesTranscript: true, botActive: false))
+        XCTAssertTrue(AppController.isMeetingBeingRecorded(captionActive: false, savesTranscript: false, botActive: true))
     }
 }

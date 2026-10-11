@@ -48,6 +48,8 @@ final class HistorySync: ObservableObject, @unchecked Sendable {
     // 以下の可変状態は queue 上でのみ触る。
     private var configuration = Configuration(enabled: false, url: "")
     private var outbox: [OutboundItem]
+    /// 壊れた送信待ちファイルを退避できなかった（＝元ファイルが残っている）ので保存しない
+    private var outboxSaveBlocked = false
     private var cache: CacheFile
     private var tokenInvalid = false
     private var inErrorStreak = false
@@ -97,7 +99,9 @@ final class HistorySync: ObservableObject, @unchecked Sendable {
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         outboxURL = base.appendingPathComponent("sync_outbox.json")
         cacheURL = base.appendingPathComponent("sync_cloud_cache.json")
-        outbox = Self.loadOutbox(from: outboxURL)
+        let loadedOutbox = Self.loadOutbox(from: outboxURL)
+        outbox = loadedOutbox.items
+        outboxSaveBlocked = loadedOutbox.saveBlocked
         cache = Self.loadCache(from: cacheURL)
 
         if let session {
@@ -463,17 +467,19 @@ final class HistorySync: ObservableObject, @unchecked Sendable {
 
     // MARK: - 永続化・UI 反映
 
-    private static func loadOutbox(from url: URL) -> [OutboundItem] {
-        guard let data = try? Data(contentsOf: url) else { return [] }
+    private static func loadOutbox(from url: URL) -> (items: [OutboundItem], saveBlocked: Bool) {
+        guard let data = try? Data(contentsOf: url) else { return ([], false) }
         guard let items = try? JSONDecoder().decode([OutboundItem].self, from: data) else {
-            // 壊れたまま空で開始すると次の保存で未送信分を上書きして消すので退避する
-            CorruptFileQuarantine.quarantine(url)
-            return []
+            // 壊れたまま空で開始すると次の保存で未送信分を上書きして消すので退避する。
+            // 退避できなければ元ファイルを守るため、このあと保存しない
+            let moved = CorruptFileQuarantine.quarantine(url, label: "履歴同期の送信待ちファイル")
+            return ([], moved == nil)
         }
-        return items.filter { !$0.id.isEmpty }
+        return (items.filter { !$0.id.isEmpty }, false)
     }
 
     private func saveOutbox() {
+        guard !outboxSaveBlocked else { return }
         guard let data = try? JSONEncoder().encode(outbox) else { return }
         do {
             try data.write(to: outboxURL, options: .atomic)
