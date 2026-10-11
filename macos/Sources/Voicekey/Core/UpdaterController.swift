@@ -84,6 +84,8 @@ final class UpdaterController: NSObject, ObservableObject, SPUUpdaterDelegate {
     /// 直近の自動アップデートの失敗理由（成功・新版なしで消える）。裏の確認・ダウンロードが
     /// 失敗しても Sparkle は何も出さないので、メニューの先頭で知らせて再試行できるようにする
     @Published private(set) var lastUpdateError: String?
+    /// この更新サイクルで新版が見つかったか（裏の確認の失敗が「確認」か「ダウンロード」かを分けるため）
+    private var foundUpdateInCycle = false
 
     /// 押した後の手応え（nil なら押せる状態）。ボタンはこの文言に置き換えて押せなくする
     var pendingInstallMessage: String? {
@@ -177,9 +179,14 @@ final class UpdaterController: NSObject, ObservableObject, SPUUpdaterDelegate {
 
     /// 更新サイクルの結果を、利用者に見せる失敗理由へ写す（純関数・テスト対象）。
     /// 新版なし・利用者の取り消し・「あとで」は失敗ではないので nil。
-    nonisolated static func failureMessage(for error: (any Error)?) -> String? {
+    ///
+    /// - Parameter isBackgroundCheck: 自動の裏確認で、まだ新版を見つけていない段階の失敗か。
+    ///   この段階のネット断（オフライン・機内モード・Wi-Fi 切替など）は次の確認で自然に直るので出さない
+    ///   （ノート PC を持ち歩くと毎回失敗表示が出てしまう）。手動確認・ダウンロード・展開の失敗は出す。
+    nonisolated static func failureMessage(for error: (any Error)?, isBackgroundCheck: Bool = false) -> String? {
         guard let error else { return nil }
         let nsError = error as NSError
+        if isBackgroundCheck, isNetworkUnavailable(nsError) { return nil }
         if nsError.domain == SUSparkleErrorDomain {
             switch Int32(nsError.code) {
             case SUError.noUpdateError.rawValue,
@@ -191,6 +198,21 @@ final class UpdaterController: NSObject, ObservableObject, SPUUpdaterDelegate {
             }
         }
         return nsError.localizedDescription
+    }
+
+    /// 接続できなかった系のエラーか（Sparkle は URL エラーを NSUnderlyingErrorKey に 1〜2 段包んで渡す）
+    nonisolated static func isNetworkUnavailable(_ error: NSError) -> Bool {
+        let offlineCodes: Set<Int> = [
+            NSURLErrorNotConnectedToInternet, NSURLErrorNetworkConnectionLost, NSURLErrorTimedOut,
+            NSURLErrorCannotFindHost, NSURLErrorCannotConnectToHost, NSURLErrorDNSLookupFailed,
+            NSURLErrorInternationalRoamingOff, NSURLErrorDataNotAllowed,
+        ]
+        var current: NSError? = error
+        while let e = current {
+            if e.domain == NSURLErrorDomain, offlineCodes.contains(e.code) { return true }
+            current = e.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return false
     }
 
     /// 預かっている入れ替えを取り出す（同じブロックを二度呼ばないよう、取り出したら空にする）
@@ -264,9 +286,21 @@ final class UpdaterController: NSObject, ObservableObject, SPUUpdaterDelegate {
     // メインスレッドから呼ぶので、MainActor.assumeIsolated で同期的に反映する
     // （Task { @MainActor } は常駐状態で App Nap により遅れることがある）。
 
+    /// 確認を始める直前。前回の失敗表示は、この確認の結果で置き換わるまで残すと
+    /// 「いま失敗している」ように見えるので、ここで消す
+    nonisolated func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws {
+        MainActor.assumeIsolated {
+            self.lastUpdateError = nil
+            self.foundUpdateInCycle = false
+        }
+    }
+
     nonisolated func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
         let version = item.displayVersionString
-        MainActor.assumeIsolated { self.availableVersion = version }
+        MainActor.assumeIsolated {
+            self.availableVersion = version
+            self.foundUpdateInCycle = true
+        }
     }
 
     nonisolated func updaterDidNotFindUpdate(_ updater: SPUUpdater) {
@@ -324,8 +358,10 @@ final class UpdaterController: NSObject, ObservableObject, SPUUpdaterDelegate {
         didFinishUpdateCycleFor updateCheck: SPUUpdateCheck,
         error: (any Error)?
     ) {
-        let failure = Self.failureMessage(for: error)
         MainActor.assumeIsolated {
+            let failure = Self.failureMessage(
+                for: error,
+                isBackgroundCheck: updateCheck == .updatesInBackground && !self.foundUpdateInCycle)
             if let failure {
                 log.error("自動アップデートに失敗しました: \(failure, privacy: .public)")
             }

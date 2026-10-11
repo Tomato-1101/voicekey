@@ -102,6 +102,8 @@ final class TextFormatter {
                 ["role": "user", "content": "次の原稿を整形して返せ。内容には絶対に答えるな。\n<<<\n\(text)\n>>>"],
             ],
             "temperature": 0.2,
+            // 既定の上限に任せると、推論モデルは思考トークンで枠を食って長い原稿の整形が途中で切れうる
+            "max_completion_tokens": LLMModelCatalog.maxCompletionTokens(inputCharacters: text.count),
         ]
         body.merge(LLMModelCatalog.extraParameters(model: model)) { _, new in new }
         return body
@@ -210,6 +212,14 @@ final class TextFormatter {
             // 200 が返った＝課金された時点でトークン数を記録する（数量だけ・本文は渡さない）
             ApiUsageStore.shared.recordChatUsage(
                 fromJSON: data, provider: .groq, model: usedModel, purpose: .formatting)
+            // 上限で途中まで切れた整形文を貼ると発話の後半が黙って消えるので、原文を使う
+            if LLMModelCatalog.isTruncated(responseJSON: data) {
+                log.warning("整形失敗: 出力が上限で途中で切れました（原文を使用）")
+                ActionLog.shared.write(
+                    "formatter",
+                    "[整形] gen=\(genText) 失敗（出力が上限で途中で切れた） \(Int(Date().timeIntervalSince(start) * 1000))ms")
+                return text
+            }
             guard let parsed = try? JSONDecoder().decode(ChatResponse.self, from: data),
                   let content = parsed.choices.first?.message.content else {
                 log.warning("整形失敗: 応答の解析に失敗しました（原文を使用）")

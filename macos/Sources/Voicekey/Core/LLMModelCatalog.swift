@@ -164,6 +164,29 @@ enum LLMModelCatalog {
         return [:]
     }
 
+    // MARK: - 出力の長さ
+
+    /// 出力トークン上限の天井（長い独り言でも 1 回の整形・翻訳で返し切れる量。これ以上は待ち時間の方が問題）
+    static let maxCompletionTokensCeiling = 8192
+
+    /// 入力の長さに応じた出力トークン上限（`max_completion_tokens`）
+    ///
+    /// gpt-oss などの推論モデルは思考トークンもこの上限に数える。固定 512 だと長い文の整形・翻訳が
+    /// 途中で切れうるので、出力が入力とほぼ同じ長さになる前提で「入力文字数 × 3 ＋ 思考ぶん 512」を確保する
+    /// （日本語は 1 文字 1〜2 トークン）。全モデルに同じ式を使う＝推論しないモデルでも切れない。
+    static func maxCompletionTokens(inputCharacters: Int) -> Int {
+        min(max(0, inputCharacters) * 3 + 512, maxCompletionTokensCeiling)
+    }
+
+    /// OpenAI 互換の chat/completions 応答が上限で途中で切れたか（`finish_reason == "length"`）
+    ///
+    /// 切れた訳文・整形文を貼ると発話の後半が黙って消えるので、呼び出し側は原文を返す。
+    static func isTruncated(responseJSON data: Data) -> Bool {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = root["choices"] as? [[String: Any]] else { return false }
+        return (choices.first?["finish_reason"] as? String) == "length"
+    }
+
     // MARK: - 廃止エラーの判定
 
     /// 「モデルが提供終了／存在しない」による失敗か
@@ -236,9 +259,7 @@ enum LLMModelCatalog {
     static func migratedModel(_ stored: String, provider: LLMProvider, available: [String]?) -> String? {
         let id = stored.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !id.isEmpty, provider == .groq, id != recommended(provider) else { return nil }
-        if isKnownRetired(id, provider: provider) { return recommended(provider) }
-        if let available, !available.contains(id) { return recommended(provider) }
-        return nil
+        return isUnavailable(id, provider: provider, available: available) ? recommended(provider) : nil
     }
 
     /// 保存済みの全モデル設定を一度だけ見直す（ConfigStore の初期化で写しを読む前に呼ぶ）
@@ -349,11 +370,18 @@ enum LLMModelCatalog {
 
     // MARK: - 設定 UI 用
 
-    /// 保存値が使えないモデルか（廃止と分かっている、または取得一覧に無い）
+    /// 保存値が使えないモデルか
+    ///
+    /// - 取得一覧にあるなら使える（静的な廃止リストより実在を優先する。同名で復活・別名で残っている場合に
+    ///   使えるモデルを「利用不可」と出して差し替えさせないため）
+    /// - 廃止と分かっているなら使えない
+    /// - Groq だけ「取得一覧に無い」も使えない扱い。Gemini の取得一覧は flash 系に絞っているので、
+    ///   一覧に無いだけでは pro 系など有効なモデルまで提供終了に見えてしまう（実際の提供終了は実行時の 404 で差し替わる）
     static func isUnavailable(_ id: String, provider: LLMProvider, available: [String]?) -> Bool {
+        if available?.contains(id) == true { return false }
         if isKnownRetired(id, provider: provider) { return true }
-        if let available { return !available.contains(id) }
-        return false
+        guard provider == .groq, let available else { return false }
+        return !available.contains(id)
     }
 
     /// Picker の選択肢（おすすめ → 既知 → 取得一覧にだけあるもの → 一覧に無い保存値）
