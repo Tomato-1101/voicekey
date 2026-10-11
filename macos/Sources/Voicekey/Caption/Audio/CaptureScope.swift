@@ -65,9 +65,19 @@ final class CaptureScopeTracker: @unchecked Sendable {
     private var appliedObjectIDs: [AudioObjectID] = []
     private var isRunning = false
 
-    /// - Parameter fixedPID: 最前面の代わりに常にこの PID を対象にする（テスト用）
-    init(fixedPID: pid_t? = nil) {
+    /// 固定 PID の「子孫プロセス」だけを拾うか（バンドル ID での一致を使わない）
+    ///
+    /// Meet ボットの Chrome と普段使いの Chrome はバンドル ID が同じなので、前方一致で拾うと
+    /// 普段の Chrome で流している音まで議事録に入る。ボットは自分で起動した Chrome の
+    /// プロセスの木だけを対象にする。
+    private let processTreeOnly: Bool
+
+    /// - Parameters:
+    ///   - fixedPID: 最前面の代わりに常にこの PID を対象にする（テスト・Meet ボット用）
+    ///   - processTreeOnly: 固定 PID の子孫だけを拾う（Meet ボット用）
+    init(fixedPID: pid_t? = nil, processTreeOnly: Bool = false) {
         self.fixedPID = fixedPID
+        self.processTreeOnly = processTreeOnly
     }
 
     deinit {
@@ -262,11 +272,48 @@ final class CaptureScopeTracker: @unchecked Sendable {
             guard process.pid > 0, process.pid != getpid() else { return false }
             if process.pid == appPID { return true }
             if responsiblePID(for: process.pid) == appPID { return true }
+            if processTreeOnly {
+                return ProcessTree.isDescendant(process.pid, of: appPID, parentOf: ProcessTree.parentPID(of:))
+            }
             if let appBundleID, !appBundleID.isEmpty, !process.bundleID.isEmpty,
                process.bundleID == appBundleID || process.bundleID.hasPrefix(appBundleID + ".") {
                 return true
             }
             return false
         }
+    }
+}
+
+/// プロセスの親子関係（Meet ボットの Chrome の子孫だけを拾うために使う）
+enum ProcessTree {
+
+    /// 親をたどる段数の上限（Chrome の木は 2〜3 段。循環や異常な木で止まらないための保険）
+    private static let maxDepth = 16
+
+    /// `pid` が `root` の子孫か
+    ///
+    /// - Parameters:
+    ///   - pid: 調べるプロセス
+    ///   - root: 祖先かどうかを見たいプロセス
+    ///   - parentOf: 親 PID を返す関数（テストで差し替えるため外から渡す）
+    /// - Returns: 子孫なら true（`pid == root` は false。それは呼び出し側で見る）
+    static func isDescendant(_ pid: pid_t, of root: pid_t, parentOf: (pid_t) -> pid_t?) -> Bool {
+        var current = pid
+        for _ in 0..<maxDepth {
+            // launchd（1）まで来たら木の外
+            guard let parent = parentOf(current), parent > 1, parent != current else { return false }
+            if parent == root { return true }
+            current = parent
+        }
+        return false
+    }
+
+    /// 親 PID を引く（終了済みなどで引けなければ nil）
+    static func parentPID(of pid: pid_t) -> pid_t? {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, u_int(mib.count), &info, &size, nil, 0) == 0, size > 0 else { return nil }
+        return info.kp_eproc.e_ppid
     }
 }

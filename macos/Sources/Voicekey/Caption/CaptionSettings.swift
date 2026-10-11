@@ -130,6 +130,7 @@ enum CaptionSettings {
         static let language = "captionLanguage"
         static let saveTranscript = "captionSaveTranscript"
         static let meetSource = "meetBotTranscriptSource"
+        static let meetLanguage = "meetBotLanguage"
         static let geminiModel = "captionGeminiModel"
         static let groqModel = "captionGroqModel"
         static let autoStart = "captionAutoStart"
@@ -259,6 +260,20 @@ enum CaptionSettings {
             return source
         }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: Key.meetSource) }
+    }
+
+    /// Meet ボットが文字起こしする会議の言語
+    ///
+    /// ライブ字幕のモード（翻訳モードは英語固定）とは切り離して選べるようにする。
+    /// 英語字幕を訳しながら、日本語の会議を議事録に取る、という使い方があるため。
+    /// 未設定なら字幕の「認識する言語」に合わせる（以前はそれを共用していた）。
+    static var meetBotLanguage: CaptionLanguage {
+        get {
+            guard let raw = UserDefaults.standard.string(forKey: Key.meetLanguage),
+                  let chosen = CaptionLanguage(rawValue: raw) else { return Self.language }
+            return chosen
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: Key.meetLanguage) }
     }
 
     /// 使用する翻訳エンジン（既定 Apple）
