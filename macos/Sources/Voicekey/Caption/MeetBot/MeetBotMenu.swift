@@ -1,7 +1,8 @@
 /// メニューバーの「Meet 議事録ボット」サブメニュー
 ///
 /// 入口は「会議に参加…」の 1 つだけ。URL を貼って参加させると、あとはボットが会議に入り
-/// 字幕を議事録へ書き続ける。状態（入室待ち・記録中）はここに出す。
+/// 字幕を議事録へ書き続ける。状態（承認待ち・記録中・行数）はここと親項目の見出しに出す。
+/// 細かい設定とログイン状態の確認は設定の「議事録・会議」にまとめてある。
 import AppKit
 import Foundation
 
@@ -12,17 +13,47 @@ final class MeetBotMenuController: NSObject, NSMenuDelegate {
 
     private weak var controller: AppController?
 
+    /// 設定の「議事録・会議」を開く
+    private let openSettings: () -> Void
+
+    /// 親項目の見出し（動作中は状態を後ろに付ける）
+    private static let baseTitle = "Meet 議事録ボット"
+
     /// メニューバーに差し込む親項目
     let menuItem: NSMenuItem
 
-    init(controller: AppController) {
+    private var stateObserver: NSObjectProtocol?
+
+    init(controller: AppController, openSettings: @escaping () -> Void) {
         self.controller = controller
-        self.menuItem = NSMenuItem(title: "Meet 議事録ボット", action: nil, keyEquivalent: "")
+        self.openSettings = openSettings
+        self.menuItem = NSMenuItem(title: Self.baseTitle, action: nil, keyEquivalent: "")
         super.init()
 
         let submenu = NSMenu()
         submenu.delegate = self
         menuItem.submenu = submenu
+
+        // メニューを開かなくても「いま会議に入っている」が見えるよう、親項目の見出しに状態を出す。
+        // ボット本体は遅延生成なので、通知で受けて生成を強制しない。
+        stateObserver = NotificationCenter.default.addObserver(
+            forName: MeetBotService.stateDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            MainActor.assumeIsolated {
+                guard let bot = note.object as? MeetBotService else { return }
+                self?.updateTitle(bot.state)
+            }
+        }
+    }
+
+    /// 親項目の見出しを状態に合わせる
+    private func updateTitle(_ state: MeetBotState) {
+        switch state {
+        case .recording: menuItem.title = "\(Self.baseTitle)（参加中）"
+        case .waitingForApproval: menuItem.title = "\(Self.baseTitle)（承認待ち）"
+        case .launching, .joining: menuItem.title = "\(Self.baseTitle)（準備中）"
+        case .idle, .ended, .failed: menuItem.title = Self.baseTitle
+        }
     }
 
     // MARK: - NSMenuDelegate
@@ -31,14 +62,16 @@ final class MeetBotMenuController: NSObject, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         guard MeetBotService.isAvailable else {
+            // Chrome が無くても項目自体は残し、何が足りないかを見せる（消すと機能の存在に気づけない）
             let item = NSMenuItem(title: "Google Chrome が必要です", action: nil, keyEquivalent: "")
             item.isEnabled = false
             menu.addItem(item)
+            addTranscriptItems(to: menu)
             return
         }
         guard let bot = controller?.meetBot else { return }
 
-        let state = NSMenuItem(title: bot.state.menuTitle, action: nil, keyEquivalent: "")
+        let state = NSMenuItem(title: bot.statusLine, action: nil, keyEquivalent: "")
         state.isEnabled = false
         menu.addItem(state)
         let source = NSMenuItem(
@@ -81,9 +114,24 @@ final class MeetBotMenuController: NSObject, NSMenuDelegate {
         login.isEnabled = !bot.state.isActive
         menu.addItem(login)
 
+        addTranscriptItems(to: menu)
+    }
+
+    /// 議事録を開く項目と設定への導線を足す
+    private func addTranscriptItems(to menu: NSMenu) {
+        menu.addItem(.separator())
+        let latest = NSMenuItem(title: "最新の議事録を開く", action: #selector(openLatestTranscript), keyEquivalent: "")
+        latest.target = self
+        latest.isEnabled = TranscriptRecorder.latestFile() != nil
+        menu.addItem(latest)
+
         let openFolder = NSMenuItem(title: "議事録フォルダを開く", action: #selector(openTranscripts), keyEquivalent: "")
         openFolder.target = self
         menu.addItem(openFolder)
+
+        let settings = NSMenuItem(title: "議事録・会議の設定…", action: #selector(openMeetSettings), keyEquivalent: "")
+        settings.target = self
+        menu.addItem(settings)
     }
 
     // MARK: - アクション
@@ -116,6 +164,15 @@ final class MeetBotMenuController: NSObject, NSMenuDelegate {
         NSWorkspace.shared.open(directory)
     }
 
+    @objc private func openLatestTranscript() {
+        guard let file = TranscriptRecorder.latestFile() else { return }
+        NSWorkspace.shared.open(file)
+    }
+
+    @objc private func openMeetSettings() {
+        openSettings()
+    }
+
     // MARK: - 入力ダイアログ
 
     /// 会議 URL を尋ねる
@@ -128,7 +185,7 @@ final class MeetBotMenuController: NSObject, NSMenuDelegate {
         let alert = NSAlert()
         alert.messageText = "会議に参加"
         alert.informativeText = "Google Meet の URL を入れてください。ボットが裏で会議に入り、"
-            + "字幕を議事録として保存します。"
+            + "発言を議事録として保存します。ボットはマイクとカメラをオフにして入ります。"
         alert.addButton(withTitle: "参加")
         alert.addButton(withTitle: "キャンセル")
 
