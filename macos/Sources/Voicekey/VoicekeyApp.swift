@@ -216,6 +216,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.controller = controller
         let statusBar = StatusItemController(controller: controller)
         self.statusBar = statusBar
+        // オンボーディング経由の起動では下の startNow 分岐を通らないため、⌥⌘S（ライブ字幕）が
+        // 次の起動まで登録されなかった。本体を開始したタイミングで同じ準備をする
+        statusBar.onStartedAfterOnboarding = { [weak self, weak controller] in
+            guard let self, let controller, self.captionHotKey == nil else { return }
+            self.setUpCaption(controller: controller)
+        }
 
         // Dock 常時表示が ON なら起動時から Dock にアイコンを出す（既定 OFF は従来どおり動的表示）
         if controller.config.dockIconAlwaysVisible {
@@ -407,6 +413,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private var sideNotch: SideNotchController?
     /// オンボーディングを完了/再起動処理済みか（クローズでの二重処理を防ぐ）
     private var onboardingFinished = false
+    /// オンボーディングの完了・× 閉じで本体を開始した直後に呼ぶ（AppDelegate がライブ字幕の準備を結線する）
+    var onStartedAfterOnboarding: (() -> Void)?
     /// 「ライブ字幕」サブメニュー（macOS 26 以降のみ。型を直接持てないので AnyObject で保持）
     private var captionMenu: AnyObject?
     /// 「Meet 議事録ボット」サブメニュー（macOS 26 限定型なので AnyObject で保持）
@@ -692,6 +700,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         presentMainWindow(onboarding: false)
         // 権限案内は済んでいるので NSAlert を二重に出さない
         controller?.startup(showPermissionAlert: false)
+        onStartedAfterOnboarding?()
     }
 
     /// 入力監視の反映にプロセス再起動が必要なとき: 現在ステップを保存して再起動する。
@@ -737,7 +746,10 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             markOnboardingComplete()
             controller?.teardownOnboardingTestModes()
             mainWindowModel?.onboarding = nil
-            controller?.startup(showPermissionAlert: false)
+            // × は途中で飛ばした＝権限の案内を最後まで見ていないことがある。抑止すると権限が無いまま
+            // 黙ってホットキーも貼り付けも効かないので、不足していれば警告を出す（揃っていれば何も出ない）
+            controller?.startup(showPermissionAlert: true)
+            onStartedAfterOnboarding?()
         }
 
         // ユーザー向けウィンドウがどれも可視でなくなったら Dock アイコンを引っ込める
