@@ -169,3 +169,24 @@ final class TranscriberWhisperPromptTests: XCTestCase {
         XCTAssertTrue(combined.contains("固有名詞: VoiceKey"))
     }
 }
+
+// 桁あふれ（以前は Int を超えるとトラップしてアプリごと落ちた）
+final class NumeralNormalizerOverflowTests: XCTestCase {
+
+    // 長い読み上げ数字列の後に位取りが続くと Int を超える → 落ちずに原文のまま出す
+    func testOverflowingDigitsBeforeUnitKeepsOriginal() {
+        let run = String(repeating: "九", count: 25) + "十"
+        XCTAssertEqual(NumeralNormalizer.normalize(run), run)
+    }
+
+    // 大きな係数に兆を掛けて Int を超える（99999999000 × 10^12）→ 落ちずに原文のまま出す
+    func testOverflowingBigUnitsKeepsOriginal() {
+        let run = "九九九九九九九九千兆"
+        XCTAssertEqual(NumeralNormalizer.normalize(run), run)
+    }
+
+    // 溢れない範囲は従来どおり変換する
+    func testLargeButSafeNumberStillConverts() {
+        XCTAssertEqual(NumeralNormalizer.normalize("九千兆"), "9000000000000000")
+    }
+}

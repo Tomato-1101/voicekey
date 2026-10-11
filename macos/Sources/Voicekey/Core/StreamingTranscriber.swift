@@ -318,7 +318,14 @@ final class StreamingTranscriber: LiveTranscribing, @unchecked Sendable {
     /// 確定 + 暫定を結合した現在の全文（生・スペース除去前）
     private func currentText() -> String {
         lock.lock(); defer { lock.unlock() }
-        return (finals + (interim.isEmpty ? [] : [interim])).joined()
+        return Self.joinSegments(finals + (interim.isEmpty ? [] : [interim]))
+    }
+
+    /// 確定片（trim 済み）を連結する（純関数・テスト対象）。
+    /// 空白なしで繋ぐと英語は "Hello" + "world" → "Helloworld" と単語がくっつく。
+    /// 空白で繋ぎ、日本語に挟まった空白は呼び出し側の stripCJKSpaces で落とす。
+    static func joinSegments(_ parts: [String]) -> String {
+        parts.joined(separator: " ")
     }
 
     // MARK: - 受信
@@ -387,7 +394,7 @@ final class StreamingTranscriber: LiveTranscribing, @unchecked Sendable {
         } else {
             interim = trimmed
         }
-        let snapshot = (finals + (interim.isEmpty ? [] : [interim])).joined()
+        let snapshot = Self.joinSegments(finals + (interim.isEmpty ? [] : [interim]))
         lock.unlock()
 
         // HUD へは日本語スペースを除去した見た目で渡す
