@@ -103,6 +103,8 @@ struct GroqTranslator: StreamingTranslator {
 
         var accumulated = ""
         var usageRecorded = false
+        var finishReason: String?
+        var interrupted = false
         do {
             for try await line in stream.lines {
                 // 最終チャンクの usage（include_usage の `usage` か Groq 独自の `x_groq.usage`）を 1 回だけ記録する。
@@ -113,16 +115,23 @@ struct GroqTranslator: StreamingTranslator {
                     usageRecorded = ApiUsageStore.shared.recordChatUsage(
                         fromJSON: json, provider: .groq, model: model, purpose: usagePurpose)
                 }
+                if let reason = Self.finishReason(fromSSELine: line) { finishReason = reason }
                 guard let piece = Self.deltaText(fromSSELine: line) else { continue }
                 if piece.isEmpty { continue }
                 accumulated += piece
                 onDelta(piece)
             }
         } catch {
-            // 途中で切れた場合、ここまで受け取った分が使えるならそれを訳として採用する
             guard !accumulated.isEmpty else {
                 throw TranslationError.network((error as NSError).localizedDescription)
             }
+            interrupted = true
+        }
+        // 途中で切れた訳を成功扱いにしない（以前は受け取った分だけで確定させていたため、
+        // 文の後半が欠けた訳がそのまま字幕・貼り付けに出ていた）。失敗にすれば呼び出し側の
+        // フォールバック（字幕は Apple の訳）が効く。
+        if let error = Self.completionError(finishReason: finishReason, interrupted: interrupted) {
+            throw error
         }
 
         let result = accumulated.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -231,6 +240,33 @@ struct GroqTranslator: StreamingTranslator {
               let choices = root["choices"] as? [[String: Any]],
               let delta = choices.first?["delta"] as? [String: Any] else { return nil }
         return delta["content"] as? String
+    }
+
+    /// SSE の 1 行から `choices[0].finish_reason` を取り出す（無い行は nil）
+    static func finishReason(fromSSELine line: String) -> String? {
+        guard line.hasPrefix("data:") else { return nil }
+        let payload = line.dropFirst("data:".count).trimmingCharacters(in: .whitespaces)
+        guard payload != "[DONE]", let data = payload.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = root["choices"] as? [[String: Any]] else { return nil }
+        return choices.first?["finish_reason"] as? String
+    }
+
+    /// ストリームの終わり方から、訳が最後まで届いたかを判定する
+    ///
+    /// - Parameters:
+    ///   - finishReason: 最後に届いた `finish_reason`（届かなければ nil）
+    ///   - interrupted: 受信の途中で通信が切れたか
+    /// - Returns: 最後まで届いていなければそのエラー。届いていれば nil
+    static func completionError(finishReason: String?, interrupted: Bool) -> TranslationError? {
+        if interrupted { return .badResponse("訳が途中で切れました（通信の切断）") }
+        switch finishReason {
+        case "stop": return nil
+        // "length" は出力上限で打ち切られた＝文の後半が無い
+        case let reason?: return .badResponse("訳が途中で切れました（finish_reason=\(reason)）")
+        // OpenAI 互換の SSE は最後のチャンクに必ず finish_reason を付ける。無いのは途中で終わった印
+        case nil: return .badResponse("訳が途中で切れました（finish_reason なし）")
+        }
     }
 
     /// 非ストリーミング応答から訳文を取り出す（ベンチ用）
