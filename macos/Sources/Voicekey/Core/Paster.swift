@@ -3,8 +3,8 @@
 //  文字起こし結果のテキスト挿入（クリップボード + Cmd+V 合成イベント）
 //
 //  日本語などのマルチバイト文字を確実に入力するため、キーストローク合成では
-//  なくクリップボード経由で貼り付ける。ユーザーが元々コピーしていたテキストは
-//  貼り付け後に復元する（テキストのみ。画像等は復元できない）。
+//  なくクリップボード経由で貼り付ける。ユーザーが元々コピーしていた内容は
+//  貼り付け後に復元する（テキストに限らず画像・リッチテキストなど全ての型をそのまま戻す）。
 //
 
 import AppKit
@@ -13,6 +13,54 @@ import Foundation
 import os.log
 
 private let log = Logger(subsystem: "com.voicekey.app", category: "paster")
+
+/// 退避したクリップボードの中身（全項目・全型）。
+///
+/// 以前は文字列だけを退避していたため、画像やリッチテキストをコピーしていると
+/// 貼り付け後にクリップボードが空になって元の内容が消えていた。型ごとのデータをそのまま持って戻す。
+struct ClipboardSnapshot: Equatable, ExpressibleByStringLiteral {
+    struct Entry: Equatable {
+        let type: String
+        let data: Data
+    }
+    /// 項目ごとの (型, 中身)。型の並び順は貼り付け先が選ぶ優先順なので配列で保つ
+    let items: [[Entry]]
+
+    init(items: [[Entry]]) {
+        self.items = items
+    }
+
+    /// 文字列 1 つだけの中身（テスト・比較用）
+    init(stringLiteral value: String) {
+        items = [[Entry(type: NSPasteboard.PasteboardType.string.rawValue, data: Data(value.utf8))]]
+    }
+
+    /// 戻すものが無いか（空のクリップボード・空文字だけ）
+    var isEmpty: Bool {
+        items.allSatisfy { $0.allSatisfy { $0.data.isEmpty } }
+    }
+
+    /// いまのクリップボードの全項目・全型を読み取る
+    @MainActor
+    static func capture(_ pasteboard: NSPasteboard) -> ClipboardSnapshot {
+        let items = (pasteboard.pasteboardItems ?? []).map { item in
+            item.types.compactMap { type in item.data(forType: type).map { Entry(type: type.rawValue, data: $0) } }
+        }
+        return ClipboardSnapshot(items: items.filter { !$0.isEmpty })
+    }
+
+    /// クリップボードをこの中身に置き換える
+    @MainActor
+    func write(to pasteboard: NSPasteboard) {
+        pasteboard.clearContents()
+        let objects = items.map { entries -> NSPasteboardItem in
+            let item = NSPasteboardItem()
+            for entry in entries { item.setData(entry.data, forType: NSPasteboard.PasteboardType(entry.type)) }
+            return item
+        }
+        pasteboard.writeObjects(objects)
+    }
+}
 
 /// 貼り付け後にクリップボードをどう戻すかの判定（副作用のない純ロジック＝テスト対象）。
 ///
@@ -27,8 +75,8 @@ enum ClipboardRestorePolicy {
         /// 待っている間にユーザー・他アプリが新しくコピーした → 触らない
         case leaveUserContent
         /// 退避した原本を書き戻す
-        case restore(String)
-        /// 戻せる原本が無い（空 or 画像などの非テキスト）→ 自分が入れたテキストを消す
+        case restore(ClipboardSnapshot)
+        /// 戻せる原本が無い（元々空だった）→ 自分が入れたテキストを消す
         case clear
     }
 
@@ -36,11 +84,11 @@ enum ClipboardRestorePolicy {
     ///   - currentGeneration: 現在の貼り付け世代
     ///   - taskGeneration: この復元タスクが担当する世代
     ///   - clipboardIsStillOurs: クリップボードが自分の挿入テキストのままか
-    ///   - original: 退避したユーザーの原本（テキストのみ。無ければ nil）
+    ///   - original: 退避したユーザーの原本（全型。無ければ nil）
     static func decide(currentGeneration: Int,
                        taskGeneration: Int,
                        clipboardIsStillOurs: Bool,
-                       original: String?) -> Decision {
+                       original: ClipboardSnapshot?) -> Decision {
         guard currentGeneration == taskGeneration else { return .skip }
         // 判定は changeCount ではなく「中身が自分の挿入テキストか」で行う。
         // changeCount はユーザーがコピーしていなくても他要因（同一文字列の再宣言など）で
@@ -75,7 +123,13 @@ enum Paster {
     /// 直近に自分がコピーしたテキスト（復元可否の判定に使う）
     @MainActor private static var injected: String?
     /// 復元すべきユーザーの真のクリップボード内容
-    @MainActor private static var savedOriginal: String?
+    @MainActor private static var savedOriginal: ClipboardSnapshot?
+    /// 実行中の貼り付け（次の貼り付けはこれの完了を待ってから始める）。
+    /// paste() は 50ms 待つ間に MainActor を手放すので、そこへ次の貼り付けが割り込むと
+    /// クリップボードが入れ替わり、先の ⌘V が後の文字を貼る取り違えが起きていた
+    @MainActor private static var pasteChain: Task<Bool, Never>?
+    /// テスト用: ⌘V を送る瞬間（送らない設定でも同じ時点）にクリップボードを覗く。本番では nil
+    @MainActor static var keystrokeProbe: ((NSPasteboard) -> Void)?
     /// アクセシビリティ許可の直近の結果（貼り付けのたびに裏で更新・起動時は許可ありとみなす）。
     /// 許可を外された直後の 1 回は従来どおり送ってしまうが、2 回目以降は結果を消さずに残せる
     @MainActor static var axTrustedCache = true
@@ -98,6 +152,23 @@ enum Paster {
                       pasteboard: NSPasteboard = .general,
                       sendKeystroke: Bool = true,
                       logGeneration: Int = 0) async -> Bool {
+        // 貼り付けを 1 本ずつ直列に流す（前の貼り付けの ⌘V が送られてから次のクリップボードを書く）
+        let previous = pasteChain
+        let current = Task { @MainActor () -> Bool in
+            _ = await previous?.value
+            return await pasteSerially(text, pasteboard: pasteboard, sendKeystroke: sendKeystroke,
+                                       logGeneration: logGeneration)
+        }
+        pasteChain = current
+        return await current.value
+    }
+
+    /// 貼り付けの本体（paste() が直列化してから呼ぶ）
+    @MainActor
+    private static func pasteSerially(_ text: String,
+                                      pasteboard: NSPasteboard,
+                                      sendKeystroke: Bool,
+                                      logGeneration: Int) async -> Bool {
         let genText = DiagnosticText.gen(logGeneration)
         guard !text.isEmpty else {
             ActionLog.shared.write("paster", "[貼付] gen=\(genText) スキップ（空文字）")
@@ -106,7 +177,7 @@ enum Paster {
         // 本文は残さない（文字数だけ）。貼り付けは「実行したのに入らない」の切り分けが要るので対で記録する
         ActionLog.shared.write("paster", "貼り付け実行 (\(text.count) 文字)")
 
-        // ユーザーのクリップボード内容を退避（テキストのみ）
+        // 連続貼り付けの判定用に文字列を読む（退避そのものは下で全型を取る）
         let current = pasteboard.string(forType: .string)
         // 原本の種類（ログ用）。空と非テキストを分けるには pasteboard への問い合わせが 1 回増えるが、
         // 貼り付け経路に足さないため既に読んだ値だけで判定する（⌘V の後では原本が残っていないので後回しにもできない）
@@ -118,11 +189,11 @@ enum Paster {
         // こうしないと最後の復元で自分の挿入テキストを書き戻してしまう。
         generation += 1
         let gen = generation
-        let original: String?
+        let original: ClipboardSnapshot?
         if let inj = injected, current == inj, savedOriginal != nil {
             original = savedOriginal
         } else {
-            original = current
+            original = ClipboardSnapshot.capture(pasteboard)
         }
         savedOriginal = original
         injected = text
@@ -131,6 +202,7 @@ enum Paster {
         pasteboard.setString(text, forType: .string)
 
         try? await Task.sleep(for: .seconds(pasteDelay))
+        keystrokeProbe?(pasteboard)
         // 貼り付け先（ログ用）。⌘V を受けるのは送る瞬間の前面アプリなので、送る直前に控える
         let front = NSWorkspace.shared.frontmostApplication
         let frontID = front?.bundleIdentifier ?? "-"
@@ -198,11 +270,10 @@ enum Paster {
             case .leaveUserContent:
                 ActionLog.shared.write("paster", "クリップボード復元 スキップ（ユーザーが新しくコピー）")
             case .restore(let original):
-                pasteboard.clearContents()
-                pasteboard.setString(original, forType: .string)
+                original.write(to: pasteboard)
                 ActionLog.shared.write("paster", "クリップボード復元 完了")
             case .clear:
-                // 戻せる原本が無い（空 or 画像などの非テキスト）。ここで何もしないと
+                // 戻せる原本が無い（元々空だった）。ここで何もしないと
                 // 文字起こし結果がクリップボードに残ってしまうため明示的に空にする
                 pasteboard.clearContents()
                 ActionLog.shared.write("paster", "クリップボード復元 原本なしのため消去")

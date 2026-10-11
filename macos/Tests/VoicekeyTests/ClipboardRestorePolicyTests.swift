@@ -64,15 +64,15 @@ final class ClipboardRestorePolicyTests: XCTestCase {
         XCTAssertEqual(decision, .clear)
     }
 
-    /// 原本が非テキスト（画像など）で退避できなかった場合も nil 扱いで消える。
-    /// 「残す」より「空にする」を選ぶのは、文字起こし結果をクリップボードに
-    /// 保存しないことがユーザーの前提だから
-    func testNonTextOriginalIsTreatedAsClear() {
+    /// 原本が非テキスト（画像など）でも全型で退避してあるので、消さずにそのまま戻す
+    /// （以前は文字列しか退避できず、画像をコピーしていると貼り付け後に消えていた）
+    func testNonTextOriginalIsRestored() {
+        let image = ClipboardSnapshot(items: [[.init(type: "public.png", data: Data([0x89, 0x50, 0x4E, 0x47]))]])
         let decision = ClipboardRestorePolicy.decide(currentGeneration: 7,
                                                      taskGeneration: 7,
                                                      clipboardIsStillOurs: true,
-                                                     original: nil)
-        XCTAssertEqual(decision, .clear)
+                                                     original: image)
+        XCTAssertEqual(decision, .restore(image))
     }
 
     /// 世代不一致が最優先（他の条件がどうであれ触らない）
