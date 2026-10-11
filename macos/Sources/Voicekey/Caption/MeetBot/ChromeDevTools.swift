@@ -24,6 +24,8 @@ enum ChromeDevToolsError: Error, CustomStringConvertible {
     case protocolError(String)
     /// 応答の形が想定と違う
     case malformedResponse
+    /// 命令を送ったのに期限内に応答が無かった（Chrome が固まっている）
+    case timedOut
 
     var description: String {
         switch self {
@@ -32,6 +34,7 @@ enum ChromeDevToolsError: Error, CustomStringConvertible {
         case .targetNotFound: return "操作対象のタブが見つかりません"
         case let .protocolError(message): return "Chrome の操作に失敗しました: \(message)"
         case .malformedResponse: return "Chrome から想定外の応答が返りました"
+        case .timedOut: return "Chrome が応答しません"
         }
     }
 }
@@ -206,7 +209,8 @@ final class ChromeDevTools: @unchecked Sendable {
     ///
     /// `--user-data-dir=<パス>` が**完全一致**するものだけ（`meetbot-profile2` のような
     /// 似た名前や、プロファイル指定の無い普段の Chrome は拾わない）。パスに空白が入るので
-    /// 引数の区切りでは切らず、直後が空白か行末であることで一致を確かめる。
+    /// 引数の区切りでは切らず、直後が行末か次のフラグの始まり（` -`）であることで一致を確かめる。
+    /// 直後が「空白」だけだと、`meetbot-profile 2` のような空白で始まる別のパスまで拾ってしまう。
     ///
     /// - Parameters:
     ///   - psOutput: `ps -axww -o pid=,args=` の出力
@@ -220,7 +224,8 @@ final class ChromeDevTools: @unchecked Sendable {
             guard args.contains("Google Chrome") else { return nil }
             var searchStart = args.startIndex
             while let range = args.range(of: needle, range: searchStart..<args.endIndex) {
-                if range.upperBound == args.endIndex || args[range.upperBound] == " " { return pid }
+                let after = args[range.upperBound...]
+                if after.isEmpty || after.hasPrefix(" -") { return pid }
                 searchStart = range.upperBound
             }
             return nil
@@ -282,14 +287,23 @@ final class ChromeDevTools: @unchecked Sendable {
         }
     }
 
+    /// 命令 1 つあたりの応答待ちの上限（秒）
+    ///
+    /// Chrome が固まると応答が永久に来ず、以前は await が返らないまま見張りごと止まっていた。
+    /// Meet の操作で一番長いのは字幕言語の選択（約 0.7 秒の待ちを含む）なので、10 秒あれば十分。
+    static let defaultTimeout: TimeInterval = 10
+
     /// CDP のコマンドを 1 つ送って結果を待つ
     ///
     /// - Parameters:
     ///   - method: `Runtime.evaluate` など
     ///   - params: パラメータ
+    ///   - timeout: 応答待ちの上限。過ぎたら `ChromeDevToolsError.timedOut` を投げる
     /// - Returns: `result` の中身
     @discardableResult
-    func send(_ method: String, _ params: [String: Any] = [:]) async throws -> [String: Any] {
+    func send(
+        _ method: String, _ params: [String: Any] = [:], timeout: TimeInterval = ChromeDevTools.defaultTimeout
+    ) async throws -> [String: Any] {
         guard let socket else { throw ChromeDevToolsError.devToolsUnavailable }
         let id = lock.withLock { () -> Int in
             let value = nextID
@@ -309,6 +323,12 @@ final class ChromeDevTools: @unchecked Sendable {
                 // 送信に失敗したら待ち手を残さない（残すと await が永久に返らない）
                 guard let waiting = self.lock.withLock({ self.pending.removeValue(forKey: id) }) else { return }
                 waiting.resume(throwing: error)
+            }
+            // 期限が来ても応答が無ければ待ち手を外して失敗させる（応答が先に来ていれば何もしない）
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
+                guard let self,
+                      let waiting = self.lock.withLock({ self.pending.removeValue(forKey: id) }) else { return }
+                waiting.resume(throwing: ChromeDevToolsError.timedOut)
             }
         }
     }

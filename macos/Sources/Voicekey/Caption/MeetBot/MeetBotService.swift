@@ -74,6 +74,8 @@ enum MeetBotLoginStatus: Equatable {
     case loggedIn
     /// ログインしていない
     case loggedOut
+    /// ログイン用ウィンドウを開いて、本人のログインを待っている
+    case waitingForLogin
 
     /// 設定画面に出す表示名
     var title: String {
@@ -82,6 +84,28 @@ enum MeetBotLoginStatus: Equatable {
         case .checking: return "確認中…"
         case .loggedIn: return "ログイン済み"
         case .loggedOut: return "ログインしていません"
+        case .waitingForLogin: return "ログイン待ち"
+        }
+    }
+
+    /// ログイン用ウィンドウを見張っている間の表示
+    ///
+    /// 見張り中に「確認中…」と「ログインしていません」を行き来させると、6 秒ごとに点滅して見える。
+    /// ログインできたと分かるまでは「ログイン待ち」のまま固定する。
+    ///
+    /// - Parameter loggedIn: 今回の確認結果（確かめられなければ nil）
+    static func whileWatching(loggedIn: Bool?) -> MeetBotLoginStatus {
+        loggedIn == true ? .loggedIn : .waitingForLogin
+    }
+
+    /// 参加の前にログインへ案内すべきか
+    ///
+    /// 初めての人は「未確認」のまま参加を押し、90 秒近く待ってから「ログインしていません」で必ず 1 回失敗していた。
+    /// ログイン済みと分かっていない間は、参加より先にログインへ案内する（確認中だけは結果を待つ）。
+    var needsLogin: Bool {
+        switch self {
+        case .loggedIn, .checking: return false
+        case .unknown, .loggedOut, .waitingForLogin: return true
         }
     }
 }
@@ -125,20 +149,32 @@ enum MeetBotError: Error, CustomStringConvertible, Equatable {
     case callEnded
     /// 承認を待ちきれなかった
     case approvalTimeout
-    /// 会議画面にたどり着けなかった
+    /// 会議画面にたどり着けなかった（参加ボタンは押せた）
     case couldNotEnter
+    /// 参加ボタンが一度も見つからなかった
+    case joinButtonNotFound
+    /// 会議コードが無効だった
+    case meetingNotFound
+    /// Chrome が命令に応答しなくなった
+    case chromeNotResponding
     /// DevTools のポートを別のアプリが使っている
     case portBusy(Int)
 
     var description: String {
         switch self {
         case .superseded: return "取り消されました"
-        case .notLoggedIn: return "ボット用ブラウザが Google にログインしていません。設定の「議事録・会議」でログインしてください"
+        case .notLoggedIn:
+            // 通知でも設定画面の状態行でも出すので、「この画面」「下の」のような今いる場所を指す言い方はしない
+            return "ボット用ブラウザが Google にログインしていません。"
+                + "メニューバーの「Meet 議事録ボット」→「ボット用ブラウザで Google にログイン…」でログインしてから、もう一度参加してください"
         case .denied: return "参加を断られました（ホストが拒否したか、外部の参加を受け付けない会議です）"
         case .removed: return "会議から外されました"
         case .callEnded: return "会議はすでに終わっています"
         case .approvalTimeout: return "10 分待っても参加を承認されませんでした"
-        case .couldNotEnter: return "会議に入れませんでした（URL が違うか、Meet の画面が変わった可能性があります）"
+        case .couldNotEnter: return "参加ボタンは押せましたが、90 秒たっても会議に入れませんでした"
+        case .joinButtonNotFound: return "参加ボタンが見つかりませんでした（Meet の画面が変わった可能性があります）"
+        case .meetingNotFound: return "この会議は見つかりませんでした。URL（会議コード）を確かめてください"
+        case .chromeNotResponding: return "Chrome が応答しません"
         case let .portBusy(port): return "ポート \(port) を別のアプリが使っています（Chrome のリモートデバッグなど）"
         }
     }
@@ -177,10 +213,8 @@ final class MeetBotService: ObservableObject {
     /// 会議が続いているかを確かめる間隔
     private static let statusPollInterval: TimeInterval = 3.0
 
-    /// 会議画面でない状態がこの回数続いたら「会議が終わった」とみなす
-    ///
-    /// 1 回だけだと画面の切り替わり途中を拾って誤判定する（約 9 秒続いたら確定）。
-    private static let notInMeetingLimit = 3
+    /// 退出・終了のとき、音声パイプラインの停止（最後の 1 文の確定）を待つ上限
+    private static let stopWaitLimit: TimeInterval = 3.0
 
     /// ログイン状態の保存キー（次に起動したときも設定画面に出せるように）
     private enum DefaultsKey {
@@ -202,7 +236,8 @@ final class MeetBotService: ObservableObject {
     private var speakerTimer: Timer?
     private var captionTimer: Timer?
     private var statusTimer: Timer?
-    private let recorder = TranscriptRecorder()
+    /// 議事録の記録係（書き込みは記録係の直列キューで行うので、音声スレッドからも呼べる）
+    nonisolated(unsafe) private let recorder = TranscriptRecorder()
     private let notifier = MeetBotNotifier()
 
     /// 参加の試行の世代
@@ -211,8 +246,26 @@ final class MeetBotService: ObservableObject {
     /// ログイン用ウィンドウの見張り（閉じられたらログイン状態を確かめて Chrome を畳む）
     private var loginWatcher: Task<Void, Never>?
 
-    /// 会議画面でない状態が続いた回数
-    private var notInMeetingCount = 0
+    /// 記録中の会議画面の見張り（外された・終わったを数回続けて確かめてから確定する）
+    private var presenceWatch = MeetingPresenceWatch()
+    /// 記録中の見張りで Chrome の時間切れが続いた回数
+    private var statusTimeouts = TimeoutStreak()
+    /// 字幕が読めているかの見張り（Meet 字幕モードでだけ使う）
+    private var captionWatch = CaptionPresenceWatch(start: Date())
+
+    /// 見張りの読み取りが返ってくる前に、次を投げないための印
+    ///
+    /// Chrome が重いと 1 回の読み取りがタイマーの間隔より長くかかる。重ねて投げると
+    /// 応答待ちが積み上がり、固まった Chrome にさらに負荷をかける。
+    private var statusPollInFlight = false
+    private var captionPollInFlight = false
+    private var speakerPollInFlight = false
+
+    /// 退出・終了の後片付け中（音声の停止を待っている間に、退出や終了を重ねて受けない）
+    private var isClosing = false
+
+    /// この会議の番号（議事録の書き込み結果を、前の会議のものと取り違えないために使う）
+    private var meetingTag = 0
 
     /// この会議の議事録ファイルを作ったか（保存オフのまま入ったときはファイルを作らない）
     private var meetingFileStarted = false
@@ -234,6 +287,17 @@ final class MeetBotService: ObservableObject {
     private let speakerNow = OSAllocatedUnfairLock<String?>(initialState: nil)
     /// いま認識中の発話に添える話者（確定したらリセットする）
     private let speakerForCurrentSegment = OSAllocatedUnfairLock<String?>(initialState: nil)
+
+    /// ローカル認識の確定文を書く先（会議の議事録ファイルを作った後だけ入る）
+    ///
+    /// 確定文は音声スレッドから来る。以前はメインへ戻ってから「記録中か」を見て書いていたため、
+    /// 退出の後片付けで状態が先に変わると、停止処理の中で確定した最後の 1 文が捨てられていた。
+    /// ここに宛先が入っている間は、メインを経由せずにその場で記録係へ渡す（記録係は自前の直列キューで書く）。
+    private struct FinalTarget: Sendable {
+        let context: String
+        let language: String
+    }
+    private let finalTarget = OSAllocatedUnfairLock<FinalTarget?>(initialState: nil)
 
     /// 記録が動いている間の App Nap 抑止
     private var antiNapActivity: NSObjectProtocol?
@@ -262,6 +326,8 @@ final class MeetBotService: ObservableObject {
     @Published private(set) var saveError: String?
     /// いま書いている（直近に書いた）議事録ファイル
     @Published private(set) var currentTranscript: URL?
+    /// 字幕が取れていない警告（取れていれば nil）
+    @Published private(set) var captionWarning: String?
     /// ボット用ブラウザのログイン状態
     @Published private(set) var loginStatus: MeetBotLoginStatus = .unknown
     /// ログイン状態を最後に確かめた時刻
@@ -282,8 +348,8 @@ final class MeetBotService: ObservableObject {
             loginStatus = defaults.bool(forKey: DefaultsKey.loggedIn) ? .loggedIn : .loggedOut
         }
         // 書き込みの結果は記録用のキューから来るので、メインへ戻して画面に出す
-        recorder.onWrite = { [weak self] outcome in
-            Task { @MainActor [weak self] in self?.handleWrite(outcome) }
+        recorder.onWrite = { [weak self] outcome, tag in
+            Task { @MainActor [weak self] in self?.handleWrite(outcome, tag: tag) }
         }
     }
 
@@ -292,6 +358,7 @@ final class MeetBotService: ObservableObject {
         guard case let .recording(name) = state else { return state.menuTitle }
         if !CaptionSettings.savesTranscript { return "参加中（議事録の保存はオフ） — \(name)" }
         if let saveError { return "議事録を保存できません — \(saveError)" }
+        if let captionWarning { return "\(captionWarning) — \(name)" }
         return "記録中 \(recordedLines) 行 — \(name)"
     }
 
@@ -301,13 +368,13 @@ final class MeetBotService: ObservableObject {
     ///
     /// - Parameter urlString: Meet の会議 URL（`https://meet.google.com/xxx-yyyy-zzz`）
     func join(urlString: String) {
-        guard !state.isActive else { return }
+        guard !state.isActive, !isClosing else { return }
         guard ChromeDevTools.isChromeInstalled else {
             state = .failed("Google Chrome が必要です")
             return
         }
         guard let url = Self.normalizedMeetURL(urlString) else {
-            state = .failed("Meet の URL ではありません")
+            state = .failed("Meet の会議 URL ではありません（meet.google.com/abc-defg-hij の形）")
             return
         }
         meetingCode = Self.meetingCode(from: url)
@@ -318,8 +385,9 @@ final class MeetBotService: ObservableObject {
         saveError = nil
         currentTranscript = nil
         meetingFileStarted = false
-        notInMeetingCount = 0
+        captionWarning = nil
         let current = generation.begin()
+        meetingTag = current
         loginWatcher?.cancel()
         loginWatcher = nil
         notifier.prepare()
@@ -353,11 +421,10 @@ final class MeetBotService: ObservableObject {
 
     /// 会議から退出して記録を閉じる
     func leave() {
-        guard state.isActive else { return }
+        guard state.isActive, !isClosing else { return }
         ActionLog.shared.write("caption.MeetBot", "Meet ボット終了（退出）")
         let wasRecording = { if case .recording = state { return true } else { return false } }()
-        finish(.idle, leaveMeetingFirst: true)
-        if wasRecording { notifyClosed(reason: "会議から退出しました") }
+        finish(.idle, leaveMeetingFirst: true, closingReason: wasRecording ? "会議から退出しました" : nil)
     }
 
     /// 初回ログイン用に、見える Chrome を開く
@@ -420,18 +487,20 @@ final class MeetBotService: ObservableObject {
         loginWatcher?.cancel()
         loginWatcher = nil
         flushPendingCaptions()
-        recorder.endSession()
         generation.invalidate()
         let pipeline = detachResources(leaveMeetingFirst: false)
-        // タップと Aggregate Device は終了前に確実に畳む（残すと HAL にゴーストデバイスが溜まる）
+        // タップと Aggregate Device は終了前に確実に畳む（残すと HAL にゴーストデバイスが溜まる）。
+        // 議事録はその後で閉じる（停止処理の中で確定した最後の 1 文を、閉じた後に受けて捨てないため）。
         if let pipeline {
             let semaphore = DispatchSemaphore(value: 0)
             Task.detached {
                 await pipeline.stop()
                 semaphore.signal()
             }
-            _ = semaphore.wait(timeout: .now() + 3.0)
+            _ = semaphore.wait(timeout: .now() + Self.stopWaitLimit)
         }
+        finalTarget.withLock { $0 = nil }
+        recorder.endSession()
         // キューに残った追記をプロセスと一緒に消さない
         recorder.waitUntilWritten()
     }
@@ -510,13 +579,8 @@ final class MeetBotService: ObservableObject {
         }
         try ensureCurrent(current)
 
+        // 参加ボタンは入室待ちの中で押す（ロビーの組み上がりが遅いときは数秒おきに押し直す）
         state = .joining("参加ボタンを押しています")
-        let joinResult = try await tools.evaluate(Self.joinScript(displayName: Self.botDisplayName))
-        try ensureCurrent(current)
-        let joined = (joinResult as? [String: Any])?["clicked"] as? String
-        logger.notice("参加操作: \(joined ?? "ボタンが見つからない", privacy: .public)")
-
-        state = .joining("会議への入室を待っています")
         try await waitUntilInMeeting(tools: tools, generation: current)
 
         if let title = try? await tools.evaluate("document.title") as? String, !title.isEmpty {
@@ -568,37 +632,70 @@ final class MeetBotService: ObservableObject {
 
     /// 会議に入れるまで待つ（承認待ち・拒否・終了を見分ける）
     ///
+    /// ロビー（「その他」の画面）にいる間は、参加ボタンを数秒おきに上限回数まで押し直す。
     /// 承認待ちに入ったら待ち時間を 10 分に延ばし、通知で知らせる。
+    /// Chrome の時間切れが続いたら「Chrome が応答しません」で諦める（固まった Chrome を 90 秒待たない）。
     private func waitUntilInMeeting(tools: ChromeDevTools, generation current: Int) async throws {
         let start = Date()
         var deadline = start.addingTimeInterval(90)
         var waitingNotified = false
+        var retry = JoinRetry()
+        var timeouts = TimeoutStreak()
         while true {
             try ensureCurrent(current)
-            if let raw = try? await tools.evaluate(Self.pageStatusScript) as? [String: Any] {
-                try ensureCurrent(current)
-                let status = MeetBotRules.pageStatus(
-                    inMeeting: (raw["inMeeting"] as? Bool) ?? false, text: (raw["text"] as? String) ?? ""
-                )
-                switch status {
-                case .inMeeting:
-                    return
-                case .waitingApproval:
-                    if !waitingNotified {
-                        waitingNotified = true
-                        deadline = start.addingTimeInterval(600)
-                        state = .waitingForApproval
-                        ActionLog.shared.write("caption.MeetBot", "Meet ボット承認待ち")
-                        notifier.post("ホストの承認を待っています。会議の画面でボットの参加を承認してください。")
-                    }
-                case .denied: throw MeetBotError.denied
-                case .removed: throw MeetBotError.removed
-                case .ended: throw MeetBotError.callEnded
-                case .other: break
+            var status: MeetPageStatus?
+            do {
+                if let raw = try await tools.evaluate(Self.pageStatusScript) as? [String: Any] {
+                    status = MeetBotRules.pageStatus(
+                        inMeeting: (raw["inMeeting"] as? Bool) ?? false, text: (raw["text"] as? String) ?? ""
+                    )
                 }
+                _ = timeouts.record(timedOut: false)
+            } catch ChromeDevToolsError.timedOut {
+                if timeouts.record(timedOut: true) { throw MeetBotError.chromeNotResponding }
+            } catch {
+                // JS の例外などは「応答はある」ので数えない（画面の切り替わり中に起きる）
+                _ = timeouts.record(timedOut: false)
+            }
+            try ensureCurrent(current)
+            switch status {
+            case .inMeeting?:
+                return
+            case .waitingApproval?:
+                if !waitingNotified {
+                    waitingNotified = true
+                    deadline = start.addingTimeInterval(600)
+                    state = .waitingForApproval
+                    ActionLog.shared.write("caption.MeetBot", "Meet ボット承認待ち")
+                    notifier.post("ホストの承認を待っています。会議の画面でボットの参加を承認してください。")
+                }
+            case .denied?: throw MeetBotError.denied
+            case .removed?: throw MeetBotError.removed
+            case .ended?: throw MeetBotError.callEnded
+            case .notFound?: throw MeetBotError.meetingNotFound
+            case .other?:
+                if !waitingNotified, retry.shouldPress(status: .other, now: Date()) {
+                    if retry.attempts > 0 { state = .joining("参加ボタンを押し直しています（\(retry.attempts + 1) 回目）") }
+                    var clicked: String?
+                    do {
+                        let result = try await tools.evaluate(Self.joinScript(displayName: Self.botDisplayName))
+                        clicked = (result as? [String: Any])?["clicked"] as? String
+                        _ = timeouts.record(timedOut: false)
+                    } catch ChromeDevToolsError.timedOut {
+                        if timeouts.record(timedOut: true) { throw MeetBotError.chromeNotResponding }
+                    } catch {
+                        _ = timeouts.record(timedOut: false)
+                    }
+                    try ensureCurrent(current)
+                    retry.recordPress(found: clicked != nil, now: Date())
+                    logger.notice("参加操作（\(retry.attempts) 回目）: \(clicked ?? "ボタンが見つからない", privacy: .public)")
+                    state = .joining("会議への入室を待っています")
+                }
+            case nil:
+                break
             }
             guard Date() < deadline else {
-                throw waitingNotified ? MeetBotError.approvalTimeout : MeetBotError.couldNotEnter
+                throw MeetBotError.joinTimeout(waitingSeen: waitingNotified, joinButtonFound: retry.buttonFound)
             }
             try? await Task.sleep(for: .seconds(2))
         }
@@ -648,10 +745,12 @@ final class MeetBotService: ObservableObject {
     ///
     /// Cookie は名前と期限だけを見る（値は読まない・ログにも出さない）。
     ///
+    /// - Parameter whileWatching: ログイン用ウィンドウの見張り中の確認か。見張り中は「確認中…」を出さず、
+    ///   ログインできたと分かったときだけ表示を変える（6 秒ごとに表示が点滅しないように）
     /// - Returns: ログイン済みか（確かめられなければ nil）
-    private func checkLogin() async -> Bool? {
+    private func checkLogin(whileWatching: Bool = false) async -> Bool? {
         let previous = loginStatus
-        loginStatus = .checking
+        if !whileWatching { loginStatus = .checking }
         do {
             let socketURL = try await ChromeDevTools.browserSocketURL(port: Self.devToolsPort)
             let browser = ChromeDevTools()
@@ -660,7 +759,11 @@ final class MeetBotService: ObservableObject {
             let result = try await browser.send("Storage.getCookies")
             let cookies = (result["cookies"] as? [[String: Any]]) ?? []
             let loggedIn = MeetBotRules.isLoggedIn(cookies: cookies)
-            setLoginStatus(loggedIn)
+            if !whileWatching || loggedIn {
+                setLoginStatus(loggedIn)
+            } else {
+                loginStatus = MeetBotLoginStatus.whileWatching(loggedIn: loggedIn)
+            }
             logger.notice("ボット用ブラウザのログイン状態: \(loggedIn ? "ログイン済み" : "未ログイン", privacy: .public)")
             return loggedIn
         } catch {
@@ -679,11 +782,24 @@ final class MeetBotService: ObservableObject {
         UserDefaults.standard.set(now, forKey: DefaultsKey.checkedAt)
     }
 
+    /// 「ログイン待ち」の表示を、最後に確かめた結果へ戻す（見張りが確認できないまま終わったとき）
+    private func restoreSavedLoginStatus() {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: DefaultsKey.checkedAt) is Date else {
+            loginStatus = .unknown
+            return
+        }
+        loginStatus = defaults.bool(forKey: DefaultsKey.loggedIn) ? .loggedIn : .loggedOut
+    }
+
     /// ログイン用ウィンドウを見張る
     ///
     /// ウィンドウが全部閉じられた（ページが 0 になった）か Chrome が終わったら、
     /// ログインできたかを確かめて Chrome を畳む。見張りは 30 分で打ち切る（開きっぱなしで放置されても回り続けない）。
     private func watchLoginWindow(_ process: Process) async {
+        if loginStatus != .loggedIn { loginStatus = .waitingForLogin }
+        // どの抜け方でも「ログイン待ち」を残さない（最後の確認ができなかったときは前回の結果に戻す）
+        defer { if loginStatus == .waitingForLogin { restoreSavedLoginStatus() } }
         var sawPage = false
         var round = 0
         let deadline = Date().addingTimeInterval(30 * 60)
@@ -697,7 +813,7 @@ final class MeetBotService: ObservableObject {
             sawPage = true
             round += 1
             // ログインが済んだら設定画面にすぐ出す（6 秒ごと・済んだら確認をやめる）
-            if round % 3 == 0, loginStatus != .loggedIn { _ = await checkLogin() }
+            if round % 3 == 0, loginStatus != .loggedIn { _ = await checkLogin(whileWatching: true) }
         }
         guard !Task.isCancelled, chrome === process else { return }
         if process.isRunning {
@@ -735,7 +851,9 @@ final class MeetBotService: ObservableObject {
     /// 会議が続いているかの見張りを始める
     private func startStatusPolling() {
         statusTimer?.invalidate()
-        notInMeetingCount = 0
+        presenceWatch = MeetingPresenceWatch()
+        statusTimeouts = TimeoutStreak()
+        statusPollInFlight = false
         let timer = Timer.scheduledTimer(withTimeInterval: Self.statusPollInterval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in await self?.pollStatus() }
         }
@@ -744,24 +862,36 @@ final class MeetBotService: ObservableObject {
     }
 
     /// 会議画面かを 1 回確かめる（外された・終わった・画面から消えたら記録を閉じる）
+    ///
+    /// 前の読み取りが返るまで次は投げない。Chrome の時間切れが続いたら「Chrome が応答しません」で閉じる
+    /// （以前は応答が永久に来ず、見張りごと止まったまま「記録中」に見え続けた）。
     private func pollStatus() async {
-        guard let tools = devTools, case .recording = state else { return }
+        guard let tools = devTools, case .recording = state, !statusPollInFlight else { return }
         let current = generation.current
-        guard let raw = try? await tools.evaluate(Self.pageStatusScript) as? [String: Any] else { return }
-        guard generation.isCurrent(current), case .recording = state else { return }
+        statusPollInFlight = true
+        defer { statusPollInFlight = false }
+        let raw: [String: Any]?
+        do {
+            raw = try await tools.evaluate(Self.pageStatusScript) as? [String: Any]
+            guard generation.isCurrent(current), case .recording = state else { return }
+            _ = statusTimeouts.record(timedOut: false)
+        } catch ChromeDevToolsError.timedOut {
+            guard generation.isCurrent(current), case .recording = state else { return }
+            if statusTimeouts.record(timedOut: true) {
+                failUnexpectedly(MeetBotError.chromeNotResponding.description)
+            }
+            return
+        } catch {
+            return
+        }
+        guard let raw else { return }
         let status = MeetBotRules.pageStatus(
             inMeeting: (raw["inMeeting"] as? Bool) ?? false, text: (raw["text"] as? String) ?? ""
         )
-        switch status {
-        case .inMeeting:
-            notInMeetingCount = 0
-        case .removed:
-            endMeeting(reason: "会議から外されました")
-        case .denied, .ended, .waitingApproval, .other:
-            notInMeetingCount += 1
-            if notInMeetingCount >= Self.notInMeetingLimit {
-                endMeeting(reason: "会議が終了しました")
-            }
+        switch presenceWatch.observe(status) {
+        case .removed?: endMeeting(reason: "会議から外されました")
+        case .ended?: endMeeting(reason: "会議が終了しました")
+        case nil: break
         }
     }
 
@@ -769,8 +899,7 @@ final class MeetBotService: ObservableObject {
     private func endMeeting(reason: String) {
         ActionLog.shared.write("caption.MeetBot", "Meet ボット終了（\(reason)）")
         logger.notice("会議の終了を検出: \(reason, privacy: .public)")
-        finish(.ended(reason))
-        notifyClosed(reason: reason)
+        finish(.ended(reason), closingReason: reason)
     }
 
     /// Chrome が終わった（落ちた・外から終了された）
@@ -790,21 +919,23 @@ final class MeetBotService: ObservableObject {
         let wasRecording = { if case .recording = state { return true } else { return false } }()
         ActionLog.shared.write("caption.MeetBot", "Meet ボット停止（\(reason)）")
         logger.error("Meet ボットが止まりました: \(reason, privacy: .public)")
-        finish(.failed(reason))
-        if wasRecording {
-            notifyClosed(reason: reason)
-        } else {
+        finish(.failed(reason), closingReason: wasRecording ? reason : nil)
+        if !wasRecording {
             notifier.post("会議に参加できませんでした: \(reason)")
         }
     }
 
-    /// 記録を閉じたことを知らせる（何行残ったか・どこに保存したか）
-    private func notifyClosed(reason: String) {
-        if !CaptionSettings.savesTranscript || !meetingFileStarted {
-            notifier.post("\(reason)。議事録の保存はオフでした。")
-        } else {
-            notifier.post("\(reason)。議事録を保存しました（\(recordedLines) 行）。")
-        }
+    /// 記録を閉じたことを知らせる（何行残ったか・保存できたか・どこに保存したか）
+    ///
+    /// 行数と失敗は、記録係が書き込みをすべて終えた時点の集計を使う（書きかけの行を数え漏らさない）。
+    private func notifyClosed(
+        reason: String, summary: TranscriptRecorder.SessionSummary, savesTranscript: Bool, fileStarted: Bool
+    ) {
+        let message = MeetBotText.closingMessage(
+            reason: reason, savesTranscript: savesTranscript, fileStarted: fileStarted,
+            lines: summary.lines, saveError: summary.error
+        )
+        notifier.post(message, transcript: summary.url, opensTranscript: savesTranscript && fileStarted)
     }
 
     // MARK: - Meet の内蔵字幕を読む（既定）
@@ -812,6 +943,8 @@ final class MeetBotService: ObservableObject {
     /// 字幕のポーリングを始める
     private func startCaptionPolling() {
         captionTimer?.invalidate()
+        captionWatch = CaptionPresenceWatch(start: Date())
+        captionPollInFlight = false
         let timer = Timer.scheduledTimer(withTimeInterval: Self.captionPollInterval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in await self?.pollCaptions() }
         }
@@ -825,20 +958,41 @@ final class MeetBotService: ObservableObject {
     /// 伸びている途中か言い終わったかの判定は `CaptionSettleTracker` に任せる
     /// （純粋なロジックなのでブラウザ無しで回帰テストできる）。
     private func pollCaptions() async {
-        guard let tools = devTools, case .recording = state else { return }
+        guard let tools = devTools, case .recording = state, !captionPollInFlight else { return }
         let current = generation.current
+        captionPollInFlight = true
+        defer { captionPollInFlight = false }
         guard let raw = try? await tools.evaluate(Self.captionScript),
-              let payload = raw as? [String: Any],
-              let rows = payload["entries"] as? [[String: Any]] else { return }
+              let payload = raw as? [String: Any] else { return }
         // 読んでいる間に退出・終了していたら書かない
         guard generation.isCurrent(current), case .recording = state else { return }
+        let now = Date()
 
+        // 字幕欄がずっと見つからない（字幕がオフ・画面が変わった）なら、0 行のまま黙らずに知らせる
+        switch captionWatch.observe(found: (payload["found"] as? Bool) ?? false, now: now) {
+        case .warn?:
+            captionWarning = MeetBotText.captionMissing
+            logger.error("Meet の字幕が 60 秒以上読めていません")
+            notifier.post("会議の字幕が 1 分以上取れていません。Meet の字幕がオンになっているか確かめてください（このままだと議事録に何も残りません）。")
+        case .recovered?:
+            captionWarning = nil
+        case nil:
+            break
+        }
+
+        let rows = (payload["entries"] as? [[String: Any]]) ?? []
+        // 字幕欄まるごとの代替経路は、前回確定分から増えた末尾だけを書く（全文を繰り返し書かない）
+        if payload["source"] as? String == "region" {
+            let text = rows.compactMap { $0["text"] as? String }.joined(separator: " ")
+            for line in settleTracker.ingestRegion(text, now: now) { recordCaption(line) }
+            return
+        }
         let entries = rows.map {
             CaptionSettleTracker.Entry(
                 speaker: ($0["speaker"] as? String) ?? "", text: ($0["text"] as? String) ?? ""
             )
         }
-        for line in settleTracker.ingest(entries, now: Date()) { recordCaption(line) }
+        for line in settleTracker.ingest(entries, now: now) { recordCaption(line) }
     }
 
     /// 保留中の発言をすべて書き出す（退出時・終了時に取りこぼさないため）
@@ -865,8 +1019,13 @@ final class MeetBotService: ObservableObject {
         guard CaptionSettings.savesTranscript, !meetingFileStarted else { return }
         meetingFileStarted = true
         recorder.beginMeeting(
-            code: meetingCode, context: "Google Meet / \(meetingName)", language: transcriptLanguageLabel
+            code: meetingCode, context: "Google Meet / \(meetingName)", language: transcriptLanguageLabel,
+            tag: meetingTag
         )
+        if activeSource == .localSpeech {
+            let target = FinalTarget(context: "Google Meet / \(meetingName)", language: transcriptLanguageLabel)
+            finalTarget.withLock { $0 = target }
+        }
     }
 
     /// 議事録のヘッダに書く言語
@@ -878,7 +1037,11 @@ final class MeetBotService: ObservableObject {
     }
 
     /// 議事録の書き込み結果を受ける
-    private func handleWrite(_ outcome: TranscriptRecorder.WriteOutcome) {
+    ///
+    /// - Parameter tag: その書き込みが属する会議の番号。退出直後に再参加したとき、前の会議の
+    ///   書き込み結果で新しい会議の行数・ファイル名を上書きしないよう、今の会議の番号と照合する。
+    private func handleWrite(_ outcome: TranscriptRecorder.WriteOutcome, tag: Int) {
+        guard tag == meetingTag else { return }
         switch outcome {
         case let .written(url, lines):
             currentTranscript = url
@@ -939,6 +1102,13 @@ final class MeetBotService: ObservableObject {
             value = nil
             return current
         } ?? speakerNow.withLock { $0 }
+        // 会議の議事録ファイルを作った後なら、その場で記録係へ渡す（退出の後片付け中に届いた最後の 1 文も残す）
+        if let target = finalTarget.withLock({ $0 }) {
+            guard CaptionSettings.savesTranscript else { return }
+            recorder.record(text: text, speaker: speaker, context: target.context, language: target.language)
+            return
+        }
+        // まだファイルを作っていない（保存オフで入って途中でオンにした）ときは、メインでファイルを作ってから書く
         Task { @MainActor [weak self] in
             guard let self, case .recording = self.state, CaptionSettings.savesTranscript else { return }
             self.startMeetingFileIfNeeded()
@@ -968,7 +1138,9 @@ final class MeetBotService: ObservableObject {
 
     /// 話者を 1 回読む
     private func pollSpeaker() async {
-        guard let tools = devTools, case .recording = state else { return }
+        guard let tools = devTools, case .recording = state, !speakerPollInFlight else { return }
+        speakerPollInFlight = true
+        defer { speakerPollInFlight = false }
         guard let value = try? await tools.evaluate(Self.activeSpeakerScript) else { return }
         let name = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let name, !name.isEmpty else { return }
@@ -979,16 +1151,53 @@ final class MeetBotService: ObservableObject {
 
     /// 記録を閉じて Chrome・タップ・タイマーを畳み、状態を移す
     ///
+    /// ローカル認識のときは、音声パイプラインの停止（上限 3 秒）を**待ってから**議事録を閉じて状態を移す。
+    /// 最後の 1 文は停止処理（認識器の締め）の中で確定するので、先に閉じるとその 1 文が捨てられていた。
+    ///
     /// - Parameters:
     ///   - newState: 移る先の状態
     ///   - leaveMeetingFirst: 「通話から退出」を押してから Chrome を閉じるか（自分で退出したとき）
-    private func finish(_ newState: MeetBotState, leaveMeetingFirst: Bool = false) {
+    ///   - closingReason: 記録を閉じたことを通知するときの理由（通知しないなら nil）
+    private func finish(_ newState: MeetBotState, leaveMeetingFirst: Bool = false, closingReason: String? = nil) {
         flushPendingCaptions()
-        recorder.endSession()
         generation.invalidate()
         let pipeline = detachResources(leaveMeetingFirst: leaveMeetingFirst)
+        guard let pipeline else {
+            closeSession(newState, closingReason: closingReason)
+            return
+        }
         // タップと Aggregate Device は必ず畳む（残すと HAL にゴーストデバイスが溜まる）
-        if let pipeline { Task { await pipeline.stop() } }
+        isClosing = true
+        Task { [weak self] in
+            let stopped = await StopWaiter.wait(limit: Self.stopWaitLimit) { await pipeline.stop() }
+            guard let self else { return }
+            if !stopped { self.logger.error("音声パイプラインの停止が 3 秒で終わりませんでした（議事録は閉じます）") }
+            self.isClosing = false
+            self.closeSession(newState, closingReason: closingReason)
+        }
+    }
+
+    /// 議事録を閉じて状態を移す（音声の停止を待った後に呼ぶ）
+    ///
+    /// 終了通知は、記録係が書き込みをすべて終えた後の集計（行数・失敗）で出す。
+    private func closeSession(_ newState: MeetBotState, closingReason: String?) {
+        finalTarget.withLock { $0 = nil }
+        speakerNow.withLock { $0 = nil }
+        speakerForCurrentSegment.withLock { $0 = nil }
+        let tag = meetingTag
+        let fileStarted = meetingFileStarted
+        let savesTranscript = CaptionSettings.savesTranscript
+        recorder.endSession { [weak self] summary in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if tag == self.meetingTag { self.recordedLines = summary.lines }
+                if let closingReason {
+                    self.notifyClosed(
+                        reason: closingReason, summary: summary, savesTranscript: savesTranscript, fileStarted: fileStarted
+                    )
+                }
+            }
+        }
         state = newState
     }
 
@@ -1013,8 +1222,6 @@ final class MeetBotService: ObservableObject {
         chrome = nil
         chromeIsVisible = false
         process?.terminationHandler = nil
-        speakerNow.withLock { $0 = nil }
-        speakerForCurrentSegment.withLock { $0 = nil }
         endAntiNap()
 
         if leaveMeetingFirst, let tools {
@@ -1081,8 +1288,19 @@ final class MeetBotService: ObservableObject {
         guard !text.isEmpty else { return nil }
         if !text.contains("://") { text = "https://" + text }
         guard let url = URL(string: text), let host = url.host else { return nil }
-        guard host == "meet.google.com" else { return nil }
+        guard host == "meet.google.com", isMeetingPath(url.path) else { return nil }
         return url
+    }
+
+    /// 会議を指すパスか（`/abc-defg-hij` か `/lookup/<名前>`）
+    ///
+    /// host だけを見ていたため、`meet.google.com` のトップや `/landing` でもボットを起動し、
+    /// 90 秒待ってから「入れませんでした」と分かっていた。会議コードの形を先に確かめる。
+    static func isMeetingPath(_ path: String) -> Bool {
+        if path.range(of: #"^/[a-z]{3}-?[a-z]{4}-?[a-z]{3}/?$"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return true
+        }
+        return path.range(of: #"^/lookup/[A-Za-z0-9_-]+/?$"#, options: .regularExpression) != nil
     }
 
     /// URL から会議コードを取り出す（`abc-defg-hij`）

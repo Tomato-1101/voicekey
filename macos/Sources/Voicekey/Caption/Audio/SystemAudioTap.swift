@@ -98,11 +98,17 @@ final class SystemAudioTap: @unchecked Sendable {
     /// 拾う範囲。controlQueue 専有。
     private var scope: CaptureScope
 
+    /// 拾った音を Mac のスピーカーから鳴らさないか（Meet ボットの会議音声だけ true）
+    private let mutesTappedAudio: Bool
+
     /// - Parameters:
     ///   - scope: 拾う範囲（既定はすべてのアプリ／自プロセス除外）
+    ///   - mutesTappedAudio: 拾った音をスピーカーから鳴らさない。ボットが裏で聞いている会議の音が
+    ///     本人の Mac から流れないようにするため。ライブ字幕は本人も聞いている音なので false のまま。
     ///   - handler: PCM を受け取るハンドラ。IO キュー上で高頻度に呼ばれるため軽い処理のみ。
-    init(scope: CaptureScope = .allExcludingSelf, handler: @escaping BufferHandler) {
+    init(scope: CaptureScope = .allExcludingSelf, mutesTappedAudio: Bool = false, handler: @escaping BufferHandler) {
         self.scope = scope
+        self.mutesTappedAudio = mutesTappedAudio
         self.handler = handler
     }
 
@@ -306,7 +312,9 @@ final class SystemAudioTap: @unchecked Sendable {
         description.name = "voicekey caption system tap"
         description.uuid = UUID()
         description.isPrivate = true              // 他プロセスからは見えないタップにする
-        description.muteBehavior = .unmuted       // ユーザーには今まで通り音を聞かせる
+        // ライブ字幕はユーザーにも今まで通り音を聞かせる。Meet ボットは裏の会議の音を鳴らさない。
+        // タップの作り方は同じなので、HAL を叩く回数は変わらない。
+        description.muteBehavior = mutesTappedAudio ? .mutedWhenTapped : .unmuted
         return description
     }
 

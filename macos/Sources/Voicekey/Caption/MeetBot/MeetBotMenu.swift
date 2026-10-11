@@ -139,6 +139,11 @@ final class MeetBotMenuController: NSObject, NSMenuDelegate {
     /// URL を尋ねて会議に参加させる
     @objc private func joinMeeting() {
         guard let bot = controller?.meetBot else { return }
+        // 未ログインのまま参加させると 90 秒待った末に必ず失敗するので、先にログインへ案内する
+        if bot.loginStatus.needsLogin {
+            if Self.askToLogIn() { bot.showLoginWindow() }
+            return
+        }
         guard let url = Self.askMeetingURL() else { return }
         bot.join(urlString: url)
     }
@@ -174,6 +179,20 @@ final class MeetBotMenuController: NSObject, NSMenuDelegate {
     }
 
     // MARK: - 入力ダイアログ
+
+    /// 参加の前にログインが要ることを伝える
+    ///
+    /// - Returns: 「ログイン画面を開く」が押されたか
+    private static func askToLogIn() -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "まず Google にログインしてください"
+        alert.informativeText = "ボットは普段の Chrome とは別のブラウザで会議に入ります。"
+            + "そのブラウザで Google に 1 回ログインすると、会議に参加できるようになります。"
+            + "ログインが済んだらウィンドウを閉じて、もう一度「会議に参加…」を選んでください。"
+        alert.addButton(withTitle: "ログイン画面を開く")
+        alert.addButton(withTitle: "キャンセル")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
 
     /// 会議 URL を尋ねる
     ///

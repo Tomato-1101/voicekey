@@ -41,8 +41,9 @@ private struct MeetBotSettingsContent: View {
 
     var body: some View {
         Form {
-            meetingSection
+            // 初めての人が上から順にたどれる並び（ログイン → 参加 → 取り方 → 議事録）
             loginSection
+            meetingSection
             methodSection
             transcriptSection
         }
@@ -87,6 +88,18 @@ private struct MeetBotSettingsContent: View {
                     SettingRowLabel(title: "退出すると議事録を閉じます",
                                     detail: "会議が終わったり外されたりしたときは自動で閉じます。")
                 }
+            } else if bot.loginStatus.needsLogin {
+                // 未ログインのまま参加させると必ず失敗するので、参加ボタンの代わりにログインを出す
+                LabeledContent {
+                    Button("まず Google にログイン") { bot.showLoginWindow() }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(!chromeInstalled)
+                } label: {
+                    SettingRowLabel(
+                        title: "参加の前にログインが要ります",
+                        detail: "ボット用のブラウザで Google に 1 回ログインすると、会議の URL を入れて参加できるようになります。"
+                    )
+                }
             } else {
                 TextField("会議の URL", text: $urlText, prompt: Text("https://meet.google.com/abc-defg-hij"))
                     .onSubmit(join)
@@ -97,7 +110,7 @@ private struct MeetBotSettingsContent: View {
                 } label: {
                     SettingRowLabel(
                         title: "ボットを会議に入れる",
-                        detail: "見えない Chrome が、下でログインした Google アカウントの名前で"
+                        detail: "見えない Chrome が、上でログインした Google アカウントの名前で"
                             + "マイクとカメラをオフにして入ります。ほかの人の会議ではホストの承認が要ります。"
                     )
                 }
@@ -106,7 +119,7 @@ private struct MeetBotSettingsContent: View {
     }
 
     private func join() {
-        guard chromeInstalled, urlIsValid, !bot.state.isActive else { return }
+        guard chromeInstalled, urlIsValid, !bot.state.isActive, !bot.loginStatus.needsLogin else { return }
         bot.join(urlString: urlText)
     }
 

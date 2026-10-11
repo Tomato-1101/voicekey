@@ -150,7 +150,10 @@ final class CapturePipeline: @unchecked Sendable {
         // 「最前面のアプリだけ」モードでは、対象が決まるまで何も拾わないタップから始める
         // （裏で鳴っている音楽を一瞬でも拾わないため）。対象は追従側が即座に埋める。
         let initialScope: CaptureScope = scopeMode == .frontmost ? .processes([]) : .allExcludingSelf
-        let tap = SystemAudioTap(scope: initialScope) { [weak self] buffer in
+        // Meet ボット（固定 PID の木だけを拾う）のときだけ、拾った会議の音をスピーカーから鳴らさない
+        let tap = SystemAudioTap(
+            scope: initialScope, mutesTappedAudio: fixedPID != nil && processTreeOnly
+        ) { [weak self] buffer in
             self?.handleCapturedBuffer(buffer)
         }
         self.tap = tap

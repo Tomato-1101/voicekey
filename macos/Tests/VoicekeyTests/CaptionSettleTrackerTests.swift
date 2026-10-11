@@ -67,7 +67,9 @@ final class CaptionSettleTrackerTests: XCTestCase {
         XCTAssertEqual(settled, [.init(speaker: "山田", text: "はい")])
     }
 
-    /// 別の発言に切り替わったら、前の発言をその場で確定する（settle を待たない）
+    /// 本当に別の発言に置き換わったら、前の発言をその場で確定する（settle を待たない）
+    ///
+    /// 書き直し（大文字化・訂正）は同じ発言として扱うので、ここで使うのは共通部分の無い 2 文。
     func testSettlesImmediatelyOnNewUtterance() {
         var tracker = CaptionSettleTracker(settleSeconds: 2.5)
         let start = Date()
@@ -154,5 +156,131 @@ final class CaptionSettleTrackerTests: XCTestCase {
         _ = tracker.ingest([.init(speaker: "山田", text: "まだ途中の発言")], now: Date())
         XCTAssertEqual(tracker.flush(), [.init(speaker: "山田", text: "まだ途中の発言")])
         XCTAssertTrue(tracker.flush().isEmpty, "2 回目は空（同じ行を二重に書かない）")
+    }
+
+    // MARK: - 書き直し（途中版と完成版を二重に書かない）
+
+    /// 英語の字幕が後から大文字化・句読点付きに書き直されても、1 行だけ書く
+    func testEnglishCapitalizationIsSameUtterance() {
+        var tracker = CaptionSettleTracker(settleSeconds: 2.5)
+        let start = Date()
+        XCTAssertTrue(tracker.ingest([.init(speaker: "Alice", text: "hello everyone we")], now: start).isEmpty)
+        let rewritten = tracker.ingest(
+            [.init(speaker: "Alice", text: "Hello everyone, we will start now.")], now: start.addingTimeInterval(1)
+        )
+        XCTAssertTrue(rewritten.isEmpty, "書き直しで途中版を確定しないこと")
+        let settled = tracker.ingest(
+            [.init(speaker: "Alice", text: "Hello everyone, we will start now.")], now: start.addingTimeInterval(4)
+        )
+        XCTAssertEqual(settled, [.init(speaker: "Alice", text: "Hello everyone, we will start now.")])
+    }
+
+    /// 日本語の字幕が途中で訂正されても（「は」→「の」）、完成版の 1 行だけ書く
+    func testJapaneseCorrectionIsSameUtterance() {
+        var tracker = CaptionSettleTracker(settleSeconds: 2.5)
+        let start = Date()
+        _ = tracker.ingest([.init(speaker: "山田", text: "今日は会議を始めま")], now: start)
+        let rewritten = tracker.ingest(
+            [.init(speaker: "山田", text: "今日の会議を始めます")], now: start.addingTimeInterval(1)
+        )
+        XCTAssertTrue(rewritten.isEmpty, "訂正で途中版を確定しないこと")
+        let settled = tracker.ingest(
+            [.init(speaker: "山田", text: "今日の会議を始めます")], now: start.addingTimeInterval(4)
+        )
+        XCTAssertEqual(settled, [.init(speaker: "山田", text: "今日の会議を始めます")])
+    }
+
+    /// 共通部分の無い文は別の発言として両方書く（書き直し判定が広すぎないこと）
+    func testDifferentUtterancesAreBothWritten() {
+        XCTAssertFalse(CaptionSettleTracker.isRevision(old: "前の発言です", new: "次の話に移ります"))
+        XCTAssertFalse(CaptionSettleTracker.isRevision(old: "thanks everyone", new: "next item is budget"))
+        XCTAssertTrue(CaptionSettleTracker.isRevision(old: "hello everyone we", new: "Hello everyone, we will"))
+
+        var tracker = CaptionSettleTracker(settleSeconds: 2.5)
+        let start = Date()
+        _ = tracker.ingest([.init(speaker: "Alice", text: "thanks everyone")], now: start)
+        let first = tracker.ingest([.init(speaker: "Alice", text: "next item is budget")], now: start.addingTimeInterval(1))
+        XCTAssertEqual(first, [.init(speaker: "Alice", text: "thanks everyone")])
+        let second = tracker.ingest([.init(speaker: "Alice", text: "next item is budget")], now: start.addingTimeInterval(4))
+        XCTAssertEqual(second, [.init(speaker: "Alice", text: "next item is budget")])
+    }
+
+    /// 確定した後で同じブロックが伸びたら、伸びた部分だけを書く（先頭からの全文を繰り返さない）
+    func testGrowthAfterSettleWritesOnlyContinuation() {
+        var tracker = CaptionSettleTracker(settleSeconds: 2.5)
+        let start = Date()
+        _ = tracker.ingest([.init(speaker: "山田", text: "本日の議題は")], now: start)
+        XCTAssertEqual(
+            tracker.ingest([.init(speaker: "山田", text: "本日の議題は")], now: start.addingTimeInterval(3)),
+            [.init(speaker: "山田", text: "本日の議題は")]
+        )
+        _ = tracker.ingest([.init(speaker: "山田", text: "本日の議題は三つです")], now: start.addingTimeInterval(4))
+        let settled = tracker.ingest(
+            [.init(speaker: "山田", text: "本日の議題は三つです")], now: start.addingTimeInterval(7)
+        )
+        XCTAssertEqual(settled, [.init(speaker: "山田", text: "三つです")])
+    }
+
+    /// 話者が替わっても、前の話者の発言は伸びが止まった時点で確定する（取りこぼさない）
+    func testPreviousSpeakerSettlesAfterSpeakerChange() {
+        var tracker = CaptionSettleTracker(settleSeconds: 2.5)
+        let start = Date()
+        _ = tracker.ingest([.init(speaker: "山田", text: "以上です")], now: start)
+        let both = [CaptionSettleTracker.Entry(speaker: "山田", text: "以上です"),
+                    CaptionSettleTracker.Entry(speaker: "佐藤", text: "ありがとうございます")]
+        XCTAssertTrue(tracker.ingest(both, now: start.addingTimeInterval(1)).isEmpty)
+        let settled = tracker.ingest(both, now: start.addingTimeInterval(4))
+        XCTAssertEqual(settled, [.init(speaker: "山田", text: "以上です"), .init(speaker: "佐藤", text: "ありがとうございます")])
+    }
+
+    // MARK: - 代替経路（字幕欄まるごと）
+
+    /// 字幕欄の全文が伸びても、前回確定した分から増えた末尾だけを書く
+    func testRegionWritesOnlyNewTail() {
+        var tracker = CaptionSettleTracker(settleSeconds: 2.5)
+        let start = Date()
+        XCTAssertTrue(tracker.ingestRegion("Good morning everyone.", now: start).isEmpty)
+        XCTAssertEqual(
+            tracker.ingestRegion("Good morning everyone.", now: start.addingTimeInterval(3)),
+            [.init(speaker: nil, text: "Good morning everyone.")]
+        )
+        let grown = "Good morning everyone. Let's begin with the budget."
+        XCTAssertTrue(tracker.ingestRegion(grown, now: start.addingTimeInterval(4)).isEmpty)
+        XCTAssertEqual(
+            tracker.ingestRegion(grown, now: start.addingTimeInterval(7)),
+            [.init(speaker: nil, text: "Let's begin with the budget")]
+        )
+        // 同じ全文が残り続けても二度は書かない
+        XCTAssertTrue(tracker.ingestRegion(grown, now: start.addingTimeInterval(10)).isEmpty)
+    }
+
+    /// 古い行が上へ押し出されて消えても、新しい末尾だけを書く
+    func testRegionHandlesScrolledOffHead() {
+        XCTAssertEqual(
+            CaptionSettleTracker.newTail(of: "second line. third line", after: "first line. second line."),
+            "third line"
+        )
+        XCTAssertEqual(CaptionSettleTracker.newTail(of: "全く別の内容", after: "first line"), "全く別の内容")
+        XCTAssertEqual(CaptionSettleTracker.newTail(of: "最初の字幕", after: nil), "最初の字幕")
+    }
+
+    /// 字幕欄が伸び続けても、一定時間で確定して書き始める（終わるまで何も残らない、を防ぐ）
+    func testRegionForcesSettleWhileContinuouslyChanging() {
+        var tracker = CaptionSettleTracker(settleSeconds: 2.5)
+        let start = Date()
+        var text = "a"
+        var emitted: [CaptionSettleTracker.Line] = []
+        for second in 0...16 {
+            text += " word\(second)"
+            emitted += tracker.ingestRegion(text, now: start.addingTimeInterval(Double(second)))
+        }
+        XCTAssertEqual(emitted.count, 1, "15 秒で 1 回確定すること")
+    }
+
+    /// 退出時の吐き出しで、代替経路の確定待ちも書く
+    func testFlushIncludesRegionPending() {
+        var tracker = CaptionSettleTracker(settleSeconds: 2.5)
+        _ = tracker.ingestRegion("最後の発言", now: Date())
+        XCTAssertEqual(tracker.flush(), [.init(speaker: nil, text: "最後の発言")])
     }
 }

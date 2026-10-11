@@ -26,6 +26,18 @@ final class TranscriptRecorder {
         case failed(String)
     }
 
+    /// 記録を区切ったときの集計（`endSession(onClosed:)` で渡す）
+    ///
+    /// 書き込みキューの上で作るので、それまでに頼んだ書き込みが全部終わった後の値になる。
+    struct SessionSummary: Equatable {
+        /// 書いていたファイル（作れなかったときは nil）
+        let url: URL?
+        /// そのファイルに書いた行数
+        let lines: Int
+        /// 最後の書き込みが失敗していれば、その理由
+        let error: String?
+    }
+
     private let logger = makeCaptionLogger("TranscriptRecorder")
 
     /// 書き込みを直列化するキュー（ファイル追記は I/O なのでメインから外す）
@@ -40,7 +52,9 @@ final class TranscriptRecorder {
     /// 書き込みのたびに呼ばれる（**記録用の直列キューの上で**呼ぶので、UI へはメインへ戻して使う）
     ///
     /// 以前は失敗を `try?` で握り潰していたため、保存先に書けなくても画面は「記録中」のままだった。
-    var onWrite: ((WriteOutcome) -> Void)?
+    /// 2 つ目の値は `beginMeeting(tag:)` で渡した会議の番号（会議でなければ 0）。退出直後に
+    /// 再参加したとき、前の会議の書き込み結果を新しい会議の行数・ファイル名と取り違えないために使う。
+    var onWrite: ((WriteOutcome, Int) -> Void)?
 
     /// 現在書き込み中のファイル（nil なら次の追記で新規作成）
     private var currentURL: URL?
@@ -48,6 +62,8 @@ final class TranscriptRecorder {
     private var lastWriteAt: Date?
     /// 直前に書いた本文（同じ確定文が二重に届いたときに弾く）
     private var lastText: String?
+    /// 直前に書いた行の話者（別の人が同じ言葉を言ったときは弾かない）
+    private var lastSpeaker: String?
     /// 現在のファイルに書いた行数
     private var linesInFile = 0
     /// 直近の書き込み失敗（成功したら消える）
@@ -55,7 +71,7 @@ final class TranscriptRecorder {
     /// 会議（Meet ボット）として記録中なら、その情報
     ///
     /// 入っている間は 5 分ルールで分けず、`endSession` まで同じファイルに書く。
-    private var meeting: (code: String?, context: String, language: String)?
+    private var meeting: (code: String?, context: String, language: String, tag: Int)?
 
     /// 保存先ディレクトリ（~/Documents/voicekey/transcripts）
     static var directory: URL {
@@ -90,15 +106,18 @@ final class TranscriptRecorder {
     ///   - context: 見出しに残す記録元（「Google Meet abc-defg-hij」など）
     ///   - language: 認識言語の表示名
     ///   - now: 開始時刻（ファイル名・見出しに使う）
-    func beginMeeting(code: String?, context: String, language: String, now: Date = Date()) {
+    ///   - tag: 会議の番号（`onWrite` の 2 つ目の値として返す）
+    func beginMeeting(code: String?, context: String, language: String, now: Date = Date(), tag: Int = 0) {
         queue.async { [weak self] in
             guard let self else { return }
             self.closeCurrent()
-            self.meeting = (code, context, language)
+            self.meeting = (code, context, language, tag)
+            // 前の記録の失敗を、この会議の結果として持ち越さない
+            self.lastError = nil
             do {
                 let url = try self.createFile(at: now, code: code, context: context, language: language)
                 self.lastError = nil
-                self.onWrite?(.written(url, lines: 0))
+                self.onWrite?(.written(url, lines: 0), tag)
             } catch {
                 self.reportFailure(error)
             }
@@ -118,8 +137,10 @@ final class TranscriptRecorder {
         guard !trimmed.isEmpty else { return }
         queue.async { [weak self] in
             guard let self else { return }
-            // 同じ確定文の重複（認識器が同一テキストを再送する / ボットの DOM 再読込）を弾く
-            if self.lastText == trimmed, let last = self.lastWriteAt, now.timeIntervalSince(last) < 10 {
+            // 同じ確定文の重複（認識器が同一テキストを再送する / ボットの DOM 再読込）を弾く。
+            // 話者も比べる（別の人が続けて「はい」と言ったのは別の発言なので残す）。
+            if self.lastText == trimmed, self.lastSpeaker == speaker,
+               let last = self.lastWriteAt, now.timeIntervalSince(last) < 10 {
                 return
             }
             do {
@@ -128,9 +149,10 @@ final class TranscriptRecorder {
                 try self.append(line, to: url)
                 self.lastWriteAt = now
                 self.lastText = trimmed
+                self.lastSpeaker = speaker
                 self.linesInFile += 1
                 self.lastError = nil
-                self.onWrite?(.written(url, lines: self.linesInFile))
+                self.onWrite?(.written(url, lines: self.linesInFile), self.meeting?.tag ?? 0)
             } catch {
                 self.reportFailure(error)
             }
@@ -138,10 +160,16 @@ final class TranscriptRecorder {
     }
 
     /// 記録を区切る（字幕を止めた・会議を出たときなど。次の追記は新しいファイルになる）
-    func endSession() {
+    ///
+    /// - Parameter onClosed: 区切った時点の集計を受け取る（**記録用の直列キューの上で**呼ぶ）。
+    ///   それまでに頼んだ書き込みが全部終わった後に呼ぶので、終了通知の行数が書きかけで少なくならない。
+    func endSession(onClosed: ((SessionSummary) -> Void)? = nil) {
         queue.async { [weak self] in
-            self?.closeCurrent()
-            self?.meeting = nil
+            guard let self else { return }
+            let summary = SessionSummary(url: self.currentURL, lines: self.linesInFile, error: self.lastError)
+            self.closeCurrent()
+            self.meeting = nil
+            onClosed?(summary)
         }
     }
 
@@ -190,6 +218,7 @@ final class TranscriptRecorder {
         currentURL = nil
         lastWriteAt = nil
         lastText = nil
+        lastSpeaker = nil
         linesInFile = 0
     }
 
@@ -198,7 +227,7 @@ final class TranscriptRecorder {
         let message = error.localizedDescription
         lastError = message
         logger.error("議事録を保存できません: \(message, privacy: .public)")
-        onWrite?(.failed(message))
+        onWrite?(.failed(message), meeting?.tag ?? 0)
     }
 
     /// 追記先のファイルを決める（必要なら新規作成してヘッダを書く）

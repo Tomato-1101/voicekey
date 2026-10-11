@@ -170,7 +170,7 @@ final class TranscriptRecorderTests: XCTestCase {
         try Data().write(to: directory)
         let recorder = TranscriptRecorder(directory: directory)
         let outcomes = OutcomeBox()
-        recorder.onWrite = { outcomes.append($0) }
+        recorder.onWrite = { outcome, _ in outcomes.append(outcome) }
 
         recorder.record(text: "保存できない発言", context: nil, language: "日本語")
         recorder.waitUntilWritten()
@@ -187,7 +187,7 @@ final class TranscriptRecorderTests: XCTestCase {
     func testWriteSuccessIsReportedWithLineCount() throws {
         let recorder = TranscriptRecorder(directory: directory)
         let outcomes = OutcomeBox()
-        recorder.onWrite = { outcomes.append($0) }
+        recorder.onWrite = { outcome, _ in outcomes.append(outcome) }
         let start = Date()
         recorder.record(text: "一行目", context: nil, language: "日本語", now: start)
         recorder.record(text: "二行目", context: nil, language: "日本語", now: start.addingTimeInterval(1))
