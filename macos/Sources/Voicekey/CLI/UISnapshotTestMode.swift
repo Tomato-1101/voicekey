@@ -38,6 +38,7 @@ enum UISnapshotTestMode {
     private static let tabSlugs: [Int: String] = [
         0: "general", 1: "slot1", 2: "slot2", 8: "dictionary", 9: "caption",
         10: "translate-input", 11: "meeting", 6: "account", 7: "about", 5: "api-keys",
+        12: "prompt", 13: "input-basics",
     ]
 
     /// 標準出力と --log-file の両方へ書く（字幕側の writer は macOS 26 限定なので使わない）

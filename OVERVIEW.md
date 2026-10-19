@@ -35,8 +35,8 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | 項目 | personal（唯一の版） |
 |---|---|
 | 文字起こしの選択肢 | **Mac**: Soniox（ライブ・stt-rt-v5）/ OpenAI ライブ / OpenAI（gpt-transcribe）/ Microsoft MAI（MAI-Transcribe-2）/ ElevenLabs（scribe_v2・v1）/ Groq を**実名表示**＋ **ローカル（Apple）オンデバイス**（macOS 26+・キー不要）。新規インストールの既定は macOS 26+ なら両録音キーともローカル（Apple）、それ以前は録音キー 1 = Soniox / 2 = Groq。Deepgram は選択肢から外し、保存済みの Deepgram は Soniox へ自動移行。**Windows** は開発停止中のため旧構成（OpenAI / Groq / ElevenLabs / Deepgram） |
-| モデル選択 | あり（フルコントロール） |
-| テキスト整形（Groq） | トグルあり・モデル/プロンプト選択可＋整え方プリセット 4 種（標準/そのまま/すっきり/箇条書き）。既定はエンジン別（スタンダード=ON / 即時入力・ローカル=OFF） |
+| モデル選択 | あり（フルコントロール）。**Mac** はエンジンとモデルを 1 つのポップアップで選ぶ（提供元の見出しの下にモデル。録音キー・字幕翻訳・翻訳して入力で共通の作り） |
+| テキスト整形（Groq） | トグルあり（録音キーごと）・モデル/プロンプト選択可。**Mac** はプロンプトを録音キー 1・2 共通の 1 つ（設定「プロンプト」ページ・正本 `autoFormatPrompt`）にし、整え方 4 種（標準/そのまま/すっきり/箇条書き）は指示文のひな形として選ぶ。**Windows** は録音キーごとのプリセット 4 種。既定はエンジン別（スタンダード=ON / 即時入力・ローカル=OFF） |
 | API キー | 利用者が設定 › API キー で入力（アプリ専用 Keychain 項目）。読み順は **アプリ項目 → 環境変数 → 中央 Keychain（service = 変数名 / account = `shared`）**（`Keychain.resolve` の 1 か所）。**ログイン・課金・アクティベーションキーは無し**（サーバー往復ゼロ＝最速） |
 | personal 限定機能 | ライブ字幕 / ローカル（Apple）文字起こし / 翻訳して入力（いずれも Mac・macOS 26+） |
 
@@ -93,7 +93,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | VAD / マイク自動検出 / 履歴 | `Core/VoiceActivity.swift` / `MicAutoDetector.swift` / `HistoryStore.swift` | `core/vad.py` / `mic_auto_detect.py` / `history.py` |
 | 履歴同期（Mac ⇄ Windows） | `Core/HistorySync.swift` | `core/history_sync.py` |
 | 使用実績（統計・レベル） | `Core/StatsStore.swift` | `core/stats.py` |
-| 設定画面 UI | `UI/SettingsView.swift` / `HotkeyRecorderView.swift` / `Glass.swift`（ガラス様式・押しやすい行の共通部品）。見た目の確認は `--ui-snapshot`（`CLI/UISnapshotTestMode.swift`・画面外で全ページを PNG 化） | `ui/settings_window.py` / `styles.py` |
+| 設定画面 UI | `UI/SettingsView.swift`（サイドバー＝はじめに / 音声入力 / 字幕と議事録 / アプリ・タブ id は `MainWindowView.TabID`）/ `HotkeyRecorderView.swift`（キーキャップ表示）/ `GroupedChoiceMenu.swift`＋`Config/EngineModelChoice.swift`（エンジン＋モデルの 1 ポップアップ）/ `Core/FormatPromptTemplates.swift`（整形プロンプトのひな形）/ `Glass.swift`（ガラス様式・押しやすい行の共通部品）。見た目の確認は `--ui-snapshot`（`CLI/UISnapshotTestMode.swift`・画面外で全ページを PNG 化） | `ui/settings_window.py` / `styles.py` |
 | ホーム画面 / ダッシュボード | `UI/HomeView.swift` / `MainWindowView.swift`（ホーム＋設定を 1 ウィンドウで切替・Mac） | `ui/settings_window.py`（先頭「ホーム」ページ） |
 | サイドノッチ（履歴スリット） | `UI/SideNotch.swift`（スリット＋検索付き履歴パネル） | `ui/side_notch.py` |
 | 操作音 / メディアダッキング / フルスクリーン判定 | `Core/SoundFX.swift` / `MediaDucker.swift` / `FrontAppTracker.swift`（Mac） | `core/sound_fx.py` / `media_ducker.py` / `fullscreen.py`、実ブラーは `platform/windows/acrylic.py` |
