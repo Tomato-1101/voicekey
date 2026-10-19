@@ -140,6 +140,9 @@ Windows（`core/history_sync.py`）の両クライアントを実装済み。詳
 | `CONTRIBUTING.md` | コミット規約・バージョニング | コミット時 |
 | `docs/BUILD_WINDOWS.md` | Windows ビルド/実機チェックリスト | Windows 配布時 |
 | `docs/HISTORY_SYNC.md` | 履歴同期の API 仕様・構築手順・障害対応 | 履歴同期に触るとき |
+| `docs/SCREENSHOT_ATTACH_PLAN.md` | 録音中のスクショ添付の実装計画（着手前・本人と仕様詰め中） | 着手するとき |
+| `docs/FILE_MENTION_PLAN.md` | 録音中に @ でファイルのパスを差し込む計画（未着手・要否を本人と検討中） | 着手するとき |
+| `docs/WINDOWS_CATCHUP_PLAN.md` | Windows 版を Mac 版に追いつかせる計画（10-19 着手） | Windows に触るとき |
 | `design/brand/` | ロゴ「17 LEGEND」のマスター SVG・生成スクリプト・展開先の一覧（`README.md`） | アイコン・ロゴを作り直すとき |
 
 ## 8. 更新ルール（重要・README 更新ルールと同じ精神）
