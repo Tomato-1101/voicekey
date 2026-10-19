@@ -3,6 +3,7 @@
 import os
 import tempfile
 import unittest
+import unittest.mock
 
 import yaml
 
@@ -18,10 +19,18 @@ class TestDefaults(unittest.TestCase):
         self.assertTrue(DEFAULT_CONFIG["hud_enabled"])
 
     def test_all_backends_have_default_model(self):
-        self.assertEqual(
-            set(DEFAULT_CONFIG["default_api_models"]),
-            {"groq", "openai", "elevenlabs", "deepgram"},
-        )
+        # 既定モデルは config/backends.py が正本（settings.yaml の default_api_models は使わない）
+        from src.config import backends
+        for backend in backends.SUPPORTED:
+            self.assertTrue(backends.default_model(backend), backend)
+
+    def test_fresh_install_slots_match_mac(self):
+        # Mac の新規インストール（Apple ローカルが無い環境）と同じ: 1 = Soniox（整形 OFF）/ 2 = Groq
+        self.assertEqual(DEFAULT_CONFIG["hotkey1"]["backend"], "soniox")
+        self.assertFalse(DEFAULT_CONFIG["hotkey1"]["format_enabled"])
+        self.assertEqual(DEFAULT_CONFIG["hotkey2"]["backend"], "groq")
+        # 廃止された llama ではなく Mac と同じおすすめ
+        self.assertEqual(DEFAULT_CONFIG["format_model"], "qwen/qwen3.8-27b")
 
 
 class TestDeepMerge(unittest.TestCase):
@@ -33,12 +42,14 @@ class TestDeepMerge(unittest.TestCase):
 
 class TestBackendNormalize(unittest.TestCase):
     def test_valid_backends_kept(self):
-        for backend in ("groq", "openai", "elevenlabs", "deepgram"):
+        for backend in ("groq", "openai", "elevenlabs", "deepgram", "soniox", "openai_live", "azure_mai"):
             self.assertEqual(ConfigManager._normalize_backend(backend), backend)
 
-    def test_invalid_falls_back_to_openai(self):
-        self.assertEqual(ConfigManager._normalize_backend("local"), "openai")
-        self.assertEqual(ConfigManager._normalize_backend("nonsense"), "openai")
+    def test_invalid_falls_back_to_groq(self):
+        # 未知の値（新しい版で保存した値・Mac の apple_local など）は Groq へ（Mac と同じ）
+        self.assertEqual(ConfigManager._normalize_backend("local"), "groq")
+        self.assertEqual(ConfigManager._normalize_backend("apple_local"), "groq")
+        self.assertEqual(ConfigManager._normalize_backend("nonsense"), "groq")
 
 
 class TestMigration(unittest.TestCase):
@@ -66,14 +77,13 @@ class TestMigration(unittest.TestCase):
         finally:
             os.unlink(path)
 
-    def test_release_constrains_openai_to_groq_keeps_deepgram(self):
-        # 製品版は openai を文字起こしに選べないため groq(正確性=普通入力の既定)へ移行し、
-        # api_model は空にして default_api_models(whisper-large-v3-turbo) へフォールバックさせる。
-        # deepgram(高速リアルタイム)は有効な選択肢なのでそのまま保持する。
+    def test_selectable_backends_and_deepgram_are_kept(self):
+        # Mac と同じ選択肢（openai / elevenlabs 等）はそのまま。選択肢から外した deepgram も
+        # 保存済みなら動かし続ける（本人の今の設定のエンジンを勝手に変えない）
         mgr, path = self._manager_for({
             "hotkey1": {
                 "hotkey": "<f2>", "hotkey_mode": "hold",
-                "backend": "openai", "api_model": "gpt-4o-transcribe",
+                "backend": "openai", "api_model": "gpt-transcribe",
             },
             "hotkey2": {
                 "hotkey": "<f3>", "hotkey_mode": "toggle",
@@ -81,27 +91,67 @@ class TestMigration(unittest.TestCase):
             },
         })
         try:
-            self.assertEqual(mgr.config["hotkey1"]["backend"], "groq")
-            self.assertEqual(mgr.config["hotkey1"]["api_model"], "")
-            # deepgram は選択肢に残したため維持される（api_model も保持）
+            self.assertEqual(mgr.config["hotkey1"]["backend"], "openai")
+            self.assertEqual(mgr.config["hotkey1"]["api_model"], "gpt-transcribe")
             self.assertEqual(mgr.config["hotkey2"]["backend"], "deepgram")
             self.assertEqual(mgr.config["hotkey2"]["api_model"], "nova-3")
         finally:
             os.unlink(path)
 
-    def test_release_migrates_elevenlabs_to_groq(self):
-        # 旧「高精度」= elevenlabs はユーザーが選べる 2 択（deepgram/groq）から外したため、
-        # スタンダード(groq)へ移行する。api_model は空にして default_api_models へフォールバックさせる。
-        # （EL は enum としては残り、スタンダードのハンズフリー録音時に内部でのみ使われる）
+    def test_unknown_backend_moves_to_groq_with_default_model(self):
+        # 未知のエンジンだけ Groq へ移し、旧エンジンのモデル名は意味が無いので空（＝既定）にする
         mgr, path = self._manager_for({
             "hotkey1": {
-                "hotkey": "<f2>", "hotkey_mode": "hold",
-                "backend": "elevenlabs", "api_model": "scribe_v1",
+                "hotkey": "<f9>", "hotkey_mode": "toggle",
+                "backend": "apple_local", "api_model": "オンデバイス音声認識",
+                "api_prompt": "固有名詞",
             },
         })
         try:
             self.assertEqual(mgr.config["hotkey1"]["backend"], "groq")
             self.assertEqual(mgr.config["hotkey1"]["api_model"], "")
+            # ホットキー・モード・プロンプトなど他の設定は保持する
+            self.assertEqual(mgr.config["hotkey1"]["hotkey"], "<f9>")
+            self.assertEqual(mgr.config["hotkey1"]["hotkey_mode"], "toggle")
+            self.assertEqual(mgr.config["hotkey1"]["api_prompt"], "固有名詞")
+        finally:
+            os.unlink(path)
+
+    def test_retired_models_migrate_once(self):
+        # 選択肢から外したモデルは一回限りで既定（空）へ。エンジンは変えない
+        mgr, path = self._manager_for({
+            "hotkey1": {"hotkey": "<f2>", "backend": "groq", "api_model": "whisper-large-v3"},
+            "hotkey2": {"hotkey": "<f3>", "backend": "deepgram", "api_model": "nova-2"},
+        })
+        try:
+            self.assertEqual(mgr.config["hotkey1"]["backend"], "groq")
+            self.assertEqual(mgr.config["hotkey1"]["api_model"], "")
+            self.assertEqual(mgr.config["hotkey2"]["backend"], "deepgram")
+            self.assertEqual(mgr.config["hotkey2"]["api_model"], "")
+            self.assertTrue(mgr.config["migrated_retired_models_v19"])
+        finally:
+            os.unlink(path)
+        # 移行済みなら、利用者が自由入力で選び直した旧モデル名を消さない
+        mgr, path = self._manager_for({
+            "migrated_retired_models_v19": True,
+            "hotkey1": {"hotkey": "<f2>", "backend": "groq", "api_model": "whisper-large-v3"},
+        })
+        try:
+            self.assertEqual(mgr.config["hotkey1"]["api_model"], "whisper-large-v3")
+        finally:
+            os.unlink(path)
+
+    def test_retired_llama_format_model_migrates(self):
+        # 2026-10 に廃止された llama 系の整形モデルはおすすめへ（一回限り）
+        mgr, path = self._manager_for({"format_model": "llama-3.1-8b-instant"})
+        try:
+            self.assertEqual(mgr.config["format_model"], "qwen/qwen3.8-27b")
+            self.assertTrue(mgr.config["migrated_llm_models_v20"])
+        finally:
+            os.unlink(path)
+        mgr, path = self._manager_for({"format_model": "openai/gpt-oss-20b"})
+        try:
+            self.assertEqual(mgr.config["format_model"], "openai/gpt-oss-20b")  # 使えるモデルは触らない
         finally:
             os.unlink(path)
 
@@ -161,6 +211,58 @@ class TestMigration(unittest.TestCase):
             self.assertTrue(mgr.config["hotkey1"]["format_enabled"])  # ON のまま尊重
         finally:
             os.unlink(path)
+
+
+class TestCorruptSettings(unittest.TestCase):
+    """壊れた settings.yaml は退避して既定で始め、ホットリロード中の書きかけは無視する。"""
+
+    def setUp(self):
+        from src.utils import corrupt_file
+        self.notices = []
+        corrupt_file._reset_for_tests()
+        corrupt_file.set_notice_handler(self.notices.append)
+        self.addCleanup(corrupt_file._reset_for_tests)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = os.path.join(self.tmp.name, "settings.yaml")
+
+    def test_corrupt_file_is_quarantined_at_startup(self):
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write("hotkey1: [unclosed\n  - : :")
+        mgr = ConfigManager(config_path=self.path)
+        # 既定値で始め、壊れたファイルは .corrupt-* として残る
+        self.assertEqual(mgr.config["language"], DEFAULT_CONFIG["language"])
+        self.assertFalse(os.path.exists(self.path))
+        moved = [n for n in os.listdir(self.tmp.name) if n.startswith("settings.yaml.corrupt-")]
+        self.assertEqual(len(moved), 1)
+        self.assertEqual(len(self.notices), 1)
+        # 退避できたので保存は通る
+        self.assertTrue(mgr.save({"language": "en"}))
+
+    def test_save_is_blocked_when_quarantine_fails(self):
+        from src.utils import corrupt_file
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write("- just a list\n")
+        original = open(self.path, encoding="utf-8").read()
+        with unittest.mock.patch.object(corrupt_file, "move_file", side_effect=OSError("locked")):
+            mgr = ConfigManager(config_path=self.path)
+        # 退避できなければ元ファイルを上書きしない
+        self.assertFalse(mgr.save({"language": "en"}))
+        self.assertEqual(open(self.path, encoding="utf-8").read(), original)
+
+    def test_hot_reload_of_half_written_file_keeps_current_config(self):
+        with open(self.path, "w", encoding="utf-8") as f:
+            yaml.dump({"language": "en"}, f)
+        mgr = ConfigManager(config_path=self.path)
+        self.assertEqual(mgr.config["language"], "en")
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write("language: [書きかけ")
+        os.utime(self.path, (mgr.last_mtime + 5, mgr.last_mtime + 5))
+        self.assertFalse(mgr.reload_if_changed())
+        # 既定値に戻さず、退避もしない（手で編集している途中のため）
+        self.assertEqual(mgr.config["language"], "en")
+        self.assertTrue(os.path.exists(self.path))
+        self.assertEqual(self.notices, [])
 
 
 class TestAtomicSave(unittest.TestCase):

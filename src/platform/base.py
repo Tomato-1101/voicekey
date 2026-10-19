@@ -6,7 +6,7 @@ OS差分（入力挿入・キー正規化・トレイ挙動・フォント）を
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 from pynput.keyboard import Key
 
@@ -97,5 +97,27 @@ class PlatformAdapter(ABC):
 
         Args:
             which: "accessibility" または "input_monitoring"
+        """
+        return None
+
+    # --- 最前面アプリ（貼り付け先の記録用。既定は「取れない」） ---
+
+    def foreground_app(self) -> Tuple[Optional[str], Optional[str]]:
+        """
+        最前面アプリの (識別子, 表示名) を返す（履歴のアプリ名と診断ログの貼付先に使う）。
+
+        Returns:
+            (識別子, 表示名)。取れない OS・失敗時は (None, None)
+        """
+        return None, None
+
+    def foreground_exe(self) -> Optional[str]:
+        """
+        最前面アプリの実行ファイル名だけを返す（録音開始時の「貼り付け先が AI か」の判定用）。
+
+        表示名（バージョン情報の読み出し）を伴わない軽い版。録音開始の経路で呼ぶので速さを優先する。
+
+        Returns:
+            実行ファイル名（例: "claude.exe"）。取れない OS・失敗時は None
         """
         return None

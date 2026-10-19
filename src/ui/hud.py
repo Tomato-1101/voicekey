@@ -21,6 +21,7 @@ from typing import Deque
 
 from PySide6.QtCore import (
     Qt,
+    Signal,
     QTimer,
     QRectF,
     QVariantAnimation,
@@ -53,9 +54,15 @@ class Hud(QWidget):
         always_visible: 待機中も小型ピルを常時表示するか（config.hud_always_visible）
     """
 
+    # モードが変わった（hidden/idle/recording/recording_auto_enter/transcribing/notice）。
+    # ライブ字幕が「音声入力中（録音・変換中・通知）は隠す」ために購読する
+    mode_changed = Signal(str)
+
     # ウィンドウ寸法・バー本数は Mac 版 HudView と一致させる
     WIDTH = 460
     HEIGHT = 56
+    # 画面下端からウィンドウ下端までの余白（Mac 版と同じく少し浮かせる）
+    BOTTOM_MARGIN = 24
     # 三段階サイズ（待機=最小 < 変換中=小 < 録音=大）。Mac 版に合わせて全体を一回り小さくした。
     PILL_HEIGHT = 36          # 録音・通知（大）のピル高さ
     TRANSCRIBING_HEIGHT = 26  # 変換中（小）のピル高さ
@@ -74,19 +81,27 @@ class Hud(QWidget):
     FONT_POINT_SIZE = 11      # HUD テキストのポイントサイズ（12→11 に縮小）
     MORPH_MSEC = 200          # サイズモーフの所要時間（Mac の spring 近似・180〜220ms）
     FULLSCREEN_POLL_MSEC = 700  # 待機ピル表示中にフルスクリーン状態を監視するポーリング間隔
-    # ハンズフリー録音のアクセント色（Mac Hud.swift の handsFreeAccent = rgb(0,0.78,0.72) の hex）
-    HANDS_FREE_COLOR = "#00C7B8"
+    # ブランドの灯り（ロゴ「17 LEGEND」の唯一のアクセント・Mac の Brand.signal）。
+    # 2.1.0 の Mac に合わせ、録音中の点・ハンズフリーの波形バー・自動送信の ⏎ 印をこの橙に統一した
+    SIGNAL_COLOR = "#FF5A1F"
+    # ハンズフリー録音の波形バーの色（Mac に合わせて灯りの橙。旧ティール #00C7B8 から変更）
+    HANDS_FREE_COLOR = SIGNAL_COLOR
 
     def __init__(self, enabled: bool = True) -> None:
         """HUD を初期化する（生成時は非表示）。"""
         super().__init__()
         self.enabled = enabled
         self.always_visible = False  # 待機ピル常時表示（app が config から設定する）
+        # ライブ字幕が出ている間は待機ピルを出さない（字幕はピルの位置から上へ伸びるので、
+        # ピルを残すと半透明の字幕越しに透けて別物に見える）。録音・変換中・通知には触らない
+        self._caption_covering = False
 
+        self._mode_value = "hidden"
         self._mode = "hidden"            # hidden/idle/recording/recording_auto_enter/transcribing/notice
         self._caption = ""               # ストリーミングのライブ字幕
         self._notice_text = ""           # 一時通知の本文
         self._hands_free = False         # 現在の録音がハンズフリー（toggle 実効）か
+        self._translate_badge = ""       # 翻訳して貼り付ける回の印（"→EN" など。空なら出さない）
         self._levels: Deque[float] = deque([0.0] * self.BAR_COUNT, maxlen=self.BAR_COUNT)
 
         # 表示中のピルサイズ（描画に使う唯一の真実）。待機ピルサイズを初期値にしておくと、
@@ -138,6 +153,48 @@ class Hud(QWidget):
         self._fs_timer = QTimer(self)
         self._fs_timer.setInterval(self.FULLSCREEN_POLL_MSEC)
         self._fs_timer.timeout.connect(self._tick_fullscreen)
+
+    @property
+    def _mode(self) -> str:
+        """現在のモード（hidden/idle/recording/recording_auto_enter/transcribing/notice）。"""
+        return self._mode_value
+
+    @_mode.setter
+    def _mode(self, value: str) -> None:
+        if value == getattr(self, "_mode_value", None):
+            return
+        self._mode_value = value
+        self.mode_changed.emit(value)
+
+    @property
+    def caption_covering(self) -> bool:
+        """ライブ字幕が出ているか（出ている間は待機ピルを引っ込める）。"""
+        return self._caption_covering
+
+    @caption_covering.setter
+    def caption_covering(self, covering: bool) -> None:
+        covering = bool(covering)
+        if covering == self._caption_covering:
+            return
+        self._caption_covering = covering
+        # 干渉するのは待機ピルだけ（録音・変換中・通知はそのまま）
+        if self._mode != "idle":
+            return
+        if covering:
+            if self.isVisible():
+                self._hide_keep_idle()
+        elif self.always_visible and self.enabled and not self._foreground_is_fullscreen():
+            self._show_pill()
+
+    @classmethod
+    def capsule_bottom_y(cls, geo) -> int:
+        """録音ピルのカプセル下端の y（ライブ字幕の下端をここに揃えて上へ伸ばす）。
+
+        Args:
+            geo: 画面の availableGeometry
+        """
+        window_top = geo.bottom() - cls.HEIGHT - cls.BOTTOM_MARGIN
+        return int(window_top + (cls.HEIGHT + cls.PILL_HEIGHT) / 2)
 
     def _setup_window(self) -> None:
         """フォーカスを奪わない・入力を透過するフレームレスウィンドウを構成する。"""
@@ -230,6 +287,13 @@ class Hud(QWidget):
         """
         self._hands_free = bool(hands_free)
         if self._mode in ("recording", "recording_auto_enter"):
+            self.update()
+
+    def set_translate_badge(self, text: str) -> None:
+        """翻訳して貼り付ける回の印（"→EN"）を設定する（空文字で消す）。"""
+        self._translate_badge = text or ""
+        if self._mode in ("recording", "recording_auto_enter"):
+            self._retarget(animate=True)
             self.update()
 
     def push_level(self, level: float) -> None:
@@ -388,6 +452,10 @@ class Hud(QWidget):
         """HUD を画面下部中央へ配置して表示し、現在モードのサイズへモーフする（アクティブ化しない）。"""
         if not self.enabled:
             return
+        if self._mode == "idle" and self._caption_covering:
+            # ライブ字幕が出ている間は待機ピルを出さない（字幕が畳み終わったら戻す）
+            self._hide_keep_idle()
+            return
         was_visible = self.isVisible()
         self._reposition()
         if not was_visible:
@@ -414,7 +482,7 @@ class Hud(QWidget):
             return
         geo = screen.availableGeometry()
         x = geo.center().x() - self.WIDTH // 2
-        y = geo.bottom() - self.HEIGHT - 24  # 画面下から少し浮かせる（Mac 版と同じ）
+        y = geo.bottom() - self.HEIGHT - self.BOTTOM_MARGIN  # 画面下から少し浮かせる（Mac 版と同じ）
         self.move(x, y)
 
     # ------------------------------------------------------------------
@@ -446,6 +514,8 @@ class Hud(QWidget):
             width = 7 + self.CONTENT_GAP + middle  # 状態ドット(7) + 間隔 + 中身
             if self._mode == "recording_auto_enter":
                 width += self.CONTENT_GAP + metrics.horizontalAdvance("⏎")
+            if self._translate_badge:
+                width += self.CONTENT_GAP + metrics.horizontalAdvance(self._translate_badge) + 2
             return width
         if self._mode == "notice":
             return min(
@@ -487,8 +557,9 @@ class Hud(QWidget):
         path = QPainterPath()
         path.addRoundedRect(pill_rect, radius, radius)
         gradient = QLinearGradient(pill_rect.topLeft(), pill_rect.bottomLeft())
-        gradient.setColorAt(0.0, QColor(58, 58, 60, 228))
-        gradient.setColorAt(1.0, QColor(24, 24, 26, 240))
+        # 地色はブランドのカーボン（#2B2A27）寄りの暖かい黒（Mac のピルに地色を重ねた見た目に合わせる）
+        gradient.setColorAt(0.0, QColor(60, 58, 54, 228))
+        gradient.setColorAt(1.0, QColor(30, 29, 26, 240))
         painter.fillPath(path, gradient)
         # 白 10% のボーダー（暗い背景上でも輪郭が出る、Mac 版と同じ値）
         painter.setPen(QPen(QColor(255, 255, 255, 26), 1))
@@ -512,22 +583,21 @@ class Hud(QWidget):
     def _paint_recording(self, painter: QPainter, metrics: QFontMetrics, pill_rect: QRectF) -> None:
         """録音中: 状態ドット + （字幕 or 波形バー） + 自動 Enter 時は ⏎ バッジ。
 
-        ハンズフリー中はラベルを出さず、ドットと波形をティール（HANDS_FREE_COLOR）に着色して
+        ハンズフリー中はラベルを出さず、波形を灯りの橙（HANDS_FREE_COLOR）に着色して
         通常録音と区別する（Mac 版 handsFree と同じ表現）。
         """
         auto_enter = self._mode == "recording_auto_enter"
-        # 状態ドット色: ハンズフリー=ティール / 自動送信=パープル / 通常=レッド
-        if self._hands_free:
-            dot_color = QColor(self.HANDS_FREE_COLOR)
-        elif auto_enter:
-            dot_color = QColor("#BF5AF2")
-        else:
-            dot_color = QColor("#FF453A")
+        # 状態ドット: 灯りの橙＋淡い光（Mac 2.1.0 と同じ。通常・ハンズフリー・自動送信とも同色で、
+        # ハンズフリーは波形バーの着色、自動送信は右端の ⏎ 印で区別する）
+        dot_color = QColor(self.SIGNAL_COLOR)
 
         x = pill_rect.left() + self.PADDING_X
         cy = self.height() / 2
-        # 左の状態ドット（8→7 に縮小）
         painter.setPen(Qt.PenStyle.NoPen)
+        glow = QColor(self.SIGNAL_COLOR)
+        glow.setAlpha(60)
+        painter.setBrush(glow)
+        painter.drawEllipse(QRectF(x - 2.5, cy - 6, 12, 12))
         painter.setBrush(dot_color)
         painter.drawEllipse(QRectF(x, cy - 3.5, 7, 7))
         x += 7 + self.CONTENT_GAP
@@ -549,14 +619,25 @@ class Hud(QWidget):
             self._paint_bars(painter, x)
             x += self._bars_width()
 
-        # 自動 Enter のバッジ（Mac 版の return アイコン相当）
+        # 自動 Enter のバッジ（Mac 版の return アイコン相当・灯りの橙）
         if auto_enter:
             x += self.CONTENT_GAP
-            painter.setPen(QColor("#BF5AF2"))
+            painter.setPen(QColor(self.SIGNAL_COLOR))
             painter.drawText(
                 QRectF(x, 0, metrics.horizontalAdvance("⏎") + 2, self.height()),
                 int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
                 "⏎",
+            )
+            x += metrics.horizontalAdvance("⏎") + 2
+
+        # 翻訳して貼り付ける回の印（"→EN"）。翻訳される回だとひと目で分かるようにする（Mac と同じ）
+        if self._translate_badge:
+            x += self.CONTENT_GAP
+            painter.setPen(QColor(245, 245, 247))
+            painter.drawText(
+                QRectF(x, 0, metrics.horizontalAdvance(self._translate_badge) + 2, self.height()),
+                int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                self._translate_badge,
             )
 
     def _paint_bars(self, painter: QPainter, start_x: float) -> None:

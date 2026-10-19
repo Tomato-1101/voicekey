@@ -211,7 +211,7 @@ class TestOnboardingWindow(unittest.TestCase):
             self.assertEqual(win._primary_btn.text(), "次へ")
 
     def test_summary_shows_default_hotkeys(self):
-        # まとめページのカードが既定ホットキー（<f2>/<f3>）と新語彙（スタンダード）を出す
+        # まとめページのカードが既定ホットキー（<f2>/<f3>）とエンジン（実プロバイダー名 · モデル）を出す
         from src.ui.onboarding_window import _STEP_SUMMARY
 
         with mock.patch("src.core.login_coordinator.shared", return_value=_FakeCoord()):
@@ -225,7 +225,7 @@ class TestOnboardingWindow(unittest.TestCase):
             joined = "\n".join(texts)
             self.assertIn("<f2>", joined)
             self.assertIn("<f3>", joined)
-            self.assertIn("スタンダード", joined)  # 既定バックエンド groq の新語彙
+            self.assertIn("Groq · whisper-large-v3-turbo", joined)  # 録音キー 2 の既定エンジン
             self.assertIn("録音キー 1（メイン）", joined)
 
     def test_finish_emits_once(self):

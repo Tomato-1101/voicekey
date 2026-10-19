@@ -1,11 +1,13 @@
 """
 音声入力履歴モジュール
 
-文字起こし（整形後）のテキストを新しい順に最大 10 件保持し、
-設定ウィンドウの「履歴」タブから再コピーできるようにする。
+文字起こし（整形後）のテキストを新しい順に最大 200 件保持し（Mac の HistoryStore.maxItems と同じ）、
+設定ウィンドウの「履歴」タブ・サイドノッチから再コピーできるようにする。
 アプリを再起動しても残るよう settings.yaml と同じディレクトリに JSON で保存する。
 各エントリには Mac と履歴を共有する history_sync 用に id（uuid4 hex）と
-device（"windows"）を持たせる（本モジュール自体は通信を一切行わない）。
+device（"windows"）、貼り付け先アプリ（app_id＝実行ファイル名・app_name＝表示名）と
+文字数（characters）を持たせる（本モジュール自体は通信を一切行わない）。
+読めなかった履歴ファイルは退避して残し（上書きして消さない）、HUD で 1 回知らせる。
 """
 
 import json
@@ -16,12 +18,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
+from ..utils import corrupt_file
 from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 # 保持する最大件数（超過分は古いものから捨てる）。Mac 版 HistoryStore.maxItems と同値
-MAX_ITEMS = 10
+MAX_ITEMS = 200
 HISTORY_FILE_NAME = "history.json"
 
 
@@ -66,14 +69,18 @@ class HistoryStore:
         self._path = Path(file_path) if file_path else _default_path()
         self._lock = threading.Lock()
         self._on_add = on_add
-        self._items: List[Dict[str, str]] = self._load()
+        # 壊れたファイルを退避できなかった（＝元ファイルが残っている）ので保存しない
+        self._save_blocked = False
+        self._items: List[Dict[str, object]] = self._load()
 
-    def add(self, text: str) -> None:
+    def add(self, text: str, app_id: Optional[str] = None, app_name: Optional[str] = None) -> None:
         """
         履歴に 1 件追加して保存する（空テキストは無視）。
 
         Args:
             text: 貼り付けたテキスト
+            app_id: 貼り付け先アプリの識別子（Windows は実行ファイル名。取れなければ None）
+            app_name: 貼り付け先アプリの表示名（取れなければ None）
         """
         if not text or not text.strip():
             return
@@ -82,6 +89,9 @@ class HistoryStore:
             "text": text,
             "date": datetime.now().astimezone().isoformat(timespec="seconds"),
             "device": "windows",
+            "app_id": app_id,
+            "app_name": app_name,
+            "characters": len(text),
         }
         with self._lock:
             self._items.insert(0, entry)
@@ -118,23 +128,33 @@ class HistoryStore:
         try:
             if self._path.exists():
                 data = json.loads(self._path.read_text(encoding="utf-8"))
-                if isinstance(data, list):
-                    return [
-                        {
-                            "id": str(e.get("id") or uuid.uuid4().hex),
-                            "text": str(e.get("text", "")),
-                            "date": str(e.get("date", "")),
-                            "device": str(e.get("device") or "windows"),
-                        }
-                        for e in data
-                        if isinstance(e, dict) and str(e.get("text", "")).strip()
-                    ][:MAX_ITEMS]
+                if not isinstance(data, list):
+                    raise ValueError("履歴ファイルの中身が一覧の形になっていません")
+                return [
+                    {
+                        "id": str(e.get("id") or uuid.uuid4().hex),
+                        "text": str(e.get("text", "")),
+                        "date": str(e.get("date", "")),
+                        "device": str(e.get("device") or "windows"),
+                        # アプリ名・文字数は旧ファイルに無いので、無ければ None / 本文の長さで補う
+                        "app_id": e.get("app_id") or None,
+                        "app_name": e.get("app_name") or None,
+                        "characters": int(e.get("characters") or len(str(e.get("text", "")))),
+                    }
+                    for e in data
+                    if isinstance(e, dict) and str(e.get("text", "")).strip()
+                ][:MAX_ITEMS]
         except Exception as e:
-            logger.warning(f"履歴の読み込みに失敗（空で開始します）: {e}")
+            logger.warning(f"履歴の読み込みに失敗（退避して空で開始します）: {e}")
+            # 空のまま保存すると元の履歴を上書きして消すので退避する。退避できなければ保存しない
+            if corrupt_file.quarantine(self._path, label="履歴ファイル") is None:
+                self._save_blocked = True
         return []
 
     def _save(self) -> None:
         """履歴をファイルに保存する（_lock 保持中に呼ぶこと）。"""
+        if self._save_blocked:
+            return
         try:
             # 書き込み途中のクラッシュで履歴ファイルが壊れないよう一時ファイル経由で置換
             tmp = self._path.with_name(self._path.name + ".tmp")

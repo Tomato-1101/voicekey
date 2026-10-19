@@ -42,12 +42,19 @@ class TranscriptionBackend(str, Enum):
         GROQ: Groq Cloud API（OpenAI 互換 REST、Whisper）
         OPENAI: OpenAI GPT-4o Transcribe API（OpenAI 互換 REST）
         ELEVENLABS: ElevenLabs Scribe API（REST、短文高精度）
-        DEEPGRAM: Deepgram Listen API（REST + WebSocket ストリーミング、nova-3）
+        DEEPGRAM: Deepgram Listen API（REST + WebSocket ストリーミング、nova-3）。
+            Mac に合わせて選択肢からは外したが、保存済みの設定ならそのまま動く
+        SONIOX: Soniox のリアルタイム文字起こし（stt-rt-v5・WebSocket のライブ型。REST は無い）
+        OPENAI_LIVE: OpenAI Realtime のライブ文字起こし（gpt-live-transcribe・WebSocket）
+        AZURE_MAI: Microsoft MAI-Transcribe-2（Azure Speech の LLM Speech API・REST）
     """
     GROQ = "groq"
     OPENAI = "openai"
     ELEVENLABS = "elevenlabs"
     DEEPGRAM = "deepgram"
+    SONIOX = "soniox"
+    OPENAI_LIVE = "openai_live"
+    AZURE_MAI = "azure_mai"
 
 
 @dataclass

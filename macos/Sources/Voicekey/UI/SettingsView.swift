@@ -105,6 +105,25 @@ struct MainWindowView: View {
         let icon: String
         /// サイドバーの見出し（同じ見出しが続く項目を 1 つのまとまりとして並べる）
         let section: String
+        /// ページ見出しの下に出す 1 行の説明（このページで何を決めるのかを最初に言う）
+        var subtitle: String = ""
+    }
+
+    /// 設定タブの id（保存値・メニュー・UI 撮影ハーネスが数値で参照するので、既存の値は変えない）。
+    /// 新しいタブは既存と重ならない番号を足していく（12 = プロンプト・13 = 入力の基本。2026-10-19 追加）
+    enum TabID {
+        static let general = 0
+        static let slot1 = 1
+        static let slot2 = 2
+        static let apiKeys = 5
+        static let account = 6
+        static let about = 7
+        static let dictionary = 8
+        static let caption = 9
+        static let translateInput = 10
+        static let meeting = 11
+        static let prompt = 12
+        static let inputBasics = 13
     }
 
     /// いまのサイドバーに出る設定タブの id（前回タブの妥当性判定と UI 撮影ハーネスが使う）
@@ -112,34 +131,60 @@ struct MainWindowView: View {
 
     /// 設定タブのナビ項目（配布ビルドでは API キーを出さない）。並び順がそのままサイドバーの表示順。
     /// ビルド種別と OS だけで決まるので static にして、ウィンドウの外（保存タブの検証など）からも引けるようにする。
+    ///
+    /// 並べ方（2026-10-19 作り直し・ユーザー指示「項目構成が合理的じゃないので人間が理解しやすく」）:
+    /// - はじめに: キーが無いと何も始まらないので API キーを最初に置く
+    /// - 音声入力: 話す前提（言語・マイク）→ 録音キー 1・2 → 整える指示（プロンプト）→ 直し方（辞書・数字）→ 翻訳
+    /// - 字幕と議事録: パソコンの音を相手にする機能
+    /// - アプリ: 表示・音・起動・履歴など、入力の中身に関係しないもの
     static var settingsNavItems: [SettingsNavItem] {
         var items: [SettingsNavItem] = []
         // personal は GitHub で一般配布し、利用者が各自のキーを入れて使うので API キーを出す。
-        // キーが無いと何も始まらないので、最後尾ではなく先頭に置く（初めての人が探さずに済むように）。
         // 製品版（配布ビルド）はサーバー経由でキーを持たないため出さない（混乱防止）
         if !EmbeddedKeys.isDist {
-            items.append(.init(id: 5, title: "API キー", icon: "key", section: "音声入力"))
+            items.append(.init(
+                id: TabID.apiKeys, title: "API キー", icon: "key", section: "はじめに",
+                subtitle: "使うサービスのキーを入れます。キーはこの Mac の Keychain にだけ保存します。"))
         }
         items += [
-            .init(id: 1, title: "録音キー 1（メイン）", icon: "1.circle", section: "音声入力"),
-            .init(id: 2, title: "録音キー 2（サブ）", icon: "2.circle", section: "音声入力"),
-            .init(id: 8, title: "ユーザー辞書", icon: "character.book.closed", section: "音声入力"),
+            .init(id: TabID.inputBasics, title: "入力の基本", icon: "mic", section: "音声入力",
+                  subtitle: "話す言語・使うマイク・録音キーと一緒に使うキーを決めます。"),
+            .init(id: TabID.slot1, title: "録音キー 1", icon: "1.circle", section: "音声入力",
+                  subtitle: "メインの録音キー。押して話すと、いま使っているアプリに文字が入ります。"),
+            .init(id: TabID.slot2, title: "録音キー 2", icon: "2.circle", section: "音声入力",
+                  subtitle: "2 つ目の録音キー。エンジンや押し方を 1 と変えて使い分けられます。"),
+            .init(id: TabID.prompt, title: "プロンプト", icon: "wand.and.stars", section: "音声入力",
+                  subtitle: "文章を整えるときに AI へ渡す指示です。録音キー 1・2 で共通です。"),
+            .init(id: TabID.dictionary, title: "辞書と数字", icon: "character.book.closed", section: "音声入力",
+                  subtitle: "聞き間違えやすい言葉の直し方と、数字の書き方を決めます。"),
         ]
         // ライブ字幕は personal 限定・macOS 26 以降でしか動かないので、使える環境でだけ出す
         if EmbeddedKeys.isPersonal, #available(macOS 26.0, *) {
             // 「翻訳して入力」も personal 限定・macOS 26 以降（Apple のオンデバイス翻訳が要る）
-            items.append(.init(id: 10, title: "翻訳して入力", icon: "character.bubble", section: "音声入力"))
-            items.append(.init(id: 9, title: "ライブ字幕", icon: "captions.bubble", section: "字幕と議事録"))
+            items.append(.init(
+                id: TabID.translateInput, title: "翻訳して入力", icon: "character.bubble", section: "音声入力",
+                subtitle: "話した内容を別の言語に訳してから入力します。"))
+            items.append(.init(
+                id: TabID.caption, title: "ライブ字幕", icon: "captions.bubble", section: "字幕と議事録",
+                subtitle: "パソコンで流れている音声に、字幕（翻訳・文字起こし）を付けます。"))
             // Meet ボットの参加・ログイン・議事録を 1 画面で（メニューだけでは状態が見えなかった）
-            items.append(.init(id: 11, title: "議事録・会議", icon: "person.2.wave.2", section: "字幕と議事録"))
+            items.append(.init(
+                id: TabID.meeting, title: "議事録・会議", icon: "person.2.wave.2", section: "字幕と議事録",
+                subtitle: "Google Meet にボットを参加させて、議事録を残します。"))
         }
-        items.append(.init(id: 0, title: "一般", icon: "gearshape", section: "アプリ"))
+        items.append(.init(
+            id: TabID.general, title: "一般", icon: "gearshape", section: "アプリ",
+            subtitle: "表示・音・起動・履歴など、アプリ全体の設定です。"))
         // personal（個人用最速版）は埋め込みキーで常に利用可＝ログイン/アカウントの概念が無いので
         // アカウントタブを出さない。配布/開発ビルドでは従来どおり出す。
         if !EmbeddedKeys.isPersonal {
-            items.append(.init(id: 6, title: "アカウント", icon: "person.crop.circle", section: "アプリ"))
+            items.append(.init(
+                id: TabID.account, title: "アカウント", icon: "person.crop.circle", section: "アプリ",
+                subtitle: "ログインとライセンスの状態です。"))
         }
-        items.append(.init(id: 7, title: "バージョン情報", icon: "info.circle", section: "アプリ"))
+        items.append(.init(
+            id: TabID.about, title: "バージョン情報", icon: "info.circle", section: "アプリ",
+            subtitle: "いまのバージョンと、アップデートの確認です。"))
         return items
     }
 
@@ -195,7 +240,8 @@ struct MainWindowView: View {
                             .padding(.bottom, 4)
                         ForEach(section.items) { item in
                             navRow(title: item.title, icon: item.icon,
-                                   selected: model.showingSettings && model.settingsTab == item.id) {
+                                   selected: model.showingSettings && model.settingsTab == item.id,
+                                   trailing: navTrailing(for: item.id)) {
                                 model.settingsTab = item.id
                                 model.showingSettings = true
                             }
@@ -246,8 +292,20 @@ struct MainWindowView: View {
         .padding(.bottom, 6)
     }
 
+    /// ナビ項目の右端に添える短い文字（録音キーのページには割り当て中のキーを出す）。
+    /// どのページがどのキーかを、ページを開かずに見分けられるようにするため。
+    private func navTrailing(for tab: Int) -> String? {
+        switch tab {
+        case TabID.slot1: return config.slot1.isAssigned ? config.slot1.hotkeyLabel : "未割り当て"
+        case TabID.slot2: return config.slot2.isAssigned ? config.slot2.hotkeyLabel : "未割り当て"
+        default: return nil
+        }
+    }
+
     /// ナビ 1 行（選択中＝アクセントのグラデピル。ホバーで薄いハイライト）
-    private func navRow(title: String, icon: String, selected: Bool, action: @escaping () -> Void) -> some View {
+    private func navRow(
+        title: String, icon: String, selected: Bool, trailing: String? = nil, action: @escaping () -> Void
+    ) -> some View {
         Button(action: action) {
             HStack(spacing: 10) {
                 Image(systemName: icon)
@@ -257,6 +315,12 @@ struct MainWindowView: View {
                     .font(.system(size: 14))
                     .lineLimit(1)
                 Spacer(minLength: 0)
+                if let trailing {
+                    Text(trailing)
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .lineLimit(1)
+                        .foregroundStyle(selected ? Color.white.opacity(0.85) : Color.secondary)
+                }
             }
             // 1 行 36pt。狙わなくても当たる高さにする（旧 28pt は「押しにくい」と指摘された）
             .frame(minHeight: 36)
@@ -302,7 +366,7 @@ struct MainWindowView: View {
     /// アカウント行（アバター円＋メール。未ログインは「ログイン」。クリックで設定のアカウントタブへ）
     private var accountRow: some View {
         Button {
-            model.settingsTab = 6
+            model.settingsTab = TabID.account
             model.showingSettings = true
         } label: {
             HStack(spacing: 8) {
@@ -390,76 +454,113 @@ struct MainWindowView: View {
         .padding(.top, 12)  // タイトルバー帯からヘッダを逃がす
     }
 
-    /// 設定モードの上部ヘッダ（現在タブ名）
+    /// 設定モードの上部ヘッダ（灯り色のアイコン＋ページ名＋このページで何を決めるかの 1 行）。
+    /// ページ名だけだと「ここで何をするのか」が開くまで分からず、項目を上から読ませていたため説明を添える。
     private var settingsHeader: some View {
-        Text(Self.settingsNavItems.first { $0.id == model.settingsTab }?.title ?? "")
-            .font(.title2.weight(.bold))
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, 18)
-            .padding(.horizontal, 20)
-            .padding(.bottom, 2)
+        let item = Self.settingsNavItems.first { $0.id == model.settingsTab }
+        return HStack(alignment: .center, spacing: 12) {
+            Image(systemName: item?.icon ?? "gearshape")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 36, height: 36)
+                .background(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(LinearGradient(
+                            colors: [Brand.signal, Brand.signal.opacity(0.75)],
+                            startPoint: .top, endPoint: .bottom
+                        ))
+                )
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item?.title ?? "")
+                    .font(.title2.weight(.bold))
+                if let subtitle = item?.subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 18)
+        .padding(.horizontal, 20)
+        .padding(.bottom, 2)
+    }
+
+    /// 別のページへ移る（録音キーのページの「プロンプトを編集」など、ページ間の導線に使う）
+    private func openTab(_ tab: Int) {
+        model.settingsTab = tab
+        model.showingSettings = true
     }
 
     /// 選択中の設定ページ（タグは旧 SettingsView と同じ値を踏襲・既存タブ View を使い回す）
     @ViewBuilder private func settingsContent(tab: Int) -> some View {
         switch tab {
-        case 0: GeneralSettingsTab(config: config, historySync: historySync)
-        case 1: SlotSettingsTab(title: "録音キー 1（メイン）", slot: $config.slot1, otherHotkey: config.slot2.hotkey)
-        case 2: SlotSettingsTab(title: "録音キー 2（サブ）", slot: $config.slot2, otherHotkey: config.slot1.hotkey)
-        case 8: DictionaryTab(config: config)
-        case 9:
+        case TabID.general: GeneralSettingsTab(config: config, historySync: historySync)
+        case TabID.inputBasics: InputBasicsTab(config: config)
+        case TabID.slot1:
+            SlotSettingsTab(slotNumber: 1, slot: $config.slot1, otherHotkey: config.slot2.hotkey,
+                            formatPrompt: config.autoFormatPrompt, openTab: openTab)
+        case TabID.slot2:
+            SlotSettingsTab(slotNumber: 2, slot: $config.slot2, otherHotkey: config.slot1.hotkey,
+                            formatPrompt: config.autoFormatPrompt, openTab: openTab)
+        case TabID.prompt: PromptSettingsTab(config: config, openTab: openTab)
+        case TabID.dictionary: DictionaryTab(config: config)
+        case TabID.caption:
             if #available(macOS 26.0, *) {
                 CaptionSettingsTab(config: config, controller: controller)
             } else {
                 GeneralSettingsTab(config: config, historySync: historySync)
             }
-        case 10:
+        case TabID.translateInput:
             if #available(macOS 26.0, *) {
                 TranslateInputTab(config: config)
             } else {
                 GeneralSettingsTab(config: config, historySync: historySync)
             }
-        case 11:
+        case TabID.meeting:
             if #available(macOS 26.0, *) {
                 MeetBotSettingsTab(config: config, controller: controller)
             } else {
                 GeneralSettingsTab(config: config, historySync: historySync)
             }
-        case 6: AccountTab()
-        case 7: AboutTab()
-        case 5: ApiKeysTab()
+        case TabID.account: AccountTab()
+        case TabID.about: AboutTab()
+        case TabID.apiKeys: ApiKeysTab()
         default: GeneralSettingsTab(config: config, historySync: historySync)
         }
     }
 }
 
-// MARK: - 一般
+// MARK: - 入力の基本（言語・マイク・録音キーと一緒に使うキー）
 
-private struct GeneralSettingsTab: View {
+/// 「入力の基本」タブ。旧「一般」タブの前半（言語・マイク・キー操作）をここへ移した。
+/// 旧「一般」は入力の前提と、表示・起動・履歴のようなアプリ全体の設定が 1 ページに混ざっていて、
+/// 目的の項目を探しにくかったため（2026-10-19 ユーザー指示「項目構成を人間が理解しやすく」）。
+private struct InputBasicsTab: View {
     @ObservedObject var config: ConfigStore
-    @ObservedObject var historySync: HistorySync
-    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     /// 入力デバイス一覧（開いたタイミングと更新ボタンで読み直す）
     @State private var inputDevices: [AudioInputDevice] = AudioDevices.inputDevices()
     /// マイク自動検出の実行中フラグ（実行中はボタンを無効化する）
     @State private var isDetectingMic = false
     /// マイク自動検出の進捗・結果表示（nil なら非表示）
     @State private var micDetectStatus: String?
-    /// 「変換しない語」の追加入力欄（保護リスト編集用）
-    @State private var newProtectWord = ""
-    /// 共有トークンは既存値を画面へ戻さず、保存後も即座に消す。
-    @State private var syncTokenInput = ""
-    @State private var syncTokenSaveMessage: String?
 
     // 説明文は別の行に置かず、項目名の下に小さく添える（行が倍に増えて目的の項目を探しにくかったため）。
-    // 見出しで「入力 → キー → 整形 → 表示 → 履歴」の順に区切り、よく触るものほど上に置く。
+    // 並びは「何を話すか（言語）→ どこで拾うか（マイク）→ どう押すか（キー）」。
     var body: some View {
         Form {
-            Section("入力") {
-                Picker("言語", selection: $config.language) {
+            Section("話す言語とマイク") {
+                Picker(selection: $config.language) {
                     Text("日本語").tag("ja")
                     Text("英語").tag("en")
                     Text("自動判定").tag("")
+                } label: {
+                    SettingRowLabel(
+                        title: "話す言語",
+                        detail: "文字起こしの精度が上がるので、決まっているなら選んでおくのがおすすめです。"
+                    )
                 }
 
                 LabeledContent {
@@ -503,34 +604,19 @@ private struct GeneralSettingsTab: View {
                 .onAppear { inputDevices = AudioDevices.inputDevices() }
             }
 
-            Section("キー操作") {
+            Section {
                 LabeledContent {
                     HStack(spacing: 8) {
                         HotkeyRecorderView(hotkey: $config.handsfreeKey)
-                            .frame(width: 180)  // 録音キーの欄と同じ幅（行いっぱいに伸びると押せる場所が分かりにくい）
+                            .frame(width: 200)  // 録音キーの欄と同じ幅（行いっぱいに伸びると押せる場所が分かりにくい）
                         if !config.handsfreeKey.isEmpty {
-                            Button("クリア") { config.handsfreeKey = [] }
+                            Button("外す") { config.handsfreeKey = [] }
                         }
                     }
                 } label: {
                     SettingRowLabel(
                         title: "ハンズフリーキー",
                         detail: "押しながら録音キーを押すと、押しっぱなしにしなくても録音が続きます（もう一度録音キーで停止）。右⇧ などの修飾キーがおすすめです。"
-                    )
-                }
-
-                LabeledContent {
-                    HStack(spacing: 8) {
-                        HotkeyRecorderView(hotkey: $config.repasteKey)
-                            .frame(width: 180)  // 録音キーの欄と同じ幅（行いっぱいに伸びると押せる場所が分かりにくい）
-                        if !config.repasteKey.isEmpty {
-                            Button("クリア") { config.repasteKey = [] }
-                        }
-                    }
-                } label: {
-                    SettingRowLabel(
-                        title: "最後の文字起こしを貼り付け",
-                        detail: "直前に入力したテキストをもう一度貼り付けます。"
                     )
                 }
 
@@ -544,176 +630,43 @@ private struct GeneralSettingsTab: View {
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 70)
                         .multilineTextAlignment(.trailing)
-                        Text("ms").foregroundStyle(.secondary)
+                        Text("ミリ秒").foregroundStyle(.secondary)
                     }
                 } label: {
                     SettingRowLabel(
-                        title: "ダブルタップ送信の待ち時間",
-                        detail: "録音キーを素早く 2 回押したとき、貼り付けてから Enter を押すまでの待ち時間です。"
+                        title: "2 回押しで送信するときの待ち時間",
+                        detail: "録音キーを素早く 2 回押すと、入力したあとに Enter も押します。その Enter までの待ち時間です。"
                     )
                 }
-            }
-
-            // 自分用ビルドは整形のモデル・指示文まで自分で選べる（何が動いているか隠さない方針）。
-            // オンオフは録音キー各タブの「文章を自動で整える」トグルで切り替える。
-            Section {
-                // 選択肢はモデルカタログ（おすすめが先頭・保存値が一覧外でも「利用不可」付きで残る）
-                LLMModelPicker(title: "整形モデル", provider: .groq, selection: $config.formatModel)
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("整形の指示")
-                        Spacer()
-                        Button("既定に戻す") {
-                            config.autoFormatPrompt = TextFormatter.defaultPrompt
-                        }
-                    }
-                    TextField("", text: $config.autoFormatPrompt, axis: .vertical)
-                        .lineLimit(4...8)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.callout)
-                        // grouped Form の入力欄は既定で右寄せになり、長い指示文が読めなくなるため左寄せに戻す
-                        .multilineTextAlignment(.leading)
-                }
             } header: {
-                Text("文章の整形")
+                Text("録音キーと一緒に使うキー")
             } footer: {
-                Text("整形するかどうかは「録音キー」の各ページで切り替えます。")
+                Text("録音キーそのものは「録音キー 1」「録音キー 2」のページで決めます。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("数字入力") {
-                // マスター。OFF なら数字の正規化を一切しない（完全パススルー）
-                Toggle("数字を半角に変換", isOn: $config.numeralNormalizeEnabled)
-                // 単独漢数字＋助数詞（三時→3時）。マスター OFF のときは無効表示
-                Toggle("助数詞つきの漢数字も変換（三時→3時）", isOn: $config.numeralConvertCounter)
-                    .disabled(!config.numeralNormalizeEnabled)
-
-                // 変換しない語（保護リスト）: 入力欄＋追加、各行に削除ボタン
+            Section("そのほかのショートカット") {
                 LabeledContent {
                     HStack(spacing: 8) {
-                        TextField("語を追加", text: $newProtectWord)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(minWidth: 140)
-                            .onSubmit { addProtectWord() }
-                        Button("追加") { addProtectWord() }
-                            .disabled(newProtectWord.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    }
-                } label: {
-                    SettingRowLabel(
-                        title: "変換しない語",
-                        detail: "「一人」「十分」など、数字に読める普通の言葉を守ります。"
-                    )
-                }
-                ForEach(config.numeralProtectWords, id: \.self) { word in
-                    HStack {
-                        Text(word)
-                        Spacer()
-                        Button {
-                            config.numeralProtectWords.removeAll { $0 == word }
-                        } label: {
-                            Image(systemName: "trash").foregroundStyle(.red)
-                        }
-                        .buttonStyle(.borderless)
-                        .help("この語を削除")
-                    }
-                }
-            }
-
-            Section("表示") {
-                Toggle("ピルを常に表示", isOn: $config.hudAlwaysVisible)
-                Toggle("サイドノッチを表示", isOn: $config.sideNotchEnabled)
-                Toggle("Dock に表示", isOn: $config.dockIconAlwaysVisible)
-            }
-
-            Section("サウンド") {
-                Toggle("操作音", isOn: $config.soundEffectsEnabled)
-                Toggle("音声入力中はメディアの音量を下げる", isOn: $config.duckMediaEnabled)
-            }
-
-            Section("起動") {
-                Toggle("ログイン時に起動", isOn: $launchAtLogin)
-                    .onChange(of: launchAtLogin) { _, enabled in
-                        do {
-                            if enabled {
-                                try SMAppService.mainApp.register()
-                            } else {
-                                try SMAppService.mainApp.unregister()
-                            }
-                        } catch {
-                            // 開発実行（未バンドル）では失敗するため表示を戻すだけ
-                            launchAtLogin = SMAppService.mainApp.status == .enabled
-                        }
-                    }
-            }
-
-            Section("履歴") {
-                Toggle("履歴を保存", isOn: $config.historyEnabled)
-                Toggle("Windows と履歴を共有", isOn: $config.historySyncEnabled)
-
-                LabeledContent("同期サーバー URL") {
-                    TextField(
-                        "https://voicekey-history-sync.<subdomain>.workers.dev",
-                        text: $config.historySyncURL
-                    )
-                    .textFieldStyle(.roundedBorder)
-                }
-                if !config.historySyncURL.isEmpty,
-                   !HistorySync.isAllowedServerURL(config.historySyncURL) {
-                    Text("https URL を入力してください（開発用は localhost / 127.0.0.1 の http も可）。")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-
-                LabeledContent {
-                    HStack(spacing: 8) {
-                        SecureField("Windows から貼り付け", text: $syncTokenInput)
-                            .textFieldStyle(.roundedBorder)
-                        Button("保存") { saveSyncToken() }
-                            .disabled(syncTokenInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        if historySync.tokenConfigured {
-                            Button("削除") {
-                                syncTokenSaveMessage = historySync.deleteToken()
-                                    ? "共有トークンを削除しました" : "共有トークンを削除できませんでした"
-                            }
+                        HotkeyRecorderView(hotkey: $config.repasteKey)
+                            .frame(width: 200)
+                        if !config.repasteKey.isEmpty {
+                            Button("外す") { config.repasteKey = [] }
                         }
                     }
                 } label: {
                     SettingRowLabel(
-                        title: "共有トークン",
-                        detail: syncTokenSaveMessage ?? (historySync.tokenConfigured ? "登録済み" : "未登録")
+                        title: "直前の入力をもう一度貼り付け",
+                        detail: "最後に入力したテキストを、いまのカーソル位置へもう一度貼り付けます。"
                     )
                 }
-
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 12) {
-                        Text("送信待ち \(historySync.pendingCount) 件")
-                        Text("最終同期 \(lastSyncText)")
-                    }
-                    .foregroundStyle(.secondary)
-                    if let error = historySync.errorMessage {
-                        Text(error).foregroundStyle(.red)
-                    }
-                }
-                .font(.caption)
             }
         }
         .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
         .glassFormRows()                   // 行フィルを半透明化して島の中で「ガラスの棚」に見せる
         .formStyle(.grouped)
         .padding(.vertical, 8)
-        .onAppear { historySync.requestFetch() }
-    }
-
-    private var lastSyncText: String {
-        guard let date = historySync.lastSyncAt else { return "--:--" }
-        return date.formatted(date: .omitted, time: .shortened)
-    }
-
-    private func saveSyncToken() {
-        let ok = historySync.saveToken(syncTokenInput)
-        syncTokenSaveMessage = ok ? "共有トークンを保存しました" : "共有トークンを保存できませんでした"
-        if ok { syncTokenInput = "" }
     }
 
     /// マイク自動検出を開始する。検出中はユーザーに喋るよう促し、結果を 2 秒表示する
@@ -740,27 +693,165 @@ private struct GeneralSettingsTab: View {
             }
         }
     }
+}
 
-    /// 入力欄の語を保護リストへ追加する（前後空白除去・重複はスキップ）。
-    private func addProtectWord() {
-        let word = newProtectWord.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !word.isEmpty else { return }
-        if !config.numeralProtectWords.contains(word) {
-            config.numeralProtectWords.append(word)
+// MARK: - 一般（アプリ全体）
+
+/// 「一般」タブ。表示・音・起動・履歴など、入力の中身に関係しないアプリ全体の設定だけを置く。
+private struct GeneralSettingsTab: View {
+    @ObservedObject var config: ConfigStore
+    @ObservedObject var historySync: HistorySync
+    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    /// 共有トークンは既存値を画面へ戻さず、保存後も即座に消す。
+    @State private var syncTokenInput = ""
+    @State private var syncTokenSaveMessage: String?
+
+    var body: some View {
+        Form {
+            Section("画面の表示") {
+                Toggle(isOn: $config.hudAlwaysVisible) {
+                    SettingRowLabel(
+                        title: "待機中もピルを表示",
+                        detail: "画面下の小さなピルを、録音していない間も出しておきます（フルスクリーンのアプリでは隠れます）。"
+                    )
+                }
+                Toggle(isOn: $config.sideNotchEnabled) {
+                    SettingRowLabel(
+                        title: "画面左端の履歴スリットを表示",
+                        detail: "クリックすると、これまでの入力の履歴を開いてコピーできます。"
+                    )
+                }
+                Toggle(isOn: $config.dockIconAlwaysVisible) {
+                    SettingRowLabel(
+                        title: "Dock にいつも表示",
+                        detail: "オフにすると、このウィンドウを開いている間だけ Dock に出ます。"
+                    )
+                }
+            }
+
+            Section("音") {
+                Toggle("録音の開始・終了で音を鳴らす", isOn: $config.soundEffectsEnabled)
+                Toggle("録音中はほかのアプリの音量を下げる", isOn: $config.duckMediaEnabled)
+            }
+
+            Section("起動") {
+                Toggle("Mac にログインしたら自動で起動", isOn: $launchAtLogin)
+                    .onChange(of: launchAtLogin) { _, enabled in
+                        do {
+                            if enabled {
+                                try SMAppService.mainApp.register()
+                            } else {
+                                try SMAppService.mainApp.unregister()
+                            }
+                        } catch {
+                            // 開発実行（未バンドル）では失敗するため表示を戻すだけ
+                            launchAtLogin = SMAppService.mainApp.status == .enabled
+                        }
+                    }
+            }
+
+            Section {
+                Toggle(isOn: $config.historyEnabled) {
+                    SettingRowLabel(
+                        title: "入力の履歴を保存",
+                        detail: "ダッシュボードの統計と、画面左端の履歴スリットに使います。"
+                    )
+                }
+                Toggle("Windows 版と履歴を共有", isOn: $config.historySyncEnabled)
+
+                // 共有の詳細（サーバー・トークン・状態）は、共有をオンにしたときだけ出す
+                // （使わない人には関係の無い入力欄が 3 行並んで、ページが読みにくくなっていたため）
+                if config.historySyncEnabled {
+                    historySyncRows
+                }
+            } header: {
+                Text("履歴")
+            }
         }
-        newProtectWord = ""
+        .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
+        .glassFormRows()                   // 行フィルを半透明化して島の中で「ガラスの棚」に見せる
+        .formStyle(.grouped)
+        .padding(.vertical, 8)
+        .onAppear { historySync.requestFetch() }
+    }
+
+    /// 履歴共有の設定行（サーバー URL・共有トークン・同期の状態）
+    @ViewBuilder private var historySyncRows: some View {
+        LabeledContent("同期サーバー URL") {
+            TextField(
+                "",
+                text: $config.historySyncURL,
+                prompt: Text("https://voicekey-history-sync.<subdomain>.workers.dev")
+            )
+            .labelsHidden()
+            .textFieldStyle(.roundedBorder)
+        }
+        if !config.historySyncURL.isEmpty,
+           !HistorySync.isAllowedServerURL(config.historySyncURL) {
+            Text("https URL を入力してください（開発用は localhost / 127.0.0.1 の http も可）。")
+                .font(.caption)
+                .foregroundStyle(.red)
+        }
+
+        LabeledContent {
+            HStack(spacing: 8) {
+                SecureField("", text: $syncTokenInput, prompt: Text("Windows から貼り付け"))
+                    .labelsHidden()
+                    .textFieldStyle(.roundedBorder)
+                Button("保存") { saveSyncToken() }
+                    .disabled(syncTokenInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if historySync.tokenConfigured {
+                    Button("削除") {
+                        syncTokenSaveMessage = historySync.deleteToken()
+                            ? "共有トークンを削除しました" : "共有トークンを削除できませんでした"
+                    }
+                }
+            }
+        } label: {
+            SettingRowLabel(
+                title: "共有トークン",
+                detail: syncTokenSaveMessage ?? (historySync.tokenConfigured ? "登録済み" : "未登録")
+            )
+        }
+
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 12) {
+                Text("送信待ち \(historySync.pendingCount) 件")
+                Text("最終同期 \(lastSyncText)")
+            }
+            .foregroundStyle(.secondary)
+            if let error = historySync.errorMessage {
+                Text(error).foregroundStyle(.red)
+            }
+        }
+        .font(.caption)
+    }
+
+    private var lastSyncText: String {
+        guard let date = historySync.lastSyncAt else { return "--:--" }
+        return date.formatted(date: .omitted, time: .shortened)
+    }
+
+    private func saveSyncToken() {
+        let ok = historySync.saveToken(syncTokenInput)
+        syncTokenSaveMessage = ok ? "共有トークンを保存しました" : "共有トークンを保存できませんでした"
+        if ok { syncTokenInput = "" }
     }
 }
 
-// MARK: - ホットキースロット
+// MARK: - 録音キー（スロット）
 
+/// 録音キー 1・2 のタブ。「どのキーを・どう押して・どのエンジンで文字にし・整えるか」を上から順に決める。
 private struct SlotSettingsTab: View {
-    let title: String
+    /// 1 or 2（文言と導線に使う）
+    let slotNumber: Int
     @Binding var slot: SlotConfig
     /// もう一方のスロットのキー（同じキーを選んだときに警告するため）
     var otherHotkey: [String] = []
-    /// エンジン変更でモデルを自動で切り替えたときの、切り替え先（ユーザーが選び直すまで一言出す）
-    @State private var autoSwitchedModel: String?
+    /// 共有の整形プロンプト（「プロンプト」ページの正本 `ConfigStore.autoFormatPrompt`。ここでは状態の表示だけ）
+    var formatPrompt: String = ""
+    /// 別のページへ移る（「プロンプトを編集」ボタン用）
+    var openTab: (Int) -> Void = { _ in }
 
     // 説明文は別の行に置かず、項目名の下に小さく添える（一般タブと同じ作り）。
     var body: some View {
@@ -770,16 +861,17 @@ private struct SlotSettingsTab: View {
                     HStack(spacing: 8) {
                         // 未割り当てのスロットは録音しない。空表示は「未割り当て」と明示する
                         HotkeyRecorderView(hotkey: $slot.hotkey, emptyLabel: "未割り当て")
-                            .frame(width: 180)
+                            .frame(width: 200)
                         // 捕捉を始めずに未割り当てへ戻す明示ボタン（ESC は取り消しなので、外す手段はこれだけ）
                         if !slot.hotkey.isEmpty {
-                            Button("割り当てを外す") { slot.hotkey = [] }
+                            Button("外す") { slot.hotkey = [] }
+                                .help("この録音キーの割り当てを外します（録音しなくなります）")
                         }
                     }
                 } label: {
                     SettingRowLabel(
-                        title: "ホットキー",
-                        detail: "クリックしてキーを押すと割り当てます。ESC で取り消し。"
+                        title: "録音キー",
+                        detail: "枠をクリックしてからキーを押すと割り当てます（ESC で取り消し）。右⌘ のように修飾キー 1 つでも使えます。"
                     )
                 }
                 // 同じキーだと片方の録音しか始まらず、どちらが動くか分からなくなる
@@ -789,78 +881,78 @@ private struct SlotSettingsTab: View {
                         .foregroundStyle(.orange)
                 }
 
-                Picker("録音のしかた", selection: $slot.mode) {
-                    ForEach(HotkeyMode.allCases) { mode in
-                        Text(mode.label).tag(mode)
+                // 押し方はモデルやエンジンとは関係の無い「キーの使い方」なので、キーの行の直下に置く
+                // （以前はエンジン・モデルの並びに混ざっていて「モデルの場所なのにホールド/トグル」に見えた）
+                LabeledContent {
+                    Picker("", selection: $slot.mode) {
+                        ForEach(HotkeyMode.allCases) { mode in
+                            Text(mode.label).tag(mode)
+                        }
                     }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                } label: {
+                    SettingRowLabel(title: "キーの押し方", detail: Self.modeCaption(slot.mode))
                 }
-                .pickerStyle(.segmented)
             }
 
-            Section("文字起こし") {
-                // 製品版は文字起こし 2 択（即時入力 / スタンダード）のみ。モデルは推奨固定で非選択。
-                // personal（自分用）は特徴名で包まず、実プロバイダー名 + モデル名をそのまま出す。
-                Picker(selection: $slot.backend) {
-                    ForEach(Backend.selectableCases) { backend in
-                        Text(EmbeddedKeys.isPersonal ? backend.developerLabel : backend.label).tag(backend)
-                    }
+            Section {
+                // エンジンとモデルを 1 つのポップアップで決める（提供元の見出しの下にモデルが並ぶ）。
+                // 以前は「エンジン」と「モデル」の 2 段で、エンジンを変えると推奨モデルへ黙って切り替わっていた
+                LabeledContent {
+                    GroupedChoiceMenu(
+                        groups: EngineModelCatalog.groups(current: choice),
+                        selection: choiceBinding,
+                        currentTitle: EngineModelCatalog.title(choice)
+                    )
                 } label: {
-                    // 選択中エンジンの説明。スタンダード(groq)はハンズフリー自動切替の1行も添える。
                     SettingRowLabel(
-                        title: EmbeddedKeys.isPersonal ? "エンジン" : "文字起こしモード",
+                        title: "文字起こしエンジン",
                         detail: Self.backendCaption(slot.backend).isEmpty ? nil : Self.backendCaption(slot.backend)
                     )
                 }
-                .onChange(of: slot.backend) { _, newBackend in
-                    // モデル名はエンジンごとに別物なので、そのエンジンの推奨モデルへ切り替える。
-                    // 黙って変えると気づけないので、切り替えたことを一言出す。
-                    // 整形は利用者が決めた設定なので、エンジンを変えても触らない
-                    // （以前はエンジンの既定へ黙って上書きしていた）。
-                    if slot.model != newBackend.defaultModel {
-                        slot.model = newBackend.defaultModel
-                        autoSwitchedModel = newBackend.defaultModel
-                    }
-                }
-
-                // 自分用ビルドはモデルまで自分で選べる（製品版はモデル非選択で固定）。
-                // 選択肢が 1 つだけのエンジン（ローカル等）は選ばせても意味が無いので出さない。
-                // ただし保存済みモデルが一覧外（自由入力）のときは、何が使われているか見えるよう出す。
-                let isCustomModel = !slot.backend.knownModels.contains(slot.model)
-                if slot.backend.knownModels.count > 1 || isCustomModel {
-                    Picker("モデル", selection: $slot.model) {
-                        // 表示は推奨モデルに「（推奨）」を付け、tag（保存値）はモデル識別子のまま
-                        ForEach(slot.backend.knownModels, id: \.self) { model in
-                            Text(model == slot.backend.defaultModel ? "\(model)（推奨）" : model)
-                                .tag(model)
-                        }
-                        // 一覧外のモデルも選択状態を保って表示する（一般タブの整形モデルと同じ扱い）
-                        if isCustomModel {
-                            Text(slot.model).tag(slot.model)
-                        }
-                    }
-                }
-                // 自分で選び直したら消える（切り替え先のままの間だけ出す）
-                if let autoSwitchedModel, autoSwitchedModel == slot.model {
-                    Text("エンジンを変えたので、モデルを「\(autoSwitchedModel)」に切り替えました")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+            } header: {
+                Text("文字起こし")
+            } footer: {
+                Text("一覧は日本語で使うときのおすすめ順です。Apple（ローカル）以外は「API キー」ページで、そのサービスのキーを入れてください。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            Section("整形") {
-                Toggle("文章を自動で整える", isOn: $slot.formatEnabled)
-                // 整形 ON のときだけ「整え方」プリセットを選ばせる（削り方の強さを切り替える）。
-                // 既定 standard は言いよどみだけ除去して話した内容は残す（「内容を削るのは NG」への対応）。
-                // モデル/プロンプトはサーバー固定（release 方針）なので、ここではプリセットのみ選ばせる。
+            Section("文章の整形") {
+                Toggle(isOn: $slot.formatEnabled) {
+                    SettingRowLabel(
+                        title: "文章を自動で整える",
+                        detail: "文字起こしのあと、AI（Groq）が「プロンプト」ページの指示で句読点や言いよどみを整えます。"
+                            + "オフにすると、文字起こしをそのまま入力します（いちばん速い）。"
+                    )
+                }
                 if slot.formatEnabled {
-                    Picker(selection: $slot.formatPresetId) {
-                        ForEach(Self.formatPresets, id: \.id) { preset in
-                            Text(preset.label).tag(preset.id)
-                        }
+                    // 指示文は録音キー 1・2 で共通（正本は 1 つ）。ここでは何が使われるかと、編集への入口だけを出す
+                    LabeledContent {
+                        Button("プロンプトを編集") { openTab(MainWindowView.TabID.prompt) }
                     } label: {
-                        SettingRowLabel(title: "整え方", detail: Self.formatPresetCaption(slot.formatPresetId))
+                        SettingRowLabel(title: "使う指示", detail: Self.promptSummary(formatPrompt))
                     }
-                    .pickerStyle(.menu)
+                    // 旧製品版（サーバー整形）だけは、サーバーへ渡す「整え方」が録音キーごとに効く。
+                    // 自前のキーで整形する personal 版では効かない（指示文が全て）ので出さない
+                    if !EmbeddedKeys.isPersonal {
+                        Picker(selection: $slot.formatPresetId) {
+                            ForEach(FormatPromptTemplates.all) { preset in
+                                Text(preset.title).tag(preset.id)
+                            }
+                        } label: {
+                            SettingRowLabel(
+                                title: "整え方（ログイン時のサーバー整形）",
+                                detail: FormatPromptTemplates.all.first { $0.id == slot.formatPresetId }?.summary
+                            )
+                        }
+                        .pickerStyle(.menu)
+                    }
                 }
             }
         }
@@ -870,31 +962,46 @@ private struct SlotSettingsTab: View {
         .padding(.vertical, 8)
     }
 
-    /// 整形プリセット（サーバー lib/format.ts の preset_id と一致）。id → UI ラベル。
-    /// 既定は standard。配列順がそのまま Picker の表示順。
-    private static let formatPresets: [(id: String, label: String)] = [
-        ("standard", "標準（言いよどみだけ除去）"),
-        ("punctuation", "そのまま（句読点だけ整える）"),
-        ("clean", "すっきり（言い直しを整理）"),
-        ("bullets", "箇条書き（リストに整理）"),
-    ]
+    /// いまの (エンジン, モデル) の組
+    private var choice: EngineModelChoice {
+        EngineModelChoice(backend: slot.backend, model: slot.model)
+    }
 
-    /// 選択中の整形プリセットの一行説明（Picker 下に薄字で出す）。
-    /// 「発言内容は削らない」ことが伝わる文言にする（クレーム対応の主眼）。
-    private static func formatPresetCaption(_ id: String) -> String {
-        switch id {
-        case "punctuation":
-            return "言葉は一切消さず、句読点・改行だけを整えます。"
-        case "clean":
-            return "言いよどみに加え、言い直し（例: 火曜いや水曜）も最終形に整理します。内容は残します。"
-        case "bullets":
-            return "箇条書きにできる部分をリストに整理します。各項目の内容は残します。"
-        default:  // standard
-            return "「えー」「あの」などの言いよどみだけを消し、話した内容はそのまま残します。"
+    /// ポップアップの選択をスロットへ書き戻す（エンジンとモデルを 1 回の代入で同時に変える＝保存も 1 回）
+    private var choiceBinding: Binding<EngineModelChoice> {
+        Binding(
+            get: { EngineModelChoice(backend: slot.backend, model: slot.model) },
+            set: { newValue in
+                var updated = slot
+                updated.backend = newValue.backend
+                updated.model = newValue.model
+                slot = updated
+            }
+        )
+    }
+
+    /// キーの押し方の説明
+    private static func modeCaption(_ mode: HotkeyMode) -> String {
+        switch mode {
+        case .hold:
+            return "押している間だけ録音し、離すと入力します。"
+        case .toggle:
+            return "1 回押すと録音が始まり、もう 1 回押すと止まって入力します。長く話すときに向いています。"
         }
     }
 
-    /// 選択中の文字起こしモードの説明文（Windows 版 _backend_caption_text と同一文言）。
+    /// 共有プロンプトの状態の一言（どのひな形のままか、自分で書き換えたか）
+    private static func promptSummary(_ prompt: String) -> String {
+        if prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "既定の指示（標準）を使います。録音キー 1・2 で共通です。"
+        }
+        if let template = FormatPromptTemplates.matching(prompt) {
+            return "ひな形「\(template.title)」を使っています。録音キー 1・2 で共通です。"
+        }
+        return "自分で書き換えた指示（\(prompt.count) 文字）を使っています。録音キー 1・2 で共通です。"
+    }
+
+    /// 選択中の文字起こしエンジンの説明文（Windows 版 _backend_caption_text と同一文言）。
     /// スタンダード(groq)はハンズフリー録音時に内部で高精度エンジン(ElevenLabs)へ切替する旨も添える。
     private static func backendCaption(_ backend: Backend) -> String {
         switch backend {
@@ -908,8 +1015,8 @@ private struct SlotSettingsTab: View {
             return "録音後に Microsoft の MAI-Transcribe-2 で文字起こしします（精度が高く単価も安め・プレビュー）。\n"
                 + "鍵: AZURE_SPEECH_KEY と AZURE_SPEECH_ENDPOINT。リソースは対応リージョンに作ってください（japaneast は非対応）。"
         case .elevenlabs:
-            return "録音後に ElevenLabs の Scribe v2 で文字起こしします（日本語の精度重視）。\n"
-                + "数字が漢数字で出やすいので、気になるときは「数字入力」の設定と併用してください。"
+            return "録音後に ElevenLabs の Scribe で文字起こしします（日本語の精度重視）。\n"
+                + "数字が漢数字で出やすいので、気になるときは「辞書と数字」ページの数字の設定と併用してください。"
         // openaiLive は personal 限定の選択肢なので、この説明は personal でしか表示されない
         // （＝ピッカーにモデル名が出ている前提で書く）
         case .openaiLive:
@@ -928,24 +1035,199 @@ private struct SlotSettingsTab: View {
     }
 }
 
+// MARK: - プロンプト（整形の指示・録音キー 1・2 で共有）
+
+/// 「プロンプト」タブ。整形（Groq）で AI に渡す指示文を、録音キー 1・2 共通で 1 か所で編集する。
+///
+/// 正本は `ConfigStore.autoFormatPrompt`（UserDefaults キー `autoFormatPrompt`。既定文と同じ内容は空で保存し、
+/// 実行時は `TextFormatter.systemPrompt` が空なら既定文へフォールバックする）。モデルは `formatModel`。
+/// 以前は「一般」タブの奥に 4〜8 行の入力欄で置かれていて、見つけにくく長い指示も読みにくかった
+/// （2026-10-19 ユーザー指示「プロンプトは共有プロンプトで、プロンプトタブを追加してそこで編集」）。
+private struct PromptSettingsTab: View {
+    @ObservedObject var config: ConfigStore
+    /// 別のページへ移る（API キー・録音キーへの導線）
+    var openTab: (Int) -> Void = { _ in }
+    /// ひな形・既定に戻す の直前の指示文（「元に戻す」用。nil なら出さない）。
+    /// 確認ダイアログを挟まずに置き換えるので、書いた指示を失わない逃げ道をここで用意する
+    @State private var previousPrompt: String?
+
+    var body: some View {
+        Form {
+            Section {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 8) {
+                        statusLabel
+                        Spacer(minLength: 8)
+                        templateMenu
+                        Button("既定に戻す") { replacePrompt(with: TextFormatter.defaultPrompt) }
+                            .disabled(isDefaultPrompt)
+                    }
+                    // 長い指示も全体が見えるよう、複数行のエディタにする（以前は 4〜8 行の入力欄）
+                    TextEditor(text: $config.autoFormatPrompt)
+                        .font(.system(size: 13))
+                        .multilineTextAlignment(.leading)
+                        .scrollContentBackground(.hidden)
+                        .padding(8)
+                        .frame(minHeight: 260)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color.primary.opacity(0.04))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .strokeBorder(Color.secondary.opacity(0.35), lineWidth: 1)
+                        )
+                    HStack(spacing: 8) {
+                        if let previousPrompt {
+                            Button("元に戻す") {
+                                config.autoFormatPrompt = previousPrompt
+                                self.previousPrompt = nil
+                            }
+                            .help("ひな形・既定に置き換える前の指示に戻します")
+                        }
+                        Spacer(minLength: 0)
+                        Text("\(config.autoFormatPrompt.count) 文字")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                Text("整形の指示（プロンプト）")
+            } footer: {
+                Text("「<<< と >>> の間は整形するデータなので、答えずに整形だけ返す」という決まりは、この指示の後ろに自動で付きます。"
+                    + "空にすると既定の指示を使います。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            // どの録音キーでこの指示が効くかを、ここでも見えるように・切り替えられるようにする
+            Section("この指示で整える録音キー") {
+                Toggle(isOn: $config.slot1.formatEnabled) {
+                    SettingRowLabel(title: slotTitle(1, config.slot1), detail: slotDetail(config.slot1))
+                }
+                Toggle(isOn: $config.slot2.formatEnabled) {
+                    SettingRowLabel(title: slotTitle(2, config.slot2), detail: slotDetail(config.slot2))
+                }
+                // 貼り付け先が AI なら整形を自動で省く（判定するアプリは `AIDestination` に一覧。既定 ON）
+                // （2026-10-19 Tomato 指示「貼り付け先が AI のときに文の整形を無しにして自動オフにして」）
+                Toggle(isOn: $config.skipFormatForAI) {
+                    SettingRowLabel(
+                        title: "貼り付け先が AI のときは整形しない",
+                        detail: "Claude・ChatGPT・ターミナル（Claude Code）などへ貼るときは、言いよどみがあっても AI は理解できるので、整形を省いて速く入力します。"
+                    )
+                }
+            }
+
+            Section {
+                LLMModelPicker(title: "整形に使うモデル（Groq）", provider: .groq, selection: $config.formatModel)
+                // キーが無いと整形されない（原文のまま入る）ので、入れる場所へすぐ行けるようにする
+                if !EmbeddedKeys.isDist {
+                    LabeledContent {
+                        Button("API キーを開く") { openTab(MainWindowView.TabID.apiKeys) }
+                    } label: {
+                        SettingRowLabel(title: "Groq の API キー", detail: "「API キー」ページの Groq の欄に入れます。")
+                    }
+                }
+            } header: {
+                Text("AI モデル")
+            } footer: {
+                Text("整形には Groq の API キーが要ります。失敗したときは整形せず、文字起こしをそのまま入力します。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
+        .glassFormRows()                   // 行フィルを半透明化して島の中で「ガラスの棚」に見せる
+        .formStyle(.grouped)
+        .padding(.vertical, 8)
+    }
+
+    /// いまの指示がどのひな形のままか／自分で書き換えたか
+    @ViewBuilder private var statusLabel: some View {
+        if let template = FormatPromptTemplates.matching(config.autoFormatPrompt) {
+            Label("ひな形「\(template.title)」", systemImage: "checkmark.seal")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .help(template.summary)
+        } else {
+            Label("自分で書き換えた指示", systemImage: "pencil")
+                .font(.callout)
+                .foregroundStyle(Brand.signal)
+        }
+    }
+
+    /// ひな形の選択メニュー（選ぶと指示文がその内容に置き換わる）
+    private var templateMenu: some View {
+        Menu {
+            ForEach(FormatPromptTemplates.all) { template in
+                Button(template.title) { replacePrompt(with: template.prompt) }
+            }
+        } label: {
+            Label("ひな形から選ぶ", systemImage: "text.badge.plus")
+        }
+        .fixedSize()
+        .help("標準／そのまま／すっきり／箇条書き から選ぶと、指示がその内容に置き換わります（「元に戻す」で戻せます）")
+    }
+
+    /// 既定文のままか（前後の空白は無視・空欄も既定扱い＝実行時に既定文を使うため）
+    private var isDefaultPrompt: Bool {
+        let current = config.autoFormatPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        return current.isEmpty
+            || current == TextFormatter.defaultPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 指示文を置き換える（同じ内容なら何もしない。直前の文を「元に戻す」用に覚える）
+    private func replacePrompt(with text: String) {
+        guard config.autoFormatPrompt != text else { return }
+        previousPrompt = config.autoFormatPrompt
+        config.autoFormatPrompt = text
+    }
+
+    /// 録音キー 1 行分の見出し（例: 「録音キー 1（右⌘）」）
+    private func slotTitle(_ number: Int, _ slot: SlotConfig) -> String {
+        "録音キー \(number)（\(slot.hotkeyLabel)）"
+    }
+
+    /// 録音キー 1 行分の説明（整形するかと、使うエンジン）
+    private func slotDetail(_ slot: SlotConfig) -> String {
+        let engine = EngineModelCatalog.title(EngineModelChoice(backend: slot.backend, model: slot.model))
+        return slot.formatEnabled
+            ? "整える（\(engine) で文字起こししたあと）"
+            : "整えない（\(engine) の文字起こしをそのまま入力）"
+    }
+}
+
 // MARK: - 翻訳して入力
+
+/// 「翻訳して入力」のエンジン＋モデルの選択値（Apple はモデルを持たないので空）
+private struct TranslateInputChoice: Hashable {
+    let engine: DictationTranslationEngine
+    let model: String
+}
 
 /// 文字起こし結果を訳してから貼り付ける設定（全体で 1 つ・スロット単位ではない）
 @available(macOS 26.0, *)
 private struct TranslateInputTab: View {
     @ObservedObject var config: ConfigStore
+    /// Groq の実在一覧（未取得なら nil＝静的一覧だけで出す。LLMModelPicker と同じ取り方）
+    @State private var groqAvailable: [String]?
 
     var body: some View {
         Form {
             // 説明文は別の行に置かず、項目名の下に小さく添える（他の設定タブと同じ作り）
-            Section {
+            Section("翻訳するとき") {
                 // たまに 1 回だけ訳す使い方が主なので、キーを先頭に置く（常時 ON は下のトグル）
                 LabeledContent {
                     HStack(spacing: 8) {
                         HotkeyRecorderView(hotkey: $config.translateOnceKey)
-                            .frame(width: 180)  // 他のキー設定の欄と同じ幅
+                            .frame(width: 200)  // 他のキー設定の欄と同じ幅
                         if !config.translateOnceKey.isEmpty {
-                            Button("クリア") { config.translateOnceKey = [] }
+                            Button("外す") { config.translateOnceKey = [] }
                         }
                     }
                 } label: {
@@ -968,7 +1250,7 @@ private struct TranslateInputTab: View {
                 }
                 Toggle(isOn: $config.translateInputEnabled) {
                     SettingRowLabel(
-                        title: "常に翻訳して入力する",
+                        title: "いつも翻訳して入力する",
                         detail: "話した内容を毎回翻訳してから貼り付けます（例: 日本語で話す → 英語が入力される）。"
                             + "メニューバーの「翻訳して入力（常時）」でも切り替えられます。"
                     )
@@ -977,22 +1259,19 @@ private struct TranslateInputTab: View {
 
             // 言語とエンジンは 1 回翻訳でも常時翻訳でも使うので、常に出す
             Section {
-                Picker("入力する言語", selection: $config.translateInputTarget) {
+                Picker("訳す先の言語", selection: $config.translateInputTarget) {
                     ForEach(DictationTranslation.targetLanguages, id: \.code) { language in
                         Text(language.label).tag(language.code)
                     }
                 }
-                Picker(selection: $config.translateInputEngine) {
-                    ForEach(DictationTranslationEngine.allCases) { engine in
-                        Text(engine.label).tag(engine)
-                    }
+                // エンジンとモデルを 1 つのポップアップで決める（録音キーの文字起こしエンジンと同じ形）
+                LabeledContent {
+                    GroupedChoiceMenu(groups: choiceGroups, selection: choiceBinding, currentTitle: currentTitle)
                 } label: {
-                    SettingRowLabel(title: "翻訳エンジン", detail: Self.engineCaption(config.translateInputEngine))
+                    SettingRowLabel(title: "翻訳エンジン", detail: engineDetail)
                 }
-                // 字幕とは別に選べる（音声入力と字幕で向いているモデルが違いうるため）
-                if config.translateInputEngine == .groq {
-                    LLMModelPicker(title: "Groq のモデル", provider: .groq, selection: $config.translateInputGroqModel)
-                }
+            } header: {
+                Text("翻訳のしかた")
             } footer: {
                 // 二重に LLM を叩くと遅くなるので、気付けるようにここで一言添える
                 // （どちらを切るかはユーザーが決める。勝手に整形を無効化はしない）
@@ -1011,16 +1290,63 @@ private struct TranslateInputTab: View {
         .glassFormRows()                   // 行フィルを半透明化して島の中で「ガラスの棚」に見せる
         .formStyle(.grouped)
         .padding(.vertical, 8)
+        .task {
+            // キャッシュで先に描き、取り直せたら差し替える（一覧 GET は無料。キー探索は非メインで行う）
+            groqAvailable = LLMModelCatalog.cachedAvailable(.groq)
+            await LLMModelCatalog.refreshAvailable(.groq, force: true)
+            groqAvailable = LLMModelCatalog.cachedAvailable(.groq)
+        }
     }
 
-    /// 選択中の翻訳エンジンの一行説明
-    private static func engineCaption(_ engine: DictationTranslationEngine) -> String {
-        switch engine {
+    /// いまの選択（Apple はモデルを持たないので空）
+    private var choice: TranslateInputChoice {
+        TranslateInputChoice(
+            engine: config.translateInputEngine,
+            model: config.translateInputEngine == .groq ? config.translateInputGroqModel : ""
+        )
+    }
+
+    private var choiceBinding: Binding<TranslateInputChoice> {
+        Binding(
+            get: { choice },
+            set: { newValue in
+                // モデルを先に書いてからエンジンを切り替える（切り替えた瞬間に古いモデルで訳さないように）
+                if newValue.engine == .groq { config.translateInputGroqModel = newValue.model }
+                config.translateInputEngine = newValue.engine
+            }
+        )
+    }
+
+    /// ポップアップの中身（Apple は 1 項目・Groq は見出しの下にモデル）
+    private var choiceGroups: [ChoiceMenuGroup<TranslateInputChoice>] {
+        let groqOptions = LLMModelCatalog.options(
+            .groq, current: config.translateInputGroqModel, available: groqAvailable
+        ).map { ChoiceMenuOption(id: TranslateInputChoice(engine: .groq, model: $0.id), label: $0.label) }
+        return [
+            ChoiceMenuGroup(title: nil, options: [
+                ChoiceMenuOption(id: TranslateInputChoice(engine: .apple, model: ""), label: "Apple 翻訳（端末内・無料）"),
+            ]),
+            ChoiceMenuGroup(title: "Groq", options: groqOptions),
+        ]
+    }
+
+    /// 閉じたポップアップの表示
+    private var currentTitle: String {
+        switch config.translateInputEngine {
+        case .apple: return "Apple 翻訳（端末内）"
+        case .groq: return "Groq · \(LLMModelCatalog.displayName(.groq, id: config.translateInputGroqModel))"
+        }
+    }
+
+    /// 選択中のエンジン（とモデル）の説明
+    private var engineDetail: String {
+        switch config.translateInputEngine {
         case .apple:
             return "Mac の中だけで翻訳します。無料・オフラインで動きます。\n"
                 + "使う言語が未導入のときは システム設定 > 一般 > 言語と地域 > 翻訳言語 で追加してください。"
         case .groq:
-            return "Groq の LLM で翻訳します。話し言葉のニュアンスに強い代わりに、通信と API キーが必要です。"
+            return "Groq の LLM で翻訳します。話し言葉のニュアンスに強い代わりに、通信と API キーが必要です。\n"
+                + LLMModelCatalog.detail(.groq, id: config.translateInputGroqModel, available: groqAvailable)
         }
     }
 }
@@ -1397,31 +1723,60 @@ private struct AboutTab: View {
     }
 }
 
-// MARK: - ユーザー辞書（確定置換）
+// MARK: - 辞書と数字（確定置換・数字の書き方）
 
-/// ユーザー辞書タブ。文字起こし・整形が終わった最終テキストに対し、貼り付け直前で
-/// from→to を機械置換するルールを編集する（API を通さないので遅延ゼロ）。
+/// 「辞書と数字」タブ。文字起こし・整形が終わった最終テキストに対し、貼り付け直前で
+/// from→to を機械置換するルール（API を通さないので遅延ゼロ）と、数字の書き方（旧「一般」タブの「数字入力」）を
+/// 1 ページにまとめる。どちらも「入力される文字をどう直すか」の設定なので同じ場所に置く。
+///
+/// 追加の入力欄はいつも出しておく（以前は「追加」を押すと空の行が増える作りで、
+/// 空のまま残った行が溜まり、どこに打てばよいかも分かりにくかった。HANDOFF の改善候補「辞書の常時入力欄」）。
 private struct DictionaryTab: View {
     @ObservedObject var config: ConfigStore
+    /// 追加欄の「聞き取られた表記」
+    @State private var newFrom = ""
+    /// 追加欄の「直したい表記」
+    @State private var newTo = ""
+    /// 「変換しない語」の追加入力欄（保護リスト編集用）
+    @State private var newProtectWord = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if config.replacements.isEmpty {
-                // 空状態の案内（待ち/未設定をユーザーが判別できるようにする）
-                VStack(spacing: 8) {
-                    Image(systemName: "character.book.closed")
-                        .font(.largeTitle)
+        Form {
+            Section {
+                HStack(spacing: 8) {
+                    TextField("", text: $newFrom, prompt: Text("聞き取られた表記（例: ボイスキー）"))
+                        .labelsHidden()
+                        .textFieldStyle(.roundedBorder)
+                        .multilineTextAlignment(.leading)
+                        .onSubmit { addRule() }
+                    Image(systemName: "arrow.right")
                         .foregroundStyle(.secondary)
-                    Text("確定置換ルールがありません")
-                        .foregroundStyle(.secondary)
-                    Text("「追加」で、よく誤変換される語の置き換えを登録できます。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
+                    TextField("", text: $newTo, prompt: Text("直したい表記（例: voicekey）"))
+                        .labelsHidden()
+                        .textFieldStyle(.roundedBorder)
+                        .multilineTextAlignment(.leading)
+                        .onSubmit { addRule() }
+                    Button("追加") { addRule() }
+                        .disabled(newFrom.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List {
+            } header: {
+                Text("置き換えを追加")
+            } footer: {
+                Text("文字起こし・整形が終わった文に、貼り付ける直前で当てます（部分一致・上から順に）。"
+                    + "AI を通さないので待ち時間は増えません。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section("登録済みの置き換え（\(config.replacements.count) 件）") {
+                if config.replacements.isEmpty {
+                    // 空状態の案内（待ち/未設定をユーザーが判別できるようにする）
+                    Label("まだありません。上の欄に入れて「追加」で登録します。", systemImage: "character.book.closed")
+                        .foregroundStyle(.secondary)
+                } else {
                     // $config.replacements の各行をその場で編集（変更は ConfigStore が自動保存）
                     ForEach($config.replacements) { $rule in
                         HStack(spacing: 8) {
@@ -1430,12 +1785,16 @@ private struct DictionaryTab: View {
                                 .toggleStyle(.switch)
                                 .labelsHidden()
                                 .help("この行を有効/無効にする")
-                            TextField("変換元", text: $rule.from)
+                            TextField("", text: $rule.from, prompt: Text("変換元"))
+                                .labelsHidden()
                                 .textFieldStyle(.roundedBorder)
+                                .multilineTextAlignment(.leading)
                             Image(systemName: "arrow.right")
                                 .foregroundStyle(.secondary)
-                            TextField("変換先", text: $rule.to)
+                            TextField("", text: $rule.to, prompt: Text("変換先"))
+                                .labelsHidden()
                                 .textFieldStyle(.roundedBorder)
+                                .multilineTextAlignment(.leading)
                             Button {
                                 config.replacements.removeAll { $0.id == rule.id }
                             } label: {
@@ -1447,23 +1806,75 @@ private struct DictionaryTab: View {
                         }
                     }
                 }
-                .scrollContentBackground(.hidden)  // List の不透明背景を消してすりガラス下地を透かす
-                .glassFormRows()                   // 行フィルを半透明化して島の中で「ガラスの棚」に見せる
             }
 
-            Divider()
-            HStack {
-                Button {
-                    config.replacements.append(ReplacementRule())
-                } label: {
-                    Label("追加", systemImage: "plus")
+            Section("数字の書き方") {
+                // マスター。OFF なら数字の正規化を一切しない（完全パススルー）
+                Toggle(isOn: $config.numeralNormalizeEnabled) {
+                    SettingRowLabel(
+                        title: "数字を半角で入力",
+                        detail: "「十二人→12人」「千二百三十四→1234」のように、漢数字や全角の数字を半角にします。"
+                    )
                 }
-                Spacer()
-                Text("貼り付け直前に置き換えます（部分一致・登録順）。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                // 単独漢数字＋助数詞（三時→3時）。マスター OFF のときは無効表示
+                Toggle("助数詞つきの漢数字も変換（三時→3時）", isOn: $config.numeralConvertCounter)
+                    .disabled(!config.numeralNormalizeEnabled)
+
+                // 変換しない語（保護リスト）: 入力欄＋追加、各行に削除ボタン
+                LabeledContent {
+                    HStack(spacing: 8) {
+                        TextField("", text: $newProtectWord, prompt: Text("語を追加"))
+                            .labelsHidden()
+                            .textFieldStyle(.roundedBorder)
+                            .multilineTextAlignment(.leading)
+                            .frame(minWidth: 140)
+                            .onSubmit { addProtectWord() }
+                        Button("追加") { addProtectWord() }
+                            .disabled(newProtectWord.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                } label: {
+                    SettingRowLabel(
+                        title: "数字にしない語",
+                        detail: "「一人」「十分」など、数字に読める普通の言葉を守ります。"
+                    )
+                }
+                ForEach(config.numeralProtectWords, id: \.self) { word in
+                    HStack {
+                        Text(word)
+                        Spacer()
+                        Button {
+                            config.numeralProtectWords.removeAll { $0 == word }
+                        } label: {
+                            Image(systemName: "trash").foregroundStyle(.red)
+                        }
+                        .buttonStyle(.borderless)
+                        .help("この語を削除")
+                    }
+                }
             }
-            .padding(12)
         }
+        .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
+        .glassFormRows()                   // 行フィルを半透明化して島の中で「ガラスの棚」に見せる
+        .formStyle(.grouped)
+        .padding(.vertical, 8)
+    }
+
+    /// 追加欄の内容でルールを 1 件足す（変換元が空なら何もしない。足したら欄を空にする）
+    private func addRule() {
+        let from = newFrom.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !from.isEmpty else { return }
+        config.replacements.append(ReplacementRule(from: from, to: newTo.trimmingCharacters(in: .whitespacesAndNewlines)))
+        newFrom = ""
+        newTo = ""
+    }
+
+    /// 入力欄の語を保護リストへ追加する（前後空白除去・重複はスキップ）。
+    private func addProtectWord() {
+        let word = newProtectWord.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !word.isEmpty else { return }
+        if !config.numeralProtectWords.contains(word) {
+            config.numeralProtectWords.append(word)
+        }
+        newProtectWord = ""
     }
 }

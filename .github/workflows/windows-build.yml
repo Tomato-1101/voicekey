@@ -1,13 +1,16 @@
 # Windows 版インストーラを GitHub Actions（windows-latest）でビルドする。
 #
-# 目的: Mac から PC をまたがずに Windows 版をリリースできるようにする
+# 目的: Mac から PC をまたがずに Windows 版のインストーラを作れるようにする
 #       （.env.dist の USB 手運び・Windows 実機でのビルド作業を廃止）。
 #
 # 使い方（Mac のターミナルから）:
 #   gh workflow run windows-build.yml -f version=1.0.0
 #   gh run watch                                  # 進捗を見る（約 10〜15 分）
-#   gh run download -n voicekey-windows-installer -D dist/ci/
-#   → dist/ci/ の setup.exe と version.json を voicekey-site へ配置して deploy
+#   gh release download "winci-1.0.0" -D dist/ci/   # 動作確認用の setup.exe を取り出す
+#
+# 2026-10-19: Windows 版は配布していない（CLAUDE.md「Windows は配布しない・ソースから」）。
+# 旧配布リポ voicekey-releases は削除済みで、更新フィード（version.json）ももう作らない。
+# このワークフローは「Windows でインストーラが作れるか」を確かめるためだけに残している。
 #
 # セキュリティ（2026-06-28 修正）:
 # - 配布バイナリに長期プロバイダーキーは 1 バイトも埋め込まない。製品版は文字起こし・
@@ -15,7 +18,7 @@
 #   よって OPENAI/GROQ/ELEVENLABS/DEEPGRAM_API_KEY の GitHub Secrets はもう渡さない。
 # - build_windows_dist.ps1 が PyInstaller 後に verify_no_embedded_keys.py で
 #   生成物にキーが混入していないことを検査してから次へ進む（漏洩回帰の防止）。
-# - リポジトリは private。artifact はソースを含まない配布バイナリ。
+# - リポジトリは PUBLIC（2026-10-01〜）。添付するのはソースを含まないインストーラだけ。
 
 name: Windows ビルド
 
@@ -73,17 +76,19 @@ jobs:
           PYTHONUTF8: "1"
         run: powershell -ExecutionPolicy Bypass -File scripts\build\build_windows_dist.ps1 -Version "${{ inputs.version }}"
 
-      - name: 成果物を転送用 GitHub Release（private 本リポ）へ公開
+      - name: 成果物を転送用 GitHub Release（プレリリース）へ添付
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           # 既存の同名 Release/タグがあれば消す（再実行を冪等にする）
           gh release delete "winci-${{ inputs.version }}" --repo ${{ github.repository }} --yes --cleanup-tag 2>&1 | Out-Null
-          # setup.exe + version.json を Release 資産として添付（Mac 側が download → voicekey-releases へ relay）
+          # setup.exe を転送用 Release 資産として添付する（動作確認で取り出したら削除する。一般配布はしない）。
+          # --prerelease は必須: 通常の Release にすると「最新版」扱いになり、Mac の自動更新が見る
+          # releases/latest/download/appcast.xml がこの Release を指して壊れる
           gh release create "winci-${{ inputs.version }}" `
             --repo ${{ github.repository }} `
             --title "Windows CI ${{ inputs.version }}（転送用）" `
-            --notes "artifact クォータ回避のための転送用 Release。Mac から download して公開リポ voicekey-releases へ relay 後、これは削除する。" `
-            "dist/installer/voicekey-${{ inputs.version }}-setup.exe" `
-            "dist/installer/version.json"
+            --notes "artifact クォータ回避のための転送用 Release（動作確認用）。Windows 版は一般配布しないので、取り出したら削除する。" `
+            --prerelease `
+            "dist/installer/voicekey-${{ inputs.version }}-setup.exe"

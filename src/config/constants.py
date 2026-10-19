@@ -82,10 +82,37 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # 長文を無音区間で分割し API へ並列送信する（既定オン。Deepgram ストリーミングは対象外）
     "split_parallel_enabled": True,
 
-    # LLM テキスト整形に使う Groq モデル（両ホットキー共通）
-    "format_model": "llama-3.1-8b-instant",
+    # LLM テキスト整形に使う Groq モデル（両ホットキー共通）。
+    # llama 系は 2026-10 に Groq の API から廃止されたので、Mac と同じおすすめ（Qwen3.8 27B）を既定にする
+    "format_model": "qwen/qwen3.8-27b",
     # 整形プロンプト本文（空 = 既定の DEFAULT_FORMAT_PROMPT を使用）
     "format_auto_prompt": "",
+    # 貼り付け先が AI（Claude・ChatGPT・ターミナル等。判定は core/ai_destination.py）のときは整形を省くか。
+    # AI は言いよどみ入りでも理解できるので Groq の往復を省いて速く・安く入力する（既定 ON・Mac の skipFormatForAI と同義）
+    "skip_format_for_ai": True,
+
+    # 最後の文字起こしをもう一度貼り付けるキー（空＝無効）。Mac の既定は ⌃⌘V だが、Windows では
+    # Ctrl+Win+V が OS の音声出力の切り替え、Ctrl+Alt+V が Office の「形式を選択して貼り付け」と重なり、
+    # pynput はキーを横取りできない（相手のアプリにも届く）ので、既定は未設定にして利用者に選んでもらう
+    "repaste_key": "",
+
+    # 翻訳して入力（Mac の DictationTranslation と同じ項目。Apple 翻訳は無いので Groq / Gemini から選ぶ）
+    # translate_input_enabled: 常に翻訳して入力するか（全体で 1 つ・スロット単位ではない）
+    # translate_input_target: 入力する言語（既定 英語）
+    # translate_input_engine: "groq"（既定・無料枠あり）/ "gemini"（有料の場合あり）
+    # translate_once_key: 録音中に押すとその回だけ翻訳するキー（空＝無効。既定 右 Shift＝Mac の 右⇧）
+    "translate_input_enabled": False,
+    "translate_input_target": "en",
+    "translate_input_engine": "groq",
+    "translate_input_groq_model": "qwen/qwen3.8-27b",
+    "translate_input_gemini_model": "gemini-3.5-flash-lite",
+    "translate_once_key": "<shift_r>",
+
+    # 音声入力の履歴を保存するか（Mac の historyEnabled と同義・既定 ON。オフなら履歴に残さない）
+    "history_enabled": True,
+
+    # API の利用料金の表示モード（"list"＝定価〔無料枠も含む〕/ "paid"＝実際に払った分）
+    "api_cost_mode": "list",
 
     # ユーザー辞書（確定置換）。文字起こし・整形が終わった最終テキストに対し、
     # 貼り付け直前で from→to を機械置換する（API を通さないので遅延ゼロ）。
@@ -105,17 +132,18 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "一番", "一度",
     ],
 
-    # ホットキー1 設定＝普通入力（製品版の既定: スタンダード = Groq whisper-large-v3-turbo・押している間）
+    # ホットキー1 設定＝メイン（新規インストールの既定: Soniox stt-rt-v5 のライブ型・押している間・整形 OFF）。
+    # Mac の新規インストール（Apple ローカルが無い環境）と同じ。保存済みの設定がある人は保存値が優先される
     "hotkey1": {
         "hotkey": "<f2>",
         "hotkey_mode": HotkeyMode.HOLD.value,
-        "backend": "groq",
+        "backend": "soniox",
         "api_model": "",
         "api_prompt": "",
-        "format_enabled": True,         # 製品版は裏でテキスト整形（既定オン）
+        "format_enabled": False,        # ライブ型は速度全振りのため既定 OFF（Mac と同じ）
     },
 
-    # ホットキー2 設定＝ハンズフリー（製品版の既定: スタンダード = Groq whisper-large-v3-turbo・トグル）。
+    # ホットキー2 設定＝サブ（既定: Groq whisper-large-v3-turbo・トグル）。
     # toggle 録音では app._maybe_handsfree_slot が内部で ElevenLabs(scribe_v1) へ自動切替する
     # （長時間録音の精度対策。保存値 groq は変えない）。
     "hotkey2": {
@@ -127,13 +155,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "format_enabled": True,         # 製品版は裏でテキスト整形（既定オン）
     },
 
-    # APIモデルデフォルト値（バックエンド別、ベンチ実測 2026-06-10 に基づく既定）
-    "default_api_models": {
-        "groq": "whisper-large-v3-turbo",   # REST 最速
-        "openai": "gpt-4o-mini-transcribe",
-        "elevenlabs": "scribe_v1",          # 日本語 REST 最高精度（v2 は長文後退）
-        "deepgram": "nova-3",               # ストリーミング/REST とも最良
-    },
+    # 旧版が保存していたバックエンド別の既定モデル。2026-10-19 からは使わない
+    # （既定モデルは config/backends.py の一覧が正本。保存済みの古い値で既定が上書きされないようにするため）。
+    # 既存の settings.yaml に残っていても無害なので、読み書きの互換のためだけに空で残す
+    "default_api_models": {},
 
     # ストリーミング文字起こし（Deepgram）。バックエンドが deepgram のホットキーで、
     # 録音と並行して確定テキストを受信し、離した瞬間に全文を一括入力する（即時入力）。
@@ -192,17 +217,18 @@ SETTINGS_FILE_NAME: str = "settings.yaml"
 
 
 def default_format_enabled(backend: str) -> bool:
-    """モード別のテキスト整形の既定 ON/OFF（Mac 版 Backend.defaultFormatEnabled と一致）。
+    """エンジン別のテキスト整形の既定 ON/OFF（Mac 版 Backend.defaultFormatEnabled と一致）。
 
-    即時入力(deepgram)は速度全振りのため既定 OFF（トグルで ON は可能）、
-    スタンダード(groq)ほかは録音後にきれいに整形するため既定 ON。設定 UI でモードを
-    切り替えたとき整形トグルをこの既定へ追従させる（config_manager の一回限り
-    マイグレーションと settings_window の backend 変更ハンドラで共用する）。
+    ライブ型（Soniox / OpenAI ライブ / Deepgram）は速度全振りのため既定 OFF、
+    録音後に送る型（Groq / ElevenLabs / OpenAI / Microsoft MAI）は既定 ON。
+    実体は config/backends.py にあり、ここは旧来の呼び出し口として残している。
 
     Args:
-        backend: バックエンド識別子（"deepgram" / "groq" 等）
+        backend: バックエンド識別子（"soniox" / "groq" 等）
 
     Returns:
-        そのモードの整形既定（deepgram のみ False、他は True）
+        そのエンジンの整形既定
     """
-    return str(backend).lower() != "deepgram"
+    from .backends import default_format_enabled as _default
+
+    return _default(backend)

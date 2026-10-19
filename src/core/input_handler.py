@@ -6,6 +6,7 @@
 日本語などのマルチバイト文字にも対応。
 """
 
+import sys
 import threading
 import time
 from enum import Enum
@@ -40,8 +41,12 @@ class RestoreDecision(Enum):
     LEAVE_USER_CONTENT = "leave_user_content"
     #: 退避した原本を書き戻す
     RESTORE = "restore"
-    #: 戻せる原本が無い（空 or 非テキスト）→ 自分が入れたテキストを消す
+    #: 戻せる原本が無い（空）→ 自分が入れたテキストを消す
     CLEAR = "clear"
+    #: 退避した全形式（画像・ファイルなど）を書き戻す（Windows）
+    RESTORE_SNAPSHOT = "restore_snapshot"
+    #: 中身はあったが 1 つも退避できなかった（大きすぎる等）→ 消さずに残す（消すと元の内容が確実に失われる）
+    LEAVE_UNSAVED = "leave_unsaved"
 
 
 def decide_restore(
@@ -49,6 +54,8 @@ def decide_restore(
     task_generation: int,
     clipboard_is_still_ours: bool,
     original: Optional[str],
+    snapshot_available: bool = False,
+    had_unsaved_content: bool = False,
 ) -> RestoreDecision:
     """クリップボード復元の行動を決める（副作用なし＝テスト対象）。
 
@@ -57,6 +64,8 @@ def decide_restore(
         task_generation: この復元タスクが担当する世代
         clipboard_is_still_ours: クリップボードが自分の挿入テキストのままか
         original: 退避したユーザーの原本（無ければ None / 空文字）
+        snapshot_available: 全形式の退避（Windows）が 1 つ以上取れているか
+        had_unsaved_content: 退避前に中身があったのに、文字列も全形式も退避できなかったか
 
     Returns:
         取るべき行動
@@ -65,10 +74,37 @@ def decide_restore(
         return RestoreDecision.SKIP
     if not clipboard_is_still_ours:
         return RestoreDecision.LEAVE_USER_CONTENT
+    if snapshot_available:
+        return RestoreDecision.RESTORE_SNAPSHOT
     if original:
         return RestoreDecision.RESTORE
+    if had_unsaved_content:
+        # Mac と同じく「退避しきれなかったときは消去しない」（画像が消える事故の防止）
+        return RestoreDecision.LEAVE_UNSAVED
     # 原本が無いときに何もしないと文字起こし結果が残り続ける（ユーザー指摘の主因）
     return RestoreDecision.CLEAR
+
+
+def _take_full_snapshot():
+    """Windows なら全形式を退避する（それ以外・失敗時は None＝従来の文字列だけの退避）。"""
+    if not sys.platform.startswith("win"):
+        return None
+    try:
+        from ..platform.windows.clipboard import take_snapshot
+
+        return take_snapshot()
+    except Exception:
+        return None
+
+
+def _restore_full_snapshot(snapshot) -> bool:
+    """退避した全形式を書き戻す（Windows のみ）。"""
+    try:
+        from ..platform.windows.clipboard import restore_snapshot
+
+        return restore_snapshot(snapshot)
+    except Exception:
+        return False
 
 
 class InputHandler:
@@ -92,6 +128,8 @@ class InputHandler:
         self._paste_gen = 0
         self._injected_text: Optional[str] = None
         self._saved_original: Optional[str] = None
+        # Windows の全形式の退避（画像・ファイル等。文字列だけの _saved_original を補う）
+        self._saved_snapshot = None
 
     def insert_text(self, text: str) -> bool:
         """
@@ -112,11 +150,12 @@ class InputHandler:
             return False
 
         try:
-            # ユーザーのクリップボード内容を退避
+            # ユーザーのクリップボード内容を退避（Windows は画像・ファイルも含む全形式を上限つきで）
             try:
                 current = pyperclip.paste() or ""
             except Exception:
                 current = ""  # 退避失敗は復元を諦めるだけで、挿入自体は続行する
+            snapshot = _take_full_snapshot()
 
             # 世代を採番し、復元すべき「真のオリジナル」を確定する。
             # 連続貼り付け（前回の復元がまだ終わっていない）でクリップボードが自分の
@@ -127,9 +166,11 @@ class InputHandler:
                 gen = self._paste_gen
                 if self._saved_original is not None and current == self._injected_text:
                     original = self._saved_original
+                    snapshot = self._saved_snapshot
                 else:
                     original = current
                 self._saved_original = original
+                self._saved_snapshot = snapshot
                 self._injected_text = text
 
             # クリップボードにコピー
@@ -188,17 +229,29 @@ class InputHandler:
                     current = pyperclip.paste() or ""
                 except Exception:
                     return
+                snapshot = self._saved_snapshot
                 decision = decide_restore(
                     current_generation=self._paste_gen,
                     task_generation=gen,
                     clipboard_is_still_ours=(current == self._injected_text),
                     original=self._saved_original,
+                    snapshot_available=bool(snapshot is not None and snapshot.items),
+                    had_unsaved_content=bool(snapshot is not None and snapshot.had_content and not snapshot.items),
                 )
                 original = self._saved_original
                 self._injected_text = None
                 self._saved_original = None
+                self._saved_snapshot = None
 
-            if decision is RestoreDecision.RESTORE:
+            if decision is RestoreDecision.RESTORE_SNAPSHOT:
+                if not _restore_full_snapshot(snapshot) and original:
+                    # 全形式で戻せなかったら、せめて文字列だけでも戻す
+                    pyperclip.copy(original)
+                if snapshot is not None and not snapshot.complete:
+                    logger.info("クリップボード復元: 上限を超えた形式は戻せませんでした（軽い形式だけ戻しました）")
+            elif decision is RestoreDecision.LEAVE_UNSAVED:
+                logger.info("クリップボード復元: 元の内容を退避できなかったため消さずに残します")
+            elif decision is RestoreDecision.RESTORE:
                 pyperclip.copy(original)
             elif decision is RestoreDecision.CLEAR:
                 # 戻せる原本が無い（空 or 画像などの非テキスト）。ここで何もしないと

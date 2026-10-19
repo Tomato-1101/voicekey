@@ -193,6 +193,9 @@ class HistorySync:
             "date": entry.get("date", ""),
             "device": entry.get("device", self.DEVICE),
         }
+        # 貼り付け先アプリ名（サーバー契約の app_name。無ければ送らず _to_post_item が null を補う）
+        if entry.get("app_name"):
+            item["app_name"] = entry["app_name"]
         with self._lock:
             self._outbox.append(item)
             self._save_outbox_locked()

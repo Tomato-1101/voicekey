@@ -2,6 +2,227 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
+## [Unreleased] - 2026-10-19
+
+Windows 版の開発を再開し、Mac 版に追いつかせる作業（`docs/WINDOWS_CATCHUP_PLAN.md` の段階 0〜2）。
+Mac の設定画面の作り直し（Mac のみ）も同じ Unreleased に含む。
+
+### Added
+- **Windows: ライブ字幕・議事録・Google Meet 議事録ボット（Windows）**（`docs/WINDOWS_CATCHUP_PLAN.md` の段階 3）。
+  2026-10-19 本人の決定「Windows はローカルの計算は無し・全部 API の文字起こし・翻訳は安い API」に従い、端末内の認識・翻訳は使わない。
+  設定のサイドバーに見出し「字幕と議事録」= ライブ字幕 / 議事録・会議（Mac と同じ並び・同じ文言）、タスクトレイに
+  「ライブ字幕: 状態」「字幕を開始/停止」「ライブ字幕の設定…」「Meet 議事録ボット」サブメニュー（会議に参加… / 会議から退出 /
+  ボット用ブラウザで Google にログイン… / 最新の議事録を開く / 議事録フォルダを開く / 議事録・会議の設定…）を足した。
+  - **音**: WASAPI ループバック。Windows 10 2004 以降の Process Loopback（`ActivateAudioInterfaceAsync` を ctypes で直接）で
+    **最前面のアプリだけ**（既定）／**voicekey 以外のすべて**を拾う。使えない Windows では PyAudioWPatch で出力デバイス全体を拾う。
+    最前面の追従は同じアプリが 1 秒続いてから・前回から 2 秒あけて張り替え、取り込みが落ちたときの作り直しは 5 回まで（指数バックオフ）
+  - **認識と翻訳は API だけ**: 翻訳エンジンは Soniox（音声ごとストリーミングして認識と翻訳をまとめて任せる・最速）/
+    Groq（**既定・単価がいちばん安い `openai/gpt-oss-20b`**。Mac の字幕の既定〔qwen3.8-27b〕とは違うが、出力上限の式と推論を抑える指定は同じ）/
+    Gemini（選んだときだけ）。Groq / Gemini のときの文字起こしエンジンは Soniox（既定）/ OpenAI ライブ（server_vad で 1 発話ずつ確定）。
+    **クラウドへ送るのは確定文だけ**。区切りポリシーは Mac の TranslationCoordinator と同じ値（上限 40 字・節区切り 24 字・無音 0.25 秒・
+    判定順は長さ → 文末 → 節区切り・1 文字も落とさない）
+  - **どの接続も無音 30 秒で WebSocket だけ切り、声が戻ったら張り直す**（課金を止める。この切断は失敗に数えない）。
+    切断からの張り直しは上限 5 回の指数バックオフ。401/402/403 と OpenAI の残高不足・キー無効は即諦め、
+    理由（「Soniox の残高不足」など）をトレイと設定画面に出して止まる（**エンジンを勝手に切り替えない**）
+  - **表示**: 録音ピルのカプセル下端に揃えて上へ伸びるガラスの字幕（確定 2 行＋ライブ行・最低表示時間 max(3 秒, 文字数×0.15 秒)・
+    8 秒何も来なければ畳む・クリック透過・大きさ 70〜200%・字幕 0.62 / ピル 0.7 の透明度は別のまま）。
+    **音声入力中（録音・変換中・通知）は字幕を隠し**（認識は止めない）、字幕が出ている間は待機ピルを出さない（畳み終わってから戻す）
+  - モードは翻訳（英→日）と文字起こし（訳さない・日本語 / 英語）。読み上げは Windows には無い
+  - **議事録**: 文字起こしを `ドキュメント\voicekey\transcripts\YYYY-MM-DD_HHmmss.md` へ逐次追記（訳文は保存しない・5 分あいたら別ファイル）。
+    「文字起こしを自動で保存する」スイッチは字幕の保存だけに効く
+  - **Meet 議事録ボット**: 専用プロファイル（`%APPDATA%\voicekey\meetbot-profile`）の Chrome を CDP で動かす（Playwright・Node は同梱しない）。
+    Meet の DOM 依存は `src/caption/meetbot/scripts.py` だけで、Mac の MeetBotScripts.swift の JS をそのまま移した。
+    文字起こしは「Meet の字幕を使う（既定・話者名つき）」と「会議の音声を API で文字起こし」（ボット用 Chrome の音だけを Process Loopback で拾う。
+    始めるとライブ字幕を止める）の 2 つ。**スイッチに関係なく会議ごとに 1 ファイル必ず保存**。参加ボタンの押し直し（4 秒おき最大 5 回）・
+    承認待ちは 10 分・「外された」は 2 回／「会議画面でない」は 3 回続いたら確定・Chrome の時間切れ 3 回で諦める・字幕が 60 秒読めないと
+    1 会議 1 回だけ知らせる・世代番号で古い試行を捨てる、を Mac 2.3.0 と同じにした。初回の Google ログインは「まず Google にログイン」から本人が行う
+  - 使った API は API 料金に記録し、ホームの内訳に「字幕・議事録の文字起こし」「会議の文字起こし（Meet ボット）」「字幕の翻訳」として出す
+  - 字幕が止まったとき（残高不足・キー無効・音を取り込めない）は、トレイのメニュー・設定画面の状態に加えてトレイの通知でも理由を知らせる
+  - ディクテーションの経路には手を入れていない（字幕サービス・ボットは開始するまで作らない・`src/caption/` は遅延 import）
+  - 取り込みが黙って止まらないようにした: Process Loopback がデバイス無効などのエラーを返したら「落ちた」にして上限つきで作り直し、
+    出力デバイス全体の取り込みもストリームが止まっていたら作り直す。張り替えの途中で止められたときは新しい取り込みを残さない
+  - **Technical Details**: `src/caption/`（service / audio_capture / live_stream / soniox_assembler / translation_coordinator / translators /
+    transcript_recorder / line_model / caption_hud / settings）、`src/caption/meetbot/`（cdp / service / settle / rules / scripts）、
+    `src/ui/caption_pages.py`、`ui/hud.py`（`mode_changed`・`caption_covering`・`capsule_bottom_y`）、`ui/system_tray.py`、`app.py`。
+    依存に `PyAudioWPatch`（Windows のみ）を追加し `voicekey.spec` で同梱。テストは `tests/test_caption_core.py` / `test_caption_stream.py` /
+    `test_caption_service.py` / `test_meetbot.py`（模擬 WebSocket・模擬 HTTP・模擬 CDP。課金 API は叩かない）
+- **貼り付け先が AI のときは整形を自動で省く（Mac / Windows）**（2026-10-19 Tomato 指示
+  「貼り付け先が AI のときに文の整形を無しにして自動オフにして。この機能のオンオフも設定でできるようにして」）。
+  Claude などの AI は言いよどみ入りでも理解できるので、Groq の整形を省いて 0.2〜0.5 秒速く・安く入力する。
+  - 設定「プロンプト」ページに「貼り付け先が AI のときは整形しない」（既定オン）。Mac `skipFormatForAI` / Windows `skip_format_for_ai`
+  - 判定は**録音開始時の最前面アプリ**で行い、その回のスナップショット（Mac `RecordContext` / Windows `TaskContext`）に載せる。
+    貼り付け直前に問い合わせない。前面アプリを読むのは整形が要る回だけ（Windows は表示名を読まない軽い `foreground_exe`）。
+    整形 LLM の事前接続（prewarm）も省いた回はしない
+  - AI とみなすアプリ: Mac は bundle ID（Claude・ChatGPT・Perplexity・Terminal・iTerm2・Ghostty・Warp・kitty・Alacritty・WezTerm・Cursor）を
+    `Core/AIDestination.swift`、Windows は実行ファイル名（claude / ChatGPT / Perplexity / WindowsTerminal / wt / powershell / pwsh / cmd / conhost /
+    Alacritty / WezTerm / Warp / Cursor）を `core/ai_destination.py` の 1 か所にまとめた。ブラウザで開いた AI（chatgpt.com 等）は対象外
+  - 省くのは整形だけ（サーバー統合整形も含む）。数字変換・辞書の置換・翻訳して入力は今どおり。オンボーディングの整形体験中は省かない
+  - `[計測]` 行の整形欄に `整形=省略(AI宛て)` を出し、アプリ名（Windows は実行ファイル名）を `[整形]` 行に残す（本文は出さない）
+- **Windows: 文字起こしエンジンを Mac と同じ並び・同じモデル名にした（Windows）**。
+  Soniox（`stt-rt-v5` のライブ型・既定）/ ElevenLabs（`scribe_v2`・`scribe_v1`）/ OpenAI（`gpt-transcribe`）/
+  Microsoft MAI（`MAI-Transcribe-2`）/ OpenAI ライブ（`gpt-live-transcribe`）/ Groq（`whisper-large-v3-turbo`）。
+  - Soniox は録音中から WebSocket で並行認識し、離鍵時に 200ms の無音 → finalize → 空フレームを送って `<fin>` で確定する。
+    接続先（米国 / 日本）はキーが通る窓口を無料のモデル一覧 API で判定し、キーの指紋（SHA256 の先頭 8 バイト）ごとに
+    `soniox_region.json` へ覚える（キー本体は保存しない）。ライブが空で終わったときは録音全体を新しいセッションへ流し直し、
+    途中で切れて前半しか取れなかったときも録音全体を再送して救う。正常終了で空なら「本当に無言」として REST へ回さない。
+    再送でも救えなかったときは取れた分を入力して「接続が途中で切れたため、途中までの入力です」と知らせる
+  - OpenAI ライブは 16kHz を 24kHz へ線形補間して base64 で送り、`input_audio_buffer.commit` で確定する。
+    接続できなかったときは同世代の `gpt-transcribe` で REST に流す
+  - OpenAI `gpt-transcribe` は `response_format=json`・`languages[]` で送り、Whisper 用の数字の例文は送らない。
+    ElevenLabs は `tag_audio_events=false` を送る。Microsoft MAI は `AZURE_SPEECH_KEY` と `AZURE_SPEECH_ENDPOINT`（scheme・ホスト・ポートだけ使う）
+  - Deepgram は選択肢から外したが、設定ファイルに deepgram が入っている人はそのまま動く（エンジンを勝手に変えない）。
+    設定画面でも「Deepgram（旧・選択肢から外しました）」として選択中のまま見える
+  - ハンズフリーで Groq を使うとき ElevenLabs のキーが無ければ切り替えず Groq のまま処理する（Mac と同じ）
+- **Windows: 設定 › API キー を全エンジン分にした（Windows）**。Soniox / OpenAI / Microsoft MAI（キー・エンドポイント）/
+  ElevenLabs / Groq / Gemini（翻訳して入力）の各行に「アプリに保存済み／環境変数から読込／資格情報マネージャー（共有）から読込／未設定」を出す。
+  読む順は アプリに保存した値（資格情報マネージャーの `voicekey.*`）→ 環境変数 → 資格情報マネージャーの共有項目
+  （サービス名＝環境変数名・アカウント `shared`。Mac の中央 Keychain に当たる）。`SONIOX_API_KEY=…` のように変数名ごと貼っても正規化して保存し、
+  保存に失敗したら入力を残してエラーを出す。削除できるのはアプリに保存した値だけ。キーの値は画面にもログにも出さない
+- **Windows: キーが未設定・無効で文字起こしに失敗したら、通知して「設定 › API キー」を開く（起動中 1 回だけ）（Windows）**
+- **Windows: 最後の文字起こしをもう一度貼り付けるキー（Windows）**。設定 › 入力の基本 › そのほかのショートカット。
+  Mac の既定 ⌃⌘V に当たるキーは Windows では他の機能（Ctrl+Win+V＝音声出力、Ctrl+Alt+V＝Office の形式を選択して貼り付け）と重なり、
+  pynput はキーを横取りできないため、既定は未設定にした
+- **Windows: 音声入力の診断ログ `[計測]` を 1 回ごとに 1 行出す（Windows）**。Mac と同じ並びで
+  押下→録音開始・押下→最初の音声・録音秒数・離鍵→確定・離鍵→停止・停止→確定・STT・VAD・整形・翻訳・貼付・離鍵→貼付完了の ms、
+  経路（streaming / rest / replay / fallback）、終わり方、結果（貼付・無音・短すぎ・空結果・ライブ空(正常終了)・文字起こし失敗 など）、
+  文字数、貼付先（実行ファイル名）を出す。話した内容とキーは出さない
+- **Windows: 履歴を 200 件に増やし、貼り付け先アプリ名を残すようにした（Windows）**。最前面ウィンドウの実行ファイル名と表示名
+  （バージョン情報の FileDescription）を Win32 API で取り、履歴の一覧・サイドノッチの検索（テキスト or アプリ名）・履歴共有の `app_name` に使う。
+  「入力の履歴を保存」スイッチ（既定 ON）を追加
+- **Windows: 設定画面を Mac の作り直し（2026-10-19）と同じ構成にした（Windows）**。サイドバーは見出し付きで、先頭に Windows の
+  ホーム・実績・履歴、続けて「はじめに」= API キー、「音声入力」= 入力の基本・録音キー 1・録音キー 2・プロンプト・辞書と数字、
+  「アプリ」= 一般・バージョン情報。録音キーの行の右端に割り当て中のキー（例 右Ctrl）か「未割り当て」を出し、各ページの先頭に
+  アイコン・ページ名・「このページで何を決めるか」の 1 行を出す。サイドバーの開閉はやめた
+  - 入力の基本: 話す言語とマイク（マイクテストもここ）／録音キーと一緒に使うキー（ハンズフリーキー・2 回押しで送信するときの待ち時間）／
+    そのほかのショートカット（再貼り付け）
+  - 録音キー 1・2: キー（録音キー・重複の警告・キーの押し方をキーの直下に）／文字起こし（エンジンとモデルを 1 つのポップアップで選ぶ。
+    閉じた表示は「Soniox · stt-rt-v5」、開くとおすすめ順に、選択肢が 1 つの提供元は 1 項目、複数ある提供元は見出しの下にモデル、推奨に「（推奨）」、
+    OpenAI ライブに「（ライブ）」、一覧外の保存済みモデルも選択中のまま）／文章の整形（オン/オフ・使う指示の状態・「プロンプトを編集」）。
+    エンジンを変えても整形のオン/オフは変えない（Mac と同じ）
+  - プロンプト: 整形の指示を録音キー 1・2 共通で 1 か所で編集（状態・ひな形 4 種〔標準／そのまま／すっきり／箇条書き・Mac と同じ文面〕・
+    既定に戻す・元に戻す・複数行エディタ・文字数）／この指示で整える録音キー（1・2 のオン/オフ）／AI モデル（整形モデル・API キーを開く）。
+    既定文と同じなら空で保存する（実行時に最新の既定文を使う）
+  - 辞書と数字: 置き換えを追加（常に出ている入力欄）／登録済みの置き換え（N 件）／数字の書き方（旧 一般 の数字入力）
+  - 一般: 画面の表示・音・起動・履歴（Mac と履歴を共有の URL・トークン欄は共有オンのときだけ）
+  - 設定ファイルの保存形式は変えていない
+- **Windows: 翻訳して入力（Windows）**。設定 › 音声入力 › 翻訳して入力。文字起こし・整形・辞書まで済んだ最終テキストを
+  貼り付け直前に 1 回だけ訳す（部分訳はしない）。訳す先は 英語（既定）/ 中国語（簡体）/ 韓国語 / スペイン語 / 日本語。
+  Windows には Apple の翻訳が無いので、エンジンは Groq（既定・`qwen/qwen3.8-27b`）と Gemini（「有料の場合あり」と表示・選んだときだけ使う）から
+  エンジンとモデルを 1 つのポップアップで選ぶ。失敗・出力が上限で途中で切れた・キー未設定のときは原文を入力して
+  「翻訳できなかったため、原文を入力しました」と知らせる。モデルが提供終了ならおすすめで 1 回取り直して設定も書き換える。
+  Gemini のキーは URL に載せずヘッダーで送る。文面（システムプロンプト）は Mac と同じ
+  - **1 回だけ翻訳するキー（既定 右Shift）**: 録音中に押すとその回だけ訳し、もう一度押すと取り消す。録音中の HUD に「→EN」などの印を出す。
+    「いつも翻訳する」とは別のスイッチ。録音キー 1・2・ハンズフリーキー・再貼り付けキーと重なると設定画面で警告する
+- **Windows: API の利用料金（Windows）**。設定ウィンドウのホームに「API の利用料金」（今日 / 今月 / 累計の推定ドル・内訳・直近 30 日の推移・
+  「定価（無料枠も含む）」/「実際に払った分」の切り替え）、タスクトレイのメニューに「今日の API 代」を出す。単価表と確認日・最低課金秒数・
+  単価未確認の扱いは Mac（`ApiPricing.swift`）と同じ。文字起こし（全エンジン・Deepgram も）・整形・翻訳の使用量を数量だけ
+  （音声の秒数・トークン数・回数）`api_usage.json` に日ごとに記録し、話した内容とキーは保存しない。保存は裏のスレッドで行い、
+  終了時に書き切る。壊れたファイルは退避して空で始める。記録は Windows 版をこの版にした日から（Mac の 10/2 以前の推定取り込みに当たるものは無い）
+- **設定に「プロンプト」ページを追加（Mac のみ）**。文章の整形（Groq）で AI に渡す指示を、録音キー 1・2 で共通の 1 つとして
+  複数行のエディタで編集できる。「ひな形から選ぶ」（標準／そのまま／すっきり／箇条書き）・「既定に戻す」・置き換え直後の「元に戻す」付き。
+  同じページで、どの録音キーで整形するかの切り替えと整形モデルの選択もできる。保存先は従来どおり `autoFormatPrompt` / `formatModel`
+- **設定に「入力の基本」ページを追加（Mac のみ）**。話す言語・マイク・ハンズフリーキー・2 回押し送信の待ち時間・再貼り付けキーを
+  旧「一般」から移した（旧「一般」は表示・音・起動・履歴だけになった）
+
+### Changed
+- **Windows: 自動アップデートの確認を止めた（Windows）**。Windows 版は配布しておらず（ソースから使う）、更新フィード
+  （削除済みの旧配布リポ・Vercel の `/windows/version.json`）も存在しないため、存在しない URL を見続けないよう
+  `src/utils/updater.py` の `VERSION_URL` を空にした。起動時の定期確認は行わず、設定 › バージョン情報は
+  「Windows 版は配布していないため、更新はソースで git pull して行ってください」と出して確認ボタンを無効にする。
+  署名検証（Ed25519）付きの更新の仕組み自体は残し、将来 Windows も配る場合は URL を入れれば動く（Windows）
+- **Windows のビルド手順から旧配布リポ `voicekey-releases` への参照を外した（Windows）**。
+  `scripts/build/build_windows_dist.ps1` は version.json を作らず、インストーラと SHA256 を出すだけにした。
+  `.github/workflows/windows-build.yml` は動作確認用のインストーラだけを転送用 Release に付ける。
+  この Release は必ずプレリリースにする（通常の Release だと「最新版」になり、Mac の自動更新が見る
+  `releases/latest/download/appcast.xml` を壊すため）
+
+- **Windows: 整形を Mac の最新に合わせた（Windows）**。既定の整形モデルを廃止済みの `llama-3.1-8b-instant` から
+  Mac と同じおすすめ `qwen/qwen3.8-27b` に変え、保存済みの llama 系は起動時に 1 回だけおすすめへ移す。
+  既定の指示文と共通フッターを Mac と同じ文面（発言内容は削らずフィラーだけ除去）にした。出力上限を入力の長さに応じた値
+  （入力文字数×3＋512、最大 8192）にし、推論モデルの思考を抑えるパラメータを付け、`finish_reason=length`（途中で切れた）なら原文を入力する。
+  実行中にモデルが提供終了で失敗したら、その 1 回をおすすめで取り直して設定も書き換え、1 回だけ知らせる
+- **Windows: 文字起こし API のエラー時に、サーバー応答の本文を通知に混ぜない（Windows）**。通知は「<サービス名> API エラー (HTTP <番号>)」までにし、
+  本文は 1 行化・200 文字で切ってログにだけ残す
+- **Windows: 新ロゴ・配色（Windows）**。アクセントを青から灯りの橙（`#FF5A1F`）に、地をボーン／カーボン系に変えた。
+  録音 HUD の点は灯りの橙＋淡い光、ハンズフリーの波形バーと自動送信の ⏎ 印も橙。タスクトレイは 待機＝刻印色の輪／録音中＝橙の点／
+  自動送信の録音＝深い橙の点／変換中＝橙の輪（Mac のメニューバーと同じ考え）。サイドノッチの光・設定画面のトグル・選択色も橙。
+  設定のサイドバーに新ロゴ（`icon.ico`）を出す
+- **Windows: 新規インストールの既定を Mac に合わせた（Windows）**。録音キー 1 = Soniox（整形 OFF）／録音キー 2 = Groq。保存済みの設定は変えない
+- **Windows: 選択肢から外したモデル（`whisper-large-v3`・`gpt-4o-*-transcribe`・`scribe_v1_experimental`・`nova-2` など）を保存していた録音キーは、
+  初回だけそのエンジンの既定モデルへ戻す（エンジンは変えない・Mac の V19 と同じ）（Windows）**。未知のエンジン名は Groq へ移す（他の設定は保持）
+- **Windows: オンボーディングのまとめカードのエンジン表示を実名（「Groq · whisper-large-v3-turbo」）にした（Windows）**
+- **文字起こしのエンジンとモデルを 1 つのポップアップで選ぶようにした（Mac のみ）**（指示「プロバイダーを選んでから下でモデルを
+  選ぶのを 1 個のポップアップに」）。開くと提供元ごとの見出しの下にモデルが並び、1 回で決まる。閉じているときは「Soniox · stt-rt-v5」の
+  ように実プロバイダー名＋モデル名を出す。一覧外の保存済みモデルも選択状態のまま見える。エンジンを変えたときに推奨モデルへ黙って
+  切り替える動き（と「切り替えました」の一言）は、両方を同時に選ぶので無くなった。
+  ライブ字幕の翻訳エンジン（Apple / Gemini / Groq / Soniox）と翻訳して入力（Apple / Groq）も同じ形にした
+- **設定画面の項目構成と見た目を作り直した（Mac のみ）**（指示「UI がダサい・項目構成が合理的じゃない」）
+  - サイドバーの見出しを「はじめに（API キー）／音声入力（入力の基本・録音キー 1・録音キー 2・プロンプト・辞書と数字・翻訳して入力）／
+    字幕と議事録／アプリ（一般・バージョン情報）」に。録音キーの行には割り当て中のキーを右端に出す
+  - 各ページの先頭に灯り色のアイコンと「このページで何を決めるか」の 1 行を出す
+  - 録音キーのページは「キー（録音キー・キーの押し方）→ 文字起こし（エンジン）→ 文章の整形（する／しない・使う指示）」の順に。
+    「押している間だけ／押すたびに開始・停止」はキーの行の直下に置き、エンジン・モデルの並びに混ざらないようにした
+    （指示「モデルの場所なのにホールドかトグルを選ぶ場所になっている」）
+  - ホットキーをキーキャップ風のチップで表示する（録音キー・ハンズフリーキー・再貼り付けキー・1 回翻訳キー）
+  - 「ユーザー辞書」を「辞書と数字」にし、追加欄をいつも出すようにした（入れて Enter か「追加」で登録。空の行が溜まらない）。
+    旧「一般」の「数字入力」もこのページへ移した
+  - 「一般」の履歴共有の URL・トークン欄は、共有をオンにしたときだけ出す
+- **録音キーごとの「整え方」は、自前のキーで整形する personal 版では効いていなかったため、録音キーのページから外した（Mac のみ）**。
+  4 種はプロンプトのひな形として残した（選ぶと実際に指示文が変わる）。旧製品版のサーバー整形（ログイン時）用の録音キーごとの
+  `formatPresetId` は保存形式ごとそのまま残し、personal 以外のビルドでは従来どおり選べる
+
+### Fixed
+- **Windows: Soniox ライブがキー無効（401）などのエラーを返して接続を閉じたとき、送信側の失敗が先に確定してエラーコードが失われることがあった（Windows）**。送信の失敗では終わり方を決めず、受信側（エラー応答か切断）に任せる。キー無効の案内が確実に出る
+- **Windows: 壊れた設定ファイル・履歴ファイルを上書きして消していた（Windows）**。起動時に読めなかった `settings.yaml`・`history.json` は
+  `<名前>.corrupt-<日時>` へ退避して HUD で 1 回知らせ、退避できなかったときは保存しない。手で編集している途中の書きかけ
+  （ホットリロード中に読めなかったとき）は既定値に戻さず今の設定のまま続ける（以前は既定値で上書きされていた）
+- **Windows: Ctrl を押しながらの英数字キー（Ctrl+Alt+V など）を組み合わせキーとして認識できなかった（Windows）**。
+  pynput が制御文字（Ctrl+V なら `\x16`）を返すため、仮想キーコードから文字を引き直す
+- **Windows: 貼り付けのキー操作を送れなかったとき、auto_enter の Enter を送らず「貼り付けできませんでした。Ctrl+V で貼り付けてください」と知らせる（Windows）**
+- **Windows: 画像やファイルをコピーしたまま音声入力すると、貼り付け後にクリップボードが空になって元の内容が消えていた（Windows）**。
+  文字列しか退避していなかったため。クリップボードの全形式を Win32 API で退避して書き戻すようにした（Mac と同じ合計 32MB・64 種類の上限。
+  超えるときは文字列・RTF・HTML・URL を優先）。1 つも退避できなかったときは消さずに残す
+
+### Technical Details
+- Linux 上でも Windows 版のテストが回ることを確認した:
+  `QT_QPA_PLATFORM=offscreen xvfb-run -a python -m unittest discover -s tests`（pynput が X 接続を要るため xvfb-run、
+  PySide6 に libEGL / libxkbcommon 等、VAD のテストに `silero-vad`（`--no-deps` で torch なし）が要る）。
+  `tests/test_updater.py` に「フィード URL が空なら通信もタイマーも動かず、手動確認には理由を返す」テストを追加
+- **config/backends.py**（新規）: エンジンの並び・既定モデル・表示名・整形の既定・使うキー・設定画面のポップアップの並び（Mac の Backend / EngineModelCatalog）
+- **config/llm_models.py**（新規）: Groq / Gemini のモデル一覧・おすすめ・モデル別パラメータ・出力上限・途中切れと提供終了の判定（Mac の LLMModelCatalog）
+- **core/live_transcriber.py**（新規）: `SonioxLiveSession` / `OpenAILiveSession`（websockets の同期クライアント・送信は専用スレッド）、
+  `SonioxTranscript`（応答の組み立て）、`LiveEnding`（終わり方）、`Upsampler16To24`。websockets 16 以降の非推奨に合わせて
+  `connect(..., legacy=True)` で直接つなぐ（古い版は従来どおり。Deepgram 版も同じ関数に寄せた）
+- **core/soniox_region.py**（新規）: リージョン判定と指紋ごとの記憶。**core/diagnostics.py**（新規）: `[計測]` 行
+- **core/api_transcriber.py**: `AzureMAITranscriber` / `SonioxTranscriber`（録音全体の再送）/ `OpenAILiveRestTranscriber` を追加。
+  `TranscriptionError` に `needs_api_key` と `detail`
+- **utils/secrets.py**: `API_KEY_ITEMS`・`resolve`・`lookup`・`api_key`・`api_key_source`・`save_item`・`delete_item`・`sanitize_key`。
+  キャッシュに世代を持たせ、読み出し中に保存・削除が挟まっても古い値を書き戻さない
+- **utils/corrupt_file.py**（新規）: 壊れたファイルの退避と 1 回の通知。**utils/paths.py**（新規）: データファイルの置き場所
+- **platform/windows/foreground.py**（新規）: 最前面アプリの実行ファイル名と表示名（Win32 API・ctypes）
+- **ui/settings_widgets.py**（新規）: 見出しつき 1 ポップアップ（`GroupedChoiceButton`）・サイドバーの見出しと右端表示（`NavItemDelegate`）・キー表記
+- **core/text_formatter.py**: ひな形 4 種（`format_prompt_templates`）・状態の一言・既定文は空で保存
+- `voicekey.spec` に `icon.ico` を同梱（設定画面のサイドバーのロゴ用）
+- `.gitignore` に開発実行時にリポジトリ直下へ出る個人データ（`history.json`・`stats.json` など）を追加（発話内容を含むため）
+- **core/dictation_translator.py**（新規）: Groq / Gemini の翻訳（Mac の DictationTranslator）。**core/api_usage.py**（新規）:
+  単価表（`price`・`billed_seconds`）と日次集計 `ApiUsageStore`（Mac の ApiPricing / ApiUsageStore と同じ項目名）。
+  **platform/windows/clipboard.py**（新規）: 全形式の退避・復元と、上限内で退避する形式を選ぶ `select_formats`（純関数）。
+  **core/input_handler.py**: `decide_restore` に `RESTORE_SNAPSHOT` / `LEAVE_UNSAVED`
+- `tests/__init__.py` で `VOICEKEY_TESTING=1` を立て、テスト中の API 使用量は一時ディレクトリへ書く（本人の `api_usage.json` を汚さない）。
+  テスト: `test_clipboard_snapshot` / `test_stage2_features`（単価・集計・翻訳〔HTTP はモック〕・翻訳ページ・料金表示）を追加
+- テスト: `test_backends_catalog` / `test_api_keys` / `test_live_transcriber`（127.0.0.1 の模擬 Soniox サーバー相手の通し）/
+  `test_api_transcriber_engines` / `test_settings_redesign` / `test_app_pipeline` を追加。課金 API は叩かない
+- **UI/SettingsView.swift**: `MainWindowView.TabID`（12 = プロンプト・13 = 入力の基本を追加。既存 id は不変）、`SettingsNavItem.subtitle`、
+  `InputBasicsTab` / `PromptSettingsTab` を追加。`SlotSettingsTab` の `onChange(of: slot.backend)` と `autoSwitchedModel` を削除
+- **UI/GroupedChoiceMenu.swift**（新規）: 見出し付きの 1 ポップアップ（Menu＋Section＋チェック付き Toggle）
+- **Config/EngineModelChoice.swift**（新規）: `EngineModelChoice` / `EngineModelCatalog`（提供元ごとのまとまり・表示名。純ロジック）
+- **Core/FormatPromptTemplates.swift**（新規）: 整形プロンプトのひな形（標準＝`TextFormatter.defaultPrompt`、ほかは共通ルール＋差し替え部）
+- **Core/LLMModelCatalog.swift**: `displayName(_:id:)` を追加
+- **Caption/UI/CaptionSettingsTab.swift**: 翻訳エンジン＋モデルを `GroupedChoiceMenu` に
+- **UI/HotkeyRecorderView.swift**: `KeyCapChip` を追加
+- **CLI/UISnapshotTestMode.swift**: 新しい 2 ページを撮影対象に追加
+- **Tests/SettingsRedesignTests.swift**（新規）: ポップアップの並び・表示名・一覧外モデルの保持、ひな形、タブ id の重複なしと復元
+
 ## [2.3.0] - 2026-10-12
 
 ### Added
