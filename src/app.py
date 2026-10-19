@@ -1905,6 +1905,10 @@ class VoicekeyApp(QObject):
             service = CaptionService(self._config)
             service.visibility_changed.connect(self._on_caption_visibility)
             service.model_replaced.connect(self._on_caption_model_replaced)
+            # 止まった理由（残高不足・キー無効など）はトレイの通知でも知らせる（メニューと設定画面にも出る）
+            service.failed.connect(
+                lambda reason: self._tray.showMessage(
+                    "voicekey ライブ字幕", f"字幕を止めました: {reason}", SystemTray.MessageIcon.Warning, 8000))
             service.set_dictation_active(self._hud._mode in _DICTATION_HUD_MODES)
             self._caption_service = service
         return self._caption_service

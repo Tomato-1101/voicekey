@@ -391,3 +391,19 @@ class TestAppWiring(unittest.TestCase):
         status = VoicekeyApp._meet_tray_status(app)
         self.assertEqual(status["source"], "会議の音声（API）")
         self.assertFalse(status["active"])
+
+
+class TestFailureSignal(unittest.TestCase):
+    def test_failed_signal_carries_reason(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        reasons = []
+        service = svc.CaptionService(FakeConfig({"caption": {"engine": "soniox"}}), hud_factory=FakeHud,
+                                     stream_factory=lambda cfg: FakeStream(ok=False),
+                                     capture_factory=lambda cfg, cb: FakeCapture(),
+                                     recorder=TranscriptRecorder(Path(tmp.name)))
+        self.addCleanup(service.shutdown)
+        service.failed.connect(reasons.append)
+        service.start()
+        self.assertEqual(len(reasons), 1)
+        self.assertIn("API キー", reasons[0])

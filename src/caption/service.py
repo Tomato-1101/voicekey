@@ -67,6 +67,8 @@ class CaptionService(QObject):
     """
 
     changed = Signal()
+    # 字幕が止まった（残高不足・キー無効・取り込めない など。ユーザー向けの理由）
+    failed = Signal(str)
     visibility_changed = Signal(bool)
     model_replaced = Signal(str, str)
     # 内部: 別スレッド → メインスレッド (世代, 種類, a, b)
@@ -142,6 +144,8 @@ class CaptionService(QObject):
         self.state = state
         self.detail = detail
         self.changed.emit()
+        if state == FAILED:
+            self.failed.emit(detail)
 
     # --- 外から使う口（メインスレッド） ---
 

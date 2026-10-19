@@ -61,6 +61,9 @@ PURPOSE_LABELS: Dict[str, str] = {
     PURPOSE_FORMATTING: "テキスト整形",
     PURPOSE_TRANSLATION: "翻訳して入力",
     "captionTranslation": "字幕の翻訳",
+    # Windows のライブ字幕・議事録は音声そのものを API で文字起こしする（Mac は端末内なので無い用途）
+    "caption": "字幕・議事録の文字起こし",
+    "meetingTranscription": "会議の文字起こし（Meet ボット）",
 }
 
 
