@@ -83,6 +83,14 @@ class SystemTray(QSystemTrayIcon):
         """コンテキストメニューを設定する。"""
         self._menu = QMenu()
 
+        # 今日の API 代（Mac のメニューバーと同じ。メニューを開くたびに記録から計算し直す）。
+        # 表示だけの項目なので押せない。中身は app が cost_text_provider で渡す
+        self.cost_text_provider = None
+        self._cost_action = self._menu.addAction("")
+        self._cost_action.setEnabled(False)
+        self._cost_action.setVisible(False)
+        self._menu.aboutToShow.connect(self._refresh_cost_action)
+
         # 設定メニュー項目（Mac 版メニューバーと同じ文言）
         settings_action = self._menu.addAction("設定…")
         settings_action.triggered.connect(self.open_settings.emit)
@@ -112,6 +120,18 @@ class SystemTray(QSystemTrayIcon):
         quit_action.triggered.connect(self.quit_app.emit)
 
         self.setContextMenu(self._menu)
+
+    def _refresh_cost_action(self) -> None:
+        """「今日の API 代 $x.xx」をメニューを開くたびに計算し直す（失敗しても項目を隠すだけ）。"""
+        provider = self.cost_text_provider
+        text = ""
+        if provider is not None:
+            try:
+                text = provider() or ""
+            except Exception:
+                text = ""
+        self._cost_action.setText(text)
+        self._cost_action.setVisible(bool(text))
 
     def show_update_available(self, version: str) -> None:
         """

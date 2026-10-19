@@ -82,6 +82,7 @@ from .settings_widgets import (
     KIND_PAGE,
     ROLE_KIND,
     ROLE_TRAILING,
+    CostTrendBars,
     GroupedChoiceButton,
     NavItemDelegate,
     key_label,
@@ -1680,9 +1681,120 @@ class SettingsWindow(QWidget):
                 else f"整えない（{engine} の文字起こしをそのまま入力）"
             )
 
+    # ------------------------------------------------------------------
+    # 翻訳して入力（Mac の TranslateInputTab: 翻訳するとき / 翻訳のしかた）
+    # ------------------------------------------------------------------
+
     def _create_translate_page(self) -> Optional[QWidget]:
-        """翻訳して入力ページ（段階 2 で追加する。まだ無ければ None）。"""
-        return None
+        """翻訳して入力ページ（1 回だけ翻訳するキー・いつも翻訳／訳す先の言語・翻訳エンジン）。
+
+        Mac の翻訳エンジンは Apple（端末内）と Groq だが、Windows には Apple 翻訳が無いので
+        Groq（既定）と Gemini から選ぶ。
+        """
+        page, layout = self._new_page()
+
+        layout.addWidget(self._section_title("翻訳するとき"))
+        card, cl = _make_card()
+        # たまに 1 回だけ訳す使い方が主なので、キーを先頭に置く（常時 ON は下のトグル）
+        self._translate_once_input = HotkeyInput(platform_adapter=self._platform)
+        key_block = QWidget()
+        kb = QVBoxLayout(key_block)
+        kb.setContentsMargins(0, 0, 0, 0)
+        kb.setSpacing(4)
+        kb.addWidget(self._hotkey_row(self._translate_once_input))
+        # 録音キー・ハンズフリーキー・再貼り付けキーと重なると黙って効かなくなるので、ここで知らせる
+        self._translate_warning_label = _make_caption("")
+        self._translate_warning_label.setStyleSheet(MacTheme.status_warn_style(self._is_dark_mode))
+        self._translate_warning_label.setVisible(False)
+        kb.addWidget(self._translate_warning_label)
+        _add_row(
+            cl, "この 1 回だけ翻訳するキー", key_block,
+            caption="録音中にこのキーを押すと（録音キーと同時でも、話している途中でも）、その回だけ翻訳して貼り付けます。"
+            "翻訳される回は録音中の表示に「→EN」のような印が出ます。録音中にもう一度押すと取り消せます。",
+        )
+        for widget in (self._translate_once_input, self._handsfree_input, self._repaste_input):
+            widget.textChanged.connect(lambda _t: self._refresh_translate_warnings())
+        self._translate_always_check = self._make_toggle()
+        _add_row(
+            cl, "いつも翻訳して入力する", self._translate_always_check,
+            caption="話した内容を毎回翻訳してから貼り付けます（例: 日本語で話す → 英語が入力される）。",
+        )
+        layout.addWidget(card)
+
+        layout.addWidget(self._section_title("翻訳のしかた"))
+        card, cl = _make_card()
+        self._translate_target_combo = QComboBox()
+        from ..core import dictation_translator
+
+        for code, label in dictation_translator.TARGET_LANGUAGES:
+            self._translate_target_combo.addItem(label, code)
+        self._translate_target_combo.setMinimumWidth(160)
+        _add_row(cl, "訳す先の言語", self._translate_target_combo)
+        # エンジンとモデルを 1 つのポップアップで決める（録音キーの文字起こしエンジンと同じ形）
+        self._translate_engine_button = GroupedChoiceButton()
+        self._translate_engine_button.setMinimumWidth(240)
+        self._translate_engine_caption = _make_caption("")
+        self._translate_choice = ("groq", llm_models.RECOMMENDED_GROQ, llm_models.RECOMMENDED_GEMINI)
+        self._translate_engine_button.chosen.connect(self._set_translate_choice)
+        _add_row(cl, "翻訳エンジン", self._translate_engine_button, caption_widget=self._translate_engine_caption)
+        layout.addWidget(card)
+        layout.addWidget(_make_caption(
+            "「文章を自動で整える」と同時に使うと、整形と翻訳で 2 回 LLM を呼びます。"
+            "速さを優先するなら、録音キーの設定で整形をオフにしてください。"
+            "翻訳に失敗したときは原文がそのまま入力されます（文章を失いません）。"
+        ))
+        layout.addStretch()
+        return self._wrap_scroll(page)
+
+    def _set_translate_choice(self, value) -> None:
+        """翻訳エンジン＋モデルを選んだ（Groq / Gemini それぞれのモデルは別々に覚える）。"""
+        engine, model = value
+        _, groq_model, gemini_model = self._translate_choice
+        if engine == "gemini":
+            gemini_model = model
+        else:
+            groq_model = model
+        self._translate_choice = (engine, groq_model, gemini_model)
+        self._render_translate_engine()
+
+    def _render_translate_engine(self) -> None:
+        """翻訳エンジンのポップアップと説明を、いまの選択で描き直す。"""
+        engine, groq_model, gemini_model = self._translate_choice
+        groups = [
+            ("Groq", [(("groq", mid), label) for mid, label in llm_models.options(llm_models.GROQ, groq_model)]),
+            ("Gemini（有料の場合あり）",
+             [(("gemini", mid), label) for mid, label in llm_models.options(llm_models.GEMINI, gemini_model)]),
+        ]
+        current_model = gemini_model if engine == "gemini" else groq_model
+        provider = llm_models.GEMINI if engine == "gemini" else llm_models.GROQ
+        name = next((info.name for info in llm_models.known(provider) if info.id == current_model), current_model)
+        self._translate_engine_button.set_groups(
+            groups, (engine, current_model), f"{'Gemini' if engine == 'gemini' else 'Groq'} · {name}"
+        )
+        if engine == "gemini":
+            detail = (
+                "Google の Gemini で翻訳します。無料枠を超えると課金されます（「API キー」ページの Gemini の欄にキーが要ります）。\n"
+                + llm_models.detail(llm_models.GEMINI, current_model)
+            )
+        else:
+            detail = (
+                "Groq の LLM で翻訳します。話し言葉のニュアンスに強い代わりに、通信と API キーが必要です。\n"
+                + llm_models.detail(llm_models.GROQ, current_model)
+            )
+        self._translate_engine_caption.setText(detail)
+
+    def _refresh_translate_warnings(self) -> None:
+        """1 回翻訳キーが他のキー設定と重なっていたら警告を出す（Mac と同じ文言）。"""
+        if not hasattr(self, "_translate_warning_label"):
+            return
+        warnings = translate_once_key_warnings(
+            self._translate_once_input.text(),
+            [self._hotkey1_input.text(), self._hotkey2_input.text()],
+            self._handsfree_input.text(),
+            self._repaste_input.text(),
+        )
+        self._translate_warning_label.setText("\n".join(warnings))
+        self._translate_warning_label.setVisible(bool(warnings))
 
     # ------------------------------------------------------------------
     # ホームページ（Mac 版 HomeView のダッシュボードと同構成の 3 カード + 最近の履歴）
@@ -1703,8 +1815,8 @@ class SettingsWindow(QWidget):
 
         Mac 版 HomeView の主役 3 カード（累計入力 / 節約できた時間 / この期間）を再現し、
         下に最近の履歴（直近 8 件・クリックでコピー）を置く。データ源は StatsStore / HistoryStore
-        （Mac と計算式・しきい値を一致させる）。アプリ別使用状況は Windows の履歴がアプリ名
-        メタデータを持たないため省略する。
+        （Mac と計算式・しきい値を一致させる）。その下に API の利用料金（今日 / 今月 / 累計・内訳・
+        直近 30 日）を置く。アプリ別使用状況は Windows では未対応（履歴にはアプリ名が残る）。
         """
         # 期間カードの選択（1=今日 / 7=今週）。既定は今日
         self._home_period_days = 1
@@ -1733,6 +1845,9 @@ class SettingsWindow(QWidget):
 
         # --- 下段: この期間（全幅・今日/今週トグル） ---
         layout.addWidget(self._build_period_card())
+
+        # --- API の利用料金（今日 / 今月 / 累計・内訳・直近 30 日・Mac のホームと同じ） ---
+        layout.addLayout(self._build_api_cost_section())
 
         # --- 最近の履歴（直近 8 件・クリックでコピー） ---
         recent_label = QLabel("最近の履歴")
@@ -1828,6 +1943,161 @@ class SettingsWindow(QWidget):
         cl.addWidget(self._home_period_sub)
         return card
 
+    # ------------------------------------------------------------------
+    # API の利用料金（Mac の HomeView.apiCostSection）
+    # ------------------------------------------------------------------
+
+    def _build_api_cost_section(self) -> QVBoxLayout:
+        """API の利用料金（今日 / 今月 / 累計の合計・内訳・直近 30 日の推移）。
+
+        右上で「定価（無料枠も含む）」と「実際に払った分」を切り替える（設定 api_cost_mode にすぐ保存）。
+        料金は使用量 × 公開単価の推定なので、その旨を小さく添える。
+        """
+        from ..core import api_usage
+
+        self._api_cost_period = "month"
+        box = QVBoxLayout()
+        box.setSpacing(8)
+        head = QHBoxLayout()
+        title = QLabel("API の利用料金")
+        title.setStyleSheet("font-size: 14px; font-weight: 600;")
+        head.addWidget(title)
+        head.addStretch()
+        self._api_cost_mode_buttons = {}
+        for mode, label in ((api_usage.MODE_LIST, "定価（無料枠も含む）"), (api_usage.MODE_PAID, "実際に払った分")):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda _=False, m=mode: self._set_api_cost_mode(m))
+            self._api_cost_mode_buttons[mode] = btn
+            head.addWidget(btn)
+        box.addLayout(head)
+
+        totals = QHBoxLayout()
+        totals.setSpacing(12)
+        self._api_cost_totals = {}
+        for key, label in (("today", "今日"), ("month", "今月"), ("all", "累計")):
+            card, cl = self._home_card()
+            cl.addWidget(_make_caption(label))
+            value = QLabel("$0.00")
+            value.setStyleSheet("font-size: 24px; font-weight: 700;")
+            cl.addWidget(value)
+            note = _make_caption("")
+            cl.addWidget(note)
+            self._api_cost_totals[key] = (value, note)
+            totals.addWidget(card, 1)
+        box.addLayout(totals)
+
+        # 内訳（プロバイダー × モデル × 用途。期間は 今日 / 今月 / 累計）
+        card, cl = self._home_card()
+        bh = QHBoxLayout()
+        bh.addWidget(_make_caption("内訳"))
+        bh.addStretch()
+        self._api_cost_period_buttons = {}
+        for key, label in (("today", "今日"), ("month", "今月"), ("all", "累計")):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda _=False, k=key: self._set_api_cost_period(k))
+            self._api_cost_period_buttons[key] = btn
+            bh.addWidget(btn)
+        cl.addLayout(bh)
+        self._api_cost_rows = QVBoxLayout()
+        self._api_cost_rows.setSpacing(4)
+        cl.addLayout(self._api_cost_rows)
+        box.addWidget(card)
+
+        # 直近 30 日の推移
+        card, cl = self._home_card()
+        th = QHBoxLayout()
+        th.addWidget(_make_caption("直近 30 日"))
+        th.addStretch()
+        self._api_cost_trend_total = _make_caption("")
+        th.addWidget(self._api_cost_trend_total)
+        cl.addLayout(th)
+        self._api_cost_trend = CostTrendBars()
+        cl.addWidget(self._api_cost_trend)
+        box.addWidget(card)
+
+        self._api_cost_footnote = _make_caption("")
+        box.addWidget(self._api_cost_footnote)
+        return box
+
+    def _api_cost_mode(self) -> str:
+        """保存されている料金の表示モード（無い・壊れた値は定価）。"""
+        from ..core import api_usage
+
+        mode = self._config_manager.get("api_cost_mode", api_usage.MODE_LIST)
+        return mode if mode in (api_usage.MODE_LIST, api_usage.MODE_PAID) else api_usage.MODE_LIST
+
+    def _set_api_cost_mode(self, mode: str) -> None:
+        """料金の表示モードを切り替える（表示の設定なので、保存ボタンを待たずにすぐ保存する）。"""
+        self._config_manager.save({"api_cost_mode": mode})
+        self._refresh_api_cost()
+
+    def _set_api_cost_period(self, period: str) -> None:
+        """内訳の期間（今日 / 今月 / 累計）を切り替える。"""
+        self._api_cost_period = period
+        self._refresh_api_cost()
+
+    def _refresh_api_cost(self) -> None:
+        """API の利用料金の表示を、記録の最新値で描き直す。"""
+        from ..core import api_usage
+
+        if not hasattr(self, "_api_cost_totals"):
+            return
+        store = api_usage.shared()
+        mode = self._api_cost_mode()
+        for m, btn in self._api_cost_mode_buttons.items():
+            btn.setChecked(m == mode)
+        for key, summary in (("today", store.today(mode)), ("month", store.month(mode)), ("all", store.all_time(mode))):
+            value, note = self._api_cost_totals[key]
+            value.setText(api_usage.formatted_usd(summary.usd))
+            # 単価が分からない分を 0 円に見せて隠さない
+            note.setText("単価未確認を含む" if summary.has_unpriced else "")
+        for k, btn in self._api_cost_period_buttons.items():
+            btn.setChecked(k == self._api_cost_period)
+        breakdown = {"today": store.today, "month": store.month}.get(self._api_cost_period, None)
+        rows = (breakdown(mode) if breakdown else store.all_time(mode)).rows
+        while self._api_cost_rows.count():
+            item = self._api_cost_rows.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        if not rows:
+            self._api_cost_rows.addWidget(_make_caption("この期間に API の利用はありません。"))
+        for row in rows:
+            line = QWidget()
+            ll = QHBoxLayout(line)
+            ll.setContentsMargins(0, 2, 0, 2)
+            left = QVBoxLayout()
+            left.setSpacing(0)
+            left.addWidget(QLabel(f"{api_usage.model_label(row.provider)} · {row.model}"))
+            if row.audioSeconds > 0:
+                quantity = self._format_minutes(row.audioSeconds)
+                if row.billedAudioSeconds >= row.audioSeconds + 1:
+                    quantity += f"（課金対象 {self._format_minutes(row.billedAudioSeconds)}）"
+            else:
+                quantity = f"入力 {self._grouped(row.inputTokens)} / 出力 {self._grouped(row.outputTokens)} トークン"
+            purpose = api_usage.PURPOSE_LABELS.get(row.purpose, row.purpose)
+            left.addWidget(_make_caption(f"{purpose} · {quantity} · {self._grouped(row.requests)} 回"))
+            ll.addLayout(left, 1)
+            if api_usage.is_free_tier(mode, row.provider):
+                price_text = "無料枠"
+            else:
+                c = row.cost_usd(mode)
+                price_text = api_usage.formatted_usd(c) if c is not None else "単価未確認"
+            ll.addWidget(QLabel(price_text))
+            self._api_cost_rows.addWidget(line)
+        series = store.daily_series(30, mode)
+        self._api_cost_trend.set_values([usd for _, usd in series])
+        self._api_cost_trend_total.setText(f"合計 {api_usage.formatted_usd(sum(usd for _, usd in series))}")
+        self._api_cost_footnote.setText(
+            "使用量 × 各社の公開単価から計算した推定で、実際の請求額とは異なることがあります。"
+            f"単価は {api_usage.CHECKED_ON} 時点（Gemini は有料枠の単価で計算）。Windows は 2026-10-19 以降の分だけを数えます。"
+            + ("「実際に払った分」は OpenAI・Soniox・Microsoft・Google（Gemini）だけを計上し、ほかは無料枠として 0 ドルにしています。"
+               if mode == api_usage.MODE_PAID else "")
+        )
+
     def _set_home_period(self, days: int) -> None:
         """期間カードの今日/今週を切り替える。"""
         self._home_period_days = days
@@ -1880,6 +2150,7 @@ class SettingsWindow(QWidget):
             self._home_saved_comparison.setText(self._saved_comparison(d["saved_seconds"]))
             self._refresh_home_period()
         self._refresh_home_history()
+        self._refresh_api_cost()
 
     def _refresh_home_period(self) -> None:
         """「この期間」カードを現在の今日/今週選択で更新する。"""
@@ -3402,6 +3673,18 @@ class SettingsWindow(QWidget):
             str(config.get("format_model", text_formatter.DEFAULT_FORMAT_MODEL) or text_formatter.DEFAULT_FORMAT_MODEL)
         )
         self._repaste_input.setText(config.get("repaste_key", "") or "")
+        # 翻訳して入力
+        self._translate_once_input.setText(config.get("translate_once_key", "") or "")
+        self._translate_always_check.setChecked(bool(config.get("translate_input_enabled", False)))
+        target_index = self._translate_target_combo.findData(config.get("translate_input_target", "en"))
+        self._translate_target_combo.setCurrentIndex(max(0, target_index))
+        engine = config.get("translate_input_engine", "groq")
+        self._translate_choice = (
+            "gemini" if engine == "gemini" else "groq",
+            str(config.get("translate_input_groq_model", "") or llm_models.RECOMMENDED_GROQ),
+            str(config.get("translate_input_gemini_model", "") or llm_models.RECOMMENDED_GEMINI),
+        )
+        self._render_translate_engine()
         self._history_enabled_check.setChecked(bool(config.get("history_enabled", True)))
         self._on_hotkey_changed()
 
@@ -3519,6 +3802,13 @@ class SettingsWindow(QWidget):
             "repaste_key": self._repaste_input.text(),
             # 音声入力の履歴を保存するか
             "history_enabled": self._history_enabled_check.isChecked(),
+            # 翻訳して入力（Mac の DictationTranslation と同じ項目）
+            "translate_once_key": self._translate_once_input.text(),
+            "translate_input_enabled": self._translate_always_check.isChecked(),
+            "translate_input_target": self._translate_target_combo.currentData() or "en",
+            "translate_input_engine": self._translate_choice[0],
+            "translate_input_groq_model": self._translate_choice[1],
+            "translate_input_gemini_model": self._translate_choice[2],
 
             # ホットキー1 設定
             "hotkey1": self._collect_slot_config(1),

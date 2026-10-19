@@ -38,7 +38,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | モデル選択 | あり（フルコントロール） |
 | テキスト整形（Groq） | トグルあり・モデル/プロンプト選択可＋整え方プリセット 4 種（標準/そのまま/すっきり/箇条書き）。既定はエンジン別（スタンダード=ON / 即時入力・ローカル=OFF） |
 | API キー | 利用者が設定 › API キー で入力（アプリ専用 Keychain 項目）。読み順は **アプリ項目 → 環境変数 → 中央 Keychain（service = 変数名 / account = `shared`）**（`Keychain.resolve` の 1 か所）。Windows は資格情報マネージャーで同じ順（アプリ項目 `voicekey.*` → 環境変数 → 共有項目）。**ログイン・課金・アクティベーションキーは無し**（サーバー往復ゼロ＝最速） |
-| personal 限定機能 | ライブ字幕 / ローカル（Apple）文字起こし / 翻訳して入力（いずれも Mac・macOS 26+） |
+| personal 限定機能 | ライブ字幕 / ローカル（Apple）文字起こし / 翻訳して入力（いずれも Mac・macOS 26+。翻訳して入力は Windows にもある〔Groq / Gemini〕） |
 
 共通: **VAD・長文分割・ストリーミング・録音 HUD は常時 ON 固定**（設定 UI から撤去済み。Mac は `ConfigStore` で true 固定、Windows は `config_manager._force_always_on` が読込・保存時に矯正）。
 
@@ -61,7 +61,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | マイク自動検出 | 入力レベルの分散で使用マイクを推定 | ✅ | ✅ |
 | 履歴 | 直近の文字起こし結果を保持（両 OS とも 200 件＋貼付先アプリ・日時のメタデータ、検索付き。Win のアプリ名は Win32 API の実行ファイル名＋FileDescription） | ✅ | ✅ |
 | ホーム画面 / ダッシュボード | 統計 3 カード（累計入力／節約できた時間／この期間）＋最近の履歴のダッシュボード。**Mac** は起動・再オープンで開くメインウィンドウのホーム面（アプリ別使用率・マイクテスト・ガイド再表示・サイドバーで同一ウィンドウ設定切替つき。再オープン時は最後の画面を復元）／**Win** は設定ウィンドウ先頭の「ホーム」ページ（アプリ別使用率は履歴のアプリ情報なしのため非対応）。詳細は CHANGELOG | ✅ | ✅ |
-| API の利用料金 | ホームに今日/今月/累計の推定料金（USD）・プロバイダー×モデル別内訳・直近 30 日推移（定価／実際に払った分の切替つき）、メニューに「今日の API 代」。10/2 以前はログ・統計から推定（`Core/ApiUsageBackfill.swift`）。単価表は `Core/ApiPricing.swift`、日次集計は `Core/ApiUsageStore.swift`（api-usage.json・数量のみ保存） | ✅ | ❌ |
+| API の利用料金 | ホームに今日/今月/累計の推定料金（USD）・プロバイダー×モデル別内訳・直近 30 日推移（定価／実際に払った分の切替つき）、メニューに「今日の API 代」。10/2 以前はログ・統計から推定（`Core/ApiUsageBackfill.swift`）。単価表は `Core/ApiPricing.swift`、日次集計は `Core/ApiUsageStore.swift`（api-usage.json・数量のみ保存）。Windows は `core/api_usage.py`（同じ単価表・`api_usage.json`）でホームとタスクトレイに出す。記録は 2026-10-19 以降のみ（推定の取り込みは無し） | ✅ | ✅ |
 | サイドノッチ | 画面左端の履歴スリット → クリックで検索付き履歴パネル（黒基調・録音中はアクセント点灯・フォーカス非奪取・既定 ON。検索は Mac＝テキスト/アプリ名・Win＝テキスト） | ✅ | ✅ |
 | 操作音 / メディアダッキング | 録音開始/停止のブリップ音（同一周波数で合成）・録音中はメディア音量を自動で下げる（既定 ON。Win ダッキングは Core Audio/pycaw・非対応時は無害スキップ） | ✅ | ✅ |
 | 最後の入力を再貼り付け | グローバルキーで直前の入力を再貼り付け（Mac 既定 ⌃⌘V／Win は既定未設定＝他機能と重ならないキーが無いため） | ✅ | ✅ |
@@ -72,7 +72,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | 議事録（文字起こしの自動保存・personal のみ・macOS 26+） | 字幕が確定した文字起こしを `~/Documents/voicekey/transcripts/*.md` へ時刻つきで追記（訳文は保存しない・5 分以上あくと別ファイル） | ✅ | ❌ |
 | Google Meet 議事録ボット（personal のみ・macOS 26+・要 Chrome） | 会議 URL を渡すと専用プロファイルの Chrome を裏で起動して参加し、文字起こしを議事録へ保存。**取得元は 2 択**（既定＝Meet の内蔵字幕・話者名つき / 端末内の Apple 認識・外に出さない）。マイク・カメラは切って参加。議事録は字幕の保存スイッチに関係なく必ず保存（会議ごとに 1 ファイル）・終了通知から開ける | ✅ | ❌ |
 | ローカル文字起こし「ローカル（Apple）」（personal のみ・macOS 26+） | 文字起こしを Apple のオンデバイス音声認識（SpeechAnalyzer）で Mac の中だけで行う。通信・API キーなし＝オフライン可。録音中から並行認識し離した瞬間に確定（実測 92〜155ms）。認識言語は「言語」設定に従い、初回だけモデル DL（進捗は録音 HUD） | ✅ | ❌ |
-| 翻訳して入力（personal のみ・macOS 26+） | 文字起こしの最終テキストを訳してから貼り付ける（本命は「日本語で話す→英語が入力される」）。**全体で 1 トグル**・出力言語は 英/中/韓/西/日 から選択・エンジンは Apple オンデバイス（既定）/ Groq の 2 択（Gemini は出さない）。貼り付け直前に 1 回だけ適用し、失敗時は原文フォールバック。録音中に押すとその回だけ翻訳する「1 回翻訳キー」（既定 右⇧）つき | ✅ | ❌ |
+| 翻訳して入力（personal のみ・macOS 26+） | 文字起こしの最終テキストを訳してから貼り付ける（本命は「日本語で話す→英語が入力される」）。**全体で 1 トグル**・出力言語は 英/中/韓/西/日 から選択・エンジンは Apple オンデバイス（既定）/ Groq の 2 択（Gemini は出さない）。貼り付け直前に 1 回だけ適用し、失敗時は原文フォールバック。録音中に押すとその回だけ翻訳する「1 回翻訳キー」（既定 右⇧）つき。**Windows** は Apple 翻訳が無いので Groq（既定）/ Gemini（有料の場合あり・選んだときだけ）、1 回翻訳キーも既定 右Shift | ✅ | ✅ |
 | 履歴同期（Mac ⇄ Windows） | Cloudflare Workers + D1 経由で音声入力履歴を共有（自分専用・共有トークン 1 本・既定オフ）。詳細は `docs/HISTORY_SYNC.md` | ✅ | ✅ |
 
 ## 5. アーキ地図（責務 → ファイル）
@@ -89,7 +89,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | 文字起こし（REST） | `Core/Transcriber.swift`（OpenAI / Microsoft MAI / ElevenLabs / Groq） | `core/api_transcriber.py`（OpenAI / Microsoft MAI / ElevenLabs / Groq / Deepgram、Soniox は録音全体の再送） |
 | 文字起こし（ストリーミング） | `Core/SonioxLiveTranscriber.swift`（Soniox）/ `Core/OpenAILiveTranscriber.swift`（OpenAI ライブ）/ `Core/StreamingTranscriber.swift`（Deepgram・選択肢からは外した） | `core/live_transcriber.py`（Soniox・OpenAI ライブ）/ `core/soniox_region.py`（接続先の判定）/ `core/streaming_transcriber.py`（Deepgram・旧構成のみ） |
 | テキスト整形（Groq）/ 後処理 | `Core/TextFormatter.swift` | `core/text_formatter.py` / `text_processor.py` / `text_utils.py` |
-| 文字入力（貼り付け） | `Core/Paster.swift`（復元判定は `ClipboardRestorePolicy` / `CLI/PasteRestoreTestMode.swift` が `--paste-restore-test` で実動検証） | `core/input_handler.py`（判定は `decide_restore`） |
+| 文字入力（貼り付け） | `Core/Paster.swift`（復元判定は `ClipboardRestorePolicy` / `CLI/PasteRestoreTestMode.swift` が `--paste-restore-test` で実動検証） | `core/input_handler.py`（判定は `decide_restore`）/ `platform/windows/clipboard.py`（全形式の退避と復元・32MB / 64 種類まで） |
 | VAD / マイク自動検出 / 履歴 | `Core/VoiceActivity.swift` / `MicAutoDetector.swift` / `HistoryStore.swift` | `core/vad.py` / `mic_auto_detect.py` / `history.py` |
 | 履歴同期（Mac ⇄ Windows） | `Core/HistorySync.swift` | `core/history_sync.py` |
 | 使用実績（統計・レベル） | `Core/StatsStore.swift` | `core/stats.py` |
@@ -105,7 +105,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | ライブ字幕（personal のみ） | `Caption/`（`CaptionService` / `CaptionGenerationGate` 停止後の古い結果を捨てる世代ゲート / `Audio` システム音声タップ / `Speech` 認識・読み上げ / `Translation` Apple・Gemini・Groq / `Soniox` 音声ストリーミングの認識＋翻訳（`SonioxCaptionStream`・`SonioxCaptionAssembler`） / `Transcript` 議事録の保存 / `Pipeline` 録音パイプライン・`PauseFinalizeTrigger` 無音での確定前倒し / `UI` 字幕 HUD・`CaptionLiveLinePolicy` ライブ行の出し方・メニュー・設定タブ / `CLI` 検証ハーネス） | — （Mac 専用） |
 | Meet 議事録ボット（personal のみ） | `Caption/MeetBot/`（`ChromeDevTools` CDP クライアント / `MeetBotService` 参加・字幕ポーリング・音声のローカル認識 / `CaptionSettleTracker` 伸びる字幕の確定判定 / `MeetBotPolicies` 参加の押し直し・時間切れ・終了通知文などの純ロジック / `MeetBotNotifier` 通知 / `MeetBotScripts` **Meet の DOM 依存はここだけ** / `MeetBotMenu` / `MeetBotTestRunner` 疎通・ログイン画面・音声・通し文字起こしのハーネス） | — （Mac 専用） |
 | ローカル文字起こし（personal のみ） | `Core/LocalSpeechTranscriber.swift`（`LiveTranscribing` 実装・認識器は `Caption/Speech/SpeechRecognizer` を共用） / `Core/Transcriber.swift`（1 発フォールバック） / `CLI/DictationTestMode.swift`（検証ハーネス） | — （Mac 専用） |
-| 翻訳して入力（personal のみ） | `Core/DictationTranslator.swift`（設定 `DictationTranslation` ＋ Apple/Groq 翻訳・1 回翻訳キーの判定） / `AppController.swift`（貼り付け直前の 1 回適用・1 回翻訳キーのトグル） / `UI/SettingsView.swift`（「翻訳して入力」タブ） | — （Mac 専用） |
+| 翻訳して入力（personal のみ） | `Core/DictationTranslator.swift`（設定 `DictationTranslation` ＋ Apple/Groq 翻訳・1 回翻訳キーの判定） / `AppController.swift`（貼り付け直前の 1 回適用・1 回翻訳キーのトグル） / `UI/SettingsView.swift`（「翻訳して入力」タブ） | `core/dictation_translator.py`（Groq / Gemini 翻訳）/ `app.py`（貼り付け直前の 1 回適用・1 回翻訳キー）/ `ui/settings_window.py`（「翻訳して入力」ページ） |
 | OS 権限 | `AppController.swift`（マイク/入力監視/アクセシビリティ） | — （Windows は OS ゲートなし） |
 | OS 抽象化 / ログイン起動 / ログ | ネイティブ API 直 | `platform/` / `utils/autostart.py` / `utils/logger.py` |
 | 行動ログ（操作と状態遷移の記録・14 日で自動削除） | `Core/ActionLog.swift`（`~/Library/Logs/voicekey/voicekey-YYYY-MM-DD.log`）/ `Core/DiagnosticLog.swift`（1 回ごとの `[計測]` 行・ライブ接続・設定差分の診断ログ） | `utils/logger.py`（日付ローテート・`%LOCALAPPDATA%\voicekey\logs\app.log`）/ `core/diagnostics.py`（1 回ごとの `[計測]` 行） |

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
+    QWidget,
 )
 
 # サイドバーの項目の役割（QListWidgetItem の UserRole + 1 に入れる）
@@ -224,3 +225,41 @@ def translate_once_key_warnings(key: str, slot_hotkeys: Sequence[str], handsfree
     ):
         warnings.append("再貼り付けキーと重なっています。録音していないときに押すと再貼り付けが動きます")
     return warnings
+
+
+class CostTrendBars(QWidget):
+    """直近 30 日の API 料金の縦バー（最も高い日を 1.0 とした相対の高さ・Mac のホームと同じ表現）。"""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setMinimumHeight(64)
+        self._values: List[float] = []
+        self.accent = QColor("#FF5A1F")
+        self.empty = QColor(127, 121, 111, 40)
+
+    def set_values(self, values: Sequence[float]) -> None:
+        """日ごとの料金（古い順）を設定して描き直す。"""
+        self._values = [max(0.0, float(v)) for v in values]
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        if not self._values:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        count = len(self._values)
+        gap = 3.0
+        width = max(1.0, (self.width() - gap * (count - 1)) / count)
+        top = max(self._values) or 0.0
+        height = float(self.height())
+        for i, value in enumerate(self._values):
+            ratio = value / top if top > 0 else 0.0
+            bar_h = max(4.0, height * ratio)
+            color = QColor(self.accent) if value > 0 else self.empty
+            if value > 0:
+                color.setAlpha(190)
+            painter.setBrush(color)
+            x = i * (width + gap)
+            painter.drawRoundedRect(int(x), int(height - bar_h), int(max(1.0, width)), int(bar_h), 2, 2)
+        painter.end()

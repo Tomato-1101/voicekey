@@ -349,6 +349,7 @@ class VoicekeyApp(QObject):
         self.account_refreshed.connect(self._settings_window.refresh_account_status)
         self._tray = SystemTray(platform_adapter=self._platform)
         self._tray.open_settings.connect(self._open_settings)
+        self._tray.cost_text_provider = self._today_cost_text
         self._tray.force_reset.connect(self._force_restart)
         self._tray.quit_app.connect(self._quit_app)
         self.status_changed.connect(self._tray.set_status)
@@ -376,6 +377,11 @@ class VoicekeyApp(QObject):
         self.llm_model_replaced.connect(self._on_llm_model_replaced)
         text_formatter.on_model_replaced = (
             lambda old, new: self.llm_model_replaced.emit("format_model", new)
+        )
+        from .core import dictation_translator
+
+        dictation_translator.on_model_replaced = (
+            lambda key, new: self.llm_model_replaced.emit(key, new)
         )
         self.interim_text.connect(self._hud.set_caption)
         # ハンズフリー着色は status より先に届くよう、_emit_state で status_changed の前に emit する
@@ -1864,6 +1870,15 @@ class VoicekeyApp(QObject):
         win.activateWindow()
         self._platform.bring_to_front(win)
 
+    def _today_cost_text(self) -> str:
+        """トレイのメニューに出す「今日の API 代 $x.xx」（ホームと同じ表示モードに従う）。"""
+        from .core import api_usage
+
+        mode = self._config.get("api_cost_mode", api_usage.MODE_LIST)
+        summary = api_usage.shared().today(mode)
+        text = f"今日の API 代 {api_usage.formatted_usd(summary.usd)}"
+        return text + "（単価未確認を含む）" if summary.has_unpriced else text
+
     def _open_api_keys_settings(self) -> None:
         """「設定 › API キー」を開く（キー未設定・無効で失敗したとき・メインスレッド上）。"""
         select = getattr(self._settings_window, "select_api_keys", None)
@@ -1937,6 +1952,12 @@ class VoicekeyApp(QObject):
 
         self._task_q.put(None)  # ワーカー停止
         self._history_sync.stop()
+        # 裏で保存待ちの API 使用量を書き切る（直前の 1 回分を失わない）
+        try:
+            from .core import api_usage
+            api_usage.flush_shared()
+        except Exception as e:
+            logger.warning(f"API 使用量の保存に失敗: {e}")
         # ストリームを閉じてマイクを OS に返す（ハング時も 1 秒で諦める。
         # プロセス終了時に OS がハンドルを回収するため実害はない）
         self._recorder.shutdown(timeout=1.0)

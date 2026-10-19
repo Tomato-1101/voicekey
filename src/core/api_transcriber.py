@@ -777,6 +777,7 @@ class DeepgramTranscriber(ApiTranscriber):
         )
 
         text = self._parse_transcript(resp)
+        self._record_usage(self.model, len(audio_data) / float(self.sample_rate))
         logger.info(
             f"{self.display_name} 文字起こし完了: {self.last_api_time:.0f}ms, {len(text)} 文字"
         )

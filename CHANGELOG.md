@@ -54,6 +54,19 @@ Windows 版の開発を再開し、Mac 版に追いつかせる作業（`docs/WI
   - 辞書と数字: 置き換えを追加（常に出ている入力欄）／登録済みの置き換え（N 件）／数字の書き方（旧 一般 の数字入力）
   - 一般: 画面の表示・音・起動・履歴（Mac と履歴を共有の URL・トークン欄は共有オンのときだけ）
   - 設定ファイルの保存形式は変えていない
+- **Windows: 翻訳して入力（Windows）**。設定 › 音声入力 › 翻訳して入力。文字起こし・整形・辞書まで済んだ最終テキストを
+  貼り付け直前に 1 回だけ訳す（部分訳はしない）。訳す先は 英語（既定）/ 中国語（簡体）/ 韓国語 / スペイン語 / 日本語。
+  Windows には Apple の翻訳が無いので、エンジンは Groq（既定・`qwen/qwen3.8-27b`）と Gemini（「有料の場合あり」と表示・選んだときだけ使う）から
+  エンジンとモデルを 1 つのポップアップで選ぶ。失敗・出力が上限で途中で切れた・キー未設定のときは原文を入力して
+  「翻訳できなかったため、原文を入力しました」と知らせる。モデルが提供終了ならおすすめで 1 回取り直して設定も書き換える。
+  Gemini のキーは URL に載せずヘッダーで送る。文面（システムプロンプト）は Mac と同じ
+  - **1 回だけ翻訳するキー（既定 右Shift）**: 録音中に押すとその回だけ訳し、もう一度押すと取り消す。録音中の HUD に「→EN」などの印を出す。
+    「いつも翻訳する」とは別のスイッチ。録音キー 1・2・ハンズフリーキー・再貼り付けキーと重なると設定画面で警告する
+- **Windows: API の利用料金（Windows）**。設定ウィンドウのホームに「API の利用料金」（今日 / 今月 / 累計の推定ドル・内訳・直近 30 日の推移・
+  「定価（無料枠も含む）」/「実際に払った分」の切り替え）、タスクトレイのメニューに「今日の API 代」を出す。単価表と確認日・最低課金秒数・
+  単価未確認の扱いは Mac（`ApiPricing.swift`）と同じ。文字起こし（全エンジン・Deepgram も）・整形・翻訳の使用量を数量だけ
+  （音声の秒数・トークン数・回数）`api_usage.json` に日ごとに記録し、話した内容とキーは保存しない。保存は裏のスレッドで行い、
+  終了時に書き切る。壊れたファイルは退避して空で始める。記録は Windows 版をこの版にした日から（Mac の 10/2 以前の推定取り込みに当たるものは無い）
 
 ### Changed
 - **Windows: 自動アップデートの確認を止めた（Windows）**。Windows 版は配布しておらず（ソースから使う）、更新フィード
@@ -90,6 +103,9 @@ Windows 版の開発を再開し、Mac 版に追いつかせる作業（`docs/WI
 - **Windows: Ctrl を押しながらの英数字キー（Ctrl+Alt+V など）を組み合わせキーとして認識できなかった（Windows）**。
   pynput が制御文字（Ctrl+V なら `\x16`）を返すため、仮想キーコードから文字を引き直す
 - **Windows: 貼り付けのキー操作を送れなかったとき、auto_enter の Enter を送らず「貼り付けできませんでした。Ctrl+V で貼り付けてください」と知らせる（Windows）**
+- **Windows: 画像やファイルをコピーしたまま音声入力すると、貼り付け後にクリップボードが空になって元の内容が消えていた（Windows）**。
+  文字列しか退避していなかったため。クリップボードの全形式を Win32 API で退避して書き戻すようにした（Mac と同じ合計 32MB・64 種類の上限。
+  超えるときは文字列・RTF・HTML・URL を優先）。1 つも退避できなかったときは消さずに残す
 
 ### Technical Details
 - Linux 上でも Windows 版のテストが回ることを確認した:
@@ -112,6 +128,12 @@ Windows 版の開発を再開し、Mac 版に追いつかせる作業（`docs/WI
 - **core/text_formatter.py**: ひな形 4 種（`format_prompt_templates`）・状態の一言・既定文は空で保存
 - `voicekey.spec` に `icon.ico` を同梱（設定画面のサイドバーのロゴ用）
 - `.gitignore` に開発実行時にリポジトリ直下へ出る個人データ（`history.json`・`stats.json` など）を追加（発話内容を含むため）
+- **core/dictation_translator.py**（新規）: Groq / Gemini の翻訳（Mac の DictationTranslator）。**core/api_usage.py**（新規）:
+  単価表（`price`・`billed_seconds`）と日次集計 `ApiUsageStore`（Mac の ApiPricing / ApiUsageStore と同じ項目名）。
+  **platform/windows/clipboard.py**（新規）: 全形式の退避・復元と、上限内で退避する形式を選ぶ `select_formats`（純関数）。
+  **core/input_handler.py**: `decide_restore` に `RESTORE_SNAPSHOT` / `LEAVE_UNSAVED`
+- `tests/__init__.py` で `VOICEKEY_TESTING=1` を立て、テスト中の API 使用量は一時ディレクトリへ書く（本人の `api_usage.json` を汚さない）。
+  テスト: `test_clipboard_snapshot` / `test_stage2_features`（単価・集計・翻訳〔HTTP はモック〕・翻訳ページ・料金表示）を追加
 - テスト: `test_backends_catalog` / `test_api_keys` / `test_live_transcriber`（127.0.0.1 の模擬 Soniox サーバー相手の通し）/
   `test_api_transcriber_engines` / `test_settings_redesign` / `test_app_pipeline` を追加。課金 API は叩かない
 
