@@ -535,8 +535,10 @@ class LiveSessionBase:
                     return
                 self._send_frame(ws, item)
             except Exception as e:
+                # ここでは解決しない。サーバーがエラー（例 401）を送ってから閉じたとき、送信の失敗が
+                # 受信より先に来ると、エラーコードの無い「切断」で確定してしまい、キー無効の案内が出なくなる。
+                # 終わり方は受信ループに任せる（エラー応答を読むか、切断を検知して解決する）
                 logger.debug(f"{self.PROVIDER}: 送信エラー: {type(e).__name__}")
-                self._resolve(failed("disconnect"), "send-failed")
                 return
 
     def _receive_loop(self, ws) -> None:
