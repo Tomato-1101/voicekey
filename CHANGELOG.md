@@ -2,6 +2,28 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
+## [Unreleased] - 2026-10-19
+
+Windows 版の開発を再開し、Mac 版に追いつかせる作業（`docs/WINDOWS_CATCHUP_PLAN.md` の段階 0〜2）。
+
+### Changed
+- **Windows: 自動アップデートの確認を止めた（Windows）**。Windows 版は配布しておらず（ソースから使う）、更新フィード
+  （削除済みの旧配布リポ・Vercel の `/windows/version.json`）も存在しないため、存在しない URL を見続けないよう
+  `src/utils/updater.py` の `VERSION_URL` を空にした。起動時の定期確認は行わず、設定 › バージョン情報は
+  「Windows 版は配布していないため、更新はソースで git pull して行ってください」と出して確認ボタンを無効にする。
+  署名検証（Ed25519）付きの更新の仕組み自体は残し、将来 Windows も配る場合は URL を入れれば動く（Windows）
+- **Windows のビルド手順から旧配布リポ `voicekey-releases` への参照を外した（Windows）**。
+  `scripts/build/build_windows_dist.ps1` は version.json を作らず、インストーラと SHA256 を出すだけにした。
+  `.github/workflows/windows-build.yml` は動作確認用のインストーラだけを転送用 Release に付ける。
+  この Release は必ずプレリリースにする（通常の Release だと「最新版」になり、Mac の自動更新が見る
+  `releases/latest/download/appcast.xml` を壊すため）
+
+### Technical Details
+- Linux 上でも Windows 版のテストが回ることを確認した:
+  `QT_QPA_PLATFORM=offscreen xvfb-run -a python -m unittest discover -s tests`（pynput が X 接続を要るため xvfb-run、
+  PySide6 に libEGL / libxkbcommon 等、VAD のテストに `silero-vad`（`--no-deps` で torch なし）が要る）。
+  `tests/test_updater.py` に「フィード URL が空なら通信もタイマーも動かず、手動確認には理由を返す」テストを追加
+
 ## [2.3.0] - 2026-10-12
 
 ### Added

@@ -80,6 +80,10 @@ class TestUpdaterCheck(unittest.TestCase):
         self.updater = Updater()
         self.available = []
         self.updater.update_available.connect(self.available.append)
+        # 本番は VERSION_URL が空（Windows 版は配布していない）なので、仕組みの検証用に仮の URL を入れる
+        patcher = mock.patch("src.utils.updater.VERSION_URL", "https://example.invalid/version.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_newer_version_emits_signal(self):
         """現行より新しいバージョンで update_available が発火する。"""
@@ -109,6 +113,22 @@ class TestUpdaterCheck(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", side_effect=OSError("offline")):
             self.updater._check()  # 例外が漏れないこと
         self.assertEqual(self.available, [])
+
+    def test_disabled_without_feed_url(self):
+        """フィード URL が空（Windows 版は配布していない）なら通信もタイマーも動かない。"""
+        failed = []
+        self.updater.update_failed.connect(failed.append)
+        with mock.patch("src.utils.updater.VERSION_URL", ""), \
+             mock.patch("src.utils.updater.secrets.is_dist_build", return_value=True), \
+             mock.patch("urllib.request.urlopen") as urlopen:
+            self.updater.start()
+            self.updater._check(manual=True)
+            self.updater.check_now(manual=True)
+        self.assertFalse(self.updater._timer.isActive())
+        urlopen.assert_not_called()
+        # 手動確認は理由を返す（押したのに無反応にしない）
+        self.assertEqual(len(failed), 1)
+        self.assertIn("git pull", failed[0])
 
     def test_start_noop_in_dev_build(self):
         """開発ビルドでは start() が定期チェックを開始しない。"""

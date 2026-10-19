@@ -2784,14 +2784,23 @@ class SettingsWindow(QWidget):
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
+        updates_enabled = self._updater is not None and self._updater.is_enabled()
         layout.addWidget(_make_caption(
             "新しいバージョンが見つかると「今すぐ更新する」ボタンが表示されます。"
             "更新は起動時と 1 日ごとに自動で確認されます。"
+            if updates_enabled else
+            # Windows 版は配布物が無い（ソースから使う）ので、更新は git pull で行う
+            "Windows 版は配布していません。ソースのフォルダで git pull して起動し直すと最新になります。"
         ))
         layout.addStretch()
 
         # updater のチェック結果を表示へ反映（ウィンドウを開いたまま検知しても更新される）
-        if self._updater is not None:
+        if self._updater is not None and not updates_enabled:
+            # 更新フィードが無い（Windows 版は配布していない）。押しても確認先が無いのでボタンを止める
+            self._check_update_btn.setEnabled(False)
+            from ..utils.updater import DISABLED_MESSAGE
+            self._version_status.setText(DISABLED_MESSAGE)
+        elif self._updater is not None:
             self._updater.update_available.connect(self._on_update_available)
             self._updater.up_to_date.connect(self._on_up_to_date)
             self._updater.update_failed.connect(self._on_update_failed)

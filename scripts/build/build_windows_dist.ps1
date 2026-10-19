@@ -13,11 +13,15 @@
 #
 # 処理の流れ:
 #   DIST マーカー生成 → PyInstaller → ソース平文混入チェック → 鍵漏洩チェック →
-#   Inno Setup → SHA256 → version.json 出力 → 生成マーカーの後始末
+#   Inno Setup → SHA256 表示 → 生成マーカーの後始末
 #
 # 出力:
 #   dist\installer\voicekey-<Version>-setup.exe
-#   dist\installer\version.json   （voicekey-releases/windows/ へコミットする）
+#
+# 注意（2026-10-19）: Windows 版は配布していない（CLAUDE.md「Windows は配布しない・ソースから」）。
+#   旧配布リポ（voicekey-releases）は削除済みで、自動アップデータも更新フィードを持たない
+#   （src/utils/updater.py の VERSION_URL が空）。よって version.json はもう作らない。
+#   このスクリプトは手元・CI で「インストーラが作れるか」を確かめるために残している。
 
 param(
     [Parameter(Mandatory = $true)]
@@ -111,29 +115,15 @@ try {
     $Setup = Join-Path $Root "dist\installer\voicekey-$Version-setup.exe"
     if (-not (Test-Path $Setup)) { Write-Error "インストーラが見つかりません: $Setup" }
 
-    # --- 6. SHA256 と version.json（自動アップデータが参照する） ---
+    # --- 6. SHA256（手元で配るときの照合用。更新フィードは作らない＝上の注意を参照） ---
     $Sha256 = (Get-FileHash $Setup -Algorithm SHA256).Hash.ToLower()
-    $VersionJson = @{
-        version = $Version
-        url     = "https://github.com/Tomato-1101/voicekey-releases/releases/download/v$Version/voicekey-$Version-setup.exe"
-        sha256  = $Sha256
-        notes   = "voicekey $Version"
-    } | ConvertTo-Json
-    $VersionJsonPath = Join-Path $Root "dist\installer\version.json"
-    # BOM 無し UTF-8 で書く。Set-Content -Encoding UTF8（PS 5.1）は BOM を付けてしまい、
-    # 素朴な json.loads(...decode("utf-8")) 系パーサが先頭 BOM で落ちる。
-    # 自動アップデータのフィードなので確実に BOM 無しにする。
-    [System.IO.File]::WriteAllText($VersionJsonPath, $VersionJson, (New-Object System.Text.UTF8Encoding $false))
     Write-Host ""
     Write-Host "==> 完了"
     Write-Host "    インストーラ : $Setup"
     Write-Host "    SHA256       : $Sha256"
-    Write-Host "    version.json : $VersionJsonPath"
     Write-Host ""
-    Write-Host "次の手順:"
-    Write-Host "  1. setup.exe を voicekey-site/downloads/ へ、version.json を voicekey-site/windows/ へ配置"
-    Write-Host "  2. voicekey-site で vercel deploy --prod（exe と version.json が同時に公開される）"
-    Write-Host "  3. constants.py の APP_VERSION 変更を voicekey 本体リポジトリへコミット"
+    Write-Host "Windows 版は配布していません（CLAUDE.md）。このインストーラは動作確認用です。"
+    Write-Host "constants.py の APP_VERSION を変えた場合は voicekey 本体リポジトリへコミットしてください。"
 }
 finally {
     # 生成した DIST マーカーは開発環境に残さない（gitignore 済みだが多層防御）

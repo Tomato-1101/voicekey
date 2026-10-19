@@ -91,6 +91,7 @@ python scripts\build\generate_embedded_keys.py --personal
 
 起動後、タスクトレイのアイコン → 設定 › **API キー** に自分のキーを入力します（Windows の資格情報マネージャーに保存）。
 Windows で使えるのは Deepgram / Groq / ElevenLabs です。exe にまとめる手順は `docs/PERSONAL_EDITION.md` §7。
+配布物が無いので自動アップデートはしません。新しい版にするときはソースのフォルダで `git pull` して起動し直してください。
 
 ---
 
@@ -851,6 +852,15 @@ pyinstaller voicekey.spec --clean --noconfirm
 ```
 
 実行ファイルは `dist/voicekey/` に生成されます（One-Dir モード）。
+
+### テスト（Windows 版）
+
+```bash
+QT_QPA_PLATFORM=offscreen python -m unittest discover -s tests
+```
+
+鍵・ネットワーク・モデルのダウンロードを使わないオフラインのテストです。Linux で回すときは pynput が X の接続を要るので
+`xvfb-run -a` を前に付けます（PySide6 用に libEGL / libxkbcommon、VAD のテストに `silero-vad` が要ります）。
 
 ### 変更履歴
 
