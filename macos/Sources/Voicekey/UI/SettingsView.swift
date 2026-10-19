@@ -1111,6 +1111,14 @@ private struct PromptSettingsTab: View {
                 Toggle(isOn: $config.slot2.formatEnabled) {
                     SettingRowLabel(title: slotTitle(2, config.slot2), detail: slotDetail(config.slot2))
                 }
+                // 貼り付け先が AI なら整形を自動で省く（判定するアプリは `AIDestination` に一覧。既定 ON）
+                // （2026-10-19 Tomato 指示「貼り付け先が AI のときに文の整形を無しにして自動オフにして」）
+                Toggle(isOn: $config.skipFormatForAI) {
+                    SettingRowLabel(
+                        title: "貼り付け先が AI のときは整形しない",
+                        detail: "Claude・ChatGPT・ターミナル（Claude Code）などへ貼るときは、言いよどみがあっても AI は理解できるので、整形を省いて速く入力します。"
+                    )
+                }
             }
 
             Section {

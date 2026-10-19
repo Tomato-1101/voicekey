@@ -53,6 +53,7 @@ from .core import (
     TranscriptionError,
 )
 from .core.api_transcriber import AzureMAITranscriber, OpenAILiveRestTranscriber, SonioxTranscriber
+from .core import ai_destination
 from .core import diagnostics
 from .core import live_transcriber
 from .core.live_transcriber import OpenAILiveSession, SonioxLiveSession
@@ -167,6 +168,9 @@ class TaskContext:
     timeline: Optional["diagnostics.DictationTimeline"] = None
     # この録音を訳してから貼り付けるか（常時翻訳 or 1 回翻訳キー。録音中にキーで付け外しする）
     translate: bool = False
+    # 貼り付け先が AI だったので整形を省いた回の、そのアプリの実行ファイル名（省いていなければ None）。
+    # 省いた回は slot.format_enabled も False に差し替え済み（整形・サーバー統合整形とも走らない）
+    format_skip_app: Optional[str] = None
 
 
 class _LoginWorker(QThread):
@@ -712,6 +716,20 @@ class VoicekeyApp(QObject):
         # slot は dataclass なので複製して format_enabled だけ差し替える（保存値は変えない）。
         if self._practice_format_override and not slot.format_enabled:
             slot = replace(slot, format_enabled=True)
+        # 貼り付け先が AI（Claude・ターミナル等）なら、この録音の整形を省く（Mac の AIDestination と同じ）。
+        # 判定は録音開始時の最前面アプリで行い、この snapshot に載せる（貼り付け直前に問い合わせない）。
+        # 前面アプリは整形が要る回だけ読む。整形体験中は voicekey 自身の窓が前面なので省かない
+        format_skip_app = None
+        if (slot.format_enabled and not self._practice_format_override
+                and bool(self._config.get("skip_format_for_ai", True))):
+            platform = getattr(self, "_platform", None)
+            try:
+                exe = platform.foreground_exe() if platform is not None else None
+            except Exception:
+                exe = None
+            if ai_destination.should_skip_format(True, True, exe):
+                format_skip_app = exe
+                slot = replace(slot, format_enabled=False)
         # サーバー統合整形（Groq プロキシで STT と整形を 1 リクエストに）が使えるか。
         # slot は _maybe_handsfree_slot 適用後なので、ハンズフリー EL 差し替え時は
         # slot.backend が elevenlabs になり、この条件が自動的に False になる（Mac と対）。
@@ -729,6 +747,7 @@ class VoicekeyApp(QObject):
             format_model=self._config.get("format_model", text_formatter.DEFAULT_FORMAT_MODEL),
             format_auto_prompt=self._config.get("format_auto_prompt", ""),
             server_format=server_format,
+            format_skip_app=format_skip_app,
         )
 
     @staticmethod
@@ -1081,6 +1100,8 @@ class VoicekeyApp(QObject):
                 model=slot.api_model,
                 pressed_at=pressed_at,
             )
+            if context.format_skip_app:
+                context.timeline.format_skip_note = ai_destination.SKIPPED_LABEL
             # 「常に翻訳して入力」か、録音キーと一緒に 1 回翻訳キーが押されていればこの回を訳す
             context.translate = bool(self._config.get("translate_input_enabled", False)) or translate_once
             self._active_context = context
@@ -1099,8 +1120,8 @@ class VoicekeyApp(QObject):
         self._emit_state()
         # 録音中に API への TLS 接続を事前確立し、停止後の初回往復を短縮する
         threading.Thread(target=slot.transcriber.prewarm, daemon=True).start()
-        # 整形が有効なら整形 LLM への接続も録音中に温めておく
-        if slot.format_enabled:
+        # 整形が有効なら整形 LLM への接続も録音中に温めておく（AI 宛てで省いた回は温めない）
+        if context.slot.format_enabled:
             threading.Thread(target=text_formatter.prewarm, daemon=True).start()
 
         # ライブ型（Soniox / OpenAI ライブ / Deepgram）かつストリーミング有効なら WebSocket を開き、
@@ -1118,6 +1139,9 @@ class VoicekeyApp(QObject):
                 self._recorder.set_chunk_callback(stream.send)
 
         self._recorder.start_async(self._on_record_started)
+        # AI 宛てで整形を省いた回は理由を残す（アプリ名だけ。本文は出さない）。録音を仕掛けた後に書く
+        if context.format_skip_app:
+            logger.info(f"[整形] 整形=省略(AI 宛て) app={context.format_skip_app}")
 
     def _create_live_session(self, slot: HotkeySlot):
         """スロットのエンジンに合ったライブ（WebSocket）セッションを作る（まだ接続しない）。"""
@@ -1452,7 +1476,12 @@ class VoicekeyApp(QObject):
             return
 
         total_ms = (time.perf_counter() - task.timestamp) * 1000
-        fmt_desc = "整形: サーバー統合" if did_server_format else "整形: クライアント/なし"
+        if did_server_format:
+            fmt_desc = "整形: サーバー統合"
+        elif getattr(ctx, "format_skip_app", None):
+            fmt_desc = "整形: 省略(AI 宛て)"
+        else:
+            fmt_desc = "整形: クライアント/なし"
         logger.info(
             f"文字起こし完了: 音声 {duration:.1f}s → {len(text)} 文字 ({total_ms:.0f}ms, {fmt_desc})"
         )

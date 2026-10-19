@@ -1593,6 +1593,13 @@ class SettingsWindow(QWidget):
             rl.addWidget(caption)
             _add_block(cl, row)
             toggle.toggled.connect(lambda on, sid=slot_id: self._sync_format_toggle(sid, on))
+        # 貼り付け先が AI なら整形を自動で省く（判定するアプリは core/ai_destination.py に一覧。既定 ON・Mac と同じ）
+        self._skip_format_for_ai_check = self._make_toggle()
+        _add_row(
+            cl, "貼り付け先が AI のときは整形しない", self._skip_format_for_ai_check,
+            caption="Claude・ChatGPT・ターミナル（Claude Code）などへ貼るときは、"
+                    "言いよどみがあっても AI は理解できるので、整形を省いて速く入力します。",
+        )
         layout.addWidget(card)
 
         layout.addWidget(self._section_title("AI モデル"))
@@ -3669,6 +3676,7 @@ class SettingsWindow(QWidget):
         self._previous_prompt = None
         self._prompt_undo_btn.setVisible(False)
         self._on_prompt_edited()
+        self._skip_format_for_ai_check.setChecked(bool(config.get("skip_format_for_ai", True)))
         self._fill_format_model_combo(
             str(config.get("format_model", text_formatter.DEFAULT_FORMAT_MODEL) or text_formatter.DEFAULT_FORMAT_MODEL)
         )
@@ -3797,6 +3805,8 @@ class SettingsWindow(QWidget):
 
             # 整形の指示（既定文と同じなら空で保存＝実行時に最新の既定文を使う・Mac と同じ）と整形モデル
             "format_auto_prompt": text_formatter.stored_prompt(self._prompt_edit.toPlainText()),
+            # 貼り付け先が AI のときは整形しない（Mac の skipFormatForAI と同義）
+            "skip_format_for_ai": self._skip_format_for_ai_check.isChecked(),
             "format_model": self._format_model_combo.currentData() or text_formatter.DEFAULT_FORMAT_MODEL,
             # 最後の文字起こしをもう一度貼り付けるキー（空＝無効）
             "repaste_key": self._repaste_input.text(),

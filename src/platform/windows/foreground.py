@@ -37,6 +37,24 @@ def foreground_app() -> Tuple[Optional[str], Optional[str]]:
     return exe, display_name(path)
 
 
+def foreground_exe() -> Optional[str]:
+    """最前面アプリの実行ファイル名だけを返す（例: "claude.exe"）。
+
+    録音開始時の「貼り付け先が AI か」の判定に使う。表示名（バージョン情報の読み出しで数 ms）を
+    読まないので、録音開始の経路に待ち時間を足さない。
+
+    Returns:
+        取れなければ None
+    """
+    if not sys.platform.startswith("win"):
+        return None
+    try:
+        path = _foreground_exe_path()
+    except Exception:
+        return None
+    return os.path.basename(path) if path else None
+
+
 def display_name(path: str) -> str:
     """実行ファイルの表示名（FileDescription。無ければ拡張子を除いた名前）。"""
     with _cache_lock:

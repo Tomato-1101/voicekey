@@ -36,7 +36,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 |---|---|
 | 文字起こしの選択肢 | **Mac**: Soniox（ライブ・stt-rt-v5）/ OpenAI ライブ / OpenAI（gpt-transcribe）/ Microsoft MAI（MAI-Transcribe-2）/ ElevenLabs（scribe_v2・v1）/ Groq を**実名表示**＋ **ローカル（Apple）オンデバイス**（macOS 26+・キー不要）。新規インストールの既定は macOS 26+ なら両録音キーともローカル（Apple）、それ以前は録音キー 1 = Soniox / 2 = Groq。Deepgram は選択肢から外し、保存済みの Deepgram は Soniox へ自動移行。**Windows** も同じ並び・同じモデル名（Soniox / ElevenLabs / OpenAI / Microsoft MAI / OpenAI ライブ / Groq。Apple ローカルは無し）。新規の既定は録音キー 1 = Soniox / 2 = Groq。保存済みの Deepgram は移行せずそのまま動かす（選択肢には出さない） |
 | モデル選択 | あり（フルコントロール）。エンジンとモデルを 1 つのポップアップで選ぶ（提供元の見出しの下にモデル。**Mac** は録音キー・字幕翻訳・翻訳して入力で共通の作り、**Windows** は録音キー・翻訳して入力） |
-| テキスト整形（Groq） | トグルあり（録音キーごと）・モデル/プロンプト選択可。プロンプトは録音キー 1・2 共通の 1 つ（設定「プロンプト」ページ。Mac の正本は `autoFormatPrompt`）にし、整え方 4 種（標準/そのまま/すっきり/箇条書き）は指示文のひな形として選ぶ（Mac・Windows 共通）。既定はエンジン別（スタンダード=ON / 即時入力・ローカル=OFF） |
+| テキスト整形（Groq） | トグルあり（録音キーごと）・モデル/プロンプト選択可。プロンプトは録音キー 1・2 共通の 1 つ（設定「プロンプト」ページ。Mac の正本は `autoFormatPrompt`）にし、整え方 4 種（標準/そのまま/すっきり/箇条書き）は指示文のひな形として選ぶ（Mac・Windows 共通）。既定はエンジン別（スタンダード=ON / 即時入力・ローカル=OFF）。貼り付け先が AI（Claude・ChatGPT・ターミナル等）なら録音開始時の前面アプリで判定して整形を省く（既定 ON・一覧は Mac `Core/AIDestination.swift` / Win `core/ai_destination.py`） |
 | API キー | 利用者が設定 › API キー で入力（アプリ専用 Keychain 項目）。読み順は **アプリ項目 → 環境変数 → 中央 Keychain（service = 変数名 / account = `shared`）**（`Keychain.resolve` の 1 か所）。Windows は資格情報マネージャーで同じ順（アプリ項目 `voicekey.*` → 環境変数 → 共有項目）。**ログイン・課金・アクティベーションキーは無し**（サーバー往復ゼロ＝最速） |
 | personal 限定機能 | ライブ字幕 / ローカル（Apple）文字起こし / 翻訳して入力（いずれも Mac・macOS 26+。翻訳して入力は Windows にもある〔Groq / Gemini〕） |
 

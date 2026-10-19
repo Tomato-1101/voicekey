@@ -289,6 +289,9 @@ final class ConfigStore: ObservableObject {
     @Published var formatModel: String
     /// 整形で LLM に渡すプロンプト本文（全スロット共通・編集可）
     @Published var autoFormatPrompt: String
+    /// 貼り付け先が AI（Claude・ChatGPT・ターミナル等）のときは整形を省くか（既定 ON。判定は `AIDestination`）。
+    /// AI は言いよどみ入りでも理解できるので、Groq の往復を省いて速く・安く入力する（2026-10-19 Tomato 指示）
+    @Published var skipFormatForAI: Bool
     /// ハンズフリー切替キー（このキー＋スロットキーでトグル録音。空＝無効）
     @Published var handsfreeKey: [String]
     /// 長文を無音区間で分割し API へ並列送信する（既定オン。Deepgram ストリーミングは対象外）
@@ -400,6 +403,7 @@ final class ConfigStore: ObservableObject {
         static let historySyncURL = "historySyncURL"
         static let numeralNormalizeEnabled = "numeralNormalizeEnabled"
         static let numeralConvertCounter = "numeralConvertCounter"
+        static let skipFormatForAI = "skipFormatForAI"
         static let numeralProtectWords = "numeralProtectWords"
         /// モード別整形既定の一回限りマイグレーション済みフラグ（v1.8）
         static let didMigrateModeDefaultsV18 = "didMigrateModeDefaultsV18"
@@ -490,6 +494,8 @@ final class ConfigStore: ObservableObject {
         // 保存済みなら空配列も含めそのまま尊重する（repasteKey と同じ「未保存判定」方式）
         numeralNormalizeEnabled = defaults.object(forKey: Keys.numeralNormalizeEnabled) as? Bool ?? true
         numeralConvertCounter = defaults.object(forKey: Keys.numeralConvertCounter) as? Bool ?? true
+        // 貼り付け先が AI のときは整形しない: 未保存なら ON（速さ優先。設定のプロンプトページで切れる）
+        skipFormatForAI = defaults.object(forKey: Keys.skipFormatForAI) as? Bool ?? true
         numeralProtectWords = defaults.object(forKey: Keys.numeralProtectWords) == nil
             ? Self.defaultNumeralProtectWords
             : ((defaults.array(forKey: Keys.numeralProtectWords) as? [String]) ?? [])
@@ -551,6 +557,7 @@ final class ConfigStore: ObservableObject {
         $historySyncURL.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.historySyncURL) }.store(in: &cancellables)
         $numeralNormalizeEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.numeralNormalizeEnabled) }.store(in: &cancellables)
         $numeralConvertCounter.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.numeralConvertCounter) }.store(in: &cancellables)
+        $skipFormatForAI.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.skipFormatForAI) }.store(in: &cancellables)
         $numeralProtectWords.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.numeralProtectWords) }.store(in: &cancellables)
         // ライブ字幕は CaptionSettings 経由で書く（キーの正本を 1 か所に保つため）
         $captionAutoStart.dropFirst().sink { CaptionSettings.startsOnLaunch = $0 }.store(in: &cancellables)
