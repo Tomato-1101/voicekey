@@ -87,6 +87,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "format_model": "qwen/qwen3.8-27b",
     # 整形プロンプト本文（空 = 既定の DEFAULT_FORMAT_PROMPT を使用）
     "format_auto_prompt": "",
+    # 貼り付け先が AI（Claude・ChatGPT・ターミナル等。判定は core/ai_destination.py）のときは整形を省くか。
+    # AI は言いよどみ入りでも理解できるので Groq の往復を省いて速く・安く入力する（既定 ON・Mac の skipFormatForAI と同義）
+    "skip_format_for_ai": True,
 
     # 最後の文字起こしをもう一度貼り付けるキー（空＝無効）。Mac の既定は ⌃⌘V だが、Windows では
     # Ctrl+Win+V が OS の音声出力の切り替え、Ctrl+Alt+V が Office の「形式を選択して貼り付け」と重なり、

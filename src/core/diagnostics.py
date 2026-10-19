@@ -88,6 +88,8 @@ class DictationTimeline:
     stt_ms: Optional[int] = None
     vad_ms: Optional[int] = None
     format_ms: Optional[int] = None
+    # 整形を省いた理由（例: ai_destination.SKIPPED_LABEL）。入っていれば整形欄に時間の代わりに出す
+    format_skip_note: Optional[str] = None
     translate_ms: Optional[int] = None
     paste_ms: Optional[int] = None
     pasted_at: Optional[float] = None
@@ -115,7 +117,7 @@ class DictationTimeline:
             f"停止→確定={_ms(self.stopped_at, self.finalized_at)}",
             f"STT={_ms_value(self.stt_ms)}",
             f"VAD={_ms_value(self.vad_ms)}",
-            f"整形={_ms_value(self.format_ms)}",
+            f"整形={self.format_skip_note or _ms_value(self.format_ms)}",
             f"翻訳={_ms_value(self.translate_ms)}",
             f"貼付={_ms_value(self.paste_ms)}",
             f"離鍵→貼付完了={_ms(self.released_at, self.pasted_at)}",

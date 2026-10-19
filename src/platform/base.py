@@ -110,3 +110,14 @@ class PlatformAdapter(ABC):
             (識別子, 表示名)。取れない OS・失敗時は (None, None)
         """
         return None, None
+
+    def foreground_exe(self) -> Optional[str]:
+        """
+        最前面アプリの実行ファイル名だけを返す（録音開始時の「貼り付け先が AI か」の判定用）。
+
+        表示名（バージョン情報の読み出し）を伴わない軽い版。録音開始の経路で呼ぶので速さを優先する。
+
+        Returns:
+            実行ファイル名（例: "claude.exe"）。取れない OS・失敗時は None
+        """
+        return None

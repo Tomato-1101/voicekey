@@ -46,6 +46,18 @@ Mac の設定画面の作り直し（Mac のみ）も同じ Unreleased に含む
     `src/ui/caption_pages.py`、`ui/hud.py`（`mode_changed`・`caption_covering`・`capsule_bottom_y`）、`ui/system_tray.py`、`app.py`。
     依存に `PyAudioWPatch`（Windows のみ）を追加し `voicekey.spec` で同梱。テストは `tests/test_caption_core.py` / `test_caption_stream.py` /
     `test_caption_service.py` / `test_meetbot.py`（模擬 WebSocket・模擬 HTTP・模擬 CDP。課金 API は叩かない）
+- **貼り付け先が AI のときは整形を自動で省く（Mac / Windows）**（2026-10-19 Tomato 指示
+  「貼り付け先が AI のときに文の整形を無しにして自動オフにして。この機能のオンオフも設定でできるようにして」）。
+  Claude などの AI は言いよどみ入りでも理解できるので、Groq の整形を省いて 0.2〜0.5 秒速く・安く入力する。
+  - 設定「プロンプト」ページに「貼り付け先が AI のときは整形しない」（既定オン）。Mac `skipFormatForAI` / Windows `skip_format_for_ai`
+  - 判定は**録音開始時の最前面アプリ**で行い、その回のスナップショット（Mac `RecordContext` / Windows `TaskContext`）に載せる。
+    貼り付け直前に問い合わせない。前面アプリを読むのは整形が要る回だけ（Windows は表示名を読まない軽い `foreground_exe`）。
+    整形 LLM の事前接続（prewarm）も省いた回はしない
+  - AI とみなすアプリ: Mac は bundle ID（Claude・ChatGPT・Perplexity・Terminal・iTerm2・Ghostty・Warp・kitty・Alacritty・WezTerm・Cursor）を
+    `Core/AIDestination.swift`、Windows は実行ファイル名（claude / ChatGPT / Perplexity / WindowsTerminal / wt / powershell / pwsh / cmd / conhost /
+    Alacritty / WezTerm / Warp / Cursor）を `core/ai_destination.py` の 1 か所にまとめた。ブラウザで開いた AI（chatgpt.com 等）は対象外
+  - 省くのは整形だけ（サーバー統合整形も含む）。数字変換・辞書の置換・翻訳して入力は今どおり。オンボーディングの整形体験中は省かない
+  - `[計測]` 行の整形欄に `整形=省略(AI宛て)` を出し、アプリ名（Windows は実行ファイル名）を `[整形]` 行に残す（本文は出さない）
 - **Windows: 文字起こしエンジンを Mac と同じ並び・同じモデル名にした（Windows）**。
   Soniox（`stt-rt-v5` のライブ型・既定）/ ElevenLabs（`scribe_v2`・`scribe_v1`）/ OpenAI（`gpt-transcribe`）/
   Microsoft MAI（`MAI-Transcribe-2`）/ OpenAI ライブ（`gpt-live-transcribe`）/ Groq（`whisper-large-v3-turbo`）。

@@ -114,3 +114,9 @@ class WindowsPlatformAdapter(PlatformAdapter):
         from .foreground import foreground_app
 
         return foreground_app()
+
+    def foreground_exe(self):
+        """最前面アプリの実行ファイル名だけ（表示名を読まない軽い版。失敗時は None）。"""
+        from .foreground import foreground_exe
+
+        return foreground_exe()
