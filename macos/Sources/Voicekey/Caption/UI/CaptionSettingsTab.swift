@@ -11,6 +11,12 @@
 import AppKit
 import SwiftUI
 
+/// 字幕翻訳の「エンジン＋モデル」の選択値（Apple・Soniox はモデルを選ばないので空）
+struct CaptionEngineChoice: Hashable {
+    let engine: TranslationEngine
+    let model: String
+}
+
 /// 字幕の状態をを SwiftUI へ流すための小さな観測モデル
 ///
 /// `CaptionService.onStateChange` は AppKit のコールバック 1 本しか持たないため、
@@ -80,6 +86,9 @@ struct CaptionSettingsTab: View {
     @State private var keyStatuses: [(provider: APIProvider, status: String)] = []
     /// 字幕の大きさ倍率（スライダーの表示用。正本は CaptionSettings.hudScale）
     @State private var hudScale = Double(CaptionSettings.hudScale)
+    /// Groq / Gemini の実在一覧（未取得なら nil＝静的一覧だけで出す）
+    @State private var groqAvailable: [String]?
+    @State private var geminiAvailable: [String]?
 
     // 他の設定タブと同じ grouped Form に揃える（見出しと説明文の置き方がこのタブだけ違い、押せる場所も狭かった）。
     var body: some View {
@@ -186,18 +195,19 @@ struct CaptionSettingsTab: View {
 
     // MARK: - 翻訳エンジン
 
+    /// エンジンとモデルを 1 つのポップアップで決める（録音キーの文字起こしエンジンと同じ形）。
+    /// 以前は「翻訳エンジン」を選んでから、その下に出る「Gemini / Groq のモデル」をもう一度選ぶ 2 段だった
+    /// （2026-10-19 ユーザー指示「1 個のポップアップで、プロバイダーを選んですぐにモデルを選べるように」）
     private var engineSection: some View {
         Section("翻訳") {
-            Picker(selection: engineBinding) {
-                ForEach(TranslationEngine.allCases, id: \.self) { engine in
-                    Text(engine.displayName).tag(engine)
-                }
-            } label: {
-                SettingRowLabel(
-                    title: "翻訳エンジン",
-                    detail: "Apple はキー不要・端末内で完結。Gemini / Groq は確定した文だけを送り、"
-                        + "Apple の訳を先に出してから差し替えます（混雑や失敗のときは Apple のまま）。"
+            LabeledContent {
+                GroupedChoiceMenu(
+                    groups: engineChoiceGroups,
+                    selection: engineChoiceBinding,
+                    currentTitle: engineChoiceTitle
                 )
+            } label: {
+                SettingRowLabel(title: "翻訳エンジン", detail: engineDetail)
             }
 
             if config.captionEngine == .soniox {
@@ -207,14 +217,94 @@ struct CaptionSettingsTab: View {
                      + "未設定や接続できないときは Apple で表示します。")
                     .font(.caption).foregroundStyle(.secondary)
             }
+        }
+        .task {
+            // 一覧外の提供終了モデルを選ばせないよう、開いたときに実在一覧を取り直す（一覧 GET は無料）。
+            // キャッシュで先に描き、取り直せたら差し替える（LLMModelPicker と同じ取り方）
+            groqAvailable = LLMModelCatalog.cachedAvailable(.groq)
+            geminiAvailable = LLMModelCatalog.cachedAvailable(.gemini)
+            await LLMModelCatalog.refreshAvailable(.groq, force: true)
+            await LLMModelCatalog.refreshAvailable(.gemini, force: true)
+            groqAvailable = LLMModelCatalog.cachedAvailable(.groq)
+            geminiAvailable = LLMModelCatalog.cachedAvailable(.gemini)
+        }
+    }
 
-            // 自由入力欄だったが、廃止モデル名を打ったまま気付けなかったので一覧から選ぶ形にした
-            if config.captionEngine == .gemini {
-                LLMModelPicker(title: "Gemini のモデル", provider: .gemini, selection: $config.captionGeminiModel)
+    /// いまの (エンジン, モデル) の組（Apple・Soniox はモデルを選ばないので空）
+    private var engineChoice: CaptionEngineChoice {
+        switch config.captionEngine {
+        case .gemini: return CaptionEngineChoice(engine: .gemini, model: config.captionGeminiModel)
+        case .groq: return CaptionEngineChoice(engine: .groq, model: config.captionGroqModel)
+        case .apple, .soniox: return CaptionEngineChoice(engine: config.captionEngine, model: "")
+        }
+    }
+
+    /// ポップアップの選択を書き戻す。モデルを先に書いてからエンジンを切り替える
+    /// （エンジンの切り替えは動作中の字幕へ即反映されるので、その時点で新しいモデルを読ませるため）
+    private var engineChoiceBinding: Binding<CaptionEngineChoice> {
+        Binding(
+            get: { engineChoice },
+            set: { newValue in
+                switch newValue.engine {
+                case .gemini: config.captionGeminiModel = newValue.model
+                case .groq: config.captionGroqModel = newValue.model
+                case .apple, .soniox: break
+                }
+                if newValue.engine != config.captionEngine {
+                    engineBinding.wrappedValue = newValue.engine
+                }
             }
-            if config.captionEngine == .groq {
-                LLMModelPicker(title: "Groq のモデル", provider: .groq, selection: $config.captionGroqModel)
+        )
+    }
+
+    /// ポップアップの中身（Apple・Soniox は 1 項目、Gemini・Groq は見出しの下にモデル。並びは allCases の順）
+    private var engineChoiceGroups: [ChoiceMenuGroup<CaptionEngineChoice>] {
+        TranslationEngine.allCases.map { engine in
+            switch engine {
+            case .apple:
+                return ChoiceMenuGroup(title: nil, options: [
+                    ChoiceMenuOption(id: CaptionEngineChoice(engine: .apple, model: ""), label: "Apple 翻訳（端末内・無料）"),
+                ])
+            case .soniox:
+                return ChoiceMenuGroup(title: nil, options: [
+                    ChoiceMenuOption(id: CaptionEngineChoice(engine: .soniox, model: ""),
+                                     label: "Soniox（リアルタイム・有料 約 $0.12/時）"),
+                ])
+            case .gemini:
+                let options = LLMModelCatalog.options(.gemini, current: config.captionGeminiModel, available: geminiAvailable)
+                return ChoiceMenuGroup(title: "Gemini", options: options.map {
+                    ChoiceMenuOption(id: CaptionEngineChoice(engine: .gemini, model: $0.id), label: $0.label)
+                })
+            case .groq:
+                let options = LLMModelCatalog.options(.groq, current: config.captionGroqModel, available: groqAvailable)
+                return ChoiceMenuGroup(title: "Groq", options: options.map {
+                    ChoiceMenuOption(id: CaptionEngineChoice(engine: .groq, model: $0.id), label: $0.label)
+                })
             }
+        }
+    }
+
+    /// 閉じたポップアップの表示（提供元 · モデル）
+    private var engineChoiceTitle: String {
+        switch config.captionEngine {
+        case .apple: return "Apple 翻訳（端末内）"
+        case .soniox: return "Soniox（リアルタイム）"
+        case .gemini: return "Gemini · \(LLMModelCatalog.displayName(.gemini, id: config.captionGeminiModel))"
+        case .groq: return "Groq · \(LLMModelCatalog.displayName(.groq, id: config.captionGroqModel))"
+        }
+    }
+
+    /// 選択中のエンジン（とモデル）の説明
+    private var engineDetail: String {
+        let common = "Apple はキー不要・端末内で完結。Gemini / Groq は確定した文だけを送り、"
+            + "Apple の訳を先に出してから差し替えます（混雑や失敗のときは Apple のまま）。"
+        switch config.captionEngine {
+        case .gemini:
+            return common + "\n" + LLMModelCatalog.detail(.gemini, id: config.captionGeminiModel, available: geminiAvailable)
+        case .groq:
+            return common + "\n" + LLMModelCatalog.detail(.groq, id: config.captionGroqModel, available: groqAvailable)
+        case .apple, .soniox:
+            return common
         }
     }
 
