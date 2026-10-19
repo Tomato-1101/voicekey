@@ -6,6 +6,8 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 # src/ は同梱しない（Python ソース平文同梱の防止）。コードは PYZ アーカイブに入る。
 # src/ 内に実行時読み込みのデータファイルは無いことを確認済み（.py のみ）
 datas = []
+# 新ロゴ（設定画面のサイドバーに出す。凍結ビルドでは sys._MEIPASS 直下に置かれる）
+datas += [('icon.ico', '.')]
 binaries = []
 hiddenimports = ['tzdata']
 

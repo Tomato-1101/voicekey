@@ -75,6 +75,14 @@ class WindowsPlatformAdapter(PlatformAdapter):
         )
 
     def normalize_listener_key(self, key) -> Optional[str]:
+        # Ctrl を押しながら文字キーを押すと、pynput は char に制御文字（Ctrl+V なら '\x16'）を入れて届ける。
+        # そのままだと「ctrl+v」のような組み合わせキー（再貼り付けキー等）が一致しないので、
+        # 英数字の仮想キーコード（0-9 / A-Z）なら仮想キーから文字を引き直す
+        vk = getattr(key, "vk", None)
+        char = getattr(key, "char", None)
+        if vk is not None and (0x30 <= vk <= 0x39 or 0x41 <= vk <= 0x5A):
+            if not char or not char.isprintable():
+                return chr(vk).lower()
         token = normalize_listener_key(key)
         if token is not None:
             return token
@@ -100,3 +108,9 @@ class WindowsPlatformAdapter(PlatformAdapter):
 
     def qt_key_to_hotkey_token(self, key: int, scan_code: int = 0) -> str:
         return qt_key_to_hotkey_token(key, scan_code)
+
+    def foreground_app(self):
+        """最前面アプリの (実行ファイル名, 表示名)（Win32 API。失敗時は (None, None)）。"""
+        from .foreground import foreground_app
+
+        return foreground_app()

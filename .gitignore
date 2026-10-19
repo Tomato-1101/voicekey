@@ -99,6 +99,13 @@ settings.yaml
 # 履歴同期の送信待ち・受信キャッシュ。開発実行時にリポジトリ直下へ出る
 sync_outbox.json
 sync_cloud_cache.json
+# Windows 版を開発実行したときにリポジトリ直下へ出る個人データ（履歴の本文・実績・API 使用量・
+# Soniox の接続先の記憶）。発話内容を含むので絶対にコミットしない
+history.json
+stats.json
+api_usage.json
+soniox_region.json
+settings.yaml.corrupt-*
 # wrangler をリポジトリ直下で実行したときの状態ディレクトリ（sync-worker/ 側は自前の .gitignore で除外）
 .wrangler/
 

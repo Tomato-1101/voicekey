@@ -7,7 +7,7 @@
 
 from typing import Optional, Union
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -43,13 +43,17 @@ class SystemTray(QSystemTrayIcon):
     quit_app = Signal()
     install_update = Signal()
     
-    # 状態別アイコンカラー（macOS システムカラー。原色は安っぽいため使わない）
+    # 状態別アイコンカラー（ブランド「17 LEGEND」の配色・Mac の Brand.swift と同じ値）。
+    # Mac のメニューバーは「待機＝輪／録音中＝橙の点／変換中＝橙の輪」なので、Windows も
+    # 灯りの橙（#FF5A1F）を唯一のアクセントにし、変換中は輪（_RING_STATES）で描く
     ICON_COLORS = {
-        AppState.IDLE: QColor("#8E8E93"),                  # 待機中：グレー（Mac 版テンプレート相当）
-        AppState.RECORDING: QColor("#FF453A"),             # 録音中：systemRed
-        AppState.RECORDING_AUTO_ENTER: QColor("#BF5AF2"),  # 録音中（auto_enter）：systemPurple
-        AppState.TRANSCRIBING: QColor("#FF9F0A"),          # 文字起こし中：systemOrange
+        AppState.IDLE: QColor("#7F796F"),                  # 待機中：刻印（legend）
+        AppState.RECORDING: QColor("#FF5A1F"),             # 録音中：灯り（signal）
+        AppState.RECORDING_AUTO_ENTER: QColor("#D9480F"),  # 録音中（auto_enter）：深い灯り（signalDeep）
+        AppState.TRANSCRIBING: QColor("#FF5A1F"),          # 文字起こし中：灯りの輪
     }
+    # 塗りつぶしではなく輪で描く状態（Mac の「待機＝輪・変換中＝橙の輪」）
+    _RING_STATES = (AppState.IDLE, AppState.TRANSCRIBING)
     
     # アイコンサイズ（ピクセル）
     ICON_SIZE = 64
@@ -73,7 +77,7 @@ class SystemTray(QSystemTrayIcon):
 
     def _setup_icon(self) -> None:
         """初期アイコンを設定する。"""
-        self._set_icon_color(self.ICON_COLORS[AppState.IDLE])
+        self._set_icon_color(self.ICON_COLORS[AppState.IDLE], ring=True)
 
     def _setup_menu(self) -> None:
         """コンテキストメニューを設定する。"""
@@ -158,8 +162,8 @@ class SystemTray(QSystemTrayIcon):
         
         color = self.ICON_COLORS.get(status, self.ICON_COLORS[AppState.IDLE])
         tooltip = self._get_tooltip(status)
-        
-        self._set_icon_color(color)
+
+        self._set_icon_color(color, ring=status in self._RING_STATES)
         self.setToolTip(tooltip)
 
     def _get_tooltip(self, status: AppState) -> str:
@@ -180,7 +184,7 @@ class SystemTray(QSystemTrayIcon):
         }
         return tooltips.get(status, "voicekey")
 
-    def _set_icon_color(self, color: QColor) -> None:
+    def _set_icon_color(self, color: QColor, ring: bool = False) -> None:
         """
         指定色の円形アイコンを生成・設定する。
 
@@ -189,6 +193,7 @@ class SystemTray(QSystemTrayIcon):
 
         Args:
             color: アイコンのベース色
+            ring: 塗りつぶさず輪で描くか（待機・変換中）
         """
         size = self.ICON_SIZE
         pixmap = QPixmap(size, size)
@@ -196,6 +201,15 @@ class SystemTray(QSystemTrayIcon):
 
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        if ring:
+            # 輪（Mac の待機・変換中の表現）。タスクバーの明暗どちらでも見えるよう太めにする
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(color, 9))
+            painter.drawEllipse(8, 8, size - 16, size - 16)
+            painter.end()
+            self.setIcon(QIcon(pixmap))
+            return
 
         # 左上に光源があるような立体感を放射グラデーションで付ける
         gradient = QRadialGradient(size * 0.38, size * 0.32, size * 0.72)

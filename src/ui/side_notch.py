@@ -33,9 +33,9 @@ from PySide6.QtWidgets import (
 
 from ..platform.windows import acrylic
 
-# アクセント色（styles.py の ACCENT と一致）。録音中グロー・フォーカスに使う
-_ACCENT_DARK = "#0A84FF"
-_ACCENT_LIGHT = "#007AFF"
+# アクセント色（ブランドの灯り・Mac の Brand.signal と同じ）。録音中グロー・フォーカスに使う
+_ACCENT_DARK = "#FF5A1F"
+_ACCENT_LIGHT = "#FF5A1F"
 
 
 def relative_time(iso_str: str, now: Optional[datetime] = None) -> str:
@@ -78,15 +78,17 @@ def relative_time(iso_str: str, now: Optional[datetime] = None) -> str:
 
 
 def filter_items(items: List[Dict[str, str]], query: str) -> List[Dict[str, str]]:
-    """履歴をクエリで絞り込む（テキスト部分一致・大文字小文字無視）。空クエリなら全件。
+    """履歴をクエリで絞り込む（テキスト or 貼り付け先アプリ名の部分一致・大文字小文字無視）。空クエリなら全件。
 
-    Windows の履歴はテキストのみ（アプリ名メタデータを持たない）ため、Mac の
-    「テキスト or アプリ名」からテキスト一致だけに簡素化している。
+    Mac と同じく「テキスト or アプリ名」で探す（2026-10-19 から Windows の履歴もアプリ名を持つ）。
     """
     q = (query or "").strip().lower()
     if not q:
         return list(items)
-    return [e for e in items if q in str(e.get("text", "")).lower()]
+    return [
+        e for e in items
+        if q in str(e.get("text", "")).lower() or q in str(e.get("app_name") or "").lower()
+    ]
 
 
 class _HistoryRow(QPushButton):

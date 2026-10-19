@@ -45,6 +45,10 @@ def _fake_app(recording_started_ago: float):
         # 実体を注入（staticmethod/通常メソッドは unbound 呼び出し）
         _acceptable_names=VoicekeyApp._acceptable_names,
         _finish_recording=mock.Mock(),
+        # 1 回翻訳キー・再貼り付けキー（この検証では押されていない）
+        _translate_once_requested=lambda s: False,
+        _repaste_pressed=lambda: False,
+        _released_at=None,
     )
     app._key_in_slot = lambda key_str, s: VoicekeyApp._key_in_slot(app, key_str, s)
     return app
@@ -88,7 +92,7 @@ class TestLongPressDoesNotRecordRelease(unittest.TestCase):
         app._handsfree_pressed = lambda: VoicekeyApp._handsfree_pressed(app)
         captured = {}
 
-        def _begin(slot_id, auto_enter, effective_mode):
+        def _begin(slot_id, auto_enter, effective_mode, **_kwargs):
             captured["auto_enter"] = auto_enter
 
         app._begin_recording = _begin
@@ -114,7 +118,7 @@ class TestLongPressDoesNotRecordRelease(unittest.TestCase):
         app._handsfree_pressed = lambda: VoicekeyApp._handsfree_pressed(app)
         app._slots[1].hotkey_mode = HotkeyMode.HOLD.value
         captured = {}
-        app._begin_recording = lambda sid, ae, em: captured.update(auto_enter=ae)
+        app._begin_recording = lambda sid, ae, em, **_kw: captured.update(auto_enter=ae)
 
         VoicekeyApp._on_press(app, "f2")
 

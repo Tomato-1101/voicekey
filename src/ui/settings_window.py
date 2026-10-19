@@ -1,12 +1,20 @@
 """
 設定ウィンドウモジュール
 
-Mac 版 SettingsView.swift と同じ 5 ページ構成（一般 / 録音キー 1（メイン）/ 録音キー 2（サブ）/ 履歴 / API キー）
-・同じ日本語文言で設定を管理する。
+Mac 版 SettingsView.swift（2026-10-19 の作り直し）と同じ構成・同じ日本語文言で設定を管理する。
+サイドバーは見出しつきで、Windows にだけあるダッシュボード系（ホーム / 実績 / 履歴）を先頭に置く:
+  ホーム・実績・履歴
+  はじめに: API キー
+  音声入力: 入力の基本 / 録音キー 1 / 録音キー 2 / プロンプト / 辞書と数字 / 翻訳して入力
+  アプリ: 一般 /（アカウント）/ バージョン情報
+各ページの先頭にアイコン・ページ名・「このページで何を決めるか」の 1 行を出す。
+録音キーの行の右端には割り当て中のキー（例 右Ctrl）か「未割り当て」を出す。
 レイアウトは macOS System Settings 風の「左サイドバーナビ + カード型セクション」。
 ダーク/ライトテーマ切り替えに対応（Qt は OS テーマに自動追従しないため Windows 版のみ）。
+設定値の保存形式（settings.yaml のキー）は変えていない。
 """
 
+import os
 import threading
 from datetime import datetime
 from typing import Optional
@@ -50,6 +58,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QProgressBar,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSlider,
@@ -59,13 +68,26 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import ConfigManager, HotkeyMode, TranscriptionBackend
-from ..config.constants import APP_VERSION, default_format_enabled
+from ..config import backends, llm_models
+from ..config.constants import APP_VERSION
+from ..core import text_formatter
 from ..core.audio_recorder import AudioRecorder
 from ..core.history import MAX_ITEMS as HISTORY_MAX_ITEMS, HistoryStore
 from ..core.mic_monitor import MicLevelMonitor
 from ..core.stats import StatsStore
 from ..platform import PlatformAdapter, get_platform_adapter
 from ..utils import autostart, secrets
+from .settings_widgets import (
+    KIND_HEADER,
+    KIND_PAGE,
+    ROLE_KIND,
+    ROLE_TRAILING,
+    GroupedChoiceButton,
+    NavItemDelegate,
+    key_label,
+    keys_conflict,
+    translate_once_key_warnings,
+)
 from .styles import MacTheme
 
 try:
@@ -75,41 +97,24 @@ except Exception:  # pragma: no cover - 同期モジュール未配置時でも�
     parse_iso_date = None  # type: ignore
 
 
-# 設定ウィンドウ上の backend 選択値と Keychain サービス識別子のマッピング。
-# Hotkey1 / Hotkey2 で同じ backend を使う場合は同じ Keychain エントリを共有する。
-_BACKEND_TO_SERVICE = {
-    TranscriptionBackend.GROQ.value: secrets.SERVICE_GROQ,
-    TranscriptionBackend.OPENAI.value: secrets.SERVICE_OPENAI,
-    TranscriptionBackend.ELEVENLABS.value: secrets.SERVICE_ELEVENLABS,
-    TranscriptionBackend.DEEPGRAM.value: secrets.SERVICE_DEEPGRAM,
-}
-
-# 提供元名（API キー欄でどのキーかを示すためだけに使う。配布版では API キータブを
-# 隠すので開発時にしか表示されない。Mac 版 Backend.providerName と一致）
-_BACKEND_PROVIDER_NAMES = {
-    TranscriptionBackend.OPENAI.value: "OpenAI",
-    TranscriptionBackend.GROQ.value: "Groq",
-    TranscriptionBackend.ELEVENLABS.value: "ElevenLabs",
-    TranscriptionBackend.DEEPGRAM.value: "Deepgram",
-}
-
-# 製品版（release）でユーザーが文字起こしに選べる 2 択（表示順）。モデルは推奨固定で非選択:
-# 即時入力=Deepgram（nova-3・短命トークン直叩き＋ストリーミング。しゃべり終わった瞬間に全文を一括入力）/
-# スタンダード=Groq（既定・whisper-large-v3-turbo・プロキシ経由。録音後にきれいに整形）。
-# ElevenLabs（scribe_v1）は選択肢から外し、スタンダードのハンズフリー録音時に内部でのみ使う。
-# Mac 版 Backend.selectableCases / Backend.label と一致させる。
-_TRANSCRIBE_BACKEND_LABELS = [
-    (TranscriptionBackend.DEEPGRAM.value, "即時入力"),
-    (TranscriptionBackend.GROQ.value, "スタンダード"),
+# 設定 › API キー の行（Mac の ApiKeysTab と同じ並び・見出し）。
+# (見出し, [(項目, 表示名, 補足, 秘密か, プレースホルダ), ...])
+_API_KEY_SECTIONS = [
+    ("文字起こし", [
+        ("soniox", "Soniox", "", True, "API キーを入力"),
+        ("openai", "OpenAI", "文字起こし（REST / ライブ）で共用", True, "API キーを入力"),
+        ("azure_key", "Microsoft MAI（キー）", "", True, "API キーを入力"),
+        ("azure_endpoint", "Microsoft MAI（エンドポイント）", "", False,
+         "https://<リソース名>.cognitiveservices.azure.com"),
+        ("elevenlabs", "ElevenLabs", "", True, "API キーを入力"),
+        ("groq", "Groq", "文字起こしと文章の自動整形・翻訳入力で共用", True, "API キーを入力"),
+    ]),
+    ("翻訳して入力", [
+        ("gemini", "Gemini", "翻訳エンジンに Gemini を選んだときだけ使います（Groq なら不要）", True, "API キーを入力"),
+    ]),
 ]
-
-# 製品版の API キータブに出すバックエンド（開発ビルドのみ表示）。
-# 文字起こし 2 択＋裏のテキスト整形に使う Groq。OpenAI は使わない。
-_API_KEY_BACKENDS = [
-    TranscriptionBackend.DEEPGRAM.value,
-    TranscriptionBackend.ELEVENLABS.value,
-    TranscriptionBackend.GROQ.value,
-]
+# 選択肢から外した旧エンジン（保存済みの設定で使っている人だけに出す）
+_LEGACY_API_KEY_ROW = ("deepgram", "Deepgram（旧エンジン）", "選択肢から外したエンジンです。今の設定で使っている間だけ表示します", True, "API キーを入力")
 
 # ホットキー動作モードの表示順と UI ラベル（Mac 版 HotkeyMode.label と完全一致させる）
 _MODE_LABELS = [
@@ -133,18 +138,33 @@ def _make_caption(text: str) -> QLabel:
 
 
 def _backend_caption_text(backend: str) -> str:
-    """選択中の文字起こしモードの説明文（Mac 版 SlotSettingsTab.backendCaption と同一文言）。
+    """選択中の文字起こしエンジンの説明文（Mac 版 SlotSettingsTab.backendCaption と同一文言）。"""
+    return backends.caption(backend)
 
-    スタンダード(groq)はハンズフリー録音時に内部で高精度エンジン(ElevenLabs)へ自動切替する旨も添える。
-    """
-    if backend == TranscriptionBackend.DEEPGRAM.value:
-        return "しゃべり終わった瞬間、全文がまとめて入力されます（最速・実測 0.1 秒）"
-    if backend == TranscriptionBackend.GROQ.value:
-        return (
-            "録音後にきれいな文章にして入力します（おすすめ）\n"
-            "ハンズフリー録音のときは、長い録音に強いエンジンへ自動で切り替わります。"
-        )
-    return ""
+
+def _mode_caption(mode: str) -> str:
+    """キーの押し方の説明（Mac の modeCaption と同じ文言）。"""
+    if mode == HotkeyMode.TOGGLE.value:
+        return "1 回押すと録音が始まり、もう 1 回押すと止まって入力します。長く話すときに向いています。"
+    return "押している間だけ録音し、離すと入力します。"
+
+
+# ページの見出し（アイコン名, 説明 1 行）。説明は Mac の subtitle（Mac 固有の言い回しは Windows に直した）
+_PAGE_SUBTITLES = {
+    "ホーム": "入力した量と、最近の履歴です。",
+    "実績": "これまでの入力量・節約できた時間・レベルです。",
+    "履歴": "これまでの入力です。クリックするとコピーします。",
+    "API キー": "使うサービスのキーを入れます。キーはこの PC の資格情報マネージャーにだけ保存します。",
+    "入力の基本": "話す言語・使うマイク・録音キーと一緒に使うキーを決めます。",
+    "録音キー 1": "メインの録音キー。押して話すと、いま使っているアプリに文字が入ります。",
+    "録音キー 2": "2 つ目の録音キー。エンジンや押し方を 1 と変えて使い分けられます。",
+    "プロンプト": "文章を整えるときに AI へ渡す指示です。録音キー 1・2 で共通です。",
+    "辞書と数字": "聞き間違えやすい言葉の直し方と、数字の書き方を決めます。",
+    "翻訳して入力": "話した内容を別の言語に訳してから入力します。",
+    "一般": "表示・音・起動・履歴など、アプリ全体の設定です。",
+    "アカウント": "ログインとライセンスの状態です。",
+    "バージョン情報": "いまのバージョンと、アップデートの確認です。",
+}
 
 
 def _format_history_date(date_str: str) -> str:
@@ -246,11 +266,14 @@ def _add_row(
 _NAV_ICON_NAME = {
     "ホーム": "home",
     "一般": "general",
-    "録音キー 1（メイン）": "hotkey1",
-    "録音キー 2（サブ）": "hotkey2",
+    "入力の基本": "mic",
+    "録音キー 1": "hotkey1",
+    "録音キー 2": "hotkey2",
+    "プロンプト": "prompt",
     "実績": "stats",
     "履歴": "history",
-    "ユーザー辞書": "dictionary",
+    "辞書と数字": "dictionary",
+    "翻訳して入力": "translate",
     "アカウント": "account",
     "バージョン情報": "version",
     "API キー": "apikey",
@@ -299,6 +322,18 @@ def _nav_svg(name: str, color: str) -> str:
             '<circle cx="8" cy="12" r="4"/><line x1="11.5" y1="12" x2="21" y2="12"/>'
             '<line x1="18" y1="12" x2="18" y2="15.5"/><line x1="21" y1="12" x2="21" y2="15"/>'
         ),
+        "mic": (
+            '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0"/>'
+            '<line x1="12" y1="17.5" x2="12" y2="21"/>'
+        ),
+        "prompt": (
+            '<path d="M4 20 15 9"/><path d="M14 5l1 2 2 1-2 1-1 2-1-2-2-1 2-1z"/>'
+            '<path d="M19 12l.6 1.2 1.2.6-1.2.6-.6 1.2-.6-1.2-1.2-.6 1.2-.6z"/>'
+        ),
+        "translate": (
+            '<path d="M4 5h8"/><path d="M8 3v2"/><path d="M5.5 5c.5 3 2.5 5.5 5.5 7"/>'
+            '<path d="M10.5 5c-.5 3-2.5 5.5-5.5 7"/><path d="M13 21l4-9 4 9"/><line x1="14.5" y1="18" x2="19.5" y2="18"/>'
+        ),
     }
     return head + bodies.get(name, "") + "</svg>"
 
@@ -338,7 +373,7 @@ class UsageBarChart(QWidget):
         self._bars: list[tuple[str, int]] = []  # [(ラベル, 値)]
         self._max = 1
         self._progress = 0.0
-        self._accent = QColor("#0A84FF")
+        self._accent = QColor("#FF5A1F")  # ブランドの灯り
         self._text = QColor("#9A9AA2")
         self._grid = QColor(0, 0, 0, 40)
         self._empty_text = "まだデータがありません。音声入力するとここに表示されます。"
@@ -500,7 +535,7 @@ class ToggleSwitch(QCheckBox):
 
         t = self._offset
         off = QColor("#48484E") if self._dark else QColor("#D9D9DE")
-        on = QColor("#0A84FF") if self._dark else QColor("#007AFF")
+        on = QColor("#FF5A1F")  # トグル ON はブランドの灯り（Mac の Brand.signal）
         # オフ→オンのトラック色をノブ位置に合わせて補間する
         track = QColor(
             round(off.red() + (on.red() - off.red()) * t),
@@ -834,6 +869,8 @@ class SettingsWindow(QWidget):
 
         # テーマ切替時にトラック色を更新するトグルスイッチの一覧
         self._toggles: list[ToggleSwitch] = []
+        # 録音キーごとのエンジン＋モデルの選択（ポップアップの値。保存時に hotkeyN.backend / api_model へ）
+        self._slot_choice = {1: (backends.SONIOX, ""), 2: (backends.GROQ, "")}
 
         # 本体と同じインスタンスを共有して保存値の乖離を防ぐ（未指定時のみ単体生成）
         self._config_manager = config_manager or ConfigManager()
@@ -864,12 +901,9 @@ class SettingsWindow(QWidget):
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
 
-        # --- 左サイドバー: ブランド + 折りたたみボタン + ナビゲーション ---
-        # 画面が狭くてもタブを全部辿れるよう、開閉（アイコンのみ）＋縦スクロールにする
-        self._SIDE_W = 184           # 展開時の幅
-        self._SIDE_W_COLLAPSED = 60  # 折りたたみ時の幅（アイコンのみ）
-        self._sidebar_collapsed = False
-
+        # --- 左サイドバー: ブランド + 見出しつきナビゲーション ---
+        # Mac と同じく開閉はやめ、全ページを見出し付きで常に並べる（1 クリックでどのページへも行ける）
+        self._SIDE_W = 200
         self._sidebar = QFrame()
         self._sidebar.setObjectName("sidebarPane")
         self._sidebar.setFixedWidth(self._SIDE_W)
@@ -877,10 +911,15 @@ class SettingsWindow(QWidget):
         sv.setContentsMargins(8, 14, 8, 10)
         sv.setSpacing(2)
 
-        # ヘッダー: ブランド名（折りたたみ時は隠す）＋ 開閉トグル（常時表示）
         brand_row = QHBoxLayout()
         brand_row.setContentsMargins(6, 0, 0, 0)
-        brand_row.setSpacing(6)
+        brand_row.setSpacing(8)
+        # 新ロゴ（icon.ico・「17 LEGEND」）。見つからないビルドでは文字だけにする
+        self._sidebar_logo = QLabel()
+        logo = self._brand_icon_pixmap(28)
+        if logo is not None:
+            self._sidebar_logo.setPixmap(logo)
+            brand_row.addWidget(self._sidebar_logo)
         brand_box = QVBoxLayout()
         brand_box.setSpacing(0)
         self._sidebar_brand = QLabel("voicekey")
@@ -891,13 +930,6 @@ class SettingsWindow(QWidget):
         brand_box.addWidget(self._sidebar_caption)
         brand_row.addLayout(brand_box)
         brand_row.addStretch()
-        self._sidebar_toggle = QPushButton("☰")
-        self._sidebar_toggle.setObjectName("sidebarToggle")
-        self._sidebar_toggle.setFixedSize(30, 30)
-        self._sidebar_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._sidebar_toggle.setToolTip("サイドバーを開閉")
-        self._sidebar_toggle.clicked.connect(self._toggle_sidebar)
-        brand_row.addWidget(self._sidebar_toggle, 0, Qt.AlignmentFlag.AlignTop)
         sv.addLayout(brand_row)
         sv.addSpacing(10)
 
@@ -905,14 +937,14 @@ class SettingsWindow(QWidget):
         self._nav.setObjectName("sidebar")
         self._nav.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._nav.setIconSize(QSize(18, 18))
-        # 縦スクロールのみ（横は出さない）。項目が増えても下までスクロールで届く
         self._nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._nav_delegate = NavItemDelegate(self._nav)
+        self._nav.setItemDelegate(self._nav_delegate)
         sv.addWidget(self._nav, 1)
         root.addWidget(self._sidebar)
 
-        # --- 右コンテンツ島: ページタイトル + ページ + 保存/キャンセル ---
+        # --- 右コンテンツ島: ページ見出し + ページ + 保存/キャンセル ---
         # QFrame にして objectName を付け、QSS の QFrame#contentPane（浮遊ガラス島）を効かせる
-        # （QWidget だと stylesheet 背景が確実に描画されないため QFrame を使う）
         right = QFrame()
         right.setObjectName("contentPane")
         rv = QVBoxLayout(right)
@@ -922,60 +954,82 @@ class SettingsWindow(QWidget):
         header = QWidget()
         hh = QHBoxLayout(header)
         hh.setContentsMargins(24, 18, 20, 8)
-        hh.setSpacing(10)
+        hh.setSpacing(12)
+        # ページ見出し: アイコン + ページ名 + 「このページで何を決めるか」の 1 行（Mac と同じ作り）
+        self._page_icon = QLabel()
+        self._page_icon.setFixedSize(28, 28)
+        title_box = QVBoxLayout()
+        title_box.setSpacing(2)
         self._page_title = QLabel("")
         self._page_title.setObjectName("pageTitle")
+        self._page_subtitle = QLabel("")
+        self._page_subtitle.setObjectName("caption")
+        self._page_subtitle.setWordWrap(True)
+        title_box.addWidget(self._page_title)
+        title_box.addWidget(self._page_subtitle)
         # テーマ切替ボタン（Qt は OS テーマに追従しないため Windows 版独自）
         self._theme_toggle = ThemeToggleButton(is_dark=self._is_dark_mode)
         self._theme_toggle.clicked.connect(self._toggle_theme)
-        hh.addWidget(self._page_title)
-        hh.addStretch()
-        hh.addWidget(self._theme_toggle)
+        hh.addWidget(self._page_icon, 0, Qt.AlignmentFlag.AlignTop)
+        hh.addLayout(title_box, 1)
+        hh.addWidget(self._theme_toggle, 0, Qt.AlignmentFlag.AlignTop)
         rv.addWidget(header)
 
-        # ページ（Mac 版のメインウィンドウ＝ホームダッシュボードを起点に、設定タブが続く構成）
+        # ページ。(見出し or None, [(ページ名, ウィジェット), ...]) の順にサイドバーへ並べる
         self._pages = QStackedWidget()
-        page_defs = [
-            ("ホーム", self._create_home_page()),
-            ("一般", self._create_general_page()),
-            ("録音キー 1（メイン）", self._create_slot_page(1)),
-            ("録音キー 2（サブ）", self._create_slot_page(2)),
-            ("実績", self._create_stats_page()),
-            ("履歴", self._create_history_page()),
+        sections = [
+            (None, [
+                ("ホーム", self._create_home_page()),
+                ("実績", self._create_stats_page()),
+                ("履歴", self._create_history_page()),
+            ]),
         ]
-        self._home_page_index = 0
-        self._stats_page_index = 4
-        self._history_page_index = 5
-        # ユーザー辞書（確定置換）。貼り付け直前に from→to を機械置換する。常時表示。
-        page_defs.append(("ユーザー辞書", self._create_dictionary_page()))
-        # アカウント（ブラウザ経由ログイン）。製品版の中核機能なので常時表示する。
-        # personal はアカウント/サーバーを一切使わないので出さない（Mac 版 SettingsView と同じ）
-        if not secrets.is_personal_build():
-            page_defs.append(("アカウント", self._create_account_page()))
-        # バージョン情報（現在版表示・更新確認・更新検知時の「今すぐ更新する」）。常時表示。
-        page_defs.append(("バージョン情報", self._create_version_page()))
-        # 配布ビルドは埋め込みキーで動くため、API キーページは出さない（テスターの混乱防止）
+        # 配布版は自社サーバー経由でキーを持たないので API キーページを出さない（テスターの混乱防止）
         if not secrets.is_dist_build():
-            page_defs.append(("API キー", self._create_api_keys_page()))
-        # ナビ項目のフルタイトルを覚えておく（折りたたみ時はテキストを消してアイコンのみにする）
-        self._nav_titles = [title for title, _ in page_defs]
-        for title, page in page_defs:
-            item = QListWidgetItem(title)
-            item.setToolTip(title)  # 折りたたみ時にホバーで名前が出るように
-            self._nav.addItem(item)
-            self._pages.addWidget(page)
+            sections.append(("はじめに", [("API キー", self._create_api_keys_page())]))
+        voice_pages = [
+            ("入力の基本", self._create_input_basics_page()),
+            ("録音キー 1", self._create_slot_page(1)),
+            ("録音キー 2", self._create_slot_page(2)),
+            ("プロンプト", self._create_prompt_page()),
+            ("辞書と数字", self._create_dictionary_page()),
+        ]
+        translate_page = self._create_translate_page()
+        if translate_page is not None:
+            voice_pages.append(("翻訳して入力", translate_page))
+        sections.append(("音声入力", voice_pages))
+        app_pages = [("一般", self._create_general_page())]
+        # アカウント（ブラウザ経由ログイン）。personal はアカウント/サーバーを一切使わないので出さない
+        if not secrets.is_personal_build():
+            app_pages.append(("アカウント", self._create_account_page()))
+        app_pages.append(("バージョン情報", self._create_version_page()))
+        sections.append(("アプリ", app_pages))
+
+        # ナビ行 → ページの対応（見出し行は None）。ページ名 → ナビ行も持つ
+        self._nav_titles = []
+        self._nav_row_of: dict = {}
+        for header_title, pages in sections:
+            if header_title:
+                head = QListWidgetItem(header_title)
+                head.setFlags(Qt.ItemFlag.NoItemFlags)
+                head.setData(ROLE_KIND, KIND_HEADER)
+                self._nav.addItem(head)
+                self._nav_titles.append(None)
+            for title, page in pages:
+                item = QListWidgetItem(title)
+                item.setToolTip(title)
+                item.setData(ROLE_KIND, KIND_PAGE)
+                item.setData(Qt.ItemDataRole.UserRole, self._pages.count())
+                self._nav.addItem(item)
+                self._nav_row_of[title] = self._nav.count() - 1
+                self._nav_titles.append(title)
+                self._pages.addWidget(page)
+        self._home_page_index = self._nav_row_of["ホーム"]
+        self._stats_page_index = self._nav_row_of["実績"]
+        self._history_page_index = self._nav_row_of["履歴"]
         rv.addWidget(self._pages, 1)
         # アイコンは色がテーマ依存なので _apply_theme で設定する
         self._apply_nav_icons()
-
-        # サイドバー開閉の幅アニメーション（カクつかせずスッと動かす）。
-        # min と max を同値に保って正確な幅にする（setFixedWidth と同等を毎フレーム維持）
-        self._sidebar_anim = QPropertyAnimation(self._sidebar, b"maximumWidth")
-        self._sidebar_anim.setDuration(180)
-        self._sidebar_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
-        self._sidebar_anim.valueChanged.connect(
-            lambda w: self._sidebar.setMinimumWidth(int(w))
-        )
 
         # ボタンエリア（保存/キャンセル）。Mac 版は即時反映だが、Windows 版は
         # settings.yaml + ホットリロードのため明示保存とする
@@ -999,7 +1053,25 @@ class SettingsWindow(QWidget):
 
         # ナビ選択でページ切替（履歴ページを開いた時点で一覧を最新化する）
         self._nav.currentRowChanged.connect(self._on_nav_changed)
-        self._nav.setCurrentRow(0)
+        self._nav.setCurrentRow(self._home_page_index)
+
+    @staticmethod
+    def _brand_icon_pixmap(size: int) -> Optional[QPixmap]:
+        """新ロゴ（リポジトリ直下 / 実行ファイル隣の icon.ico）を指定サイズで返す（無ければ None）。"""
+        import sys
+        from pathlib import Path
+
+        candidates = []
+        if getattr(sys, "frozen", False):
+            candidates.append(Path(sys.executable).parent / "icon.ico")
+            candidates.append(Path(getattr(sys, "_MEIPASS", "")) / "icon.ico")
+        candidates.append(Path(__file__).resolve().parent.parent.parent / "icon.ico")
+        for path in candidates:
+            if path.exists():
+                pixmap = QIcon(str(path)).pixmap(size, size)
+                if not pixmap.isNull():
+                    return pixmap
+        return None
 
     def _make_toggle(self) -> ToggleSwitch:
         """テーマ追従するトグルスイッチを作って登録する。"""
@@ -1008,44 +1080,41 @@ class SettingsWindow(QWidget):
         self._toggles.append(toggle)
         return toggle
 
-    # ------------------------------------------------------------------
-    # サイドバーの開閉（アイコンのみ ⇔ アイコン＋ラベル）
-    # ------------------------------------------------------------------
-
-    def _toggle_sidebar(self) -> None:
-        """サイドバーの開閉を切り替える（幅をアニメーションさせ、ラベル表示を出し入れ）。"""
-        self._sidebar_collapsed = not self._sidebar_collapsed
-        target = self._SIDE_W_COLLAPSED if self._sidebar_collapsed else self._SIDE_W
-        self._sidebar_anim.stop()
-        self._sidebar_anim.setStartValue(self._sidebar.width())
-        self._sidebar_anim.setEndValue(target)
-        self._sidebar_anim.start()
-        self._apply_sidebar_mode()
-
-    def _apply_sidebar_mode(self) -> None:
-        """折りたたみ状態に応じてブランド表示とナビ項目のラベルを切り替える。"""
-        collapsed = self._sidebar_collapsed
-        self._sidebar_brand.setVisible(not collapsed)
-        self._sidebar_caption.setVisible(not collapsed)
-        # 折りたたみ時はテキストを消してアイコンのみ。ホバーのツールチップで名前を出す
-        for i in range(self._nav.count()):
-            item = self._nav.item(i)
-            item.setText("" if collapsed else self._nav_titles[i])
-            item.setTextAlignment(
-                Qt.AlignmentFlag.AlignCenter if collapsed
-                else (Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-            )
-
     def _sidebar_icon_color(self) -> str:
         """サイドバーアイコンの通常色（テーマに追従）。"""
-        return "#C7C7CC" if self._is_dark_mode else "#6E6E73"
+        return "#CFC9BE" if self._is_dark_mode else "#7F796F"
 
     def _apply_nav_icons(self) -> None:
         """ナビ各項目に現テーマ色のアイコンを設定する（選択時は白に切り替わる）。"""
         color = self._sidebar_icon_color()
         for i in range(self._nav.count()):
-            name = _NAV_ICON_NAME.get(self._nav_titles[i], "general")
+            title = self._nav_titles[i]
+            if title is None:
+                continue
+            name = _NAV_ICON_NAME.get(title, "general")
             self._nav.item(i).setIcon(_make_nav_icon(name, color))
+        self._nav_delegate.secondary_color = QColor(color)
+        # ページ見出しのアイコンも選択中のページに合わせて描き直す
+        row = self._nav.currentRow()
+        if 0 <= row < len(self._nav_titles) and self._nav_titles[row]:
+            self._set_page_header(self._nav_titles[row])
+
+    def _set_page_header(self, title: str) -> None:
+        """ページ見出し（アイコン・ページ名・説明 1 行）を出す。"""
+        self._page_title.setText(title)
+        self._page_subtitle.setText(_PAGE_SUBTITLES.get(title, ""))
+        accent = MacTheme.Colors(self._is_dark_mode).ACCENT
+        name = _NAV_ICON_NAME.get(title, "general")
+        self._page_icon.setPixmap(_svg_pixmap(_nav_svg(name, accent), 26))
+
+    def _refresh_nav_trailing(self) -> None:
+        """録音キーの行の右端に、割り当て中のキー（例 右Ctrl）か「未割り当て」を出す。"""
+        for slot_id in (1, 2):
+            row = self._nav_row_of.get(f"録音キー {slot_id}")
+            hotkey_input = getattr(self, f"_hotkey{slot_id}_input", None)
+            if row is None or hotkey_input is None:
+                continue
+            self._nav.item(row).setData(ROLE_TRAILING, key_label(hotkey_input.text()))
 
     @staticmethod
     def _wrap_scroll(page: QWidget) -> QScrollArea:
@@ -1062,37 +1131,68 @@ class SettingsWindow(QWidget):
     # 一般ページ（Mac 版 GeneralSettingsTab と同項目 + Windows 版固有項目）
     # ------------------------------------------------------------------
 
-    def _create_general_page(self) -> QWidget:
-        """一般ページを作成する（基本 / 音声処理 / 表示と動作 / テキスト整形 / 起動）。"""
+    @staticmethod
+    def _section_title(text: str) -> QLabel:
+        """カードの上に置く見出し（Mac の Section の見出しに当たる）。"""
+        label = QLabel(text)
+        label.setObjectName("sectionTitle")
+        label.setStyleSheet("font-weight: 600; padding: 4px 2px 0 2px;")
+        return label
+
+    def _new_page(self) -> tuple:
+        """ページの土台（縦に見出し＋カードを積む）を作る。"""
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(24, 8, 24, 24)
-        layout.setSpacing(14)
+        layout.setSpacing(8)
+        return page, layout
 
-        # --- カード: 基本（言語・入力デバイス） ---
+    def _hotkey_row(self, hotkey_input: "HotkeyInput", clear_text: str = "クリア") -> QWidget:
+        """キー入力欄＋外すボタンの 1 行を作る。"""
+        hotkey_input.setFixedWidth(200)
+        clear = QPushButton(clear_text)
+        clear.setCursor(Qt.CursorShape.PointingHandCursor)
+        clear.clicked.connect(hotkey_input.clear)
+        row = QWidget()
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        lay.addWidget(hotkey_input)
+        lay.addWidget(clear)
+        lay.addStretch()
+        return row
+
+    # ------------------------------------------------------------------
+    # 入力の基本（Mac の InputBasicsTab と同じ 3 グループ）
+    # ------------------------------------------------------------------
+
+    def _create_input_basics_page(self) -> QWidget:
+        """入力の基本ページ（話す言語とマイク / 録音キーと一緒に使うキー / そのほかのショートカット）。"""
+        page, layout = self._new_page()
+
+        # --- 話す言語とマイク ---
+        layout.addWidget(self._section_title("話す言語とマイク"))
         card, cl = _make_card()
-
-        # 言語（Mac 版と同じ 3 択。空文字 = API 側の自動判定）
         self._lang_combo = QComboBox()
         for label, value in _LANGUAGE_OPTIONS:
             self._lang_combo.addItem(label, value)
         self._lang_combo.setMinimumWidth(160)
-        _add_row(cl, "言語", self._lang_combo)
+        _add_row(
+            cl, "話す言語", self._lang_combo,
+            caption="文字起こしの精度が上がるので、決まっているなら選んでおくのがおすすめです。",
+        )
 
         # 入力デバイス（一覧 + 更新 / 自動検出ボタンを 1 ブロックにまとめる）
         self._input_device_combo = QComboBox()
-
         refresh_button = QPushButton("更新")
         refresh_button.setCursor(Qt.CursorShape.PointingHandCursor)
         refresh_button.setToolTip("デバイス一覧を更新")
         refresh_button.clicked.connect(self._populate_input_devices)
-
         # マイク自動検出（Mac 版と同機能）: 押した後に喋ると声が入ったマイクを自動選択する
         self._mic_detect_button = QPushButton("自動検出")
         self._mic_detect_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._mic_detect_button.setToolTip("全マイクを監視し、喋った声が入ったマイクを自動選択します")
         self._mic_detect_button.clicked.connect(self._start_mic_auto_detect)
-
         device_block = QWidget()
         device_layout = QVBoxLayout(device_block)
         device_layout.setContentsMargins(0, 0, 0, 0)
@@ -1115,15 +1215,11 @@ class SettingsWindow(QWidget):
         self._entitlement_done.connect(self._on_entitlement_done)
         self._redeem_done.connect(self._on_redeem_done)
 
-        layout.addWidget(card)
-
-        # --- カード: マイクテスト（録音キーを押さずに拾えているか確認・無料枠を消費しない） ---
-        card, cl = _make_card()
+        # マイクテスト（録音キーを押さずに拾えているか確認・無料枠を消費しない）
         self._mic_monitor = MicLevelMonitor()
         self._mic_test_timer = QTimer(self)
         self._mic_test_timer.setInterval(33)
         self._mic_test_timer.timeout.connect(self._poll_mic_test_level)
-
         self._mic_test_button = QPushButton("テスト")
         self._mic_test_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._mic_test_button.clicked.connect(self._toggle_mic_test)
@@ -1140,50 +1236,34 @@ class SettingsWindow(QWidget):
         mic_test_layout.addWidget(self._mic_test_bar, 1)
         _add_row(
             cl, "マイクテスト", mic_test_row,
-            caption="「テスト」を押して声を出すと、拾えていればバーが動きます"
-            "（録音キーは押さなくて大丈夫です）。",
+            caption="「テスト」を押して声を出すと、拾えていればバーが動きます（録音キーは押さなくて大丈夫です）。",
         )
         layout.addWidget(card)
 
-        # --- カード: はじめかた（セットアップガイドの再表示） ---
+        # --- 録音キーと一緒に使うキー ---
+        layout.addWidget(self._section_title("録音キーと一緒に使うキー"))
         card, cl = _make_card()
-        guide_button = QPushButton("セットアップガイドを開く")
-        guide_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        guide_button.clicked.connect(self.open_onboarding_requested.emit)
-        guide_row = QWidget()
-        guide_layout = QHBoxLayout(guide_row)
-        guide_layout.setContentsMargins(0, 0, 0, 0)
-        guide_layout.addWidget(guide_button)
-        guide_layout.addStretch()
+        # ハンズフリー切替キー（この切替キー＋ホットキーで toggle 録音になる。空＝無効）
+        self._handsfree_input = HotkeyInput(platform_adapter=self._platform)
         _add_row(
-            cl, "はじめかた", guide_row,
-            caption="使い方をはじめから、もう一度見られます。",
+            cl, "ハンズフリーキー", self._hotkey_row(self._handsfree_input),
+            caption="押しながら録音キーを押すと、押しっぱなしにしなくても録音が続きます"
+            "（もう一度録音キーで停止）。右 Shift などの修飾キーがおすすめです。",
         )
-        layout.addWidget(card)
-
-        # --- カード: 動作（自動 Enter・ハンズフリー） ---
-        # VAD / VAD 最小無音時間 / 長文分割 / 音量正規化 / 録音 HUD /
-        # ストリーミングは常時 ON に固定したため設定 UI から撤去した
-        # （常時 ON の強制は config_manager._load_config 側で行う）
-        card, cl = _make_card()
-
-        # Auto Enter 遅延（ダブルタップ時、テキスト挿入後のEnter押下までの待機時間）
-        # 一部アプリが即時Enterに反応しないため、ユーザー側で調整可能にする
+        # Auto Enter 遅延（ダブルタップ時、テキスト挿入後の Enter 押下までの待機時間）
         self._auto_enter_delay_slider = QSlider(Qt.Orientation.Horizontal)
         self._auto_enter_delay_slider.setRange(0, 500)
         self._auto_enter_delay_slider.setSingleStep(10)
         self._auto_enter_delay_slider.setPageStep(50)
         self._auto_enter_delay_slider.setFixedWidth(180)
-
-        self._auto_enter_delay_label = QLabel("50 ms")
-        self._auto_enter_delay_label.setMinimumWidth(50)
+        self._auto_enter_delay_label = QLabel("50 ミリ秒")
+        self._auto_enter_delay_label.setMinimumWidth(64)
         self._auto_enter_delay_label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
         self._auto_enter_delay_slider.valueChanged.connect(
-            lambda v: self._auto_enter_delay_label.setText(f"{v} ms")
+            lambda v: self._auto_enter_delay_label.setText(f"{v} ミリ秒")
         )
-
         delay_row = QWidget()
         delay_row_layout = QHBoxLayout(delay_row)
         delay_row_layout.setContentsMargins(0, 0, 0, 0)
@@ -1191,137 +1271,88 @@ class SettingsWindow(QWidget):
         delay_row_layout.addWidget(self._auto_enter_delay_slider)
         delay_row_layout.addWidget(self._auto_enter_delay_label)
         _add_row(
-            cl, "ダブルタップ送信の待ち時間", delay_row,
-            caption="録音キーを素早く2回押したとき、貼り付け後に Enter を自動で押すまでの待ち時間です。",
+            cl, "2 回押しで送信するときの待ち時間", delay_row,
+            caption="録音キーを素早く 2 回押すと、入力したあとに Enter も押します。その Enter までの待ち時間です。",
         )
-
-        # ハンズフリー切替キー（この切替キー＋ホットキーで toggle 録音になる。空＝無効）
-        self._handsfree_input = HotkeyInput(platform_adapter=self._platform)
-        self._handsfree_input.setFixedWidth(220)
-        handsfree_clear = QPushButton("クリア")
-        handsfree_clear.setCursor(Qt.CursorShape.PointingHandCursor)
-        handsfree_clear.clicked.connect(self._handsfree_input.clear)
-        handsfree_row = QWidget()
-        handsfree_row_layout = QHBoxLayout(handsfree_row)
-        handsfree_row_layout.setContentsMargins(0, 0, 0, 0)
-        handsfree_row_layout.setSpacing(8)
-        handsfree_row_layout.addWidget(self._handsfree_input)
-        handsfree_row_layout.addWidget(handsfree_clear)
-        handsfree_row_layout.addStretch()
-        _add_row(
-            cl, "ハンズフリーキー", handsfree_row,
-            caption="このキーを押しながら録音キーを押すと、押しっぱなしにしなくても録音が続きます"
-            "（もう一度録音キーを押すと停止）。修飾キー（右 Shift など）がおすすめです。",
-        )
-
         layout.addWidget(card)
+        layout.addWidget(_make_caption("録音キーそのものは「録音キー 1」「録音キー 2」のページで決めます。"))
 
-        # 製品版はテキスト整形のモデル・指示文を固定（UI 非公開）。
-        # オンオフは録音キー各タブの「文章を自動で整える」トグルで切り替える。
-
-        # --- カード: 表示（Mac 版 SettingsView の「表示」セクションと同項目・同文言） ---
+        # --- そのほかのショートカット ---
+        layout.addWidget(self._section_title("そのほかのショートカット"))
         card, cl = _make_card()
+        self._repaste_input = HotkeyInput(platform_adapter=self._platform)
+        _add_row(
+            cl, "直前の入力をもう一度貼り付け", self._hotkey_row(self._repaste_input),
+            caption="最後に入力したテキストを、いまのカーソル位置へもう一度貼り付けます。"
+            "Windows では Ctrl+Win+V や Ctrl+Alt+V が他の機能と重なるので、既定は未設定です。",
+        )
+        layout.addWidget(card)
+        layout.addStretch()
+        return self._wrap_scroll(page)
 
+    # ------------------------------------------------------------------
+    # 一般（Mac の GeneralSettingsTab: 画面の表示・音・起動・履歴）
+    # ------------------------------------------------------------------
+
+    def _create_general_page(self) -> QWidget:
+        """一般ページ（画面の表示 / 音 / 起動 / 履歴）。"""
+        page, layout = self._new_page()
+
+        layout.addWidget(self._section_title("画面の表示"))
+        card, cl = _make_card()
         # 待機中も小型ピルを常時表示する（Mac 版 hudAlwaysVisible と同義・既定 OFF）
         self._hud_always_visible_check = self._make_toggle()
         _add_row(
-            cl, "ピルを常に表示", self._hud_always_visible_check,
-            caption="待機中も画面下部に小さなピルを表示します。録音を始めると大きくなります。",
+            cl, "待機中もピルを表示", self._hud_always_visible_check,
+            caption="画面下の小さなピルを、録音していない間も出しておきます（フルスクリーンのアプリでは隠れます）。",
         )
-
         # 画面左端のサイドノッチ（履歴スリット）を表示する（Mac 版 sideNotchEnabled と同義・既定 ON）
         self._side_notch_check = self._make_toggle()
         _add_row(
-            cl, "サイドノッチを表示", self._side_notch_check,
-            caption="画面の左端に細いバーを表示します。クリックすると、これまでの音声入力の履歴を開けます。",
+            cl, "画面左端の履歴スリットを表示", self._side_notch_check,
+            caption="クリックすると、これまでの入力の履歴を開いてコピーできます。",
         )
-
         layout.addWidget(card)
 
-        # --- カード: サウンド（Mac 版 SettingsView の「サウンド」セクションと同項目・同文言） ---
+        layout.addWidget(self._section_title("音"))
         card, cl = _make_card()
-
-        # 操作音（録音開始/停止の効果音）を鳴らす（Mac 版 soundEffectsEnabled と同義・既定 ON）
         self._sound_effects_check = self._make_toggle()
         _add_row(
             cl, "操作音", self._sound_effects_check,
             caption="録音の開始と停止のときに、短い効果音を鳴らします。",
         )
-
-        # 録音中は他アプリ（メディア）の音量を下げる（Mac 版 duckMediaEnabled と同義・既定 ON）
         self._duck_media_check = self._make_toggle()
         _add_row(
             cl, "音声入力中はメディアの音量を下げる", self._duck_media_check,
             caption="録音している間だけ、再生中の音楽や動画の音量を下げて、停止すると元に戻します。",
         )
-
         layout.addWidget(card)
 
-        # --- カード: 数字入力（Mac 版 SettingsView の「数字入力」セクションと同項目・同文言） ---
+        layout.addWidget(self._section_title("起動"))
         card, cl = _make_card()
-
-        # 数字を半角に変換（マスター・Mac 版 numeralNormalizeEnabled と同義・既定 ON）
-        self._numeral_enabled_check = self._make_toggle()
-        _add_row(
-            cl, "数字を半角に変換", self._numeral_enabled_check,
-            caption="話した数字を半角のアラビア数字に直します（十二人→12人・二〇二六→2026）。",
-        )
-
-        # 助数詞つきの漢数字も変換（Mac 版 numeralConvertCounter と同義・既定 ON）
-        self._numeral_counter_check = self._make_toggle()
-        _add_row(
-            cl, "助数詞つきの漢数字も変換（三時→3時）", self._numeral_counter_check,
-            caption="「三時」「十時」「百人」のような、単位の付いた漢数字も半角数字にします。",
-        )
-        # マスターが OFF のときは助数詞トグルを無効化する（機能全体が止まるため）
-        self._numeral_enabled_check.toggled.connect(self._numeral_counter_check.setEnabled)
-
-        # 変換しない語（保護リスト）。数字漢字で始まる語をラン先頭にアンカー照合して守る
-        protect_block = QWidget()
-        pbl = QVBoxLayout(protect_block)
-        pbl.setContentsMargins(0, 0, 0, 0)
-        pbl.setSpacing(6)
-        pbl.addWidget(QLabel("変換しない語"))
-        self._numeral_protect_list = QListWidget()
-        self._numeral_protect_list.setMaximumHeight(140)
-        pbl.addWidget(self._numeral_protect_list)
-        protect_add_row = QHBoxLayout()
-        self._numeral_protect_input = QLineEdit()
-        self._numeral_protect_input.setPlaceholderText("例: 一人")
-        self._numeral_protect_input.returnPressed.connect(self._add_protect_word)
-        protect_add_btn = QPushButton("追加")
-        protect_add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        protect_add_btn.clicked.connect(self._add_protect_word)
-        protect_del_btn = QPushButton("削除")
-        protect_del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        protect_del_btn.clicked.connect(self._remove_selected_protect_word)
-        protect_add_row.addWidget(self._numeral_protect_input, 1)
-        protect_add_row.addWidget(protect_add_btn)
-        protect_add_row.addWidget(protect_del_btn)
-        pbl.addLayout(protect_add_row)
-        pbl.addWidget(_make_caption(
-            "ここに登録した語は数字に変換しません（「一人」「十分」など、"
-            "数字に読める普通の言葉を守ります）。"
-        ))
-        _add_block(cl, protect_block)
-
-        layout.addWidget(card)
-
-        # --- カード: 起動 ---
-        card, cl = _make_card()
-
-        # ログイン時に自動起動（Windows のみ。Mac ネイティブ版は SMAppService で対応）。
-        # 状態はレジストリ側が真実なので settings.yaml には保存しない
+        # ログイン時に自動起動（Windows のみ）。状態はレジストリ側が真実なので settings.yaml には保存しない
         self._autostart_check = self._make_toggle()
         self._autostart_check.setEnabled(autostart.is_supported())
         _add_row(
             cl, "ログイン時に起動", self._autostart_check,
             caption="" if autostart.is_supported() else "この機能は Windows でのみ利用できます。",
         )
-
+        guide_button = QPushButton("セットアップガイドを開く")
+        guide_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        guide_button.clicked.connect(self.open_onboarding_requested.emit)
+        _add_row(cl, "はじめかた", guide_button, caption="使い方をはじめから、もう一度見られます。")
         layout.addWidget(card)
-        layout.addStretch()
 
+        layout.addWidget(self._section_title("履歴"))
+        card, cl = _make_card()
+        self._history_enabled_check = self._make_toggle()
+        _add_row(
+            cl, "入力の履歴を保存", self._history_enabled_check,
+            caption="ホームの最近の履歴と、画面左端の履歴スリットに使います。オフにすると新しい入力を残しません。",
+        )
+        layout.addWidget(card)
+        layout.addWidget(self._create_history_sync_card())
+        layout.addStretch()
         return self._wrap_scroll(page)
 
     # ------------------------------------------------------------------
@@ -1330,7 +1361,7 @@ class SettingsWindow(QWidget):
 
     def _create_slot_page(self, slot_id: int) -> QWidget:
         """
-        ホットキースロットのページを作成する。
+        録音キーのページを作成する（キー → 文字起こし → 文章の整形・Mac の SlotSettingsTab と同じ順）。
 
         Args:
             slot_id: スロットID（1または2）
@@ -1338,96 +1369,320 @@ class SettingsWindow(QWidget):
         Returns:
             ホットキー設定のページ
         """
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(24, 8, 24, 24)
-        layout.setSpacing(14)
+        page, layout = self._new_page()
 
+        # --- キー（キー・重複警告・押し方をキーの直下に）---
+        layout.addWidget(self._section_title("キー"))
         card, cl = _make_card()
-
-        # ホットキー入力（空＝未割り当て。未割り当てのスロットは録音しない）。
-        # 空表示は「未割り当て」と明示し、捕捉を始めずに外せる明示ボタンを添える（Mac 版と対応）。
-        hotkey_input = HotkeyInput(
-            platform_adapter=self._platform, empty_label="未割り当て"
-        )
-        hotkey_input.setFixedWidth(180)
+        # ホットキー入力（空＝未割り当て。未割り当てのスロットは録音しない）
+        hotkey_input = HotkeyInput(platform_adapter=self._platform, empty_label="未割り当て")
         setattr(self, f"_hotkey{slot_id}_input", hotkey_input)
-        hotkey_clear = QPushButton("割り当てを外す")
-        hotkey_clear.setCursor(Qt.CursorShape.PointingHandCursor)
-        hotkey_clear.clicked.connect(hotkey_input.clear)
-        hotkey_row = QWidget()
-        hotkey_row_layout = QHBoxLayout(hotkey_row)
-        hotkey_row_layout.setContentsMargins(0, 0, 0, 0)
-        hotkey_row_layout.setSpacing(8)
-        hotkey_row_layout.addWidget(hotkey_input)
-        hotkey_row_layout.addWidget(hotkey_clear)
-        hotkey_row_layout.addStretch()
+        warn = _make_caption("もう一方の録音キーと同じキーです。どちらかを変えてください")
+        warn.setStyleSheet(MacTheme.status_warn_style(self._is_dark_mode))
+        warn.setVisible(False)
+        setattr(self, f"_hotkey{slot_id}_warning", warn)
+        key_block = QWidget()
+        kb = QVBoxLayout(key_block)
+        kb.setContentsMargins(0, 0, 0, 0)
+        kb.setSpacing(4)
+        kb.addWidget(self._hotkey_row(hotkey_input, "割り当てを外す"))
+        kb.addWidget(warn)
         _add_row(
-            cl, "ホットキー", hotkey_row,
-            caption="クリックしてキーを押すと割り当てます。ESC で割り当てなし（このホットキーを無効化）。",
+            cl, "録音キー", key_block,
+            caption="枠をクリックしてからキーを押すと割り当てます（ESC で取り消し）。右 Ctrl のように修飾キー 1 つでも使えます。",
         )
+        hotkey_input.textChanged.connect(lambda _t: self._on_hotkey_changed())
 
-        # 動作モード（表示は日本語ラベル、保存値は userData の識別子）
+        # 押し方はエンジンやモデルとは関係の無い「キーの使い方」なので、キーの行の直下に置く
         mode_combo = QComboBox()
         for value, label in _MODE_LABELS:
             mode_combo.addItem(label, value)
-        mode_combo.setMinimumWidth(160)
+        mode_combo.setMinimumWidth(180)
         setattr(self, f"_mode{slot_id}_combo", mode_combo)
-        _add_row(cl, "録音のしかた", mode_combo)
+        mode_caption = _make_caption(_mode_caption(HotkeyMode.HOLD.value))
+        setattr(self, f"_mode{slot_id}_caption", mode_caption)
+        mode_combo.currentIndexChanged.connect(
+            lambda _i, c=mode_combo, cap=mode_caption: cap.setText(_mode_caption(c.currentData()))
+        )
+        _add_row(cl, "キーの押し方", mode_combo, caption_widget=mode_caption)
+        layout.addWidget(card)
 
-        # バックエンド選択（製品版は 2 択: 即時入力 / スタンダード）。
-        # モデルは推奨固定で非選択（Deepgram=nova-3 / Groq=whisper-large-v3-turbo）。
-        backend_combo = QComboBox()
-        for value, label in _TRANSCRIBE_BACKEND_LABELS:
-            backend_combo.addItem(label, value)
-        backend_combo.setMinimumWidth(180)
-        setattr(self, f"_backend{slot_id}_combo", backend_combo)
-        # 選択中モードの説明（薄字。Mac 版 SlotSettingsTab のキャプションと同一文言）。
-        # combo 変更で更新する（スタンダード時はハンズフリー自動切替の1行も出る）。
+        # --- 文字起こし（エンジンとモデルを 1 つのポップアップで決める）---
+        layout.addWidget(self._section_title("文字起こし"))
+        card, cl = _make_card()
+        engine_button = GroupedChoiceButton()
+        engine_button.setMinimumWidth(240)
+        setattr(self, f"_engine{slot_id}_button", engine_button)
         backend_caption = _make_caption("")
         setattr(self, f"_backend{slot_id}_caption", backend_caption)
-        backend_combo.currentIndexChanged.connect(
-            lambda _i, sid=slot_id: self._update_backend_caption(sid)
-        )
-        # モード（backend）を切り替えたら整形トグルをそのモードの既定へ追従させる
-        # （即時入力=既定 OFF・スタンダード=既定 ON）。ユーザーはこの後トグルで自由に上書き可。
-        # _load_settings では setCurrentIndex の後に明示 setChecked で保存値へ戻すため、
-        # 読み込み時にこのハンドラが走っても最終的な整形トグルは保存値になる。
-        backend_combo.currentIndexChanged.connect(
-            lambda _i, sid=slot_id: self._apply_format_default_for_backend(sid)
-        )
-        _add_row(cl, "文字起こしモード", backend_combo, caption_widget=backend_caption)
+        engine_button.chosen.connect(lambda value, sid=slot_id: self._set_slot_choice(sid, value))
+        _add_row(cl, "文字起こしエンジン", engine_button, caption_widget=backend_caption)
+        layout.addWidget(card)
+        layout.addWidget(_make_caption(
+            "一覧は日本語で使うときのおすすめ順です。「API キー」ページで、使うサービスのキーを入れてください。"
+        ))
 
-        # 文章を自動で整える: 貼り付け前に高速 LLM で 1 回整形する
-        # （整形内容は LLM が自動判断。指示は「一般」ページで編集可。Mac 版と構成を一致させる）
+        # --- 文章の整形 ---
+        layout.addWidget(self._section_title("文章の整形"))
+        card, cl = _make_card()
         format_check = self._make_toggle()
         setattr(self, f"_format{slot_id}_check", format_check)
         _add_row(
             cl, "文章を自動で整える", format_check,
-            caption="「えー」「あの」などの言いよどみを除去し、句読点や改行を整えます。",
+            caption="文字起こしのあと、AI（Groq）が「プロンプト」ページの指示で句読点や言いよどみを整えます。"
+            "オフにすると、文字起こしをそのまま入力します（いちばん速い）。",
         )
-
+        prompt_row = QWidget()
+        pr = QVBoxLayout(prompt_row)
+        pr.setContentsMargins(0, 0, 0, 0)
+        pr.setSpacing(4)
+        prompt_head = QHBoxLayout()
+        prompt_head.addWidget(QLabel("使う指示"))
+        prompt_head.addStretch()
+        edit_btn = QPushButton("プロンプトを編集")
+        edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        edit_btn.clicked.connect(lambda: self.select_page("プロンプト"))
+        prompt_head.addWidget(edit_btn)
+        pr.addLayout(prompt_head)
+        summary = _make_caption("")
+        setattr(self, f"_prompt_summary{slot_id}", summary)
+        pr.addWidget(summary)
+        _add_block(cl, prompt_row)
+        # 整形がオフのときは「使う指示」を出さない（Mac と同じ。表示の切り替えは _sync_format_toggle）
+        setattr(self, f"_prompt_row{slot_id}", prompt_row)
+        prompt_row.setVisible(False)
+        format_check.toggled.connect(lambda on, sid=slot_id: self._sync_format_toggle(sid, on))
         layout.addWidget(card)
-        layout.addStretch()
 
+        layout.addStretch()
         return self._wrap_scroll(page)
 
-    def _update_backend_caption(self, slot_id: int) -> None:
-        """バックエンド combo の選択に合わせて、直下のモード説明キャプションを更新する。"""
-        combo = getattr(self, f"_backend{slot_id}_combo")
-        caption = getattr(self, f"_backend{slot_id}_caption")
-        caption.setText(_backend_caption_text(combo.currentData()))
+    def _set_slot_choice(self, slot_id: int, value) -> None:
+        """エンジン＋モデルを選んだ: 選択を覚えてポップアップと説明を描き直す。
 
-    def _apply_format_default_for_backend(self, slot_id: int) -> None:
-        """バックエンド変更に合わせて整形トグルをそのモードの既定へ追従させる。
-
-        即時入力(deepgram)=既定 OFF・スタンダード(groq)=既定 ON。ユーザーはこの後トグルで
-        自由に上書きできる（Mac 版 SlotSettingsTab の .onChange(of: slot.backend) と対）。
+        エンジンとモデルが 1 回で決まるので、エンジン変更で推奨モデルへ切り替える処理は要らない。
+        整形のオン/オフは利用者が決めた設定なのでエンジンを変えても触らない（Mac と同じ）。
         """
-        combo = getattr(self, f"_backend{slot_id}_combo")
-        getattr(self, f"_format{slot_id}_check").setChecked(
-            default_format_enabled(combo.currentData())
+        backend, model = value
+        self._slot_choice[slot_id] = (backend, model)
+        self._render_engine_button(slot_id)
+
+    def _render_engine_button(self, slot_id: int) -> None:
+        """エンジンのポップアップと説明文を、いまの選択で描き直す。"""
+        backend, model = self._slot_choice[slot_id]
+        groups = [
+            (title, [((b, m), label) for b, m, label in options])
+            for title, options in backends.picker_groups(backend, model)
+        ]
+        button = getattr(self, f"_engine{slot_id}_button")
+        button.set_groups(groups, (backend, backends.resolve_model(backend, model)),
+                          backends.choice_title(backend, model))
+        getattr(self, f"_backend{slot_id}_caption").setText(_backend_caption_text(backend))
+        # プロンプトページの「この指示で整える録音キー」の説明（使うエンジン）も合わせる
+        if hasattr(self, "_prompt_slot_captions"):
+            self._refresh_prompt_slot_rows()
+
+    def _on_hotkey_changed(self) -> None:
+        """録音キーが変わった: 重複の警告・サイドバーの右端・プロンプトページの表示を更新する。"""
+        a = self._hotkey1_input.text() if hasattr(self, "_hotkey1_input") else ""
+        b = self._hotkey2_input.text() if hasattr(self, "_hotkey2_input") else ""
+        conflict = keys_conflict(a, b)
+        for slot_id in (1, 2):
+            warn = getattr(self, f"_hotkey{slot_id}_warning", None)
+            if warn is not None:
+                warn.setVisible(conflict)
+        if hasattr(self, "_nav_row_of"):
+            self._refresh_nav_trailing()
+        if hasattr(self, "_prompt_slot_captions"):
+            self._refresh_prompt_slot_rows()
+        if hasattr(self, "_translate_warning_label"):
+            self._refresh_translate_warnings()
+
+    def _sync_format_toggle(self, slot_id: int, on: bool) -> None:
+        """録音キーページの整形トグルとプロンプトページの同じトグルをそろえる（正本は 1 つ）。"""
+        # シグナルは止めない（ToggleSwitch は toggled で自分のつまみを動かすため、止めると見た目がずれる）。
+        # 代わりに状態が同じなら何もしないことで、相互に呼び合っても 1 往復で止まる
+        for name in (f"_format{slot_id}_check", f"_prompt_slot{slot_id}_check"):
+            toggle = getattr(self, name, None)
+            if toggle is not None and toggle.isChecked() != on:
+                toggle.setChecked(on)
+        row = getattr(self, f"_prompt_row{slot_id}", None)
+        if row is not None:
+            row.setVisible(on)
+        if hasattr(self, "_prompt_slot_captions"):
+            self._refresh_prompt_slot_rows()
+
+    # ------------------------------------------------------------------
+    # プロンプト（Mac の PromptSettingsTab: 整形の指示を録音キー 1・2 共通で 1 か所で編集）
+    # ------------------------------------------------------------------
+
+    def _create_prompt_page(self) -> QWidget:
+        """プロンプトページ（整形の指示 / この指示で整える録音キー / AI モデル）。"""
+        page, layout = self._new_page()
+        self._previous_prompt: Optional[str] = None
+
+        layout.addWidget(self._section_title("整形の指示（プロンプト）"))
+        card, cl = _make_card()
+        block = QWidget()
+        bl = QVBoxLayout(block)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.setSpacing(8)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        self._prompt_status = _make_caption("")
+        head.addWidget(self._prompt_status, 1)
+        # ひな形から選ぶ（選ぶと指示文がその内容に置き換わる。直前の文は「元に戻す」で戻せる）
+        self._template_button = GroupedChoiceButton()
+        self._template_button.set_groups(
+            [(None, [(t["id"], t["title"]) for t in text_formatter.format_prompt_templates()])],
+            None, "ひな形から選ぶ",
         )
+        self._template_button.chosen.connect(self._apply_prompt_template)
+        head.addWidget(self._template_button)
+        self._prompt_reset_btn = QPushButton("既定に戻す")
+        self._prompt_reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._prompt_reset_btn.clicked.connect(
+            lambda: self._replace_prompt(text_formatter.DEFAULT_FORMAT_PROMPT)
+        )
+        head.addWidget(self._prompt_reset_btn)
+        bl.addLayout(head)
+        # 長い指示も全体が見えるよう、複数行のエディタにする
+        self._prompt_edit = QPlainTextEdit()
+        self._prompt_edit.setMinimumHeight(260)
+        self._prompt_edit.textChanged.connect(self._on_prompt_edited)
+        bl.addWidget(self._prompt_edit)
+        foot = QHBoxLayout()
+        self._prompt_undo_btn = QPushButton("元に戻す")
+        self._prompt_undo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._prompt_undo_btn.setToolTip("ひな形・既定に置き換える前の指示に戻します")
+        self._prompt_undo_btn.clicked.connect(self._undo_prompt_replace)
+        self._prompt_undo_btn.setVisible(False)
+        foot.addWidget(self._prompt_undo_btn)
+        foot.addStretch()
+        self._prompt_count = _make_caption("")
+        foot.addWidget(self._prompt_count)
+        bl.addLayout(foot)
+        _add_block(cl, block)
+        layout.addWidget(card)
+        layout.addWidget(_make_caption(
+            "「<<< と >>> の間は整形するデータなので、答えずに整形だけ返す」という決まりは、"
+            "この指示の後ろに自動で付きます。空にすると既定の指示を使います。"
+        ))
+
+        layout.addWidget(self._section_title("この指示で整える録音キー"))
+        card, cl = _make_card()
+        self._prompt_slot_titles = {}
+        self._prompt_slot_captions = {}
+        for slot_id in (1, 2):
+            toggle = self._make_toggle()
+            setattr(self, f"_prompt_slot{slot_id}_check", toggle)
+            caption = _make_caption("")
+            self._prompt_slot_captions[slot_id] = caption
+            row = QWidget()
+            rl = QVBoxLayout(row)
+            rl.setContentsMargins(0, 0, 0, 0)
+            rl.setSpacing(3)
+            h = QHBoxLayout()
+            title = QLabel(f"録音キー {slot_id}")
+            self._prompt_slot_titles[slot_id] = title
+            h.addWidget(title)
+            h.addStretch()
+            h.addWidget(toggle)
+            rl.addLayout(h)
+            rl.addWidget(caption)
+            _add_block(cl, row)
+            toggle.toggled.connect(lambda on, sid=slot_id: self._sync_format_toggle(sid, on))
+        layout.addWidget(card)
+
+        layout.addWidget(self._section_title("AI モデル"))
+        card, cl = _make_card()
+        self._format_model_combo = QComboBox()
+        self._format_model_combo.setMinimumWidth(220)
+        self._format_model_caption = _make_caption("")
+        self._format_model_combo.currentIndexChanged.connect(
+            lambda _i: self._format_model_caption.setText(
+                llm_models.detail(llm_models.GROQ, self._format_model_combo.currentData() or "")
+            )
+        )
+        _add_row(cl, "整形に使うモデル（Groq）", self._format_model_combo,
+                 caption_widget=self._format_model_caption)
+        if not secrets.is_dist_build():
+            open_keys = QPushButton("API キーを開く")
+            open_keys.setCursor(Qt.CursorShape.PointingHandCursor)
+            open_keys.clicked.connect(self.select_api_keys)
+            _add_row(cl, "Groq の API キー", open_keys, caption="「API キー」ページの Groq の欄に入れます。")
+        layout.addWidget(card)
+        layout.addWidget(_make_caption(
+            "整形には Groq の API キーが要ります。失敗したときは整形せず、文字起こしをそのまま入力します。"
+        ))
+        layout.addStretch()
+        return self._wrap_scroll(page)
+
+    def _fill_format_model_combo(self, current: str) -> None:
+        """整形モデルの選択肢（おすすめ → 既知 → 一覧に無い保存値）を入れ直す。"""
+        combo = self._format_model_combo
+        combo.blockSignals(True)
+        combo.clear()
+        for model_id, label in llm_models.options(llm_models.GROQ, current):
+            combo.addItem(label, model_id)
+        index = combo.findData(current)
+        combo.setCurrentIndex(max(0, index))
+        combo.blockSignals(False)
+        self._format_model_caption.setText(llm_models.detail(llm_models.GROQ, combo.currentData() or ""))
+
+    def _on_prompt_edited(self) -> None:
+        """指示文が書き換わった: 状態・文字数・ボタンの有効無効を更新する。"""
+        text = self._prompt_edit.toPlainText()
+        self._prompt_count.setText(f"{len(text)} 文字")
+        self._prompt_status.setText(text_formatter.prompt_summary(text))
+        is_default = text.strip() == text_formatter.DEFAULT_FORMAT_PROMPT.strip()
+        self._prompt_reset_btn.setEnabled(not is_default)
+        for slot_id in (1, 2):
+            label = getattr(self, f"_prompt_summary{slot_id}", None)
+            if label is not None:
+                label.setText(text_formatter.prompt_summary(text))
+
+    def _replace_prompt(self, new_text: str) -> None:
+        """指示文を置き換える（直前の文を「元に戻す」用に覚える）。"""
+        current = self._prompt_edit.toPlainText()
+        if current == new_text:
+            return
+        self._previous_prompt = current
+        self._prompt_edit.setPlainText(new_text)
+        self._prompt_undo_btn.setVisible(True)
+
+    def _apply_prompt_template(self, template_id: str) -> None:
+        """ひな形を選んだ: 指示文をその内容に置き換える。"""
+        for template in text_formatter.format_prompt_templates():
+            if template["id"] == template_id:
+                self._replace_prompt(template["prompt"])
+                return
+
+    def _undo_prompt_replace(self) -> None:
+        """「元に戻す」: ひな形・既定に置き換える前の指示に戻す。"""
+        if self._previous_prompt is not None:
+            self._prompt_edit.setPlainText(self._previous_prompt)
+        self._previous_prompt = None
+        self._prompt_undo_btn.setVisible(False)
+
+    def _refresh_prompt_slot_rows(self) -> None:
+        """「この指示で整える録音キー」の名前（割り当て中のキー）と説明（整えるか・エンジン）を更新する。"""
+        for slot_id in (1, 2):
+            hotkey_input = getattr(self, f"_hotkey{slot_id}_input", None)
+            key = key_label(hotkey_input.text()) if hotkey_input is not None else ""
+            self._prompt_slot_titles[slot_id].setText(f"録音キー {slot_id}（{key}）")
+            choice = getattr(self, "_slot_choice", {}).get(slot_id)
+            engine = backends.choice_title(*choice) if choice else ""
+            toggle = getattr(self, f"_format{slot_id}_check", None)
+            on = toggle.isChecked() if toggle is not None else False
+            self._prompt_slot_captions[slot_id].setText(
+                f"整える（{engine} で文字起こししたあと）" if on
+                else f"整えない（{engine} の文字起こしをそのまま入力）"
+            )
+
+    def _create_translate_page(self) -> Optional[QWidget]:
+        """翻訳して入力ページ（段階 2 で追加する。まだ無ければ None）。"""
+        return None
 
     # ------------------------------------------------------------------
     # ホームページ（Mac 版 HomeView のダッシュボードと同構成の 3 カード + 最近の履歴）
@@ -1668,7 +1923,10 @@ class SettingsWindow(QWidget):
         if device != "windows":
             preview = ("[Mac] " if device == "mac" else f"[{device}] ") + preview
         date = _format_history_date(entry["date"])
-        item = QListWidgetItem(f"{preview}\n{date}")
+        # 貼り付け先アプリ名があれば日時の横に添える（Mac の履歴と同じく「どこに入れたか」を見せる）
+        app_name = entry.get("app_name")
+        meta = f"{date}  ·  {app_name}" if app_name else date
+        item = QListWidgetItem(f"{preview}\n{meta}")
         item.setData(Qt.ItemDataRole.UserRole, text)
         item.setToolTip(text)
         return item
@@ -1922,7 +2180,7 @@ class SettingsWindow(QWidget):
         layout.setSpacing(10)
         layout.setContentsMargins(24, 8, 24, 24)
 
-        layout.addWidget(self._create_history_sync_card())
+        # 「Mac と履歴を共有」の設定は 一般 › 履歴 へ移した（Mac の設定画面の作り直しに合わせる）
 
         # QListWidget 自体がスクロールするため _wrap_scroll は不要
         self._history_list = QListWidget()
@@ -1953,10 +2211,16 @@ class SettingsWindow(QWidget):
         self._refresh_history()
         return page
 
-    def _create_history_sync_card(self) -> QFrame:
-        """「Mac と履歴を共有」カードを作る（トグル・同期先 URL・共有トークン・同期状況）。"""
-        card, cl = _make_card()
+    def _create_history_sync_card(self) -> QWidget:
+        """「Mac と履歴を共有」カードを作る（トグル・同期先 URL・共有トークン・同期状況）。
 
+        URL・トークン欄は共有がオンのときだけ出す（Mac の一般タブと同じ）。
+        """
+        box = QWidget()
+        box_layout = QVBoxLayout(box)
+        box_layout.setContentsMargins(0, 0, 0, 0)
+        box_layout.setSpacing(8)
+        card, cl = _make_card()
         self._history_sync_enabled_toggle = self._make_toggle()
         _add_row(
             cl, "Mac と履歴を共有", self._history_sync_enabled_toggle,
@@ -1965,6 +2229,12 @@ class SettingsWindow(QWidget):
                 "Mac で入力した履歴もここに表示します。"
             ),
         )
+        box_layout.addWidget(card)
+        card, cl = _make_card()
+        self._history_sync_detail_card = card
+        box_layout.addWidget(card)
+        self._history_sync_enabled_toggle.toggled.connect(card.setVisible)
+        card.setVisible(False)
 
         self._history_sync_url_input = QLineEdit()
         self._history_sync_url_input.setPlaceholderText(
@@ -2015,7 +2285,7 @@ class SettingsWindow(QWidget):
         self._history_sync_status_label.setStyleSheet(MacTheme.status_muted_style())
         _add_block(cl, self._history_sync_status_label)
 
-        return card
+        return box
 
     def _refresh_history_sync_token_status(self) -> None:
         """共有トークンの保存状況ラベルを更新する（_refresh_api_key_status と同じ規則）。"""
@@ -2104,11 +2374,17 @@ class SettingsWindow(QWidget):
         self._history_sync_status_label.setStyleSheet(MacTheme.status_muted_style())
 
     def _on_nav_changed(self, row: int) -> None:
-        """サイドバー選択でページを切り替え、タイトルを更新する。"""
+        """サイドバー選択でページを切り替え、見出しを更新する（見出し行は選べない）。"""
         if row < 0:
             return
-        self._pages.setCurrentIndex(row)
-        self._page_title.setText(self._nav.item(row).text())
+        item = self._nav.item(row)
+        page_index = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        if page_index is None:
+            return
+        self._pages.setCurrentIndex(int(page_index))
+        self._set_page_header(self._nav_titles[row])
+        if self._nav_titles[row] == "API キー":
+            self._refresh_all_api_key_status()
         # ウィンドウを開いたまま音声入力しても、各ページを開いた時点で最新になるように
         if row == self._home_page_index:
             self._refresh_home()
@@ -2123,6 +2399,16 @@ class SettingsWindow(QWidget):
     def select_home(self) -> None:
         """ホーム（ダッシュボード）ページを選択する（サイドノッチの「ホームを開く」から呼ぶ）。"""
         self._nav.setCurrentRow(self._home_page_index)
+
+    def select_page(self, title: str) -> None:
+        """ページ名でページを選択する（「プロンプトを編集」「API キーを開く」などの導線）。"""
+        row = self._nav_row_of.get(title)
+        if row is not None:
+            self._nav.setCurrentRow(row)
+
+    def select_api_keys(self) -> None:
+        """「API キー」ページを選択する（キー未設定・無効で文字起こしに失敗したときにアプリが呼ぶ）。"""
+        self.select_page("API キー")
 
     def _refresh_history(self) -> None:
         """履歴一覧をストアの現在の内容で作り直す（同期がオンなら Mac の履歴も含む）。"""
@@ -2181,143 +2467,185 @@ class SettingsWindow(QWidget):
         self._refresh_stats()
 
     def _create_api_keys_page(self) -> QWidget:
-        """API キーページを作成する（製品版で使う 3 バックエンド分の保存・削除を 1 カードに収める）。"""
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setSpacing(12)
-        layout.setContentsMargins(24, 8, 24, 24)
+        """API キーページ（全エンジン・翻訳のキー。各行に「どこから読めるか」の状態を出す・Mac と同じ）。
 
-        # service 識別子 → (入力欄, 状態ラベル)
+        値そのもの（末尾も含む）は画面に一切出さない。保存先はアプリ専用の項目
+        （資格情報マネージャーの voicekey.*）で、削除できるのはアプリに保存した値だけ。
+        読む順は アプリに保存した値 → 環境変数 → 資格情報マネージャーの共有項目（サービス名＝変数名・shared）。
+        """
+        page, layout = self._new_page()
+        layout.addWidget(_make_caption(
+            "使う文字起こしエンジンのキーだけ入れれば動きます。キーはこの PC の Windows 資格情報マネージャー"
+            "（アプリ専用の項目）に保存され、画面やログには表示しません。"
+        ))
+
+        # 項目 → 入力欄・状態ラベル・削除ボタン・エラー表示
         self._api_key_inputs = {}
         self._api_key_status = {}
+        self._api_key_delete = {}
+        self._api_key_error = {}
+        self._api_key_sources = {}
 
-        card, cl = _make_card()
-
-        for backend_value in _API_KEY_BACKENDS:
-            service = _BACKEND_TO_SERVICE[backend_value]
-            # API キー欄はどのキーかが分かる必要があるので提供元名で見出しを出す
-            # （このタブ自体が配布版では非表示なので提供元名が露出するのは開発時のみ）
-            provider_name = _BACKEND_PROVIDER_NAMES[backend_value]
-
-            block = QWidget()
-            block_layout = QVBoxLayout(block)
-            block_layout.setContentsMargins(0, 0, 0, 0)
-            block_layout.setSpacing(6)
-
-            head = QHBoxLayout()
-            head.setSpacing(8)
-            name_label = QLabel(provider_name)
-            name_label.setStyleSheet("font-weight: 600;")
-            status_label = QLabel("未設定")
-            status_label.setStyleSheet(MacTheme.status_muted_style())
-            head.addWidget(name_label)
-            head.addWidget(status_label)
-            head.addStretch()
-
-            # 入力中は伏字表示。保存時のみ keyring に書き込み、値は再表示しない
-            key_input = QLineEdit()
-            key_input.setEchoMode(QLineEdit.EchoMode.Password)
-            key_input.setPlaceholderText("API キーを入力")
-
-            save_btn = QPushButton("保存")
-            save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            save_btn.clicked.connect(
-                lambda _=False, svc=service: self._save_api_key(svc)
-            )
-
-            delete_btn = QPushButton("削除")
-            delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            delete_btn.clicked.connect(
-                lambda _=False, svc=service: self._delete_api_key(svc)
-            )
-
-            body = QHBoxLayout()
-            body.setSpacing(8)
-            body.addWidget(key_input, 1)
-            body.addWidget(save_btn)
-            body.addWidget(delete_btn)
-
-            block_layout.addLayout(head)
-            block_layout.addLayout(body)
-            _add_block(cl, block)
-
-            self._api_key_inputs[service] = key_input
-            self._api_key_status[service] = status_label
-
-        layout.addWidget(card)
-        layout.addWidget(_make_caption(
-            "API キーは OS の資格情報ストア（Windows 資格情報マネージャー / macOS キーチェーン）に"
-            "安全に保存されます。settings.yaml には書き込まれません。"
-        ))
+        sections = list(_API_KEY_SECTIONS)
+        # 選択肢から外した Deepgram は、いまの設定で使っている人にだけ出す
+        uses_deepgram = any(
+            (self._config_manager.get(f"hotkey{i}", {}) or {}).get("backend") == backends.DEEPGRAM
+            for i in (1, 2)
+        )
+        if uses_deepgram:
+            sections.append(("旧エンジン", [_LEGACY_API_KEY_ROW]))
+        for section_title, rows in sections:
+            layout.addWidget(self._section_title(section_title))
+            card, cl = _make_card()
+            for item_id, title, note, secret, placeholder in rows:
+                _add_block(cl, self._api_key_block(item_id, title, note, secret, placeholder))
+            layout.addWidget(card)
         layout.addStretch()
         return self._wrap_scroll(page)
 
-    def _refresh_api_key_status(self, service: str) -> None:
-        """
-        指定サービスの API キー保存状況ラベルを更新する。
+    def _api_key_block(self, item_id: str, title: str, note: str, secret: bool, placeholder: str) -> QWidget:
+        """API キー 1 項目分の行（名前・状態・補足・入力欄・保存・削除）。"""
+        block = QWidget()
+        bl = QVBoxLayout(block)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.setSpacing(6)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        name_label = QLabel(title)
+        name_label.setStyleSheet("font-weight: 600;")
+        status_label = QLabel("未設定")
+        status_label.setStyleSheet(MacTheme.status_muted_style())
+        head.addWidget(name_label)
+        head.addStretch()
+        head.addWidget(status_label)
+        bl.addLayout(head)
+        if note:
+            bl.addWidget(_make_caption(note))
+        key_input = QLineEdit()
+        if secret:
+            # 入力中は伏字表示。保存時のみ資格情報マネージャーに書き込み、値は再表示しない
+            key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        key_input.setPlaceholderText(placeholder)
+        save_btn = QPushButton("保存")
+        save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        save_btn.clicked.connect(lambda _=False, i=item_id: self._save_api_key(i))
+        delete_btn = QPushButton("削除")
+        delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        delete_btn.clicked.connect(lambda _=False, i=item_id: self._delete_api_key(i))
+        delete_btn.setEnabled(False)  # 消せるのはアプリに保存した値だけ
+        body = QHBoxLayout()
+        body.setSpacing(8)
+        body.addWidget(key_input, 1)
+        body.addWidget(save_btn)
+        body.addWidget(delete_btn)
+        bl.addLayout(body)
+        error = _make_caption("保存できませんでした（資格情報マネージャーに書き込めませんでした）。もう一度お試しください")
+        error.setStyleSheet(MacTheme.status_warn_style(self._is_dark_mode))
+        error.setVisible(False)
+        bl.addWidget(error)
+        self._api_key_inputs[item_id] = key_input
+        self._api_key_status[item_id] = status_label
+        self._api_key_delete[item_id] = delete_btn
+        self._api_key_error[item_id] = error
+        return block
 
-        キーが登録されているかどうかを表示するだけで、
-        実際の値は表示しない（パスワード欄は常に空）。
+    def _refresh_all_api_key_status(self) -> None:
+        """全項目の状態を読み直す（ページを開いたとき・ウィンドウを開いたとき）。"""
+        for item_id in list(self._api_key_status):
+            self._refresh_api_key_status(item_id)
+
+    def _refresh_api_key_status(self, item_id: str) -> None:
         """
-        status_label = self._api_key_status.get(service)
+        項目の状態ラベル（アプリに保存済み／環境変数から読込／資格情報マネージャー（共有）から読込／未設定）を更新する。
+
+        値は返さない・表示しない（どこから読めるかだけ）。
+        """
+        status_label = self._api_key_status.get(item_id)
         if status_label is None:
             return
-        if not secrets.is_keyring_available():
+        if secrets.is_keyring_available():
+            source = secrets.api_key_source(item_id)
+        else:
+            # 資格情報ストアが使えない環境では環境変数だけを見る
+            item = secrets.API_KEY_ITEMS.get(item_id)
+            source = (
+                secrets.SOURCE_ENVIRONMENT
+                if item is not None and os.environ.get(item.variable_name) else None
+            )
+        self._api_key_sources[item_id] = source
+        if source is not None:
+            status_label.setText("✓ " + secrets.SOURCE_LABELS[source])
+            status_label.setStyleSheet(MacTheme.status_ok_style(self._is_dark_mode))
+        elif not secrets.is_keyring_available():
             status_label.setText("資格情報ストア利用不可（環境変数で設定してください）")
             status_label.setStyleSheet(MacTheme.status_warn_style(self._is_dark_mode))
-            return
-        if secrets.get_api_key(service):
-            status_label.setText("設定済み")
-            status_label.setStyleSheet(MacTheme.status_ok_style(self._is_dark_mode))
         else:
             status_label.setText("未設定")
             status_label.setStyleSheet(MacTheme.status_muted_style())
+        self._api_key_delete[item_id].setEnabled(source == secrets.SOURCE_APP)
 
-    def _save_api_key(self, service: str) -> None:
+    def _save_api_key(self, item_id: str) -> None:
         """
-        入力欄の API キーを資格情報ストアに保存する。
+        入力欄の値をアプリ専用の保存先へ保存する（`SONIOX_API_KEY=...` のような貼り付けも正規化する）。
 
-        保存後は入力欄をクリアし（再表示しないため）、ステータスを更新する。
+        保存できたら入力欄を空にして状態を更新する。失敗したら入力を残してエラーを出す
+        （黙って空にすると「保存できた」と誤解されるため・Mac と同じ）。
         """
-        key_input = self._api_key_inputs[service]
-        new_key = key_input.text().strip()
-        if not new_key:
-            QMessageBox.warning(self, "API キー", "API キーを入力してください。")
+        key_input = self._api_key_inputs[item_id]
+        value = secrets.sanitize_key(key_input.text())
+        if not value:
             return
-
-        if not secrets.set_api_key(service, new_key):
-            QMessageBox.critical(
-                self,
-                "API キー",
-                "資格情報ストアへの保存に失敗しました。環境変数 (.env) で設定してください。"
-            )
+        if not secrets.save_item(item_id, value):
+            self._api_key_error[item_id].setVisible(True)
             return
-
+        self._api_key_error[item_id].setVisible(False)
         key_input.clear()
-        self._refresh_api_key_status(service)
+        self._refresh_api_key_status(item_id)
 
-    def _delete_api_key(self, service: str) -> None:
-        """資格情報ストアに保存された API キーを削除する。"""
-        secrets.delete_api_key(service)
-        self._api_key_inputs[service].clear()
-        self._refresh_api_key_status(service)
+    def _delete_api_key(self, item_id: str) -> None:
+        """アプリに保存した値だけを消す（環境変数・共有の項目には触らない）。"""
+        secrets.delete_item(item_id)
+        self._api_key_inputs[item_id].clear()
+        self._api_key_error[item_id].setVisible(False)
+        self._refresh_api_key_status(item_id)
 
     # ------------------------------------------------------------------
     # ユーザー辞書（確定置換）
     # ------------------------------------------------------------------
 
     def _create_dictionary_page(self) -> QWidget:
-        """ユーザー辞書ページを作成する（確定置換ルールの追加・編集・削除）。"""
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setSpacing(12)
-        layout.setContentsMargins(24, 8, 24, 24)
+        """辞書と数字ページ（置き換えを追加 / 登録済みの置き換え / 数字の書き方・Mac と同じ構成）。"""
+        page, layout = self._new_page()
 
+        # --- 置き換えを追加（常に出ている入力欄） ---
+        layout.addWidget(self._section_title("置き換えを追加"))
+        card, cl = _make_card()
+        add_row = QWidget()
+        ar = QHBoxLayout(add_row)
+        ar.setContentsMargins(0, 0, 0, 0)
+        ar.setSpacing(8)
+        self._new_rule_from = QLineEdit()
+        self._new_rule_from.setPlaceholderText("聞き取られた表記（例: ボイスキー）")
+        self._new_rule_to = QLineEdit()
+        self._new_rule_to.setPlaceholderText("直したい表記（例: voicekey）")
+        add_btn = QPushButton("追加")
+        add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        add_btn.clicked.connect(self._add_rule_from_inputs)
+        self._new_rule_to.returnPressed.connect(self._add_rule_from_inputs)
+        ar.addWidget(self._new_rule_from, 1)
+        ar.addWidget(QLabel("→"))
+        ar.addWidget(self._new_rule_to, 1)
+        ar.addWidget(add_btn)
+        _add_block(cl, add_row)
+        layout.addWidget(card)
         layout.addWidget(_make_caption(
-            "文字起こし・整形が終わった文章を貼り付ける直前に、"
-            "「変換元」を「変換先」へ機械置換します（部分一致・登録順・API を通さないので遅延ゼロ）。"
+            "文字起こし・整形が終わった文に、貼り付ける直前で当てます（部分一致・上から順に）。"
+            "API を通さないので待ち時間は増えません。"
         ))
 
+        # --- 登録済みの置き換え（N 件） ---
+        self._rules_title = self._section_title("登録済みの置き換え（0 件）")
+        layout.addWidget(self._rules_title)
         # ルール行を縦に積むコンテナ（追加・削除で動的に増減する）
         self._rules_container = QWidget()
         self._rules_layout = QVBoxLayout(self._rules_container)
@@ -2332,21 +2660,67 @@ class SettingsWindow(QWidget):
                 self._add_replacement_row(rule)
 
         # 空状態の案内（ルールが無いとき表示）
-        self._dict_empty_label = _make_caption("確定置換ルールがありません。「追加」で登録できます。")
+        self._dict_empty_label = _make_caption(
+            "置き換えはまだありません。上の欄で、よく聞き間違えられる語の直し方を登録できます。"
+        )
         layout.addWidget(self._dict_empty_label)
         self._update_dict_empty_label()
 
-        # 追加ボタン
-        add_btn = QPushButton("追加")
-        add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        add_btn.clicked.connect(lambda: self._add_replacement_row())
-        add_row = QHBoxLayout()
-        add_row.addWidget(add_btn)
-        add_row.addStretch()
-        layout.addLayout(add_row)
+        # --- 数字の書き方（旧 一般 の数字入力） ---
+        layout.addWidget(self._section_title("数字の書き方"))
+        card, cl = _make_card()
+        self._numeral_enabled_check = self._make_toggle()
+        _add_row(
+            cl, "数字を半角で入力", self._numeral_enabled_check,
+            caption="「十二人→12人」「千二百三十四→1234」のように、漢数字や全角の数字を半角にします。",
+        )
+        self._numeral_counter_check = self._make_toggle()
+        _add_row(
+            cl, "助数詞つきの漢数字も変換（三時→3時）", self._numeral_counter_check,
+            caption="「三時」「十時」「百人」のような、単位の付いた漢数字も半角数字にします。",
+        )
+        # マスターが OFF のときは助数詞トグルを無効化する（機能全体が止まるため）
+        self._numeral_enabled_check.toggled.connect(self._numeral_counter_check.setEnabled)
+
+        # 数字にしない語（保護リスト）。数字漢字で始まる語をラン先頭にアンカー照合して守る
+        protect_block = QWidget()
+        pbl = QVBoxLayout(protect_block)
+        pbl.setContentsMargins(0, 0, 0, 0)
+        pbl.setSpacing(6)
+        pbl.addWidget(QLabel("数字にしない語"))
+        pbl.addWidget(_make_caption("「一人」「十分」など、数字に読める普通の言葉を守ります。"))
+        self._numeral_protect_list = QListWidget()
+        self._numeral_protect_list.setMaximumHeight(140)
+        pbl.addWidget(self._numeral_protect_list)
+        protect_add_row = QHBoxLayout()
+        self._numeral_protect_input = QLineEdit()
+        self._numeral_protect_input.setPlaceholderText("語を追加")
+        self._numeral_protect_input.returnPressed.connect(self._add_protect_word)
+        protect_add_btn = QPushButton("追加")
+        protect_add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        protect_add_btn.clicked.connect(self._add_protect_word)
+        protect_del_btn = QPushButton("削除")
+        protect_del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        protect_del_btn.clicked.connect(self._remove_selected_protect_word)
+        protect_add_row.addWidget(self._numeral_protect_input, 1)
+        protect_add_row.addWidget(protect_add_btn)
+        protect_add_row.addWidget(protect_del_btn)
+        pbl.addLayout(protect_add_row)
+        _add_block(cl, protect_block)
+        layout.addWidget(card)
 
         layout.addStretch()
         return self._wrap_scroll(page)
+
+    def _add_rule_from_inputs(self) -> None:
+        """「置き換えを追加」の入力欄から 1 件追加する（変換元が空なら何もしない）。"""
+        src = self._new_rule_from.text().strip()
+        if not src:
+            return
+        self._add_replacement_row({"from": src, "to": self._new_rule_to.text(), "enabled": True})
+        self._new_rule_from.clear()
+        self._new_rule_to.clear()
+        self._new_rule_from.setFocus()
 
     def _add_replacement_row(self, rule: Optional[dict] = None) -> None:
         """確定置換ルール 1 行ぶんのウィジェットを作って一覧に追加する。"""
@@ -2389,9 +2763,12 @@ class SettingsWindow(QWidget):
         self._update_dict_empty_label()
 
     def _update_dict_empty_label(self) -> None:
-        """ルールが無いときだけ空状態の案内を表示する。"""
+        """ルールが無いときだけ空状態の案内を表示し、見出しの件数を更新する。"""
+        count = len(getattr(self, "_replacement_rows", []))
         if hasattr(self, "_dict_empty_label"):
-            self._dict_empty_label.setVisible(len(self._replacement_rows) == 0)
+            self._dict_empty_label.setVisible(count == 0)
+        if hasattr(self, "_rules_title"):
+            self._rules_title.setText(f"登録済みの置き換え（{count} 件）")
 
     def _collect_replacements(self) -> list:
         """UI のルール行を settings.yaml 用のリストにまとめる（変換元が空の行は捨てる）。"""
@@ -2980,9 +3357,8 @@ class SettingsWindow(QWidget):
             lang_index = self._lang_combo.count() - 1
         self._lang_combo.setCurrentIndex(lang_index)
 
-        # ホットキー 1 / 2（製品版の既定: 両スロットとも スタンダード(groq)。DEFAULT_CONFIG と揃える。
-        # ハンズフリー(toggle)録音では groq を内部で ElevenLabs(scribe_v1) へ自動切替する）
-        slot_defaults = {1: ("<f2>", "groq"), 2: ("<f3>", "groq")}
+        # 録音キー 1 / 2（既定は DEFAULT_CONFIG と同じ: 1 = Soniox / 2 = Groq）
+        slot_defaults = {1: ("<f2>", backends.SONIOX), 2: ("<f3>", backends.GROQ)}
         for slot_id, (default_hotkey, default_backend) in slot_defaults.items():
             hotkey_config = config.get(f"hotkey{slot_id}", {}) or {}
 
@@ -2997,27 +3373,37 @@ class SettingsWindow(QWidget):
             if mode_index < 0:
                 mode_index = mode_combo.findData(HotkeyMode.TOGGLE.value)
             mode_combo.setCurrentIndex(mode_index)
+            getattr(self, f"_mode{slot_id}_caption").setText(_mode_caption(mode_combo.currentData()))
 
-            # 保存値が combo に「存在するか」で判定する（_BACKEND_TO_SERVICE 所属では判定しない）。
-            # combo は 2 択（deepgram/groq）なので、範囲外の保存値（旧 elevenlabs/openai）は
-            # findData が -1 を返す → スタンダード(groq)へフォールバックする（先頭 deepgram に化けない）。
-            backend = hotkey_config.get("backend", default_backend)
-            backend_combo = getattr(self, f"_backend{slot_id}_combo")
-            index = backend_combo.findData(backend)
-            if index < 0:
-                index = backend_combo.findData(TranscriptionBackend.GROQ.value)
-            backend_combo.setCurrentIndex(max(0, index))
-            # 選択に合わせてキャプションを初期化（setCurrentIndex が同一 index だと
-            # currentIndexChanged が発火しないため明示的に呼ぶ）
-            self._update_backend_caption(slot_id)
+            # エンジン＋モデル（保存値をそのまま選択状態にする。一覧外のモデル・旧 Deepgram もそのまま見せる）
+            backend = str(hotkey_config.get("backend", default_backend) or default_backend)
+            if not backends.is_supported(backend):
+                backend = backends.GROQ
+            model = backends.resolve_model(backend, hotkey_config.get("api_model", ""))
+            self._slot_choice[slot_id] = (backend, model)
+            self._render_engine_button(slot_id)
 
-            # プロンプト（api_prompt）入力欄は UI から撤去したので読み込まない
-            # （保存値は _collect_slot_config が既存値をそのまま維持する）。
+            # プロンプト（api_prompt）入力欄は UI に無い（保存値は _collect_slot_config が維持する）
 
-            # テキスト整形設定（backend 追従で上書きされうるため、保存値を最後に明示適用する）
-            getattr(self, f"_format{slot_id}_check").setChecked(
-                bool(hotkey_config.get("format_enabled", False))
-            )
+            # テキスト整形（録音キーページとプロンプトページの両方に同じトグルがある）
+            format_on = bool(hotkey_config.get("format_enabled", False))
+            getattr(self, f"_format{slot_id}_check").setChecked(format_on)
+            self._sync_format_toggle(slot_id, format_on)
+
+        # 整形の指示（空＝既定文。既定文をそのまま編集できるよう実テキストを出す）と整形モデル
+        stored_prompt = str(config.get("format_auto_prompt", "") or "")
+        self._prompt_edit.setPlainText(
+            stored_prompt if stored_prompt.strip() else text_formatter.DEFAULT_FORMAT_PROMPT
+        )
+        self._previous_prompt = None
+        self._prompt_undo_btn.setVisible(False)
+        self._on_prompt_edited()
+        self._fill_format_model_combo(
+            str(config.get("format_model", text_formatter.DEFAULT_FORMAT_MODEL) or text_formatter.DEFAULT_FORMAT_MODEL)
+        )
+        self._repaste_input.setText(config.get("repaste_key", "") or "")
+        self._history_enabled_check.setChecked(bool(config.get("history_enabled", True)))
+        self._on_hotkey_changed()
 
         # 一般 - その他（VAD/分割/HUD/ストリーミング/音量正規化は常時ON固定のため UI 無し）
         # 自動起動はレジストリの実状態を反映（settings.yaml には持たない）
@@ -3054,13 +3440,13 @@ class SettingsWindow(QWidget):
 
         # 製品版は文字起こしモデル・整形モデル/指示が固定（UI 非公開）のため読み込み不要。
 
-        # API キー保存状況
-        for service in _BACKEND_TO_SERVICE.values():
-            self._refresh_api_key_status(service)
+        # API キーの状態（どこから読めるか）
+        self._refresh_all_api_key_status()
 
         # Mac との履歴共有
         hs = config.get("history_sync", {}) or {}
         self._history_sync_enabled_toggle.setChecked(bool(hs.get("enabled", False)))
+        self._history_sync_detail_card.setVisible(self._history_sync_enabled_toggle.isChecked())
         self._history_sync_url_input.setText(str(hs.get("url", "")))
         self._refresh_history_sync_token_status()
         self._refresh_history_sync_status()
@@ -3125,22 +3511,20 @@ class SettingsWindow(QWidget):
             # vad_filter / vad_min_silence_duration_ms / split_parallel_enabled /
             # streaming_enabled / hud_enabled / audio_preprocess.volume_normalize は
             # 常時 ON 固定（UI 撤去）。ここでは保存せず config_manager 側で True を強制する。
-            # format_model / format_auto_prompt も製品版は固定（UI 非公開）なので保存しない
-            # （DEFAULT_CONFIG の既定 = llama-3.1-8b-instant / 既定プロンプトが使われる）。
+
+            # 整形の指示（既定文と同じなら空で保存＝実行時に最新の既定文を使う・Mac と同じ）と整形モデル
+            "format_auto_prompt": text_formatter.stored_prompt(self._prompt_edit.toPlainText()),
+            "format_model": self._format_model_combo.currentData() or text_formatter.DEFAULT_FORMAT_MODEL,
+            # 最後の文字起こしをもう一度貼り付けるキー（空＝無効）
+            "repaste_key": self._repaste_input.text(),
+            # 音声入力の履歴を保存するか
+            "history_enabled": self._history_enabled_check.isChecked(),
 
             # ホットキー1 設定
             "hotkey1": self._collect_slot_config(1),
 
             # ホットキー2 設定
             "hotkey2": self._collect_slot_config(2),
-
-            # APIモデルデフォルト値（全 4 バックエンド）
-            "default_api_models": self._config_manager.get("default_api_models", {
-                "groq": "whisper-large-v3-turbo",
-                "openai": "gpt-4o-mini-transcribe",
-                "elevenlabs": "scribe_v1",
-                "deepgram": "nova-3",
-            }),
 
             # Mac との履歴共有
             "history_sync": {
@@ -3180,15 +3564,17 @@ class SettingsWindow(QWidget):
         Returns:
             hotkey1 / hotkey2 セクションに保存する設定辞書
         """
-        # api_prompt の入力欄は UI から撤去したため、既存の保存値をそのまま維持する
+        # api_prompt の入力欄は UI に無いため、既存の保存値をそのまま維持する
         # （保存フィールド自体は互換のため残す。空文字で上書きしない）。
         existing_slot = self._config_manager.get(f"hotkey{slot_id}", {}) or {}
+        backend, model = self._slot_choice[slot_id]
         return {
             "hotkey": getattr(self, f"_hotkey{slot_id}_input").text(),
             "hotkey_mode": getattr(self, f"_mode{slot_id}_combo").currentData(),
-            "backend": getattr(self, f"_backend{slot_id}_combo").currentData(),
-            # 製品版はモデル非選択。空にして default_api_models（deepgram=nova-3 等）へフォールバック
-            "api_model": "",
+            "backend": backend,
+            # 既定モデルなら空で保存する（既定モデルが将来変わったとき自動で追従させるため。
+            # 一覧外の自由入力・既定以外を選んだときはその名前を保存する）
+            "api_model": "" if model == backends.default_model(backend) else model,
             "api_prompt": existing_slot.get("api_prompt", ""),
             "format_enabled": getattr(self, f"_format{slot_id}_check").isChecked(),
         }

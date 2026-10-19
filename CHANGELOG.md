@@ -6,6 +6,55 @@ voicekeyの変更履歴を記録するファイルです。
 
 Windows 版の開発を再開し、Mac 版に追いつかせる作業（`docs/WINDOWS_CATCHUP_PLAN.md` の段階 0〜2）。
 
+### Added
+- **Windows: 文字起こしエンジンを Mac と同じ並び・同じモデル名にした（Windows）**。
+  Soniox（`stt-rt-v5` のライブ型・既定）/ ElevenLabs（`scribe_v2`・`scribe_v1`）/ OpenAI（`gpt-transcribe`）/
+  Microsoft MAI（`MAI-Transcribe-2`）/ OpenAI ライブ（`gpt-live-transcribe`）/ Groq（`whisper-large-v3-turbo`）。
+  - Soniox は録音中から WebSocket で並行認識し、離鍵時に 200ms の無音 → finalize → 空フレームを送って `<fin>` で確定する。
+    接続先（米国 / 日本）はキーが通る窓口を無料のモデル一覧 API で判定し、キーの指紋（SHA256 の先頭 8 バイト）ごとに
+    `soniox_region.json` へ覚える（キー本体は保存しない）。ライブが空で終わったときは録音全体を新しいセッションへ流し直し、
+    途中で切れて前半しか取れなかったときも録音全体を再送して救う。正常終了で空なら「本当に無言」として REST へ回さない。
+    再送でも救えなかったときは取れた分を入力して「接続が途中で切れたため、途中までの入力です」と知らせる
+  - OpenAI ライブは 16kHz を 24kHz へ線形補間して base64 で送り、`input_audio_buffer.commit` で確定する。
+    接続できなかったときは同世代の `gpt-transcribe` で REST に流す
+  - OpenAI `gpt-transcribe` は `response_format=json`・`languages[]` で送り、Whisper 用の数字の例文は送らない。
+    ElevenLabs は `tag_audio_events=false` を送る。Microsoft MAI は `AZURE_SPEECH_KEY` と `AZURE_SPEECH_ENDPOINT`（scheme・ホスト・ポートだけ使う）
+  - Deepgram は選択肢から外したが、設定ファイルに deepgram が入っている人はそのまま動く（エンジンを勝手に変えない）。
+    設定画面でも「Deepgram（旧・選択肢から外しました）」として選択中のまま見える
+  - ハンズフリーで Groq を使うとき ElevenLabs のキーが無ければ切り替えず Groq のまま処理する（Mac と同じ）
+- **Windows: 設定 › API キー を全エンジン分にした（Windows）**。Soniox / OpenAI / Microsoft MAI（キー・エンドポイント）/
+  ElevenLabs / Groq / Gemini（翻訳して入力）の各行に「アプリに保存済み／環境変数から読込／資格情報マネージャー（共有）から読込／未設定」を出す。
+  読む順は アプリに保存した値（資格情報マネージャーの `voicekey.*`）→ 環境変数 → 資格情報マネージャーの共有項目
+  （サービス名＝環境変数名・アカウント `shared`。Mac の中央 Keychain に当たる）。`SONIOX_API_KEY=…` のように変数名ごと貼っても正規化して保存し、
+  保存に失敗したら入力を残してエラーを出す。削除できるのはアプリに保存した値だけ。キーの値は画面にもログにも出さない
+- **Windows: キーが未設定・無効で文字起こしに失敗したら、通知して「設定 › API キー」を開く（起動中 1 回だけ）（Windows）**
+- **Windows: 最後の文字起こしをもう一度貼り付けるキー（Windows）**。設定 › 入力の基本 › そのほかのショートカット。
+  Mac の既定 ⌃⌘V に当たるキーは Windows では他の機能（Ctrl+Win+V＝音声出力、Ctrl+Alt+V＝Office の形式を選択して貼り付け）と重なり、
+  pynput はキーを横取りできないため、既定は未設定にした
+- **Windows: 音声入力の診断ログ `[計測]` を 1 回ごとに 1 行出す（Windows）**。Mac と同じ並びで
+  押下→録音開始・押下→最初の音声・録音秒数・離鍵→確定・離鍵→停止・停止→確定・STT・VAD・整形・翻訳・貼付・離鍵→貼付完了の ms、
+  経路（streaming / rest / replay / fallback）、終わり方、結果（貼付・無音・短すぎ・空結果・ライブ空(正常終了)・文字起こし失敗 など）、
+  文字数、貼付先（実行ファイル名）を出す。話した内容とキーは出さない
+- **Windows: 履歴を 200 件に増やし、貼り付け先アプリ名を残すようにした（Windows）**。最前面ウィンドウの実行ファイル名と表示名
+  （バージョン情報の FileDescription）を Win32 API で取り、履歴の一覧・サイドノッチの検索（テキスト or アプリ名）・履歴共有の `app_name` に使う。
+  「入力の履歴を保存」スイッチ（既定 ON）を追加
+- **Windows: 設定画面を Mac の作り直し（2026-10-19）と同じ構成にした（Windows）**。サイドバーは見出し付きで、先頭に Windows の
+  ホーム・実績・履歴、続けて「はじめに」= API キー、「音声入力」= 入力の基本・録音キー 1・録音キー 2・プロンプト・辞書と数字、
+  「アプリ」= 一般・バージョン情報。録音キーの行の右端に割り当て中のキー（例 右Ctrl）か「未割り当て」を出し、各ページの先頭に
+  アイコン・ページ名・「このページで何を決めるか」の 1 行を出す。サイドバーの開閉はやめた
+  - 入力の基本: 話す言語とマイク（マイクテストもここ）／録音キーと一緒に使うキー（ハンズフリーキー・2 回押しで送信するときの待ち時間）／
+    そのほかのショートカット（再貼り付け）
+  - 録音キー 1・2: キー（録音キー・重複の警告・キーの押し方をキーの直下に）／文字起こし（エンジンとモデルを 1 つのポップアップで選ぶ。
+    閉じた表示は「Soniox · stt-rt-v5」、開くとおすすめ順に、選択肢が 1 つの提供元は 1 項目、複数ある提供元は見出しの下にモデル、推奨に「（推奨）」、
+    OpenAI ライブに「（ライブ）」、一覧外の保存済みモデルも選択中のまま）／文章の整形（オン/オフ・使う指示の状態・「プロンプトを編集」）。
+    エンジンを変えても整形のオン/オフは変えない（Mac と同じ）
+  - プロンプト: 整形の指示を録音キー 1・2 共通で 1 か所で編集（状態・ひな形 4 種〔標準／そのまま／すっきり／箇条書き・Mac と同じ文面〕・
+    既定に戻す・元に戻す・複数行エディタ・文字数）／この指示で整える録音キー（1・2 のオン/オフ）／AI モデル（整形モデル・API キーを開く）。
+    既定文と同じなら空で保存する（実行時に最新の既定文を使う）
+  - 辞書と数字: 置き換えを追加（常に出ている入力欄）／登録済みの置き換え（N 件）／数字の書き方（旧 一般 の数字入力）
+  - 一般: 画面の表示・音・起動・履歴（Mac と履歴を共有の URL・トークン欄は共有オンのときだけ）
+  - 設定ファイルの保存形式は変えていない
+
 ### Changed
 - **Windows: 自動アップデートの確認を止めた（Windows）**。Windows 版は配布しておらず（ソースから使う）、更新フィード
   （削除済みの旧配布リポ・Vercel の `/windows/version.json`）も存在しないため、存在しない URL を見続けないよう
@@ -18,11 +67,53 @@ Windows 版の開発を再開し、Mac 版に追いつかせる作業（`docs/WI
   この Release は必ずプレリリースにする（通常の Release だと「最新版」になり、Mac の自動更新が見る
   `releases/latest/download/appcast.xml` を壊すため）
 
+- **Windows: 整形を Mac の最新に合わせた（Windows）**。既定の整形モデルを廃止済みの `llama-3.1-8b-instant` から
+  Mac と同じおすすめ `qwen/qwen3.8-27b` に変え、保存済みの llama 系は起動時に 1 回だけおすすめへ移す。
+  既定の指示文と共通フッターを Mac と同じ文面（発言内容は削らずフィラーだけ除去）にした。出力上限を入力の長さに応じた値
+  （入力文字数×3＋512、最大 8192）にし、推論モデルの思考を抑えるパラメータを付け、`finish_reason=length`（途中で切れた）なら原文を入力する。
+  実行中にモデルが提供終了で失敗したら、その 1 回をおすすめで取り直して設定も書き換え、1 回だけ知らせる
+- **Windows: 文字起こし API のエラー時に、サーバー応答の本文を通知に混ぜない（Windows）**。通知は「<サービス名> API エラー (HTTP <番号>)」までにし、
+  本文は 1 行化・200 文字で切ってログにだけ残す
+- **Windows: 新ロゴ・配色（Windows）**。アクセントを青から灯りの橙（`#FF5A1F`）に、地をボーン／カーボン系に変えた。
+  録音 HUD の点は灯りの橙＋淡い光、ハンズフリーの波形バーと自動送信の ⏎ 印も橙。タスクトレイは 待機＝刻印色の輪／録音中＝橙の点／
+  自動送信の録音＝深い橙の点／変換中＝橙の輪（Mac のメニューバーと同じ考え）。サイドノッチの光・設定画面のトグル・選択色も橙。
+  設定のサイドバーに新ロゴ（`icon.ico`）を出す
+- **Windows: 新規インストールの既定を Mac に合わせた（Windows）**。録音キー 1 = Soniox（整形 OFF）／録音キー 2 = Groq。保存済みの設定は変えない
+- **Windows: 選択肢から外したモデル（`whisper-large-v3`・`gpt-4o-*-transcribe`・`scribe_v1_experimental`・`nova-2` など）を保存していた録音キーは、
+  初回だけそのエンジンの既定モデルへ戻す（エンジンは変えない・Mac の V19 と同じ）（Windows）**。未知のエンジン名は Groq へ移す（他の設定は保持）
+- **Windows: オンボーディングのまとめカードのエンジン表示を実名（「Groq · whisper-large-v3-turbo」）にした（Windows）**
+
+### Fixed
+- **Windows: 壊れた設定ファイル・履歴ファイルを上書きして消していた（Windows）**。起動時に読めなかった `settings.yaml`・`history.json` は
+  `<名前>.corrupt-<日時>` へ退避して HUD で 1 回知らせ、退避できなかったときは保存しない。手で編集している途中の書きかけ
+  （ホットリロード中に読めなかったとき）は既定値に戻さず今の設定のまま続ける（以前は既定値で上書きされていた）
+- **Windows: Ctrl を押しながらの英数字キー（Ctrl+Alt+V など）を組み合わせキーとして認識できなかった（Windows）**。
+  pynput が制御文字（Ctrl+V なら `\x16`）を返すため、仮想キーコードから文字を引き直す
+- **Windows: 貼り付けのキー操作を送れなかったとき、auto_enter の Enter を送らず「貼り付けできませんでした。Ctrl+V で貼り付けてください」と知らせる（Windows）**
+
 ### Technical Details
 - Linux 上でも Windows 版のテストが回ることを確認した:
   `QT_QPA_PLATFORM=offscreen xvfb-run -a python -m unittest discover -s tests`（pynput が X 接続を要るため xvfb-run、
   PySide6 に libEGL / libxkbcommon 等、VAD のテストに `silero-vad`（`--no-deps` で torch なし）が要る）。
   `tests/test_updater.py` に「フィード URL が空なら通信もタイマーも動かず、手動確認には理由を返す」テストを追加
+- **config/backends.py**（新規）: エンジンの並び・既定モデル・表示名・整形の既定・使うキー・設定画面のポップアップの並び（Mac の Backend / EngineModelCatalog）
+- **config/llm_models.py**（新規）: Groq / Gemini のモデル一覧・おすすめ・モデル別パラメータ・出力上限・途中切れと提供終了の判定（Mac の LLMModelCatalog）
+- **core/live_transcriber.py**（新規）: `SonioxLiveSession` / `OpenAILiveSession`（websockets の同期クライアント・送信は専用スレッド）、
+  `SonioxTranscript`（応答の組み立て）、`LiveEnding`（終わり方）、`Upsampler16To24`。websockets 16 以降の非推奨に合わせて
+  `connect(..., legacy=True)` で直接つなぐ（古い版は従来どおり。Deepgram 版も同じ関数に寄せた）
+- **core/soniox_region.py**（新規）: リージョン判定と指紋ごとの記憶。**core/diagnostics.py**（新規）: `[計測]` 行
+- **core/api_transcriber.py**: `AzureMAITranscriber` / `SonioxTranscriber`（録音全体の再送）/ `OpenAILiveRestTranscriber` を追加。
+  `TranscriptionError` に `needs_api_key` と `detail`
+- **utils/secrets.py**: `API_KEY_ITEMS`・`resolve`・`lookup`・`api_key`・`api_key_source`・`save_item`・`delete_item`・`sanitize_key`。
+  キャッシュに世代を持たせ、読み出し中に保存・削除が挟まっても古い値を書き戻さない
+- **utils/corrupt_file.py**（新規）: 壊れたファイルの退避と 1 回の通知。**utils/paths.py**（新規）: データファイルの置き場所
+- **platform/windows/foreground.py**（新規）: 最前面アプリの実行ファイル名と表示名（Win32 API・ctypes）
+- **ui/settings_widgets.py**（新規）: 見出しつき 1 ポップアップ（`GroupedChoiceButton`）・サイドバーの見出しと右端表示（`NavItemDelegate`）・キー表記
+- **core/text_formatter.py**: ひな形 4 種（`format_prompt_templates`）・状態の一言・既定文は空で保存
+- `voicekey.spec` に `icon.ico` を同梱（設定画面のサイドバーのロゴ用）
+- `.gitignore` に開発実行時にリポジトリ直下へ出る個人データ（`history.json`・`stats.json` など）を追加（発話内容を含むため）
+- テスト: `test_backends_catalog` / `test_api_keys` / `test_live_transcriber`（127.0.0.1 の模擬 Soniox サーバー相手の通し）/
+  `test_api_transcriber_engines` / `test_settings_redesign` / `test_app_pipeline` を追加。課金 API は叩かない
 
 ## [2.3.0] - 2026-10-12
 

@@ -14,22 +14,20 @@ from typing import Any, Dict, Optional
 
 import yaml
 
+from . import llm_models
+from ..utils import corrupt_file
 from ..utils.logger import get_logger
+from . import backends
 from .constants import DEFAULT_CONFIG, SETTINGS_FILE_NAME, default_format_enabled
 
 logger = get_logger(__name__)
-# 対応バックエンド（REST + ストリーミング）。これ以外は openai にフォールバック
-API_BACKENDS = {"groq", "openai", "elevenlabs", "deepgram"}
-# 製品版（release ブランチ）でユーザーが文字起こしに選べるバックエンド（2 択）。
-# 即時入力 = deepgram（nova-3・短命トークン直叩き＋ストリーミング。しゃべり終わった瞬間に全文を一括入力）/
-# スタンダード = groq（既定・whisper-large-v3-turbo・プロキシ経由。録音後にきれいに整形）。
-# elevenlabs（scribe_v1）は選択肢から外し、スタンダードのハンズフリー録音時に内部でのみ使う
-# （長時間録音の精度対策・app._maybe_handsfree_slot）。openai は開発用のみ。
-# ＝範囲外（旧 elevenlabs / openai 等）の保存値だけ groq へ自動移行する（下の _constrain_release_backends）。
-# deepgram は選択肢に残るため維持。バックエンドの enum・保存値は 4 値のまま（「選べる集合」だけを絞る）。
-RELEASE_TRANSCRIBE_BACKENDS = ("deepgram", "groq")
-# 製品版で範囲外（旧 elevenlabs / openai 等）の保存値を移行する先（スタンダード＝既定）
-RELEASE_DEFAULT_BACKEND = "groq"
+# 動かせるバックエンド（Mac と同じ選択肢 6 つ＋選択肢から外した Deepgram）。
+# Deepgram は Mac で選択肢から外したが、Windows は保存済みの設定ならそのまま動かす
+# （本人の今の設定のエンジンを勝手に変えない）。これ以外（未知の値）は groq へ移す（Mac と同じ）
+API_BACKENDS = set(backends.SUPPORTED)
+RELEASE_TRANSCRIBE_BACKENDS = backends.SUPPORTED
+# 範囲外（未知の値）の保存値を移行する先（Mac と同じく Groq）
+RELEASE_DEFAULT_BACKEND = backends.GROQ
 
 
 def _deep_merge(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
@@ -84,7 +82,9 @@ class ConfigManager:
         self.config_file_existed: bool = os.path.exists(self.config_path)
         # config は listener / 設定監視 / UI の各スレッドから read/write されるため保護する
         self._lock = threading.RLock()
-        self.config: Dict[str, Any] = self._load_config()
+        # 起動時に読めなかった settings.yaml を退避できなかったら、元ファイルを守るため保存しない
+        self._save_blocked = False
+        self.config: Dict[str, Any] = self._load_config(initial=True)
 
     def _resolve_config_path(self, config_path: Optional[str]) -> str:
         """設定ファイルのパスを解決する。"""
@@ -155,20 +155,20 @@ class ConfigManager:
 
             logger.info("設定マイグレーション完了")
 
-        # スロット設定が存在する場合は、API専用バックエンドに正規化
-        defaults = DEFAULT_CONFIG.get("default_api_models", {})
+        # スロット設定が存在する場合は、動かせるバックエンドに正規化する。
+        # api_model の空はそのまま残す（実行時に config/backends.py の既定モデルが使われる）
         for slot_id in [1, 2]:
             slot_key = f"hotkey{slot_id}"
             slot = config.get(slot_key)
             if not isinstance(slot, dict):
                 continue
 
-            backend = self._normalize_backend(slot.get("backend", "openai"))
+            raw_backend = str(slot.get("backend", "groq")).lower()
+            backend = self._normalize_backend(raw_backend)
+            if backend != raw_backend:
+                # 別のエンジンへ移したら、旧エンジンのモデル名は意味が無いので既定へ戻す（Mac と同じ）
+                slot["api_model"] = ""
             slot["backend"] = backend
-
-            api_model = str(slot.get("api_model", "") or "").strip()
-            if not api_model:
-                slot["api_model"] = defaults.get(backend, "")
 
         # 廃止したローカル推論設定キーを削除
         for key in [
@@ -190,21 +190,26 @@ class ConfigManager:
     @staticmethod
     def _normalize_backend(backend: Any) -> str:
         """
-        バックエンド値をAPI専用の有効値に正規化する。
+        バックエンド値を動かせる値に正規化する。
 
-        `local` や不正値は `openai` にフォールバックする。
+        `local` や未知の値（新しい版で保存した値など）は groq にフォールバックする（Mac と同じ）。
         """
         backend_str = str(backend).lower()
         if backend_str in API_BACKENDS:
             return backend_str
-        return "openai"
+        return RELEASE_DEFAULT_BACKEND
 
-    def _load_config(self) -> Dict[str, Any]:
+    def _load_config(self, initial: bool = False) -> Dict[str, Any]:
         """
         ファイルから設定を読み込み、デフォルト値とマージする。
 
+        Args:
+            initial: 起動時の初回読み込みか。読めなかったとき、起動時は壊れたファイルを退避して
+                既定値で始める。ホットリロード中は手で編集している途中の可能性が高いので、
+                退避も既定値への差し替えもしない（None を返し、呼び出し側が今の設定を保つ）
+
         Returns:
-            すべてのキーが保証された設定辞書
+            すべてのキーが保証された設定辞書（ホットリロードで読めなかったときは None）
 
         Note:
             土台は必ず DEFAULT_CONFIG の deepcopy にする。浅い copy / _deep_merge だと
@@ -222,6 +227,9 @@ class ConfigManager:
             with open(self.config_path, "r", encoding="utf-8") as f:
                 loaded_config = yaml.safe_load(f) or {}
 
+            if not isinstance(loaded_config, dict):
+                raise ValueError("settings.yaml の中身が設定の形（キーと値の組）になっていません")
+
             # 旧形式の設定をマイグレーション
             loaded_config = self._migrate_legacy_config(loaded_config)
 
@@ -233,10 +241,21 @@ class ConfigManager:
             self._constrain_release_backends(config)
             # モード別整形既定の一回限りマイグレーション（deepgram スロットの整形を初回だけ既定 OFF へ）
             self._migrate_format_defaults(config)
+            # 選択肢から外したモデル → そのエンジンの既定（一回限り・Mac の V19）
+            self._migrate_retired_models(config)
+            # 廃止された LLM モデル（Groq の llama 系）→ おすすめ（一回限り・Mac の V20）
+            self._migrate_llm_models(config)
             return config
 
         except Exception as e:
             logger.error(f"設定読み込みエラー: {e}")
+            if not initial:
+                # 手で編集している途中の書きかけを読んだ可能性が高い。今の設定を保ち、次の変更を待つ
+                return None
+            # 起動時に読めない＝壊れている。既定値で始めると次の保存で元の内容を上書きして消すので、
+            # 退避して本人に 1 回知らせる。退避できなければ保存しない（元ファイルを守る）
+            if corrupt_file.quarantine(self.config_path, label="設定ファイル（settings.yaml）") is None:
+                self._save_blocked = True
             return copy.deepcopy(DEFAULT_CONFIG)
 
     @staticmethod
@@ -263,14 +282,11 @@ class ConfigManager:
     @staticmethod
     def _constrain_release_backends(config: Dict[str, Any]) -> None:
         """
-        製品版（release）の文字起こしバックエンドを 2 択（deepgram/groq）に制限する。
+        文字起こしバックエンドを動かせる集合（Mac と同じ 6 つ＋旧 Deepgram）に制限する。
 
-        保存済み settings.yaml に範囲外バックエンド（旧 elevenlabs / openai 等）が残っていても、
-        groq（スタンダード＝既定）へ移行する。移行時は api_model を空にして
-        default_api_models（groq→whisper-large-v3-turbo）にフォールバックさせる。
-        deepgram（即時入力）は選択肢に残したので、保存済み deepgram はそのまま維持される。
-        elevenlabs は enum としては残す（スタンダードのハンズフリー録音時に内部でのみ使う）が、
-        ユーザーが直接選ぶ保存値としては許可しない（「選べる集合」だけを絞る）。
+        未知の値（新しい版で保存した値など）だけ groq へ移し、api_model を空にして
+        既定モデルへフォールバックさせる。Deepgram は選択肢から外したが、保存済みなら維持する
+        （本人の設定のエンジンを勝手に変えない）。
 
         Args:
             config: 矯正対象の設定辞書（その場で書き換える）
@@ -311,6 +327,39 @@ class ConfigManager:
                 slot["format_enabled"] = False
         config["migrated_format_defaults"] = True
 
+    @staticmethod
+    def _migrate_retired_models(config: Dict[str, Any]) -> None:
+        """2026-10-01 に選択肢から外したモデルを、そのエンジンの既定へ戻す（一回限り・Mac の V19）。
+
+        毎回置換すると、移行後に利用者が自由入力で選び直した旧モデル名まで消えるので一度きりにする。
+        エンジンそのものは変えない（本人の設定のエンジンを勝手に変えない）。
+        """
+        if config.get("migrated_retired_models_v19"):
+            return
+        for slot_key in ("hotkey1", "hotkey2"):
+            slot = config.get(slot_key)
+            if not isinstance(slot, dict):
+                continue
+            if str(slot.get("api_model", "") or "").strip() in backends.RETIRED_MODELS:
+                slot["api_model"] = ""  # 空＝実行時に既定モデル
+        config["migrated_retired_models_v19"] = True
+
+    @staticmethod
+    def _migrate_llm_models(config: Dict[str, Any]) -> None:
+        """廃止と分かっている Groq の LLM モデル（llama 系）をおすすめへ戻す（一回限り・Mac の V20）。
+
+        Windows の旧既定 llama-3.1-8b-instant は 2026-10 に Groq の API から廃止され、
+        整形が毎回失敗する。以後の提供終了は実行時の差し替え（text_formatter）で拾う。
+        """
+        if config.get("migrated_llm_models_v20"):
+            return
+        for key in ("format_model", "translate_input_groq_model"):
+            replacement = llm_models.migrated_model(str(config.get(key, "") or ""), llm_models.GROQ)
+            if replacement:
+                logger.info(f"保存モデルを移行: {key} {config.get(key)} → {replacement}")
+                config[key] = replacement
+        config["migrated_llm_models_v20"] = True
+
     def reload_if_changed(self) -> bool:
         """
         ファイルが変更されていれば設定を再読み込みする。
@@ -326,6 +375,11 @@ class ConfigManager:
             if self.last_mtime is None or current_mtime > self.last_mtime:
                 logger.info("設定ファイルが変更されました。再読み込み中...")
                 new_config = self._load_config()
+                if new_config is None:
+                    # 読めなかった（手で編集中など）。同じ書きかけを毎秒読み直さないよう時刻だけ進める
+                    self.last_mtime = current_mtime
+                    logger.warning("settings.yaml を読めなかったため、今の設定のまま続けます")
+                    return False
                 with self._lock:
                     self.config = new_config
                 return True
@@ -358,6 +412,10 @@ class ConfigManager:
         Returns:
             成功した場合True、失敗した場合False
         """
+        if self._save_blocked:
+            # 起動時に壊れていた settings.yaml を退避できなかった。上書きすると元の内容が消えるので保存しない
+            logger.error("設定ファイルが壊れていて退避できなかったため、保存を止めています")
+            return False
         try:
             with self._lock:
                 # 内部設定を更新（ネストした辞書のカスタムキーを失わないよう deep merge する。

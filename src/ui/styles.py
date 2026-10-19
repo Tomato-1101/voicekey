@@ -98,7 +98,8 @@ class MacTheme:
             HAIRLINE: カード内の行区切り線
             TEXT: テキスト色
             SECONDARY_TEXT: 二次テキスト色（QColor 消費のため hex 固定）
-            ACCENT / ACCENT_HOVER / ACCENT_PRESSED: アクセント（青・QColor 消費のため hex 固定）
+            ACCENT / ACCENT_HOVER / ACCENT_PRESSED: アクセント（ブランドの灯り #FF5A1F・QColor 消費のため hex 固定。
+                Mac の Brand.signal と同じ唯一のアクセント。2026-10-19 に青から変更）
             ACCENT_GRAD / ACCENT_GRAD_HOVER / ACCENT_GRAD_PRESSED: アクセントの縦グラデ（塗り用）
             INPUT_BG / INPUT_BORDER: 入力欄
             BTN_BG / BTN_HOVER / BTN_PRESSED / BTN_BORDER: 通常ボタン
@@ -118,8 +119,9 @@ class MacTheme:
             if is_dark:
                 # ルート土台（backdrop）。紫・ネオンは「信頼できる色に」との指摘で撤去し、
                 # 無彩色（黒〜ダークグレー）の対角グラデにする。この上に半透明の「島」を浮かべる
+                # 地はブランドのカーボン（#2B2A27）系の暖かい黒（Mac の背景ウォッシュと同じ系統・2026-10-19）
                 self.BG_WINDOW = ("qlineargradient(x1:0, y1:0, x2:1, y2:1, "
-                                  "stop:0 #2A2A2D, stop:0.4 #1F1F22, stop:1 #151517)")
+                                  "stop:0 #2E2C29, stop:0.4 #23221F, stop:1 #191816)")
                 self.BG_SIDEBAR = "rgba(255, 255, 255, 0.05)"   # サイドバー島の面（backdrop が透ける）
                 self.CONTENT_BG = "rgba(255, 255, 255, 0.04)"   # コンテンツ島の面（島側はやや薄く）
                 self.BG_CONTENT = "#1B2130"                     # QMessageBox 用の不透明フラット
@@ -132,15 +134,15 @@ class MacTheme:
                 self.HAIRLINE = "rgba(255, 255, 255, 0.08)"
                 self.TEXT = "#F4F5FB"
                 self.SECONDARY_TEXT = "#A8AEBD"                 # 半透明カード上でも約 5:1・hex 固定
-                self.ACCENT = "#0A84FF"                         # hex 維持必須（QColor 消費）
-                self.ACCENT_HOVER = "#2B95FF"
-                self.ACCENT_PRESSED = "#0774E0"
+                self.ACCENT = "#FF5A1F"                         # 灯り（Brand.signal）。hex 維持必須（QColor 消費）
+                self.ACCENT_HOVER = "#FF7040"
+                self.ACCENT_PRESSED = "#D9480F"                 # 深い灯り（Brand.signalDeep）
                 self.ACCENT_GRAD = ("qlineargradient(x1:0, y1:0, x2:0, y2:1, "
-                                    "stop:0 #4AA3FF, stop:1 #0A6FE6)")
+                                    "stop:0 #FF7A47, stop:1 #E84E14)")
                 self.ACCENT_GRAD_HOVER = ("qlineargradient(x1:0, y1:0, x2:0, y2:1, "
-                                          "stop:0 #63B0FF, stop:1 #1B7CF2)")
+                                          "stop:0 #FF8C5E, stop:1 #F25A1F)")
                 self.ACCENT_GRAD_PRESSED = ("qlineargradient(x1:0, y1:0, x2:0, y2:1, "
-                                            "stop:0 #2E90F5, stop:1 #085FC8)")
+                                            "stop:0 #E8551C, stop:1 #C2400C)")
                 self.INPUT_BG = "rgba(0, 0, 0, 0.25)"           # 沈み込み表現（v1 より透明側へ）
                 self.INPUT_BORDER = "rgba(255, 255, 255, 0.14)"
                 self.BTN_BG = ("qlineargradient(x1:0, y1:0, x2:0, y2:1, "
@@ -156,8 +158,9 @@ class MacTheme:
             else:
                 # ルート土台（backdrop）。青みを抜いた無彩色（白〜ライトグレー）の対角グラデ。
                 # この上に白系半透明の「島」とカード・ボタンを浮かべる
+                # 地はブランドのボーン（#F4F1EB）系（Mac の背景ウォッシュと同じ系統・2026-10-19）
                 self.BG_WINDOW = ("qlineargradient(x1:0, y1:0, x2:1, y2:1, "
-                                  "stop:0 #F1F1F3, stop:0.5 #F6F6F8, stop:1 #EAEAED)")
+                                  "stop:0 #F4F1EB, stop:0.5 #F7F5F0, stop:1 #ECE8E0)")
                 self.BG_SIDEBAR = "rgba(255, 255, 255, 0.55)"   # サイドバー島の面（白すりガラス）
                 self.CONTENT_BG = "rgba(255, 255, 255, 0.45)"   # コンテンツ島の面（島側はやや薄く）
                 self.BG_CONTENT = "#F2F3F8"                     # QMessageBox 用の不透明フラット
@@ -170,15 +173,15 @@ class MacTheme:
                 self.HAIRLINE = "rgba(0, 0, 0, 0.07)"
                 self.TEXT = "#1C1C21"
                 self.SECONDARY_TEXT = "#6C6C74"                 # 白地 約 4.9:1・hex 固定
-                self.ACCENT = "#007AFF"                         # hex 維持必須（QColor 消費）
-                self.ACCENT_HOVER = "#1A88FF"
-                self.ACCENT_PRESSED = "#0068DA"
+                self.ACCENT = "#FF5A1F"                         # 灯り（Brand.signal）。hex 維持必須（QColor 消費）
+                self.ACCENT_HOVER = "#FF7040"
+                self.ACCENT_PRESSED = "#D9480F"                 # 深い灯り（Brand.signalDeep）
                 self.ACCENT_GRAD = ("qlineargradient(x1:0, y1:0, x2:0, y2:1, "
-                                    "stop:0 #2E9BFF, stop:1 #0069DC)")
+                                    "stop:0 #FF7A47, stop:1 #E84E14)")
                 self.ACCENT_GRAD_HOVER = ("qlineargradient(x1:0, y1:0, x2:0, y2:1, "
-                                          "stop:0 #45A6FF, stop:1 #0074F0)")
+                                          "stop:0 #FF8C5E, stop:1 #F25A1F)")
                 self.ACCENT_GRAD_PRESSED = ("qlineargradient(x1:0, y1:0, x2:0, y2:1, "
-                                            "stop:0 #0F79E8, stop:1 #005BC4)")
+                                            "stop:0 #E8551C, stop:1 #C2400C)")
                 self.INPUT_BG = "rgba(255, 255, 255, 0.70)"     # v1 より透明側へ
                 self.INPUT_BORDER = "rgba(0, 0, 0, 0.13)"
                 self.BTN_BG = ("qlineargradient(x1:0, y1:0, x2:0, y2:1, "

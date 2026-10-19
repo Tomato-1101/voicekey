@@ -11,7 +11,8 @@ import json
 import os
 import threading
 import uuid
-from typing import Dict, Optional
+from dataclasses import dataclass
+from typing import Callable, Dict, Optional, Tuple
 
 from .logger import get_logger
 
@@ -34,6 +35,59 @@ SERVICE_AUTH: str = "voicekey.Auth"
 # 履歴同期 Worker の共有トークン。Mac の Keychain と同じサービス名
 SERVICE_SYNC_TOKEN: str = "voicekey.SyncToken"
 
+# 2026-10 に Mac へ追加したエンジン・翻訳のキー（サービス名は Mac の ApiKeyItem.appService と同一）
+SERVICE_SONIOX: str = "voicekey.Soniox"
+SERVICE_AZURE_SPEECH: str = "voicekey.AzureSpeech"
+SERVICE_AZURE_SPEECH_ENDPOINT: str = "voicekey.AzureSpeechEndpoint"
+SERVICE_GEMINI: str = "voicekey.Gemini"
+
+# 共有のキー置き場（Mac の「中央 Keychain」に当たるもの）のアカウント名。
+# サービス名は環境変数名（SONIOX_API_KEY など）で、プロバイダーごとにキーを 1 本だけ発行して
+# 複数のプロジェクトで使い回すための置き場。voicekey は読むだけで書き込まない。
+CENTRAL_ACCOUNT: str = "shared"
+
+
+@dataclass(frozen=True)
+class ApiKeyItem:
+    """設定 › API キー で入力できる 1 項目（Mac の ApiKeyItem と同じ並び・同じ名前）。
+
+    Attributes:
+        id: 項目の識別子（config.backends.key_item が返す値）
+        app_service: アプリ自身が資格情報マネージャーに保存するときのサービス名
+        variable_name: 環境変数名（＝共有の置き場のサービス名）
+    """
+
+    id: str
+    app_service: str
+    variable_name: str
+
+
+# 項目の一覧（表示順）。Deepgram は選択肢から外したが、保存済みの設定で使う人のために残す
+API_KEY_ITEMS: Dict[str, ApiKeyItem] = {
+    item.id: item
+    for item in (
+        ApiKeyItem("soniox", SERVICE_SONIOX, "SONIOX_API_KEY"),
+        ApiKeyItem("openai", SERVICE_OPENAI, "OPENAI_API_KEY"),
+        ApiKeyItem("azure_key", SERVICE_AZURE_SPEECH, "AZURE_SPEECH_KEY"),
+        ApiKeyItem("azure_endpoint", SERVICE_AZURE_SPEECH_ENDPOINT, "AZURE_SPEECH_ENDPOINT"),
+        ApiKeyItem("elevenlabs", SERVICE_ELEVENLABS, "ELEVENLABS_API_KEY"),
+        ApiKeyItem("groq", SERVICE_GROQ, "GROQ_API_KEY"),
+        ApiKeyItem("gemini", SERVICE_GEMINI, "GEMINI_API_KEY"),
+        ApiKeyItem("deepgram", SERVICE_DEEPGRAM, "DEEPGRAM_API_KEY"),
+    )
+}
+
+# キーの取得元（設定画面の状態表示に使う。値そのものは画面にもログにも出さない）
+SOURCE_APP: str = "app"
+SOURCE_ENVIRONMENT: str = "environment"
+SOURCE_CENTRAL: str = "central"
+
+SOURCE_LABELS: Dict[str, str] = {
+    SOURCE_APP: "アプリに保存済み",
+    SOURCE_ENVIRONMENT: "環境変数から読込",
+    SOURCE_CENTRAL: "資格情報マネージャー（共有）から読込",
+}
+
 # ユーザー名は固定。アプリ単一ユーザー前提のため、エントリ識別はサービス名のみで足りる。
 _USERNAME: str = "default"
 
@@ -42,6 +96,10 @@ _USERNAME: str = "default"
 # None（未登録）もキャッシュし、set/delete 時に無効化する。
 _cache: Dict[str, Optional[str]] = {}
 _cache_lock = threading.Lock()
+# キャッシュの世代。set / delete のたびに進める（_cache_lock で保護）。
+# 読み出しはロックの外で keyring を叩くので、その最中に保存・削除が走ると、読み出し側が
+# 後から古い値でキャッシュを上書きしてしまう。読み始めの世代と一致するときだけ書き戻す（Mac と同じ）
+_cache_generation: int = 0
 
 # device_id の初回生成を直列化する（同時呼び出しで別々の ID を生成し、サーバーの
 # 同時利用台数上限に誤って当たるのを防ぐ）。
@@ -122,20 +180,37 @@ def get_api_key(service: str) -> Optional[str]:
     """
     # プロバイダーキーは OS のシークレットストア（keyring）からのみ取得する。
     # 配布ビルドにキーは埋め込まないため、未登録なら None（製品版はサーバー経由で動く）。
+    return _read_cached(service, _USERNAME)
+
+
+def _read_cached(service: str, username: str) -> Optional[str]:
+    """keyring から 1 項目を読む（プロセス内キャッシュ・世代つき）。
+
+    Args:
+        service: サービス名
+        username: アカウント名（アプリ保存は "default"、共有の置き場は "shared"）
+
+    Returns:
+        値。未登録・取得失敗は None
+    """
     if _keyring_module is None:
         return None
+    cache_key = service if username == _USERNAME else f"{username}:{service}"
     with _cache_lock:
-        if service in _cache:
-            return _cache[service]
+        if cache_key in _cache:
+            return _cache[cache_key]
+        generation = _cache_generation
     try:
-        value = _keyring_module.get_password(service, _USERNAME) or None
+        value = _keyring_module.get_password(service, username) or None
     except Exception as e:
         # NoKeyringError / KeyringError / OS 認証拒否などをまとめて握る。
         # 失敗はキャッシュしない（次回呼び出しで再試行させる）
         logger.warning(f"keyring 読み込みに失敗 ({service}): {e}")
         return None
     with _cache_lock:
-        _cache[service] = value
+        # 読んでいる間に保存・削除が挟まっていたら、古い値で上書きしない
+        if generation == _cache_generation:
+            _cache[cache_key] = value
     return value
 
 
@@ -158,8 +233,10 @@ def set_api_key(service: str, key: str) -> bool:
     except Exception as e:
         logger.warning(f"keyring 書き込みに失敗 ({service}): {e}")
         return False
-    # 古い値をキャッシュし続けないよう更新する
+    # 古い値をキャッシュし続けないよう更新する（世代を進めて、走っている読み出しの書き戻しを捨てる）
+    global _cache_generation
     with _cache_lock:
+        _cache_generation += 1
         _cache[service] = key
     return True
 
@@ -176,15 +253,128 @@ def delete_api_key(service: str) -> bool:
     """
     if _keyring_module is None:
         return False
-    with _cache_lock:
-        _cache[service] = None
     try:
         _keyring_module.delete_password(service, _USERNAME)
     except Exception as e:
         # PasswordDeleteError は「そもそも未登録」の場合にも飛ぶので info に留める
         logger.info(f"keyring からの削除をスキップ ({service}): {e}")
-        return True
+    # 削除の後で世代を進めてキャッシュを捨てる。先に捨てると、削除前の項目を読んだ読み出しが
+    # 古い値を書き戻し、消したはずのキーが使われ続けるため（Mac と同じ順序）
+    global _cache_generation
+    with _cache_lock:
+        _cache_generation += 1
+        _cache[service] = None
     return True
+
+
+# ============================================
+# 設定 › API キー（全エンジン・翻訳）の読み出し
+# ============================================
+
+def sanitize_key(raw: str) -> str:
+    """貼り付けられたキーを正規化する（Mac の APIKeyStore.sanitize と同じ規則）。
+
+    `SONIOX_API_KEY=...`・`export ...`・引用符付きで貼られても、キーの本体だけを取り出す。
+
+    Args:
+        raw: 入力欄の文字列
+
+    Returns:
+        正規化したキー（空なら空文字）
+    """
+    value = (raw or "").strip()
+    if value.startswith("export "):
+        value = value[len("export "):]
+    for item in API_KEY_ITEMS.values():
+        prefix = f"{item.variable_name}="
+        if value.startswith(prefix):
+            value = value[len(prefix):]
+            break
+    value = value.strip()
+    for quote in ('"', "'"):
+        if len(value) >= 2 and value.startswith(quote) and value.endswith(quote):
+            value = value[1:-1]
+    return value.strip()
+
+
+def resolve(
+    app: Callable[[], Optional[str]],
+    env: Callable[[], Optional[str]],
+    central: Callable[[], Optional[str]],
+) -> Optional[Tuple[str, str]]:
+    """キーの探索順を決める純関数（アプリ保存値 → 環境変数 → 共有の置き場）。
+
+    各段は遅延評価なので、手前で見つかれば後段（keyring の読み出し）は走らない。
+    空文字は未設定扱い。Mac の Keychain.resolve と同じ順。
+
+    Returns:
+        (値, 取得元) か、どこにも無ければ None
+    """
+    for source, reader in ((SOURCE_APP, app), (SOURCE_ENVIRONMENT, env), (SOURCE_CENTRAL, central)):
+        value = reader()
+        if value:
+            return value, source
+    return None
+
+
+def lookup(item_id: str) -> Optional[Tuple[str, str]]:
+    """項目の値と取得元を探す（アプリ保存値 → 環境変数 → 共有の置き場）。
+
+    Args:
+        item_id: API_KEY_ITEMS のキー（"soniox" など）
+
+    Returns:
+        (値, 取得元)。未設定・未知の項目は None
+    """
+    item = API_KEY_ITEMS.get(item_id)
+    if item is None:
+        return None
+    return resolve(
+        app=lambda: _read_cached(item.app_service, _USERNAME),
+        env=lambda: os.environ.get(item.variable_name),
+        central=lambda: _read_cached(item.variable_name, CENTRAL_ACCOUNT),
+    )
+
+
+def central_key(variable_name: str) -> Optional[str]:
+    """共有の置き場（サービス名＝環境変数名・アカウント shared）から読む（無ければ None）。"""
+    return _read_cached(variable_name, CENTRAL_ACCOUNT)
+
+
+def api_key(item_id: str) -> Optional[str]:
+    """項目のキーを返す（どこにも無ければ None）。文字起こし・整形・翻訳はここから読む。"""
+    found = lookup(item_id)
+    return found[0] if found else None
+
+
+def api_key_source(item_id: str) -> Optional[str]:
+    """項目がどこから読めるか（設定画面の状態表示用。値は返さない。未設定なら None）。"""
+    found = lookup(item_id)
+    return found[1] if found else None
+
+
+def save_item(item_id: str, raw: str) -> bool:
+    """項目の値をアプリ自身の保存先（資格情報マネージャーの voicekey.* 項目）へ保存する。
+
+    共有の置き場・環境変数には書かない。値は sanitize_key で正規化してから保存し、
+    空になれば保存しない。
+
+    Returns:
+        保存できたら True
+    """
+    item = API_KEY_ITEMS.get(item_id)
+    value = sanitize_key(raw)
+    if item is None or not value:
+        return False
+    return set_api_key(item.app_service, value)
+
+
+def delete_item(item_id: str) -> bool:
+    """アプリ自身が保存した値だけを消す（環境変数・共有の置き場には触らない）。"""
+    item = API_KEY_ITEMS.get(item_id)
+    if item is None:
+        return False
+    return delete_api_key(item.app_service)
 
 
 # ============================================
