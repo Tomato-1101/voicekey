@@ -21,6 +21,7 @@ from typing import Deque
 
 from PySide6.QtCore import (
     Qt,
+    Signal,
     QTimer,
     QRectF,
     QVariantAnimation,
@@ -53,9 +54,15 @@ class Hud(QWidget):
         always_visible: 待機中も小型ピルを常時表示するか（config.hud_always_visible）
     """
 
+    # モードが変わった（hidden/idle/recording/recording_auto_enter/transcribing/notice）。
+    # ライブ字幕が「音声入力中（録音・変換中・通知）は隠す」ために購読する
+    mode_changed = Signal(str)
+
     # ウィンドウ寸法・バー本数は Mac 版 HudView と一致させる
     WIDTH = 460
     HEIGHT = 56
+    # 画面下端からウィンドウ下端までの余白（Mac 版と同じく少し浮かせる）
+    BOTTOM_MARGIN = 24
     # 三段階サイズ（待機=最小 < 変換中=小 < 録音=大）。Mac 版に合わせて全体を一回り小さくした。
     PILL_HEIGHT = 36          # 録音・通知（大）のピル高さ
     TRANSCRIBING_HEIGHT = 26  # 変換中（小）のピル高さ
@@ -85,7 +92,11 @@ class Hud(QWidget):
         super().__init__()
         self.enabled = enabled
         self.always_visible = False  # 待機ピル常時表示（app が config から設定する）
+        # ライブ字幕が出ている間は待機ピルを出さない（字幕はピルの位置から上へ伸びるので、
+        # ピルを残すと半透明の字幕越しに透けて別物に見える）。録音・変換中・通知には触らない
+        self._caption_covering = False
 
+        self._mode_value = "hidden"
         self._mode = "hidden"            # hidden/idle/recording/recording_auto_enter/transcribing/notice
         self._caption = ""               # ストリーミングのライブ字幕
         self._notice_text = ""           # 一時通知の本文
@@ -142,6 +153,48 @@ class Hud(QWidget):
         self._fs_timer = QTimer(self)
         self._fs_timer.setInterval(self.FULLSCREEN_POLL_MSEC)
         self._fs_timer.timeout.connect(self._tick_fullscreen)
+
+    @property
+    def _mode(self) -> str:
+        """現在のモード（hidden/idle/recording/recording_auto_enter/transcribing/notice）。"""
+        return self._mode_value
+
+    @_mode.setter
+    def _mode(self, value: str) -> None:
+        if value == getattr(self, "_mode_value", None):
+            return
+        self._mode_value = value
+        self.mode_changed.emit(value)
+
+    @property
+    def caption_covering(self) -> bool:
+        """ライブ字幕が出ているか（出ている間は待機ピルを引っ込める）。"""
+        return self._caption_covering
+
+    @caption_covering.setter
+    def caption_covering(self, covering: bool) -> None:
+        covering = bool(covering)
+        if covering == self._caption_covering:
+            return
+        self._caption_covering = covering
+        # 干渉するのは待機ピルだけ（録音・変換中・通知はそのまま）
+        if self._mode != "idle":
+            return
+        if covering:
+            if self.isVisible():
+                self._hide_keep_idle()
+        elif self.always_visible and self.enabled and not self._foreground_is_fullscreen():
+            self._show_pill()
+
+    @classmethod
+    def capsule_bottom_y(cls, geo) -> int:
+        """録音ピルのカプセル下端の y（ライブ字幕の下端をここに揃えて上へ伸ばす）。
+
+        Args:
+            geo: 画面の availableGeometry
+        """
+        window_top = geo.bottom() - cls.HEIGHT - cls.BOTTOM_MARGIN
+        return int(window_top + (cls.HEIGHT + cls.PILL_HEIGHT) / 2)
 
     def _setup_window(self) -> None:
         """フォーカスを奪わない・入力を透過するフレームレスウィンドウを構成する。"""
@@ -399,6 +452,10 @@ class Hud(QWidget):
         """HUD を画面下部中央へ配置して表示し、現在モードのサイズへモーフする（アクティブ化しない）。"""
         if not self.enabled:
             return
+        if self._mode == "idle" and self._caption_covering:
+            # ライブ字幕が出ている間は待機ピルを出さない（字幕が畳み終わったら戻す）
+            self._hide_keep_idle()
+            return
         was_visible = self.isVisible()
         self._reposition()
         if not was_visible:
@@ -425,7 +482,7 @@ class Hud(QWidget):
             return
         geo = screen.availableGeometry()
         x = geo.center().x() - self.WIDTH // 2
-        y = geo.bottom() - self.HEIGHT - 24  # 画面下から少し浮かせる（Mac 版と同じ）
+        y = geo.bottom() - self.HEIGHT - self.BOTTOM_MARGIN  # 画面下から少し浮かせる（Mac 版と同じ）
         self.move(x, y)
 
     # ------------------------------------------------------------------

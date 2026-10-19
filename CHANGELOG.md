@@ -8,6 +8,17 @@ Windows 版の開発を再開し、Mac 版に追いつかせる作業（`docs/WI
 Mac の設定画面の作り直し（Mac のみ）も同じ Unreleased に含む。
 
 ### Added
+- **Windows: ライブ字幕・議事録・Meet 議事録ボットの中身（Windows）**（段階 3。設定画面・トレイへの結線は続くコミット）。
+  2026-10-19 本人の決定「Windows はローカルの計算は無し・全部 API の文字起こし・翻訳は安い API」に従い、端末内の認識・翻訳は使わない。
+  - `src/caption/`: 区切りポリシー（Mac の TranslationCoordinator と同じ値＝上限 40 字・節区切り 24 字・無音 0.25 秒・判定順は長さ → 文末 → 節区切り・
+    1 文字も落とさない）、Groq（SSE ストリーミング・既定 `openai/gpt-oss-20b`）/ Gemini の字幕翻訳器（確定文だけ送る）、
+    Soniox / OpenAI ライブの連続ストリーミング（上限 5 回の指数バックオフ・401/402/403 は即諦めて理由を返す・
+    **無音 30 秒で WebSocket だけ切って声が戻ったら張り直す＝この切断は失敗に数えない**）、Soniox の応答の組み立て（Mac の
+    SonioxCaptionAssembler の移植）、WASAPI ループバック（Process Loopback でアプリ単位・使えなければ PyAudioWPatch で出力全体。
+    最前面の追従と作り直しには上限）、議事録の逐次追記（`Documents/voicekey/transcripts/`・5 分あいたら別ファイル・訳文は保存しない）、
+    字幕の行の管理（確定 2 行＋ライブ行・最低表示時間 max(3 秒, 文字数×0.15 秒)）
+  - `src/caption/meetbot/`: Chrome を CDP で動かす最小クライアント、Mac の MeetBotScripts.swift の JS（DOM 依存はこの 1 ファイル）、
+    字幕の確定判定（CaptionSettleTracker の移植）、参加の押し直し・時間切れ・「外された」の 2 回確認などの判断、ボット本体
 - **Windows: 文字起こしエンジンを Mac と同じ並び・同じモデル名にした（Windows）**。
   Soniox（`stt-rt-v5` のライブ型・既定）/ ElevenLabs（`scribe_v2`・`scribe_v1`）/ OpenAI（`gpt-transcribe`）/
   Microsoft MAI（`MAI-Transcribe-2`）/ OpenAI ライブ（`gpt-live-transcribe`）/ Groq（`whisper-large-v3-turbo`）。
