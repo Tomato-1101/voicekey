@@ -100,6 +100,8 @@ _MIN_AUDIO_SEC: float = 0.3
 _SPLIT_MIN_SEC: float = 12.0
 # ホットリロードで退役したトランスクライバを close するまでの猶予（秒）
 _RETIRE_CLOSE_DELAY_SEC: float = 30.0
+# 音声入力中とみなす HUD のモード（この間はライブ字幕を隠す。認識・翻訳は止めない）
+_DICTATION_HUD_MODES = ("recording", "recording_auto_enter", "transcribing", "notice")
 # /ephemeral の serverless 関数を温め直す間隔（秒）。Vercel 関数が冷える前に GET で叩き、
 # 録音時の cold start（話し始めの遅延）を防ぐ。消費ゼロの GET なので無料枠は減らさない。
 _EPHEMERAL_WARM_INTERVAL_SEC: float = 240.0
@@ -221,6 +223,10 @@ class VoicekeyApp(QObject):
     api_keys_requested = Signal()
     # 整形・翻訳のモデルが提供終了で差し替えられた（設定の保存はメインスレッドで行う）。引数は (設定キー, 新モデル)
     llm_model_replaced = Signal(str, str)
+    # 設定が変わった（監視スレッドからも来るので、字幕への反映はメインスレッドへホップする）
+    _caption_config_changed = Signal()
+    # Meet ボットが会議の音を拾い始める（ボットのスレッドから。ライブ字幕の停止はメインスレッドで）
+    _stop_caption_requested = Signal()
 
     def __init__(self) -> None:
         """アプリケーションを初期化する。"""
@@ -388,6 +394,31 @@ class VoicekeyApp(QObject):
         self.hands_free_changed.connect(self._hud.set_hands_free)
         # 翻訳される回の印（"→EN"）を録音中の HUD に出す
         self.translate_badge.connect(self._hud.set_translate_badge)
+
+        # --- ライブ字幕・Meet 議事録ボット ---
+        # 字幕を開始するまで（ボットは使うまで）何も作らない＝音声入力の経路に 1ms も足さない。
+        # 設定画面・トレイは caption_service(create) / meet_bot(create) で受け取る
+        self._caption_service = None
+        self._meet_bot_service = None
+        self._bot_message_path = ""
+        self._bot_message_at = 0.0
+        self._settings_window.caption_host = self
+        self._hud.mode_changed.connect(self._on_hud_mode_changed)
+        self._caption_config_changed.connect(self._apply_caption_config)
+        self._stop_caption_requested.connect(self._stop_caption_for_bot)
+        self._tray.caption_status_provider = self._caption_tray_status
+        self._tray.meet_status_provider = self._meet_tray_status
+        self._tray.caption_toggle.connect(self._toggle_caption)
+        self._tray.caption_settings.connect(lambda: self._open_settings_page("select_caption"))
+        self._tray.meet_join.connect(self._meet_join_from_tray)
+        self._tray.meet_leave.connect(self._meet_leave_from_tray)
+        self._tray.meet_login.connect(lambda: self.meet_bot(True).show_login_window())
+        self._tray.meet_open_latest.connect(self._open_latest_transcript)
+        self._tray.meet_open_folder.connect(self._open_transcripts_folder)
+        self._tray.meet_settings.connect(lambda: self._open_settings_page("select_meeting"))
+        self._tray.messageClicked.connect(self._on_tray_message_clicked)
+        # 起動時の自動開始（設定 ON かつ一度でも開始したことがあるときだけ。初回は勝手に始めない）
+        QTimer.singleShot(1500, self._maybe_auto_start_caption)
 
         # サイドノッチ（画面左端の履歴スリット）。Mac 版 SideNotch と対。録音状態で点灯し、
         # クリックで履歴パネルを開く。「ホームを開く」は設定ウィンドウのホームページを開く。
@@ -1715,6 +1746,9 @@ class VoicekeyApp(QObject):
         # 履歴同期の設定変更（有効/無効・URL）を反映し、401 停止も解除する
         self._history_sync.apply_config()
 
+        # ライブ字幕（動作中なら表示の設定を反映し、張り直しが要る変更なら張り直す）。メインスレッドで
+        self._caption_config_changed.emit()
+
         logger.info("設定を再読み込みして適用しました")
 
     def _watchdog_check(self) -> None:
@@ -1859,6 +1893,174 @@ class VoicekeyApp(QObject):
         """セットアップガイドをもう一度表示する（設定画面の『セットアップガイドを開く』から）。"""
         self._show_onboarding()
 
+    # ------------------------------------------------------------------
+    # ライブ字幕・Meet 議事録ボット
+    # ------------------------------------------------------------------
+
+    def caption_service(self, create: bool = True):
+        """ライブ字幕のサービス（create=False なら作らずに今あるものだけ返す）。"""
+        if self._caption_service is None and create:
+            from .caption.service import CaptionService
+
+            service = CaptionService(self._config)
+            service.visibility_changed.connect(self._on_caption_visibility)
+            service.model_replaced.connect(self._on_caption_model_replaced)
+            service.set_dictation_active(self._hud._mode in _DICTATION_HUD_MODES)
+            self._caption_service = service
+        return self._caption_service
+
+    def meet_bot(self, create: bool = True):
+        """Meet 議事録ボット（create=False なら作らずに今あるものだけ返す）。"""
+        if self._meet_bot_service is None and create:
+            from .caption.meetbot.service import MeetBotService
+
+            bot = MeetBotService(self._config)
+            bot.notified.connect(self._on_meet_notified)
+            bot.login_checked.connect(bot.save_login)
+            # 会議の音を API で拾う前にライブ字幕を止める（同じ音を二重に拾わない・議事録も二重にしない）
+            bot.on_will_start_recording = self._stop_caption_requested.emit
+            self._meet_bot_service = bot
+        return self._meet_bot_service
+
+    def _on_hud_mode_changed(self, mode: str) -> None:
+        """音声入力中（録音・変換中・通知）は字幕を隠す（認識は止めない）。"""
+        service = self._caption_service
+        if service is not None:
+            service.set_dictation_active(mode in _DICTATION_HUD_MODES)
+
+    def _on_caption_visibility(self, visible: bool) -> None:
+        """字幕が出ている間は待機ピルを出さない（字幕が畳み終わったら戻す）。"""
+        self._hud.caption_covering = visible
+
+    def _apply_caption_config(self) -> None:
+        service = self._caption_service
+        if service is not None:
+            service.apply_config()
+
+    def _on_caption_model_replaced(self, key: str, new_model: str) -> None:
+        """字幕の翻訳モデルが提供終了で差し替わった: 設定へ保存して 1 回知らせる。"""
+        caption = self._config.get("caption", {}) or {}
+        old_model = caption.get(key, "")
+        if old_model == new_model:
+            return
+        self._config.save({"caption": {key: new_model}})
+        self.notice.emit(f"字幕の翻訳モデル {old_model or '既定'} は使えないため {new_model} に切り替えました")
+
+    def _maybe_auto_start_caption(self) -> None:
+        from .caption.settings import CaptionConfig
+
+        if CaptionConfig.from_config(self._config).should_auto_start_now:
+            logger.info("ライブ字幕を自動開始します（設定）")
+            self.caption_service(True).start()
+
+    def _toggle_caption(self) -> None:
+        self.caption_service(True).toggle()
+
+    def _stop_caption_for_bot(self) -> None:
+        service = self._caption_service
+        if service is not None and service.is_active:
+            logger.info("Meet ボットが会議の音を拾うため、ライブ字幕を止めます")
+            service.stop()
+
+    def _caption_tray_status(self):
+        service = self._caption_service
+        if service is None:
+            return ("停止中", [], False)
+        return (service.title, service.status_lines(), service.is_active)
+
+    def _meet_tray_status(self) -> dict:
+        from .caption.meetbot import cdp as meet_cdp
+        from .caption import settings as cs
+
+        bot = self._meet_bot_service
+        meet = cs.MeetBotConfig.from_config(self._config)
+        status = {
+            "title": "参加していません", "active": False, "chrome": meet_cdp.is_chrome_installed(),
+            "source": cs.MEET_SOURCE_SUMMARIES.get(meet.source, ""), "badge": "",
+        }
+        if bot is not None:
+            status["title"] = bot.status_line
+            status["active"] = bot.is_active
+            if bot.is_active:
+                status["source"] = cs.MEET_SOURCE_SUMMARIES.get(bot.active_source, status["source"])
+            status["badge"] = {"recording": "（参加中）", "waitingForApproval": "（承認待ち）",
+                               "launching": "（準備中）", "joining": "（準備中）"}.get(bot.state, "")
+        return status
+
+    def _meet_join_from_tray(self) -> None:
+        """トレイの「会議に参加…」: 未ログインなら先にログインへ案内し、URL を聞いて参加する。"""
+        from PySide6.QtGui import QGuiApplication
+        from PySide6.QtWidgets import QInputDialog
+
+        from .caption.meetbot import cdp as meet_cdp
+        from .caption.meetbot import rules
+        from .caption.meetbot.service import needs_login
+
+        if not meet_cdp.is_chrome_installed():
+            QMessageBox.information(None, "Meet 議事録ボット", "Google Chrome が必要です。インストールすると使えるようになります。")
+            return
+        bot = self.meet_bot(True)
+        if bot.is_active:
+            return
+        if needs_login(bot.login_status):
+            answer = QMessageBox.question(
+                None, "まず Google にログインしてください",
+                "ボットは普段の Chrome とは別のブラウザで会議に入ります。"
+                "そのブラウザで Google に 1 回ログインすると、会議に参加できるようになります。"
+                "ログインが済んだらウィンドウを閉じて、もう一度「会議に参加…」を選んでください。\n\n"
+                "ログイン画面を開きますか？",
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                bot.show_login_window()
+            return
+        clipboard = (QGuiApplication.clipboard().text() or "").strip()
+        initial = clipboard if rules.normalized_meet_url(clipboard) else ""
+        url, ok = QInputDialog.getText(
+            None, "会議に参加",
+            "Google Meet の URL を入れてください。ボットが裏で会議に入り、発言を議事録として保存します。"
+            "ボットはマイクとカメラをオフにして入ります。",
+            text=initial,
+        )
+        if ok and url.strip():
+            bot.join(url)
+
+    def _meet_leave_from_tray(self) -> None:
+        bot = self._meet_bot_service
+        if bot is not None:
+            bot.leave()
+
+    def _on_meet_notified(self, message: str, path: str) -> None:
+        """ボットの知らせをトレイの通知で出す（議事録があれば、通知を押すと開く）。"""
+        self._bot_message_path = path
+        self._bot_message_at = time.monotonic()
+        self._tray.showMessage("voicekey 議事録ボット", message, SystemTray.MessageIcon.Information, 8000)
+
+    def _on_tray_message_clicked(self) -> None:
+        # 直前に出したのがボットの通知（議事録つき）のときだけ開く（アップデートの通知と取り違えない）
+        if self._bot_message_path and time.monotonic() - self._bot_message_at < 30:
+            from .ui.caption_pages import open_path
+
+            open_path(self._bot_message_path)
+
+    def _open_latest_transcript(self) -> None:
+        from .caption.transcript_recorder import latest_file, transcripts_dir
+        from .ui.caption_pages import open_path
+
+        latest = latest_file()
+        open_path(latest if latest is not None else transcripts_dir())
+
+    def _open_transcripts_folder(self) -> None:
+        from .caption.transcript_recorder import transcripts_dir
+        from .ui.caption_pages import open_path
+
+        open_path(transcripts_dir())
+
+    def _open_settings_page(self, selector: str) -> None:
+        select = getattr(self._settings_window, selector, None)
+        if callable(select):
+            select()
+        self._open_settings()
+
     def _open_settings(self) -> None:
         """設定ウィンドウを開いて確実に前面化する。"""
         win = self._settings_window
@@ -1952,6 +2154,13 @@ class VoicekeyApp(QObject):
 
         self._task_q.put(None)  # ワーカー停止
         self._history_sync.stop()
+        # ライブ字幕・Meet ボットの後片付け（音声の取り込み・接続・Chrome を残さない。議事録を書き切る）
+        for name, service in (("ライブ字幕", self._caption_service), ("Meet ボット", self._meet_bot_service)):
+            if service is not None:
+                try:
+                    service.shutdown()
+                except Exception as e:
+                    logger.warning(f"{name}の後片付けに失敗: {e}")
         # 裏で保存待ちの API 使用量を書き切る（直前の 1 回分を失わない）
         try:
             from .core import api_usage

@@ -89,6 +89,7 @@ from .settings_widgets import (
     keys_conflict,
     translate_once_key_warnings,
 )
+from .caption_pages import CaptionPagesMixin
 from .styles import MacTheme
 
 try:
@@ -162,6 +163,8 @@ _PAGE_SUBTITLES = {
     "プロンプト": "文章を整えるときに AI へ渡す指示です。録音キー 1・2 で共通です。",
     "辞書と数字": "聞き間違えやすい言葉の直し方と、数字の書き方を決めます。",
     "翻訳して入力": "話した内容を別の言語に訳してから入力します。",
+    "ライブ字幕": "パソコンで流れている音声に、字幕（翻訳・文字起こし）を付けます。",
+    "議事録・会議": "Google Meet にボットを参加させて、議事録を残します。",
     "一般": "表示・音・起動・履歴など、アプリ全体の設定です。",
     "アカウント": "ログインとライセンスの状態です。",
     "バージョン情報": "いまのバージョンと、アップデートの確認です。",
@@ -275,6 +278,8 @@ _NAV_ICON_NAME = {
     "履歴": "history",
     "辞書と数字": "dictionary",
     "翻訳して入力": "translate",
+    "ライブ字幕": "caption",
+    "議事録・会議": "meeting",
     "アカウント": "account",
     "バージョン情報": "version",
     "API キー": "apikey",
@@ -334,6 +339,15 @@ def _nav_svg(name: str, color: str) -> str:
         "translate": (
             '<path d="M4 5h8"/><path d="M8 3v2"/><path d="M5.5 5c.5 3 2.5 5.5 5.5 7"/>'
             '<path d="M10.5 5c-.5 3-2.5 5.5-5.5 7"/><path d="M13 21l4-9 4 9"/><line x1="14.5" y1="18" x2="19.5" y2="18"/>'
+        ),
+        "caption": (
+            '<rect x="3" y="5" width="18" height="14" rx="3"/>'
+            '<line x1="7" y1="11" x2="11" y2="11"/><line x1="13" y1="11" x2="17" y2="11"/>'
+            '<line x1="7" y1="15" x2="14" y2="15"/>'
+        ),
+        "meeting": (
+            '<circle cx="8.5" cy="9" r="2.6"/><circle cx="15.5" cy="9" r="2.6"/>'
+            '<path d="M3.5 19a5 5 0 0 1 10 0"/><path d="M10.5 19a5 5 0 0 1 10 0"/>'
         ),
     }
     return head + bodies.get(name, "") + "</svg>"
@@ -817,7 +831,7 @@ class HotkeyInput(QLineEdit):
         return self._platform.qt_key_to_hotkey_token(key, scan_code)
 
 
-class SettingsWindow(QWidget):
+class SettingsWindow(CaptionPagesMixin, QWidget):
     """
     アプリケーション設定ウィンドウ。
 
@@ -999,6 +1013,12 @@ class SettingsWindow(QWidget):
         if translate_page is not None:
             voice_pages.append(("翻訳して入力", translate_page))
         sections.append(("音声入力", voice_pages))
+        # 字幕と議事録（パソコンの音を相手にする機能・Mac と同じ並び）。配布版（製品版）には出さない
+        if not secrets.is_dist_build():
+            sections.append(("字幕と議事録", [
+                ("ライブ字幕", self._create_caption_page()),
+                ("議事録・会議", self._create_meeting_page()),
+            ]))
         app_pages = [("一般", self._create_general_page())]
         # アカウント（ブラウザ経由ログイン）。personal はアカウント/サーバーを一切使わないので出さない
         if not secrets.is_personal_build():
@@ -2656,6 +2676,8 @@ class SettingsWindow(QWidget):
         self._set_page_header(self._nav_titles[row])
         if self._nav_titles[row] == "API キー":
             self._refresh_all_api_key_status()
+        if self._nav_titles[row] in ("ライブ字幕", "議事録・会議"):
+            self._refresh_caption_pages_status()
         # ウィンドウを開いたまま音声入力しても、各ページを開いた時点で最新になるように
         if row == self._home_page_index:
             self._refresh_home()
@@ -2676,6 +2698,14 @@ class SettingsWindow(QWidget):
         row = self._nav_row_of.get(title)
         if row is not None:
             self._nav.setCurrentRow(row)
+
+    def select_caption(self) -> None:
+        """「ライブ字幕」ページを選択する（トレイの「ライブ字幕の設定…」から）。"""
+        self.select_page("ライブ字幕")
+
+    def select_meeting(self) -> None:
+        """「議事録・会議」ページを選択する（トレイの「議事録・会議の設定…」から）。"""
+        self.select_page("議事録・会議")
 
     def select_api_keys(self) -> None:
         """「API キー」ページを選択する（キー未設定・無効で文字起こしに失敗したときにアプリが呼ぶ）。"""
@@ -3615,6 +3645,10 @@ class SettingsWindow(QWidget):
         """
         config = self._config_manager.config
 
+        # 字幕と議事録（ページがあるときだけ）
+        if hasattr(self, "_caption_mode_combo"):
+            self._load_caption_settings(self._config_manager)
+
         # テーマも永続 config に合わせて戻す（未保存のプレビューを破棄）
         self._is_dark_mode = config.get("dark_mode", False)
         self._theme_toggle.set_dark(self._is_dark_mode)
@@ -3827,6 +3861,10 @@ class SettingsWindow(QWidget):
             "dev_mode": existing_dev_mode,
             "llm_postprocess": existing_llm_postprocess,
         }
+
+        # 字幕と議事録（settings.yaml の caption: / meet_bot:。deep merge なので他のキーは消えない）
+        if hasattr(self, "_caption_mode_combo"):
+            new_config.update(self._collect_caption_config())
 
         if self._config_manager.save(new_config):
             # 自動起動は保存成功と同じ境界でのみ反映する。先に反映すると保存失敗時に

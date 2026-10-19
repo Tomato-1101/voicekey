@@ -8,17 +8,41 @@ Windows 版の開発を再開し、Mac 版に追いつかせる作業（`docs/WI
 Mac の設定画面の作り直し（Mac のみ）も同じ Unreleased に含む。
 
 ### Added
-- **Windows: ライブ字幕・議事録・Meet 議事録ボットの中身（Windows）**（段階 3。設定画面・トレイへの結線は続くコミット）。
+- **Windows: ライブ字幕・議事録・Google Meet 議事録ボット（Windows）**（`docs/WINDOWS_CATCHUP_PLAN.md` の段階 3）。
   2026-10-19 本人の決定「Windows はローカルの計算は無し・全部 API の文字起こし・翻訳は安い API」に従い、端末内の認識・翻訳は使わない。
-  - `src/caption/`: 区切りポリシー（Mac の TranslationCoordinator と同じ値＝上限 40 字・節区切り 24 字・無音 0.25 秒・判定順は長さ → 文末 → 節区切り・
-    1 文字も落とさない）、Groq（SSE ストリーミング・既定 `openai/gpt-oss-20b`）/ Gemini の字幕翻訳器（確定文だけ送る）、
-    Soniox / OpenAI ライブの連続ストリーミング（上限 5 回の指数バックオフ・401/402/403 は即諦めて理由を返す・
-    **無音 30 秒で WebSocket だけ切って声が戻ったら張り直す＝この切断は失敗に数えない**）、Soniox の応答の組み立て（Mac の
-    SonioxCaptionAssembler の移植）、WASAPI ループバック（Process Loopback でアプリ単位・使えなければ PyAudioWPatch で出力全体。
-    最前面の追従と作り直しには上限）、議事録の逐次追記（`Documents/voicekey/transcripts/`・5 分あいたら別ファイル・訳文は保存しない）、
-    字幕の行の管理（確定 2 行＋ライブ行・最低表示時間 max(3 秒, 文字数×0.15 秒)）
-  - `src/caption/meetbot/`: Chrome を CDP で動かす最小クライアント、Mac の MeetBotScripts.swift の JS（DOM 依存はこの 1 ファイル）、
-    字幕の確定判定（CaptionSettleTracker の移植）、参加の押し直し・時間切れ・「外された」の 2 回確認などの判断、ボット本体
+  設定のサイドバーに見出し「字幕と議事録」= ライブ字幕 / 議事録・会議（Mac と同じ並び・同じ文言）、タスクトレイに
+  「ライブ字幕: 状態」「字幕を開始/停止」「ライブ字幕の設定…」「Meet 議事録ボット」サブメニュー（会議に参加… / 会議から退出 /
+  ボット用ブラウザで Google にログイン… / 最新の議事録を開く / 議事録フォルダを開く / 議事録・会議の設定…）を足した。
+  - **音**: WASAPI ループバック。Windows 10 2004 以降の Process Loopback（`ActivateAudioInterfaceAsync` を ctypes で直接）で
+    **最前面のアプリだけ**（既定）／**voicekey 以外のすべて**を拾う。使えない Windows では PyAudioWPatch で出力デバイス全体を拾う。
+    最前面の追従は同じアプリが 1 秒続いてから・前回から 2 秒あけて張り替え、取り込みが落ちたときの作り直しは 5 回まで（指数バックオフ）
+  - **認識と翻訳は API だけ**: 翻訳エンジンは Soniox（音声ごとストリーミングして認識と翻訳をまとめて任せる・最速）/
+    Groq（**既定・単価がいちばん安い `openai/gpt-oss-20b`**。Mac の字幕の既定〔qwen3.8-27b〕とは違うが、出力上限の式と推論を抑える指定は同じ）/
+    Gemini（選んだときだけ）。Groq / Gemini のときの文字起こしエンジンは Soniox（既定）/ OpenAI ライブ（server_vad で 1 発話ずつ確定）。
+    **クラウドへ送るのは確定文だけ**。区切りポリシーは Mac の TranslationCoordinator と同じ値（上限 40 字・節区切り 24 字・無音 0.25 秒・
+    判定順は長さ → 文末 → 節区切り・1 文字も落とさない）
+  - **どの接続も無音 30 秒で WebSocket だけ切り、声が戻ったら張り直す**（課金を止める。この切断は失敗に数えない）。
+    切断からの張り直しは上限 5 回の指数バックオフ。401/402/403 と OpenAI の残高不足・キー無効は即諦め、
+    理由（「Soniox の残高不足」など）をトレイと設定画面に出して止まる（**エンジンを勝手に切り替えない**）
+  - **表示**: 録音ピルのカプセル下端に揃えて上へ伸びるガラスの字幕（確定 2 行＋ライブ行・最低表示時間 max(3 秒, 文字数×0.15 秒)・
+    8 秒何も来なければ畳む・クリック透過・大きさ 70〜200%・字幕 0.62 / ピル 0.7 の透明度は別のまま）。
+    **音声入力中（録音・変換中・通知）は字幕を隠し**（認識は止めない）、字幕が出ている間は待機ピルを出さない（畳み終わってから戻す）
+  - モードは翻訳（英→日）と文字起こし（訳さない・日本語 / 英語）。読み上げは Windows には無い
+  - **議事録**: 文字起こしを `ドキュメント\voicekey\transcripts\YYYY-MM-DD_HHmmss.md` へ逐次追記（訳文は保存しない・5 分あいたら別ファイル）。
+    「文字起こしを自動で保存する」スイッチは字幕の保存だけに効く
+  - **Meet 議事録ボット**: 専用プロファイル（`%APPDATA%\voicekey\meetbot-profile`）の Chrome を CDP で動かす（Playwright・Node は同梱しない）。
+    Meet の DOM 依存は `src/caption/meetbot/scripts.py` だけで、Mac の MeetBotScripts.swift の JS をそのまま移した。
+    文字起こしは「Meet の字幕を使う（既定・話者名つき）」と「会議の音声を API で文字起こし」（ボット用 Chrome の音だけを Process Loopback で拾う。
+    始めるとライブ字幕を止める）の 2 つ。**スイッチに関係なく会議ごとに 1 ファイル必ず保存**。参加ボタンの押し直し（4 秒おき最大 5 回）・
+    承認待ちは 10 分・「外された」は 2 回／「会議画面でない」は 3 回続いたら確定・Chrome の時間切れ 3 回で諦める・字幕が 60 秒読めないと
+    1 会議 1 回だけ知らせる・世代番号で古い試行を捨てる、を Mac 2.3.0 と同じにした。初回の Google ログインは「まず Google にログイン」から本人が行う
+  - 使った API は API 料金に記録する（字幕・議事録の音声は用途「caption」/ ボットは「meetingTranscription」、翻訳は「字幕の翻訳」）
+  - ディクテーションの経路には手を入れていない（字幕サービス・ボットは開始するまで作らない・`src/caption/` は遅延 import）
+  - **Technical Details**: `src/caption/`（service / audio_capture / live_stream / soniox_assembler / translation_coordinator / translators /
+    transcript_recorder / line_model / caption_hud / settings）、`src/caption/meetbot/`（cdp / service / settle / rules / scripts）、
+    `src/ui/caption_pages.py`、`ui/hud.py`（`mode_changed`・`caption_covering`・`capsule_bottom_y`）、`ui/system_tray.py`、`app.py`。
+    依存に `PyAudioWPatch`（Windows のみ）を追加し `voicekey.spec` で同梱。テストは `tests/test_caption_core.py` / `test_caption_stream.py` /
+    `test_caption_service.py` / `test_meetbot.py`（模擬 WebSocket・模擬 HTTP・模擬 CDP。課金 API は叩かない）
 - **Windows: 文字起こしエンジンを Mac と同じ並び・同じモデル名にした（Windows）**。
   Soniox（`stt-rt-v5` のライブ型・既定）/ ElevenLabs（`scribe_v2`・`scribe_v1`）/ OpenAI（`gpt-transcribe`）/
   Microsoft MAI（`MAI-Transcribe-2`）/ OpenAI ライブ（`gpt-live-transcribe`）/ Groq（`whisper-large-v3-turbo`）。
