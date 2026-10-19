@@ -155,6 +155,8 @@ class TestSonioxCaptionStream(unittest.TestCase):
             self.assertTrue(wait_until(lambda: self.links[-1] == sa.LINK_IDLE))
             stream.send(voiced())
             self.assertTrue(wait_until(lambda: server.connections == count + 1))
+            # 次の無音を数え始める前に、張り直しが終わったのを待つ（古い IDLE を読まない）
+            self.assertTrue(wait_until(lambda: self.links[-1] == sa.LINK_CONNECTED))
         self.assertEqual(self.gave_up, [])
 
     def test_fatal_402_gives_up_with_reason(self):

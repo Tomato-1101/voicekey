@@ -473,10 +473,11 @@ class TestMeetBotServiceFlow(unittest.TestCase):
         page = _FakePage(logged_in=False)
         service = self._service(page)
         service.join("https://meet.google.com/abc-defg-hij")
-        self.assertTrue(self._pump(lambda: service.state == "failed"))
+        # 状態が変わった後に通知が届く（別スレッドからの合図）ので、両方を待つ
+        self.assertTrue(self._pump(lambda: service.state == "failed"
+                                   and any("参加できませんでした" in n for n in self.notices)), self.notices)
         self.assertIn("ログインしていません", service.status_line)
         self.assertEqual(service.login_status, "loggedOut")
-        self.assertTrue(any("参加できませんでした" in n for n in self.notices))
 
     def test_rejects_non_meeting_url(self):
         service = self._service(_FakePage())

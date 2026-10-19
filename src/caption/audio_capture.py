@@ -302,8 +302,12 @@ class ProcessLoopbackCapture:
         self._thread: Optional[threading.Thread] = None
         self.failed = threading.Event()
 
-    def start(self, timeout: float = 5.0) -> None:
-        """取り込みスレッドを起動し、初期化できるまで待つ（失敗は CaptureUnavailable）。"""
+    def start(self, timeout: float = 8.0) -> None:
+        """取り込みスレッドを起動し、初期化できるまで待つ（失敗は CaptureUnavailable）。
+
+        準備（ActivateAudioInterfaceAsync の完了待ち 5 秒＋形式の設定）より長く待つ。時間切れのときは
+        取り込みスレッドにも止まるよう伝える（遅れて準備できても音を配らない＝代わりの取り方と二重にならない）。
+        """
         if sys.platform != "win32":
             raise CaptureUnavailable("Windows 以外ではシステム音声を取り込めません")
         self._thread = threading.Thread(target=self._run, daemon=True, name="ProcessLoopback")
@@ -388,7 +392,11 @@ class ProcessLoopbackCapture:
                 kernel32.WaitForSingleObject(event, 100)
                 while not self._stop.is_set():
                     packet = ctypes.c_uint32(0)
-                    if get_next(ctypes.byref(packet)) < 0 or packet.value == 0:
+                    hr_next = get_next(ctypes.byref(packet))
+                    if hr_next < 0:
+                        # デバイスが無効になった等。黙って止まらず「落ちた」にして、見張りに上限つきで作り直させる
+                        raise RuntimeError(f"GetNextPacketSize 0x{hr_next & 0xFFFFFFFF:08X}")
+                    if packet.value == 0:
                         break
                     data_ptr = ctypes.c_void_p()
                     frames = ctypes.c_uint32(0)
@@ -656,6 +664,15 @@ class SystemLoopbackCapture:
             self.stop()
             raise CaptureUnavailable(f"システム音声の取り込みを開始できません（{type(e).__name__}）")
 
+    def poll_health(self) -> None:
+        """ストリームが止まっていたら「落ちた」にする（出力デバイスが外されたときなど）。"""
+        stream = self._stream
+        try:
+            if stream is not None and not stream.is_active():
+                self.failed.set()
+        except Exception:
+            self.failed.set()
+
     def stop(self) -> None:
         stream, self._stream = self._stream, None
         pa, self._pa = self._pa, None
@@ -782,7 +799,17 @@ class CaptureController:
 
     def _swap(self, capture) -> None:
         with self._lock:
-            old, self._capture = self._capture, capture
+            if self._stop.is_set():
+                # 張り替えの最中に止められた。新しい取り込みを残さない
+                old = None
+            else:
+                old, self._capture = self._capture, capture
+        if self._stop.is_set():
+            try:
+                capture.stop()
+            except Exception:
+                pass
+            return
         if old is not None and old is not capture:
             try:
                 old.stop()
@@ -855,6 +882,9 @@ class CaptureController:
             now = self._clock()
             with self._lock:
                 capture = self._capture
+            health = getattr(capture, "poll_health", None)
+            if callable(health):
+                health()
             failed = capture is not None and getattr(capture, "failed", None) is not None and capture.failed.is_set()
             if failed and retry_at is None:
                 delay = self._limiter.next_delay(now)

@@ -38,6 +38,8 @@ Mac の設定画面の作り直し（Mac のみ）も同じ Unreleased に含む
     1 会議 1 回だけ知らせる・世代番号で古い試行を捨てる、を Mac 2.3.0 と同じにした。初回の Google ログインは「まず Google にログイン」から本人が行う
   - 使った API は API 料金に記録する（字幕・議事録の音声は用途「caption」/ ボットは「meetingTranscription」、翻訳は「字幕の翻訳」）
   - ディクテーションの経路には手を入れていない（字幕サービス・ボットは開始するまで作らない・`src/caption/` は遅延 import）
+  - 取り込みが黙って止まらないようにした: Process Loopback がデバイス無効などのエラーを返したら「落ちた」にして上限つきで作り直し、
+    出力デバイス全体の取り込みもストリームが止まっていたら作り直す。張り替えの途中で止められたときは新しい取り込みを残さない
   - **Technical Details**: `src/caption/`（service / audio_capture / live_stream / soniox_assembler / translation_coordinator / translators /
     transcript_recorder / line_model / caption_hud / settings）、`src/caption/meetbot/`（cdp / service / settle / rules / scripts）、
     `src/ui/caption_pages.py`、`ui/hud.py`（`mode_changed`・`caption_covering`・`capsule_bottom_y`）、`ui/system_tray.py`、`app.py`。

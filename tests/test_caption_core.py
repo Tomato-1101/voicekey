@@ -7,6 +7,7 @@
 import json
 import tempfile
 import threading
+import time
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -558,3 +559,103 @@ class TestCaptionSettings(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCaptureController(unittest.TestCase):
+    """取り込みの統括（最前面の追従・代わりの取り方・作り直しの上限）を模擬の取り込みで確かめる。"""
+
+    class _Capture:
+        def __init__(self, log, kind, fail=False):
+            self.log, self.kind, self.fail = log, kind, fail
+            self.failed = threading.Event()
+            self.stopped = False
+
+        def start(self):
+            from src.caption.audio_capture import CaptureUnavailable
+
+            if self.fail:
+                raise CaptureUnavailable("使えません")
+            self.log.append(("start",) + self.kind)
+
+        def stop(self):
+            self.stopped = True
+            self.log.append(("stop",) + self.kind)
+
+    def _controller(self, foreground, process_ok=True, frontmost=True):
+        from src.caption.audio_capture import CaptureController
+
+        self.log = []
+        self.now = [0.0]
+        self.captures = []
+
+        def process_factory(pid, include, cb):
+            capture = self._Capture(self.log, ("process", pid, include), fail=not process_ok)
+            self.captures.append(capture)
+            return capture
+
+        def system_factory(cb):
+            capture = self._Capture(self.log, ("system",))
+            self.captures.append(capture)
+            return capture
+
+        controller = CaptureController(on_audio=lambda s: None, frontmost=frontmost, own_pid=1,
+                                       process_factory=process_factory, system_factory=system_factory,
+                                       foreground=lambda: foreground[0], clock=lambda: self.now[0])
+        controller.POLL_SECONDS = 0.01
+        self.addCleanup(controller.stop)
+        return controller
+
+    def test_follows_frontmost_with_limits(self):
+        foreground = [(200, "chrome.exe")]
+        controller = self._controller(foreground)
+        names = []
+        controller.on_target_changed = names.append
+        controller.start()
+        self.assertEqual(self.log[0], ("start", "process", 200, True))
+        # 自分の画面（設定）が前に来ても対象は変えない
+        foreground[0] = (1, "voicekey.exe")
+        time.sleep(0.1)
+        self.assertEqual(len([e for e in self.log if e[0] == "start"]), 1)
+        foreground[0] = (300, "vlc.exe")
+        self.now[0] = 0.5
+        time.sleep(0.1)
+        self.assertEqual(len([e for e in self.log if e[0] == "start"]), 1, "1 秒続くまで張り替えない")
+        self.now[0] = 2.5
+        self.assertTrue(_wait(lambda: ("start", "process", 300, True) in self.log))
+        self.assertIn(("stop", "process", 200, True), self.log)
+        self.assertEqual(controller.target_name, "VLC")
+
+    def test_falls_back_to_system_loopback(self):
+        controller = self._controller([(200, "chrome.exe")], process_ok=False)
+        notices = []
+        controller.on_notice = notices.append
+        controller.start()
+        self.assertTrue(controller.uses_system_loopback)
+        self.assertIn(("start", "system"), self.log)
+        self.assertTrue(notices and "パソコン全体" in notices[0])
+
+    def test_rebuild_has_upper_limit(self):
+        controller = self._controller([(200, "chrome.exe")], frontmost=False)
+        failed = []
+        controller.on_failed = failed.append
+        controller.start()
+        self.assertEqual(self.log[0], ("start", "process", 1, False), "すべて＝自分以外")
+        for _ in range(12):
+            for capture in list(self.captures):
+                capture.failed.set()
+            self.now[0] += 10
+            time.sleep(0.05)
+            if failed:
+                break
+        self.assertTrue(_wait(lambda: failed))
+        starts = [e for e in self.log if e[0] == "start"]
+        self.assertLessEqual(len(starts), 1 + 5, "作り直しは 5 回まで")
+
+
+def _wait(predicate, timeout=3.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
