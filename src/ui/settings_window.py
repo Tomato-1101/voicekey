@@ -69,9 +69,10 @@ from PySide6.QtWidgets import (
 
 from ..config import ConfigManager, HotkeyMode, TranscriptionBackend
 from ..config import backends, llm_models
-from ..config.constants import APP_VERSION
+from ..config.constants import APP_VERSION, DEFAULT_HISTORY_LIMIT, HISTORY_LIMIT_OPTIONS
 from ..core import text_formatter
 from ..core.audio_recorder import AudioRecorder
+from ..core.clipboard_history import ClipboardHistoryStore
 from ..core.history import MAX_ITEMS as HISTORY_MAX_ITEMS, HistoryStore
 from ..core.mic_monitor import MicLevelMonitor
 from ..core.stats import StatsStore
@@ -858,6 +859,7 @@ class SettingsWindow(CaptionPagesMixin, QWidget):
         config_manager: Optional[ConfigManager] = None,
         updater=None,
         history_sync: Optional["HistorySync"] = None,
+        clipboard_history: Optional[ClipboardHistoryStore] = None,
     ) -> None:
         """
         設定ウィンドウを初期化する。
@@ -869,6 +871,7 @@ class SettingsWindow(CaptionPagesMixin, QWidget):
             config_manager: アプリ本体と共有する設定マネージャ（None なら単体生成）
             updater: 自動アップデータ（「バージョン情報」タブで更新確認/実行に使う。None なら無効表示）
             history_sync: Mac との履歴同期（「履歴」タブに設定 UI を出す。None なら同期 UI は非表示相当）
+            clipboard_history: クリップボード履歴ストア（一般 › 履歴 の「消去」で使う）
         """
         super().__init__()
         self._platform = platform_adapter or get_platform_adapter()
@@ -876,6 +879,7 @@ class SettingsWindow(CaptionPagesMixin, QWidget):
         self._stats = stats
         self._updater = updater
         self._history_sync = history_sync
+        self._clipboard_history = clipboard_history
 
         # DIST ビルドでは API キーページを作らないため、ページ生成前に空で初期化しておく
         # （_load_current_settings が無条件に _refresh_api_key_status を呼ぶ）
@@ -1371,6 +1375,20 @@ class SettingsWindow(CaptionPagesMixin, QWidget):
             cl, "入力の履歴を保存", self._history_enabled_check,
             caption="ホームの最近の履歴と、画面左端の履歴スリットに使います。オフにすると新しい入力を残しません。",
         )
+        # 保存件数とクリップボードの履歴（Mac の 一般 › 履歴 と同じ 4 項目・同じ文言）
+        self._history_limit_combo = self._make_history_limit_combo()
+        _add_row(cl, "音声入力の保存件数", self._history_limit_combo)
+        self._clipboard_history_check = self._make_toggle()
+        _add_row(
+            cl, "クリップボードの履歴を残す", self._clipboard_history_check,
+            caption="パスワード管理アプリからのコピーは残しません。",
+        )
+        self._clipboard_history_limit_combo = self._make_history_limit_combo()
+        _add_row(cl, "クリップボードの保存件数", self._clipboard_history_limit_combo)
+        clipboard_clear_btn = QPushButton("消去")
+        clipboard_clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        clipboard_clear_btn.clicked.connect(self._clear_clipboard_history)
+        _add_row(cl, "クリップボードの履歴を消去", clipboard_clear_btn)
         layout.addWidget(card)
         layout.addWidget(self._create_history_sync_card())
         layout.addStretch()
@@ -2501,10 +2519,9 @@ class SettingsWindow(CaptionPagesMixin, QWidget):
         footer.addWidget(clear_btn)
         layout.addLayout(footer)
 
-        layout.addWidget(_make_caption(
-            f"音声入力の直近 {HISTORY_MAX_ITEMS} 件（同期がオンのときは Mac の履歴も含めて"
-            "最大 200 件）です。行をクリックするとクリップボードにコピーします。"
-        ))
+        # 件数は設定で変わるので _refresh_history のたびに書き直す
+        self._history_caption = _make_caption("")
+        layout.addWidget(self._history_caption)
 
         self._refresh_history()
         return page
@@ -2722,10 +2739,16 @@ class SettingsWindow(CaptionPagesMixin, QWidget):
         """履歴一覧をストアの現在の内容で作り直す（同期がオンなら Mac の履歴も含む）。"""
         self._history_list.clear()
         items = self._history_entries()
+        # limit を持たない差し替えストア（テストの偽物など）でも既定件数で表示する
+        limit = getattr(self._history, "limit", HISTORY_MAX_ITEMS)
+        self._history_caption.setText(
+            f"音声入力の直近 {limit} 件（同期がオンのときは Mac の履歴も含めて"
+            "最大 200 件）です。行をクリックするとクリップボードにコピーします。"
+        )
 
         if not items:
             placeholder = QListWidgetItem(
-                f"まだ履歴がありません。音声入力すると、ここに直近 {HISTORY_MAX_ITEMS} 件が残ります。"
+                f"まだ履歴がありません。音声入力すると、ここに直近 {limit} 件が残ります。"
             )
             # 選択・クリック不可の案内行にする
             placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
@@ -2744,6 +2767,38 @@ class SettingsWindow(CaptionPagesMixin, QWidget):
         QApplication.clipboard().setText(text)
         self._history_feedback.setText(f"コピーしました（{len(text)} 文字）")
         QTimer.singleShot(1500, lambda: self._history_feedback.setText(""))
+
+    @staticmethod
+    def _make_history_limit_combo() -> QComboBox:
+        """履歴の保存件数の選択（50〜1000 件。値は件数の int）。"""
+        combo = QComboBox()
+        for value in HISTORY_LIMIT_OPTIONS:
+            combo.addItem(f"{value} 件", value)
+        return combo
+
+    @staticmethod
+    def _select_history_limit(combo: QComboBox, value) -> None:
+        """保存済みの件数を選ぶ（選択肢に無ければ既定 200）。"""
+        index = combo.findData(value if value in HISTORY_LIMIT_OPTIONS else DEFAULT_HISTORY_LIMIT)
+        combo.setCurrentIndex(max(0, index))
+
+    def _confirm_clear_clipboard(self) -> bool:
+        """クリップボードの履歴の消去を確かめる（Mac の確認ダイアログと同じ文言。テストで差し替える）。"""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText("クリップボードの履歴をすべて消去しますか？")
+        box.setInformativeText("この操作は取り消せません。")
+        clear_button = box.addButton("消去", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        return box.clickedButton() is clear_button
+
+    def _clear_clipboard_history(self) -> None:
+        """確認のうえクリップボードの履歴をすべて消去する（保存ボタンを待たずにすぐ消す）。"""
+        if self._clipboard_history is None:
+            return
+        if self._confirm_clear_clipboard():
+            self._clipboard_history.clear()
 
     def _clear_history(self) -> None:
         """履歴をすべて消去して一覧を更新する。"""
@@ -3728,6 +3783,9 @@ class SettingsWindow(CaptionPagesMixin, QWidget):
         )
         self._render_translate_engine()
         self._history_enabled_check.setChecked(bool(config.get("history_enabled", True)))
+        self._select_history_limit(self._history_limit_combo, config.get("history_limit"))
+        self._clipboard_history_check.setChecked(bool(config.get("clipboard_history_enabled", True)))
+        self._select_history_limit(self._clipboard_history_limit_combo, config.get("clipboard_history_limit"))
         self._on_hotkey_changed()
 
         # 一般 - その他（VAD/分割/HUD/ストリーミング/音量正規化は常時ON固定のため UI 無し）
@@ -3846,6 +3904,10 @@ class SettingsWindow(CaptionPagesMixin, QWidget):
             "repaste_key": self._repaste_input.text(),
             # 音声入力の履歴を保存するか
             "history_enabled": self._history_enabled_check.isChecked(),
+            # 履歴の保存件数とクリップボードの履歴（Mac の historyLimit / clipboardHistory* と同義）
+            "history_limit": self._history_limit_combo.currentData() or DEFAULT_HISTORY_LIMIT,
+            "clipboard_history_enabled": self._clipboard_history_check.isChecked(),
+            "clipboard_history_limit": self._clipboard_history_limit_combo.currentData() or DEFAULT_HISTORY_LIMIT,
             # 翻訳して入力（Mac の DictationTranslation と同じ項目）
             "translate_once_key": self._translate_once_input.text(),
             "translate_input_enabled": self._translate_always_check.isChecked(),

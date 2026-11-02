@@ -123,6 +123,8 @@ def _win32():
     user32.SetClipboardData.restype = wintypes.HANDLE
     user32.GetClipboardFormatNameW.argtypes = [wintypes.UINT, wintypes.LPWSTR, ctypes.c_int]
     user32.GetClipboardFormatNameW.restype = ctypes.c_int
+    user32.RegisterClipboardFormatW.argtypes = [wintypes.LPCWSTR]
+    user32.RegisterClipboardFormatW.restype = wintypes.UINT
     kernel32.GlobalSize.argtypes = [wintypes.HGLOBAL]
     kernel32.GlobalSize.restype = ctypes.c_size_t
     kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
@@ -226,6 +228,56 @@ def restore_snapshot(snapshot: ClipboardSnapshot) -> bool:
         return restored > 0
     except Exception as e:
         logger.debug(f"クリップボードの復元に失敗: {e}")
+        return False
+    finally:
+        user32.CloseClipboard()
+
+
+def copy_text_excluded(text: str) -> bool:
+    """テキストを「クリップボードの履歴・監視に残さないで」の印付きで書き込む（成功したら True）。
+
+    voicekey の貼り付けの一時書き込み用。Windows の取り決め（Clipboard Formats の文書）どおり
+    ExcludeClipboardContentFromMonitorProcessing と CanIncludeInClipboardHistory=0 を一緒に置き、
+    voicekey 自身のクリップボード履歴にも Win+V の履歴にも他のクリップボード管理アプリにも残させない。
+    Windows 以外・失敗時は False（呼び出し側は従来の pyperclip.copy に戻る）。
+    """
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        user32, kernel32 = _win32()
+    except Exception:
+        return False
+    if not _open(user32):
+        return False
+
+    def put(fmt: int, data: bytes) -> bool:
+        handle = kernel32.GlobalAlloc(0x0002, max(1, len(data)))  # GMEM_MOVEABLE
+        if not handle:
+            return False
+        pointer = kernel32.GlobalLock(handle)
+        if not pointer:
+            kernel32.GlobalFree(handle)
+            return False
+        ctypes.memmove(pointer, data, len(data))
+        kernel32.GlobalUnlock(handle)
+        # 成功したらハンドルの持ち主はクリップボードになる（失敗したときだけ自分で解放する）
+        if not user32.SetClipboardData(fmt, handle):
+            kernel32.GlobalFree(handle)
+            return False
+        return True
+
+    try:
+        user32.EmptyClipboard()
+        if not put(13, text.encode("utf-16-le") + b"\x00\x00"):  # CF_UNICODETEXT
+            return False
+        # 印は付けられなくても本文は入っているので貼り付けは続ける（履歴に残るだけ）
+        for name in ("ExcludeClipboardContentFromMonitorProcessing", "CanIncludeInClipboardHistory"):
+            fmt = user32.RegisterClipboardFormatW(name)
+            if fmt:
+                put(fmt, b"\x00\x00\x00\x00")
+        return True
+    except Exception as e:
+        logger.debug(f"印付きのクリップボード書き込みに失敗: {e}")
         return False
     finally:
         user32.CloseClipboard()

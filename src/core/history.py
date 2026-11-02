@@ -1,7 +1,7 @@
 """
 音声入力履歴モジュール
 
-文字起こし（整形後）のテキストを新しい順に最大 200 件保持し（Mac の HistoryStore.maxItems と同じ）、
+文字起こし（整形後）のテキストを新しい順に保持し（既定 200 件・設定で 50〜1000。Mac の HistoryStore.limit と同じ）、
 設定ウィンドウの「履歴」タブ・サイドノッチから再コピーできるようにする。
 アプリを再起動しても残るよう settings.yaml と同じディレクトリに JSON で保存する。
 各エントリには Mac と履歴を共有する history_sync 用に id（uuid4 hex）と
@@ -23,7 +23,7 @@ from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# 保持する最大件数（超過分は古いものから捨てる）。Mac 版 HistoryStore.maxItems と同値
+# 保持する最大件数の既定（超過分は古いものから捨てる）。設定 history_limit で変えられる（Mac の HistoryStore.limit と同値）
 MAX_ITEMS = 200
 HISTORY_FILE_NAME = "history.json"
 
@@ -55,6 +55,7 @@ class HistoryStore:
         self,
         file_path: Optional[Path] = None,
         on_add: Optional[Callable[[dict], None]] = None,
+        limit: int = MAX_ITEMS,
     ) -> None:
         """
         履歴ストアを初期化し、保存済みの履歴を読み込む。
@@ -65,10 +66,12 @@ class HistoryStore:
                 履歴ストア自体は通信を知らず、貼り付け経路をブロックしないよう
                 保存完了後・ロック外で呼び、例外は握って警告ログのみ出す
                 （同期の失敗が貼り付けを壊すことは絶対に避ける）。
+            limit: 保持する最大件数（読み込み時もこの件数で切るので、保存済みの件数を先に渡す）
         """
         self._path = Path(file_path) if file_path else _default_path()
         self._lock = threading.Lock()
         self._on_add = on_add
+        self._limit = max(0, int(limit))
         # 壊れたファイルを退避できなかった（＝元ファイルが残っている）ので保存しない
         self._save_blocked = False
         self._items: List[Dict[str, object]] = self._load()
@@ -95,13 +98,29 @@ class HistoryStore:
         }
         with self._lock:
             self._items.insert(0, entry)
-            del self._items[MAX_ITEMS:]
+            del self._items[self._limit:]
             self._save()
         if self._on_add is not None:
             try:
                 self._on_add(dict(entry))
             except Exception as e:
                 logger.warning(f"履歴追加コールバックに失敗（無視）: {e}")
+
+    @property
+    def limit(self) -> int:
+        return self._limit
+
+    @limit.setter
+    def limit(self, value: int) -> None:
+        """件数を変える。下げたら超過分を古い方から捨てて即保存する（Mac と同じ）。"""
+        value = max(0, int(value))
+        with self._lock:
+            if value == self._limit:
+                return
+            self._limit = value
+            if len(self._items) > value:
+                del self._items[value:]
+                self._save()
 
     def items(self) -> List[Dict[str, str]]:
         """
@@ -143,7 +162,7 @@ class HistoryStore:
                     }
                     for e in data
                     if isinstance(e, dict) and str(e.get("text", "")).strip()
-                ][:MAX_ITEMS]
+                ][: self._limit]
         except Exception as e:
             logger.warning(f"履歴の読み込みに失敗（退避して空で開始します）: {e}")
             # 空のまま保存すると元の履歴を上書きして消すので退避する。退避できなければ保存しない

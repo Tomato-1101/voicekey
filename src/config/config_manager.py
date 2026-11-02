@@ -18,7 +18,13 @@ from . import llm_models
 from ..utils import corrupt_file
 from ..utils.logger import get_logger
 from . import backends
-from .constants import DEFAULT_CONFIG, SETTINGS_FILE_NAME, default_format_enabled
+from .constants import (
+    DEFAULT_CONFIG,
+    DEFAULT_HISTORY_LIMIT,
+    HISTORY_LIMIT_OPTIONS,
+    SETTINGS_FILE_NAME,
+    default_format_enabled,
+)
 
 logger = get_logger(__name__)
 # 動かせるバックエンド（Mac と同じ選択肢 6 つ＋選択肢から外した Deepgram）。
@@ -239,6 +245,8 @@ class ConfigManager:
             self._force_always_on(config)
             # 製品版は文字起こしバックエンドを 3 択に制限（範囲外の openai 等は groq へ移行・deepgram は維持）
             self._constrain_release_backends(config)
+            # 履歴の保存件数は選択肢のどれかに揃える（手書きの範囲外は既定 200）
+            self._constrain_history_limits(config)
             # モード別整形既定の一回限りマイグレーション（deepgram スロットの整形を初回だけ既定 OFF へ）
             self._migrate_format_defaults(config)
             # 選択肢から外したモデル → そのエンジンの既定（一回限り・Mac の V19）
@@ -278,6 +286,22 @@ class ConfigManager:
         if not isinstance(config.get("audio_preprocess"), dict):
             config["audio_preprocess"] = {}
         config["audio_preprocess"]["volume_normalize"] = True
+
+    @staticmethod
+    def _constrain_history_limits(config: Dict[str, Any]) -> None:
+        """
+        履歴の保存件数（history_limit / clipboard_history_limit）を選択肢に揃える（破壊的更新）。
+
+        Mac の ConfigStore.validHistoryLimit と同じく、選択肢（50/100/200/500/1000）以外は既定 200 にする。
+        手で書いた 0 や巨大な値で履歴が消えたり、ファイルが膨れたりしないようにする。
+
+        Args:
+            config: 矯正対象の設定辞書（その場で書き換える）
+        """
+        for key in ("history_limit", "clipboard_history_limit"):
+            value = config.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value not in HISTORY_LIMIT_OPTIONS:
+                config[key] = DEFAULT_HISTORY_LIMIT
 
     @staticmethod
     def _constrain_release_backends(config: Dict[str, Any]) -> None:
@@ -423,6 +447,7 @@ class ConfigManager:
                 self.config = _deep_merge(self.config, new_config)
                 # 常時 ON 固定の項目はファイルにも True で書き戻す（UI から撤去済み）
                 self._force_always_on(self.config)
+                self._constrain_history_limits(self.config)
 
                 # アトミック書き込み: 一時ファイルへ全量書いてから os.replace で置換する。
                 # open("w") の直接書きは truncate 後にクラッシュ/ディスク不足が起きると

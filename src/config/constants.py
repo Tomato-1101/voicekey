@@ -5,7 +5,7 @@
 settings.yamlが存在しない場合のデフォルト設定を定義する。
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 from .types import HotkeyMode
 
@@ -66,6 +66,10 @@ AUDIO_DTYPE: str = "float32"  # 音声データ型
 # タイミング設定
 # ============================================
 CONFIG_CHECK_INTERVAL_SEC: int = 1          # 設定ファイル監視間隔（秒）
+
+# 履歴の保存件数の選択肢と既定（音声入力・クリップボード共通。Mac の ConfigStore.historyLimitOptions と同じ）
+HISTORY_LIMIT_OPTIONS: Tuple[int, ...] = (50, 100, 200, 500, 1000)
+DEFAULT_HISTORY_LIMIT: int = 200
 # ============================================
 # デフォルト設定
 # ============================================
@@ -110,6 +114,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 
     # 音声入力の履歴を保存するか（Mac の historyEnabled と同義・既定 ON。オフなら履歴に残さない）
     "history_enabled": True,
+    # 音声入力の履歴の保存件数（HISTORY_LIMIT_OPTIONS のどれか。Mac の historyLimit と同義）
+    "history_limit": 200,
+    # コピーしたテキストをクリップボードの履歴に残すか（Mac の clipboardHistoryEnabled と同義・既定 ON）
+    "clipboard_history_enabled": True,
+    # クリップボードの履歴の保存件数（Mac の clipboardHistoryLimit と同義）
+    "clipboard_history_limit": 200,
 
     # API の利用料金の表示モード（"list"＝定価〔無料枠も含む〕/ "paid"＝実際に払った分）
     "api_cost_mode": "list",

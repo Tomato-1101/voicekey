@@ -7,6 +7,8 @@ Mac 版 SideNotch.swift と対の Windows 実装:
 - クリックで履歴パネル（ガラス島）が左端から出る。上部に検索フィールド、行クリックでコピー、
   下部に「ホームを開く」。外側クリック（パネルの非アクティブ化）or スリット再クリックで閉じる。
   全消去はホーム側だけに置く（ここには置かない）。
+- 履歴パネルには音声入力の履歴とクリップボードの履歴を出す。「すべて / 音声入力 / クリップボード」で
+  絞り込め、「すべて」は両方を日時の新しい順に混ぜて 1 本のリストにする（Mac と同じ）。
 - 背景は ⑤ の DWM アクリル/ブラー（対応 OS）＋ QSS 疑似ガラスのフォールバック。
 
 最重要の制約: スリットは絶対にフォーカスを奪ってはならない（貼り付け先＝音声入力の入力先を
@@ -18,10 +20,11 @@ import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QObject, QRectF, Qt, Signal
+from PySide6.QtCore import QMimeData, QObject, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPainterPath
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -31,6 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..core.clipboard_history import CAN_INCLUDE_MIME, EXCLUDE_MIME
 from ..platform.windows import acrylic
 
 # アクセント色（ブランドの灯り・Mac の Brand.signal と同じ）。録音中グロー・フォーカスに使う
@@ -91,8 +95,75 @@ def filter_items(items: List[Dict[str, str]], query: str) -> List[Dict[str, str]
     ]
 
 
+# 履歴パネルの絞り込み（Mac の SideNotchFilter と同じ 3 つ）
+FILTER_ALL = "all"
+FILTER_VOICE = "voice"
+FILTER_CLIPBOARD = "clipboard"
+
+# 行の種類の印（Mac の mic / doc.on.clipboard に当たる）
+_KIND_ICON = {FILTER_VOICE: "🎙", FILTER_CLIPBOARD: "📋"}
+# クリップボードの行に出す文字数の上限（巨大なテキストで描画が重くならないように。コピーは全文）
+CLIP_DISPLAY_CHARS = 500
+
+
+def _date_key(entry: Dict[str, str]) -> float:
+    """並べ替え用の時刻（読めない日時は最も古い扱い）。"""
+    try:
+        dt = datetime.fromisoformat(str(entry.get("date", "")))
+    except (ValueError, TypeError):
+        return float("-inf")
+    if dt.tzinfo is None:
+        dt = dt.astimezone()
+    return dt.timestamp()
+
+
+def merge_entries(voice_items, clip_items, filter_kind: str) -> List[Dict[str, str]]:
+    """絞り込みに合わせて音声入力とクリップボードの履歴を 1 本にする（各行に "kind" を付ける）。
+
+    「すべて」は両方を日時の新しい順に混ぜる。片方だけのときはストアの並び（新しい順）のまま。
+    """
+    voice = [] if filter_kind == FILTER_CLIPBOARD else [dict(e, kind=FILTER_VOICE) for e in voice_items]
+    clips = [] if filter_kind == FILTER_VOICE else [dict(e, kind=FILTER_CLIPBOARD) for e in clip_items]
+    if filter_kind == FILTER_ALL:
+        return sorted(voice + clips, key=_date_key, reverse=True)
+    return voice + clips
+
+
+def empty_message(filter_kind: str, query: str, clipboard_running: bool) -> str:
+    """一覧が空のときの文言（絞り込みごと。Mac の emptyMessage と同じ）。"""
+    if (query or "").strip():
+        return "「%s」に一致する履歴はありません。" % query
+    message = {
+        FILTER_ALL: "音声入力やコピーをすると、ここに履歴が残ります。\nクリックでコピーできます。",
+        FILTER_VOICE: "音声入力すると、ここに履歴が残ります。\nクリックでコピーできます。",
+        FILTER_CLIPBOARD: "コピーすると、ここに履歴が残ります。\nクリックでコピーできます。",
+    }.get(filter_kind, "")
+    # クリップボードを含む絞り込みで記録が OFF なら、空の理由を 1 行添える
+    if filter_kind != FILTER_VOICE and not clipboard_running:
+        message += "\n\nクリップボードの履歴は記録しない設定になっています。"
+    return message
+
+
+def display_text(entry: Dict[str, str]) -> str:
+    """行に出す本文。クリップボードは先頭だけを改行を詰めて出す（2 行表示なので）。"""
+    text = str(entry.get("text", ""))
+    if entry.get("kind") == FILTER_CLIPBOARD:
+        return " ".join(text[:CLIP_DISPLAY_CHARS].splitlines())
+    return text
+
+
+def marked_mime_data(text: str) -> QMimeData:
+    """「監視・履歴に残さないで」の印付きのテキスト（Windows の Clipboard Formats の取り決め）。"""
+    mime = QMimeData()
+    mime.setText(text)
+    mime.setData(EXCLUDE_MIME, b"\x00\x00\x00\x00")
+    # DWORD の 0 ＝ Win+V の履歴とクラウド同期に入れない
+    mime.setData(CAN_INCLUDE_MIME, b"\x00\x00\x00\x00")
+    return mime
+
+
 class _HistoryRow(QPushButton):
-    """履歴 1 行（テキスト 2 行省略＋相対時刻）。クリックでコピー。"""
+    """履歴 1 行（テキスト 2 行省略＋種類の印＋相対時刻）。クリックでコピー。"""
 
     def __init__(self, entry: Dict[str, str], is_dark: bool, parent=None) -> None:
         super().__init__(parent)
@@ -112,13 +183,16 @@ class _HistoryRow(QPushButton):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(3)
-        text_label = QLabel(self._text)
+        text_label = QLabel(display_text(entry))
         text_label.setWordWrap(True)
         text_label.setStyleSheet(f"color: {primary}; font-size: 12px; background: transparent;")
         text_label.setMaximumHeight(38)  # 約 2 行に抑える
         text_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         layout.addWidget(text_label)
-        time_label = QLabel(relative_time(str(entry.get("date", ""))))
+        # 音声入力かクリップボードかを小さな印で見分けられるようにする
+        icon = _KIND_ICON.get(str(entry.get("kind", "")), "")
+        when = relative_time(str(entry.get("date", "")))
+        time_label = QLabel(f"{icon}  {when}" if icon else when)
         time_label.setStyleSheet(f"color: {secondary}; font-size: 10px; background: transparent;")
         time_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         layout.addWidget(time_label)
@@ -231,11 +305,15 @@ class SideNotchHistoryPanel(QWidget):
     PANEL_WIDTH = 320
     PANEL_HEIGHT = 440
 
-    def __init__(self, history, is_dark: bool = False) -> None:
+    def __init__(self, history, is_dark: bool = False, clipboard=None) -> None:
         super().__init__()
         self._history = history
+        # クリップボード履歴のストア（無ければ音声入力の履歴だけ）
+        self._clipboard = clipboard
         self._is_dark = is_dark
         self._query = ""
+        # 絞り込み（開くたびに「すべて」へ戻す。Mac はパネルを作り直すので同じ動き）
+        self._filter = FILTER_ALL
         self._setup_window()
         self.resize(self.PANEL_WIDTH, self.PANEL_HEIGHT)
         self._build_ui()
@@ -300,6 +378,32 @@ class SideNotchHistoryPanel(QWidget):
         swl.addWidget(self._search)
         root.addWidget(search_wrap)
 
+        # 絞り込み（すべて / 音声入力 / クリップボード）
+        filter_wrap = QWidget()
+        fwl = QHBoxLayout(filter_wrap)
+        fwl.setContentsMargins(14, 0, 14, 10)
+        fwl.setSpacing(4)
+        checked_bg = "rgba(255,255,255,0.16)" if self._is_dark else "rgba(0,0,0,0.10)"
+        self._filter_group = QButtonGroup(self)
+        self._filter_group.setExclusive(True)
+        self._filter_buttons: Dict[str, QPushButton] = {}
+        for kind, label in ((FILTER_ALL, "すべて"), (FILTER_VOICE, "音声入力"), (FILTER_CLIPBOARD, "クリップボード")):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            btn.setStyleSheet(
+                f"QPushButton {{ border: none; border-radius: 6px; padding: 4px 8px; "
+                f"color: {self._secondary()}; background-color: {field_bg}; font-size: 11px; }}"
+                f"QPushButton:checked {{ color: {self._primary()}; background-color: {checked_bg}; }}"
+            )
+            btn.clicked.connect(lambda _=False, k=kind: self.set_filter(k))
+            self._filter_group.addButton(btn)
+            self._filter_buttons[kind] = btn
+            fwl.addWidget(btn, 1)
+        self._filter_buttons[FILTER_ALL].setChecked(True)
+        root.addWidget(filter_wrap)
+
         # 一覧（スクロール）
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
@@ -338,6 +442,14 @@ class SideNotchHistoryPanel(QWidget):
         self._query = text
         self._rebuild_list()
 
+    def set_filter(self, kind: str) -> None:
+        """絞り込みを変えて一覧を作り直す。"""
+        self._filter = kind
+        button = self._filter_buttons.get(kind)
+        if button is not None and not button.isChecked():
+            button.setChecked(True)
+        self._rebuild_list()
+
     def refresh(self) -> None:
         """履歴ストアの現在値で一覧を作り直す（開くたびに呼ぶ）。"""
         self._rebuild_list()
@@ -351,13 +463,12 @@ class SideNotchHistoryPanel(QWidget):
             if w is not None:
                 w.deleteLater()
 
-        items = filter_items(self._history.items(), self._query)
+        clip_items = self._clipboard.items() if self._clipboard is not None else []
+        merged = merge_entries(self._history.items(), clip_items, self._filter)
+        items = filter_items(merged, self._query)
         if not items:
-            empty = QLabel(
-                "「%s」に一致する履歴はありません。" % self._query
-                if self._query.strip()
-                else "音声入力すると、ここに履歴が残ります。\nクリックでコピーできます。"
-            )
+            running = bool(self._clipboard is not None and self._clipboard.is_running)
+            empty = QLabel(empty_message(self._filter, self._query, running))
             empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
             empty.setWordWrap(True)
             empty.setStyleSheet(f"color: {self._secondary()}; font-size: 11px; background: transparent;")
@@ -370,12 +481,16 @@ class SideNotchHistoryPanel(QWidget):
             self._list_layout.insertWidget(i, row)
 
     def _copy(self, text: str) -> None:
-        """履歴テキストをクリップボードへコピーする（フォーカスは奪わない）。"""
+        """履歴テキストをクリップボードへコピーする（フォーカスは奪わない）。
+
+        パネルからのコピーはクリップボード履歴に記録し直さない（並びが変わったり重複したりしないように）。
+        Windows の「監視・履歴に残さないで」の印を一緒に置くので、Win+V の履歴にも残らない。
+        """
         if not text:
             return
         clipboard = QApplication.clipboard()
         if clipboard is not None:
-            clipboard.setText(text)
+            clipboard.setMimeData(marked_mime_data(text))
 
     def changeEvent(self, event) -> None:
         """ウィンドウが非アクティブになったら（外側クリック）閉じる合図を出す。"""
@@ -422,9 +537,10 @@ class SideNotch(QObject):
     # 外側クリック（非アクティブ化）で閉じた直後のスリット再クリックが即開き直すのを防ぐ猶予
     _REOPEN_GUARD_SEC = 0.25
 
-    def __init__(self, history, is_dark: bool = False, enabled: bool = True) -> None:
+    def __init__(self, history, is_dark: bool = False, enabled: bool = True, clipboard=None) -> None:
         super().__init__()
         self._history = history
+        self._clipboard = clipboard
         self._is_dark = is_dark
         self._enabled = enabled
         self._last_closed_at = 0.0
@@ -485,7 +601,7 @@ class SideNotch(QObject):
         if self._panel is None:
             self._make_panel()
         self._panel.set_dark(self._is_dark)
-        self._panel.refresh()
+        self._panel.set_filter(FILTER_ALL)
         self._position_panel()
         self._panel.show()
         self._panel.raise_()
@@ -500,7 +616,7 @@ class SideNotch(QObject):
         self._last_closed_at = time.monotonic()
 
     def _make_panel(self) -> None:
-        self._panel = SideNotchHistoryPanel(self._history, is_dark=self._is_dark)
+        self._panel = SideNotchHistoryPanel(self._history, is_dark=self._is_dark, clipboard=self._clipboard)
         self._panel.open_home_requested.connect(self._on_open_home)
         self._panel.deactivated.connect(self._close_panel)
 

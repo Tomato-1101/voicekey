@@ -64,6 +64,7 @@ from .core import numeral_normalizer
 from .core import sound_fx
 from .core.audio_preprocess import preprocess as preprocess_audio
 from .core.text_utils import join_segments
+from .core.clipboard_history import ClipboardHistoryStore
 from .core.history import HistoryStore
 from .core.history_sync import HistorySync
 from .core.stats import StatsStore
@@ -231,6 +232,8 @@ class VoicekeyApp(QObject):
     _caption_config_changed = Signal()
     # Meet ボットが会議の音を拾い始める（ボットのスレッドから。ライブ字幕の停止はメインスレッドで）
     _stop_caption_requested = Signal()
+    # 設定が変わった（監視スレッドからも来るので、クリップボード監視の開始・停止はメインスレッドで）
+    _clipboard_history_config_changed = Signal()
 
     def __init__(self) -> None:
         """アプリケーションを初期化する。"""
@@ -327,7 +330,17 @@ class VoicekeyApp(QObject):
         # Mac と履歴を共有。貼り付け経路は enqueue だけ＝ファイル追記のみでブロックしない。
         # on_changed は同期スレッドから呼ばれるため Signal 経由で UI スレッドへ渡す
         self._history_sync = HistorySync(self._config, on_changed=self.history_sync_changed.emit)
-        self._history = HistoryStore(on_add=self._history_sync.enqueue)
+        # 件数は読み込み時にも効くので、保存済みの件数で作る（既定 200 で作ると多めに残した履歴が削れる）
+        self._history = HistoryStore(
+            on_add=self._history_sync.enqueue,
+            limit=int(self._config.get("history_limit", 200)),
+        )
+        # クリップボード履歴（Mac の ClipboardHistoryStore と対）。コピー元は検出時点の前面アプリで近似する。
+        # 記録の開始は QClipboard が要るので UI を作ったあと（_apply_clipboard_history_config）
+        self._clipboard_history = ClipboardHistoryStore(
+            limit=int(self._config.get("clipboard_history_limit", 200)),
+            app_provider=self._platform.foreground_app,
+        )
 
         # --- 使用実績（節約時間・レベル・連続日数。設定の「実績」タブで表示。貼り付け後に集計する） ---
         self._stats = StatsStore()
@@ -346,6 +359,7 @@ class VoicekeyApp(QObject):
             platform_adapter=self._platform,
             history=self._history,
             history_sync=self._history_sync,
+            clipboard_history=self._clipboard_history,
             stats=self._stats,
             config_manager=self._config,
             updater=self._updater,
@@ -430,7 +444,10 @@ class VoicekeyApp(QObject):
             history=self._history,
             is_dark=bool(self._config.get("dark_mode", False)),
             enabled=bool(self._config.get("side_notch_enabled", True)),
+            clipboard=self._clipboard_history,
         )
+        self._clipboard_history_config_changed.connect(self._apply_clipboard_history_config)
+        self._apply_clipboard_history_config()
         self.status_changed.connect(self._side_notch.set_status)
         self._side_notch.open_home_requested.connect(self._open_home)
 
@@ -1777,8 +1794,23 @@ class VoicekeyApp(QObject):
 
         # ライブ字幕（動作中なら表示の設定を反映し、張り直しが要る変更なら張り直す）。メインスレッドで
         self._caption_config_changed.emit()
+        # 履歴の保存件数とクリップボード履歴の記録 ON/OFF。メインスレッドで
+        self._clipboard_history_config_changed.emit()
 
         logger.info("設定を再読み込みして適用しました")
+
+    def _apply_clipboard_history_config(self) -> None:
+        """履歴の保存件数とクリップボード履歴の記録 ON/OFF を反映する（メインスレッド）。
+
+        QClipboard の通知の接続・切断は UI スレッドでしか安全に行えないので、設定の監視スレッドからは
+        Signal 経由でここへ来る。
+        """
+        self._history.limit = int(self._config.get("history_limit", 200))
+        self._clipboard_history.limit = int(self._config.get("clipboard_history_limit", 200))
+        if bool(self._config.get("clipboard_history_enabled", True)):
+            self._clipboard_history.start()
+        else:
+            self._clipboard_history.stop()
 
     def _watchdog_check(self) -> None:
         """録音時間上限・PortAudio ハング・リスナー死活を確認する。"""
@@ -2187,6 +2219,7 @@ class VoicekeyApp(QObject):
 
         self._task_q.put(None)  # ワーカー停止
         self._history_sync.stop()
+        self._clipboard_history.stop()
         # ライブ字幕・Meet ボットの後片付け（音声の取り込み・接続・Chrome を残さない。議事録を書き切る）
         for name, service in (("ライブ字幕", self._caption_service), ("Meet ボット", self._meet_bot_service)):
             if service is not None:

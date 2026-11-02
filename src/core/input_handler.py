@@ -97,6 +97,22 @@ def _take_full_snapshot():
         return None
 
 
+def _copy_injected_text(text: str) -> bool:
+    """貼り付け用の一時書き込みを「履歴に残さない」印付きで行う（Windows のみ・失敗時は False）。
+
+    印が無いと、貼り付けるたびに音声入力の結果がクリップボード履歴（voicekey 自身・Win+V）に溜まる。
+    元の中身の書き戻し（復元）には印を付けない（利用者が自分でコピーした内容なので）。
+    """
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        from ..platform.windows.clipboard import copy_text_excluded
+
+        return copy_text_excluded(text)
+    except Exception:
+        return False
+
+
 def _restore_full_snapshot(snapshot) -> bool:
     """退避した全形式を書き戻す（Windows のみ）。"""
     try:
@@ -173,8 +189,9 @@ class InputHandler:
                 self._saved_snapshot = snapshot
                 self._injected_text = text
 
-            # クリップボードにコピー
-            pyperclip.copy(text)
+            # クリップボードにコピー（Windows は履歴に残さない印付き。書けなければ従来どおり）
+            if not _copy_injected_text(text):
+                pyperclip.copy(text)
 
             # ここから先は何が起きても復元タイマーを必ず登録する（try/finally）。
             # キー合成の失敗等で復元が一度も予約されないと、ユーザーの元のクリップボード
