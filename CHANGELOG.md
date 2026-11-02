@@ -18,7 +18,8 @@ Mac の設定画面の作り直し（Mac のみ）も同じ Unreleased に含む
   `ExcludeClipboardContentFromMonitorProcessing` と `CanIncludeInClipboardHistory`=0 を付ける（Win+V の履歴にも残らない）。
   保存先は `history.json` と同じ場所の `clipboard_history.json`
 - **履歴の保存件数を設定で選べるようにした（Mac / Windows）**。設定 › 一般 › 履歴に「音声入力の保存件数」「クリップボードの履歴を残す」
-  「クリップボードの保存件数」（50 / 100 / 200 / 500 / 1000 件・既定 200）と「クリップボードの履歴を消去」（確認つき）を追加
+  「クリップボードの保存件数」（50 / 100 / 200 / 500 / 1000 件・既定 200）と「クリップボードの履歴を消去」（確認つき）を追加。
+  見た目の確認用に `--ui-snapshot` へ `--side-notch-sample`（履歴パネルを見本データで撮る・本人の履歴とクリップボードには触れない）を足した（Mac のみ）
 - **Windows: ライブ字幕・議事録・Google Meet 議事録ボット（Windows）**（`docs/WINDOWS_CATCHUP_PLAN.md` の段階 3）。
   2026-10-19 本人の決定「Windows はローカルの計算は無し・全部 API の文字起こし・翻訳は安い API」に従い、端末内の認識・翻訳は使わない。
   設定のサイドバーに見出し「字幕と議事録」= ライブ字幕 / 議事録・会議（Mac と同じ並び・同じ文言）、タスクトレイに
