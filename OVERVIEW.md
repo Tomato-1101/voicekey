@@ -59,9 +59,10 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | 数字変換 v2 | 貼付直前に漢数字→半角（全角半角化・裸数字列・位取り〔千二百三十四→1234〕・助数詞つき単独漢数字〔三時→3時〕）。決定的・純関数・冪等（LLM 不使用）。設定「辞書と数字」の「数字の書き方」で 2 トグル＋保護リスト編集（誤変換を防ぐ語・先頭アンカー照合） | ✅ | ✅ |
 | VAD / 長文分割 / ストリーミング / 録音 HUD | 常時 ON 固定（§3） | ✅ | ✅ |
 | マイク自動検出 | 入力レベルの分散で使用マイクを推定 | ✅ | ✅ |
-| 履歴 | 直近の文字起こし結果を保持（両 OS とも 200 件＋貼付先アプリ・日時のメタデータ、検索付き。Win のアプリ名は Win32 API の実行ファイル名＋FileDescription） | ✅ | ✅ |
+| 履歴 | 直近の文字起こし結果を保持（両 OS とも 200 件〔Mac は設定で 50〜1000〕＋貼付先アプリ・日時のメタデータ、検索付き。Win のアプリ名は Win32 API の実行ファイル名＋FileDescription） | ✅ | ✅ |
 | ホーム画面 / ダッシュボード | 統計 3 カード（累計入力／節約できた時間／この期間）＋最近の履歴のダッシュボード。**Mac** は起動・再オープンで開くメインウィンドウのホーム面（アプリ別使用率・マイクテスト・ガイド再表示・サイドバーで同一ウィンドウ設定切替つき。再オープン時は最後の画面を復元）／**Win** は設定ウィンドウ先頭の「ホーム」ページ（アプリ別使用率は履歴のアプリ情報なしのため非対応）。詳細は CHANGELOG | ✅ | ✅ |
 | API の利用料金 | ホームに今日/今月/累計の推定料金（USD）・プロバイダー×モデル別内訳・直近 30 日推移（定価／実際に払った分の切替つき）、メニューに「今日の API 代」。10/2 以前はログ・統計から推定（`Core/ApiUsageBackfill.swift`）。単価表は `Core/ApiPricing.swift`、日次集計は `Core/ApiUsageStore.swift`（api-usage.json・数量のみ保存）。Windows は `core/api_usage.py`（同じ単価表・`api_usage.json`）でホームとタスクトレイに出す。記録は 2026-10-19 以降のみ（推定の取り込みは無し） | ✅ | ✅ |
+| クリップボード履歴 | コピーしたテキストを記録し、サイドノッチの履歴パネルに音声入力の履歴と並べて出す（すべて／音声入力／クリップボードの切替・パスワード管理アプリ等の印付きは記録しない・件数は設定で 50〜1000・既定 ON） | ✅ | ❌ |
 | サイドノッチ | 画面左端の履歴スリット → クリックで検索付き履歴パネル（黒基調・録音中はアクセント点灯・フォーカス非奪取・既定 ON。検索は Mac＝テキスト/アプリ名・Win＝テキスト） | ✅ | ✅ |
 | 操作音 / メディアダッキング | 録音開始/停止のブリップ音（同一周波数で合成）・録音中はメディア音量を自動で下げる（既定 ON。Win ダッキングは Core Audio/pycaw・非対応時は無害スキップ） | ✅ | ✅ |
 | 最後の入力を再貼り付け | グローバルキーで直前の入力を再貼り付け（Mac 既定 ⌃⌘V／Win は既定未設定＝他機能と重ならないキーが無いため） | ✅ | ✅ |
@@ -92,6 +93,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | 文字入力（貼り付け） | `Core/Paster.swift`（復元判定は `ClipboardRestorePolicy` / `CLI/PasteRestoreTestMode.swift` が `--paste-restore-test` で実動検証） | `core/input_handler.py`（判定は `decide_restore`）/ `platform/windows/clipboard.py`（全形式の退避と復元・32MB / 64 種類まで） |
 | VAD / マイク自動検出 / 履歴 | `Core/VoiceActivity.swift` / `MicAutoDetector.swift` / `HistoryStore.swift` | `core/vad.py` / `mic_auto_detect.py` / `history.py` |
 | 履歴同期（Mac ⇄ Windows） | `Core/HistorySync.swift` | `core/history_sync.py` |
+| クリップボード履歴 | `Core/ClipboardHistoryStore.swift`（changeCount のポーリング・clipboard-history.json） | — |
 | 使用実績（統計・レベル） | `Core/StatsStore.swift` | `core/stats.py` |
 | 設定画面 UI | `UI/SettingsView.swift`（サイドバー＝はじめに / 音声入力 / 字幕と議事録 / アプリ・タブ id は `MainWindowView.TabID`）/ `HotkeyRecorderView.swift`（キーキャップ表示）/ `GroupedChoiceMenu.swift`＋`Config/EngineModelChoice.swift`（エンジン＋モデルの 1 ポップアップ）/ `Core/FormatPromptTemplates.swift`（整形プロンプトのひな形）/ `Glass.swift`（ガラス様式・押しやすい行の共通部品）。見た目の確認は `--ui-snapshot`（`CLI/UISnapshotTestMode.swift`・画面外で全ページを PNG 化） | `ui/settings_window.py`（サイドバー＝はじめに / 音声入力 / 字幕と議事録 / アプリ）/ `ui/settings_widgets.py`（見出しつき 1 ポップアップ・サイドバーの見出し）/ `ui/caption_pages.py` / `styles.py`。エンジン一覧は `config/backends.py`、LLM モデルは `config/llm_models.py` |
 | ホーム画面 / ダッシュボード | `UI/HomeView.swift` / `MainWindowView.swift`（ホーム＋設定を 1 ウィンドウで切替・Mac） | `ui/settings_window.py`（先頭「ホーム」ページ） |

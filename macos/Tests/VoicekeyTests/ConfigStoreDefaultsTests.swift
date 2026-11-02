@@ -37,6 +37,28 @@ final class ConfigStoreDefaultsTests: XCTestCase {
         XCTAssertEqual(store.historySyncURL, "")
     }
 
+    // 履歴の件数・クリップボード記録の既定値。選択肢に無い保存値は既定 200 へ戻す
+    func testHistoryLimitDefaultsAndFallback() {
+        let (defaults, suite) = makeDefaults()
+        defer { removeTestDefaults(defaults, suite) }
+
+        let store = ConfigStore(defaults: defaults)
+        XCTAssertTrue(store.clipboardHistoryEnabled)
+        XCTAssertEqual(store.clipboardHistoryLimit, 200)
+        XCTAssertEqual(store.historyLimit, 200)
+
+        store.historyLimit = 500
+        store.clipboardHistoryLimit = 50
+        XCTAssertEqual(ConfigStore(defaults: defaults).historyLimit, 500)
+        XCTAssertEqual(ConfigStore.savedClipboardHistoryLimit(defaults: defaults), 50)
+
+        defaults.set(123, forKey: "historyLimit")
+        defaults.set(-1, forKey: "clipboardHistoryLimit")
+        let reloaded = ConfigStore(defaults: defaults)
+        XCTAssertEqual(reloaded.historyLimit, 200)
+        XCTAssertEqual(reloaded.clipboardHistoryLimit, 200)
+    }
+
     // ライブ字幕のミラーが CaptionSettings（正本）と一致して初期化される
     //
     // 字幕設定の正本は UserDefaults.standard 側の caption* キーなので、ここでは

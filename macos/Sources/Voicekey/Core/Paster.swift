@@ -297,6 +297,8 @@ enum Paster {
 
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
+        // 一時的な書き込みの印。voicekey 自身のクリップボード履歴にも、他のクリップボード管理アプリにも残させない
+        pasteboard.setData(Data(), forType: ClipboardHistoryStore.transientType)
 
         try? await Task.sleep(for: .seconds(pasteDelay))
         keystrokeProbe?(pasteboard)

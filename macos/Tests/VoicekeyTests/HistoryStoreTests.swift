@@ -91,8 +91,8 @@ final class HistoryStoreTests: XCTestCase {
 
         let store = HistoryStore(directory: dir)
         for i in 0..<205 { store.add("テキスト\(i)") }
-        XCTAssertEqual(store.items.count, HistoryStore.maxItems)
-        XCTAssertEqual(HistoryStore.maxItems, 200)
+        XCTAssertEqual(store.items.count, store.limit)
+        XCTAssertEqual(store.limit, 200)
         XCTAssertEqual(store.items.first?.text, "テキスト204")  // 最後に追加したものが先頭
         XCTAssertEqual(store.items.last?.text, "テキスト5")     // 0〜4 は押し出された
     }
@@ -129,5 +129,24 @@ final class HistoryStoreTests: XCTestCase {
         let store = HistoryStore(directory: dir)
         store.add("   \n ")
         XCTAssertTrue(store.items.isEmpty)
+    }
+
+    // limit を下げると即座に切り詰めて保存し、表示用一覧も追従する。読み込みも limit を使う
+    func testLimitChangeTrimsAndSaves() {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let store = HistoryStore(directory: dir, limit: 500)
+        for i in 0..<300 { store.add("テキスト\(i)") }
+        XCTAssertEqual(store.items.count, 300)
+        XCTAssertEqual(store.allItems.count, 300)
+
+        store.limit = 50
+        XCTAssertEqual(store.items.count, 50)
+        XCTAssertEqual(store.allItems.count, 50)
+        XCTAssertEqual(store.items.first?.text, "テキスト299")
+
+        XCTAssertEqual(HistoryStore(directory: dir, limit: 500).items.count, 50)
+        XCTAssertEqual(HistoryStore(directory: dir, limit: 10).items.count, 10)
     }
 }

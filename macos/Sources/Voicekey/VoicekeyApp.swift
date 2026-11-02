@@ -537,6 +537,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         // 画面端のサイドノッチ（履歴スリット）を常駐させる。「ホームを開く」は統合メインウィンドウへ。
         sideNotch = SideNotchController(
             history: controller.history,
+            clipboard: controller.clipboardHistory,
             config: controller.config,
             onOpenHome: { [weak self] in self?.showHome() },
             onRequestFetch: { [weak controller] in controller?.historySync.requestFetch() }

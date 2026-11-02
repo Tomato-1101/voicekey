@@ -44,8 +44,10 @@ final class AppController: ObservableObject {
 
     let config = ConfigStore()
     let hud = HudController()
-    /// 音声入力履歴（貼り付けたテキストを最大 200 件保持。設定の「履歴」タブで再コピー可）
-    let history = HistoryStore()
+    /// 音声入力履歴（貼り付けたテキストを最大 historyLimit 件保持。設定の「履歴」タブで再コピー可）
+    let history = HistoryStore(limit: ConfigStore.savedHistoryLimit())
+    /// クリップボード履歴（サイドノッチの履歴パネルに音声入力の履歴と並べて出す）
+    let clipboardHistory = ClipboardHistoryStore(limit: ConfigStore.savedClipboardHistoryLimit())
     /// Mac ⇄ Windows 履歴同期（認証層とは独立し、通信は専用直列キューで行う）
     let historySync: HistorySync
     /// 使用実績（節約時間・レベル・連続日数。設定の「実績」タブで表示。貼り付け後に集計する）
@@ -159,6 +161,7 @@ final class AppController: ObservableObject {
 
     private var configObservation: Any?
     private var historySyncObservations: Set<AnyCancellable> = []
+    private var historyLimitObservations: Set<AnyCancellable> = []
 
     /// オンボーディングの整形体験ステップ中だけ整形を強制 ON にする一時フラグ（保存しない）。
     /// true の間の録音は、スロットの formatEnabled 設定に関わらず整形を実行する
@@ -238,6 +241,18 @@ final class AppController: ObservableObject {
             .debounce(for: .milliseconds(800), scheduler: RunLoop.main)
             .sink { [weak sync] _ in sync?.applyConfig() }
             .store(in: &historySyncObservations)
+        // 履歴の件数・クリップボード記録の ON/OFF。@Published は購読時に現在値を流すので起動時の反映もここで済む
+        config.$historyLimit
+            .sink { [weak self] in self?.history.limit = $0 }
+            .store(in: &historyLimitObservations)
+        config.$clipboardHistoryLimit
+            .sink { [weak self] in self?.clipboardHistory.limit = $0 }
+            .store(in: &historyLimitObservations)
+        config.$clipboardHistoryEnabled
+            .sink { [weak self] enabled in
+                if enabled { self?.clipboardHistory.start() } else { self?.clipboardHistory.stop() }
+            }
+            .store(in: &historyLimitObservations)
         hud.enabled = config.hudEnabled
         hud.alwaysVisible = config.hudAlwaysVisible
         hud.logGeneration = { [weak self] in self?.recordingGeneration ?? 0 }

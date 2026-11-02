@@ -494,10 +494,15 @@ struct MainWindowView: View {
         model.showingSettings = true
     }
 
+    /// 設定の「クリップボードの履歴を消去」。ストアは AppController が持つ（UI 撮影では controller が無いので何もしない）
+    private func clearClipboardHistory() {
+        controller?.clipboardHistory.clear()
+    }
+
     /// 選択中の設定ページ（タグは旧 SettingsView と同じ値を踏襲・既存タブ View を使い回す）
     @ViewBuilder private func settingsContent(tab: Int) -> some View {
         switch tab {
-        case TabID.general: GeneralSettingsTab(config: config, historySync: historySync)
+        case TabID.general: GeneralSettingsTab(config: config, historySync: historySync, onClearClipboardHistory: clearClipboardHistory)
         case TabID.inputBasics: InputBasicsTab(config: config)
         case TabID.slot1:
             SlotSettingsTab(slotNumber: 1, slot: $config.slot1, otherHotkey: config.slot2.hotkey,
@@ -511,24 +516,24 @@ struct MainWindowView: View {
             if #available(macOS 26.0, *) {
                 CaptionSettingsTab(config: config, controller: controller)
             } else {
-                GeneralSettingsTab(config: config, historySync: historySync)
+                GeneralSettingsTab(config: config, historySync: historySync, onClearClipboardHistory: clearClipboardHistory)
             }
         case TabID.translateInput:
             if #available(macOS 26.0, *) {
                 TranslateInputTab(config: config)
             } else {
-                GeneralSettingsTab(config: config, historySync: historySync)
+                GeneralSettingsTab(config: config, historySync: historySync, onClearClipboardHistory: clearClipboardHistory)
             }
         case TabID.meeting:
             if #available(macOS 26.0, *) {
                 MeetBotSettingsTab(config: config, controller: controller)
             } else {
-                GeneralSettingsTab(config: config, historySync: historySync)
+                GeneralSettingsTab(config: config, historySync: historySync, onClearClipboardHistory: clearClipboardHistory)
             }
         case TabID.account: AccountTab()
         case TabID.about: AboutTab()
         case TabID.apiKeys: ApiKeysTab()
-        default: GeneralSettingsTab(config: config, historySync: historySync)
+        default: GeneralSettingsTab(config: config, historySync: historySync, onClearClipboardHistory: clearClipboardHistory)
         }
     }
 }
@@ -701,6 +706,9 @@ private struct InputBasicsTab: View {
 private struct GeneralSettingsTab: View {
     @ObservedObject var config: ConfigStore
     @ObservedObject var historySync: HistorySync
+    /// 「クリップボードの履歴を消去」の確認後に呼ぶ
+    let onClearClipboardHistory: () -> Void
+    @State private var confirmingClipboardClear = false
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     /// 共有トークンは既存値を画面へ戻さず、保存後も即座に消す。
     @State private var syncTokenInput = ""
@@ -756,6 +764,36 @@ private struct GeneralSettingsTab: View {
                         title: "入力の履歴を保存",
                         detail: "ダッシュボードの統計と、画面左端の履歴スリットに使います。"
                     )
+                }
+                Picker(selection: $config.historyLimit) {
+                    ForEach(ConfigStore.historyLimitOptions, id: \.self) { Text("\($0) 件").tag($0) }
+                } label: {
+                    SettingRowLabel(title: "音声入力の保存件数")
+                }
+                Toggle(isOn: $config.clipboardHistoryEnabled) {
+                    SettingRowLabel(
+                        title: "クリップボードの履歴を残す",
+                        detail: "パスワード管理アプリからのコピーは残しません。"
+                    )
+                }
+                Picker(selection: $config.clipboardHistoryLimit) {
+                    ForEach(ConfigStore.historyLimitOptions, id: \.self) { Text("\($0) 件").tag($0) }
+                } label: {
+                    SettingRowLabel(title: "クリップボードの保存件数")
+                }
+                LabeledContent {
+                    Button("消去", role: .destructive) { confirmingClipboardClear = true }
+                        .confirmationDialog(
+                            "クリップボードの履歴をすべて消去しますか？",
+                            isPresented: $confirmingClipboardClear
+                        ) {
+                            Button("消去", role: .destructive) { onClearClipboardHistory() }
+                            Button("キャンセル", role: .cancel) {}
+                        } message: {
+                            Text("この操作は取り消せません。")
+                        }
+                } label: {
+                    SettingRowLabel(title: "クリップボードの履歴を消去")
                 }
                 Toggle("Windows 版と履歴を共有", isOn: $config.historySyncEnabled)
 
