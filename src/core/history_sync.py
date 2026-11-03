@@ -193,6 +193,9 @@ class HistorySync:
             "date": entry.get("date", ""),
             "device": entry.get("device", self.DEVICE),
         }
+        # 貼り付け先アプリ名（サーバー契約の app_name。無ければ送らず _to_post_item が null を補う）
+        if entry.get("app_name"):
+            item["app_name"] = entry["app_name"]
         with self._lock:
             self._outbox.append(item)
             self._save_outbox_locked()
@@ -209,16 +212,18 @@ class HistorySync:
             self._fetch_requested = True
         self._wake_event.set()
 
-    def merged_items(self, local_items: List[dict]) -> List[dict]:
+    def merged_items(self, local_items: List[dict], limit: int = _CACHE_MAX_ITEMS) -> List[dict]:
         """ローカル履歴と受信キャッシュを id でまとめ、日付降順で返す（表示用）。
 
         同じ id はローカル側を優先する（ローカルは確定直後の最新表現のため）。
 
         Args:
             local_items: HistoryStore.items() の結果（送信前のものを含んでよい）
+            limit: 表示する最大件数（ローカル履歴の保存件数を渡す）。受信キャッシュの保持上限とは別
+                （同じ値で切ると、保存件数を 500/1000 にしても同期オンの画面では 200 件しか見えない）
 
         Returns:
-            {"id","text","date","device"} に app_name/characters を足した辞書のリスト（最大 200 件）
+            {"id","text","date","device"} に app_name/characters を足した辞書のリスト（最大 limit 件）
         """
         with self._lock:
             cache_items = list(self._cache.get("items", []))
@@ -234,7 +239,7 @@ class HistorySync:
         merged = sorted(
             combined.values(), key=lambda e: parse_iso_date(e.get("date", "")), reverse=True
         )
-        return merged[:_CACHE_MAX_ITEMS]
+        return merged[: max(0, int(limit))]
 
     def status(self) -> dict:
         """設定画面の「履歴」タブ向けの状態を返す。"""

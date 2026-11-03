@@ -289,6 +289,9 @@ final class ConfigStore: ObservableObject {
     @Published var formatModel: String
     /// 整形で LLM に渡すプロンプト本文（全スロット共通・編集可）
     @Published var autoFormatPrompt: String
+    /// 貼り付け先が AI（Claude・ChatGPT・ターミナル等）のときは整形を省くか（既定 ON。判定は `AIDestination`）。
+    /// AI は言いよどみ入りでも理解できるので、Groq の往復を省いて速く・安く入力する（2026-10-19 Tomato 指示）
+    @Published var skipFormatForAI: Bool
     /// ハンズフリー切替キー（このキー＋スロットキーでトグル録音。空＝無効）
     @Published var handsfreeKey: [String]
     /// 長文を無音区間で分割し API へ並列送信する（既定オン。Deepgram ストリーミングは対象外）
@@ -309,6 +312,12 @@ final class ConfigStore: ObservableObject {
     @Published var sideNotchEnabled: Bool
     /// 音声入力の履歴を保存するか（既定オン。オフなら履歴に残さない）
     @Published var historyEnabled: Bool
+    /// 音声入力の履歴の保存件数（既定 200。選択肢は historyLimitOptions）
+    @Published var historyLimit: Int
+    /// クリップボードの履歴を残すか（既定オン。サイドノッチの履歴パネルに出す）
+    @Published var clipboardHistoryEnabled: Bool
+    /// クリップボードの履歴の保存件数（既定 200。選択肢は historyLimitOptions）
+    @Published var clipboardHistoryLimit: Int
     /// Mac ⇄ Windows の履歴共有を有効にするか（既定オフ）
     @Published var historySyncEnabled: Bool
     /// 履歴共有 Worker のベース URL（末尾スラッシュなしを推奨）
@@ -371,6 +380,29 @@ final class ConfigStore: ObservableObject {
         "一番", "一度",  // いちばん（＝最も）・いちど（もう一度）を守る（番・度は助数詞なので既定では 1番/1度 になってしまう）
     ]
 
+    /// 履歴の保存件数の選択肢（音声入力・クリップボード共通）
+    static let historyLimitOptions = [50, 100, 200, 500, 1000]
+    /// 履歴の保存件数の既定値
+    static let defaultHistoryLimit = 200
+
+    /// 保存値が選択肢に無ければ既定へ戻す（古い版や手で書き換えた値で Picker が空表示にならないように）
+    private static func validHistoryLimit(_ value: Int?) -> Int {
+        guard let value, historyLimitOptions.contains(value) else { return defaultHistoryLimit }
+        return value
+    }
+
+    /// 保存済みの音声入力履歴の件数。履歴ストアは ConfigStore より先に作られるので、
+    /// 読み込みの時点から正しい上限を使うためにここから直接引く（既定 200 で読んでから上げると、
+    /// 201 件目以降が読み込みで切り捨てられて次の保存で消えるため）
+    static func savedHistoryLimit(defaults: UserDefaults = .standard) -> Int {
+        validHistoryLimit(defaults.object(forKey: Keys.historyLimit) as? Int)
+    }
+
+    /// 保存済みのクリップボード履歴の件数（理由は savedHistoryLimit と同じ）
+    static func savedClipboardHistoryLimit(defaults: UserDefaults = .standard) -> Int {
+        validHistoryLimit(defaults.object(forKey: Keys.clipboardHistoryLimit) as? Int)
+    }
+
     private var cancellables: Set<AnyCancellable> = []
     private let defaults: UserDefaults
 
@@ -396,10 +428,14 @@ final class ConfigStore: ObservableObject {
         static let dockIconAlwaysVisible = "dockIconAlwaysVisible"
         static let sideNotchEnabled = "sideNotchEnabled"
         static let historyEnabled = "historyEnabled"
+        static let historyLimit = "historyLimit"
+        static let clipboardHistoryEnabled = "clipboardHistoryEnabled"
+        static let clipboardHistoryLimit = "clipboardHistoryLimit"
         static let historySyncEnabled = "historySyncEnabled"
         static let historySyncURL = "historySyncURL"
         static let numeralNormalizeEnabled = "numeralNormalizeEnabled"
         static let numeralConvertCounter = "numeralConvertCounter"
+        static let skipFormatForAI = "skipFormatForAI"
         static let numeralProtectWords = "numeralProtectWords"
         /// モード別整形既定の一回限りマイグレーション済みフラグ（v1.8）
         static let didMigrateModeDefaultsV18 = "didMigrateModeDefaultsV18"
@@ -484,12 +520,17 @@ final class ConfigStore: ObservableObject {
             : ((defaults.array(forKey: Keys.translateOnceKey) as? [String]) ?? [])
         sideNotchEnabled = defaults.object(forKey: Keys.sideNotchEnabled) as? Bool ?? true
         historyEnabled = defaults.object(forKey: Keys.historyEnabled) as? Bool ?? true
+        historyLimit = Self.savedHistoryLimit(defaults: defaults)
+        clipboardHistoryEnabled = defaults.object(forKey: Keys.clipboardHistoryEnabled) as? Bool ?? true
+        clipboardHistoryLimit = Self.savedClipboardHistoryLimit(defaults: defaults)
         historySyncEnabled = defaults.object(forKey: Keys.historySyncEnabled) as? Bool ?? false
         historySyncURL = defaults.string(forKey: Keys.historySyncURL) ?? ""
         // 数字入力: マスター・助数詞は既定 ON。保護リストは未保存ならシード、
         // 保存済みなら空配列も含めそのまま尊重する（repasteKey と同じ「未保存判定」方式）
         numeralNormalizeEnabled = defaults.object(forKey: Keys.numeralNormalizeEnabled) as? Bool ?? true
         numeralConvertCounter = defaults.object(forKey: Keys.numeralConvertCounter) as? Bool ?? true
+        // 貼り付け先が AI のときは整形しない: 未保存なら ON（速さ優先。設定のプロンプトページで切れる）
+        skipFormatForAI = defaults.object(forKey: Keys.skipFormatForAI) as? Bool ?? true
         numeralProtectWords = defaults.object(forKey: Keys.numeralProtectWords) == nil
             ? Self.defaultNumeralProtectWords
             : ((defaults.array(forKey: Keys.numeralProtectWords) as? [String]) ?? [])
@@ -547,10 +588,14 @@ final class ConfigStore: ObservableObject {
         $dockIconAlwaysVisible.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.dockIconAlwaysVisible) }.store(in: &cancellables)
         $sideNotchEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.sideNotchEnabled) }.store(in: &cancellables)
         $historyEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.historyEnabled) }.store(in: &cancellables)
+        $historyLimit.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.historyLimit) }.store(in: &cancellables)
+        $clipboardHistoryEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.clipboardHistoryEnabled) }.store(in: &cancellables)
+        $clipboardHistoryLimit.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.clipboardHistoryLimit) }.store(in: &cancellables)
         $historySyncEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.historySyncEnabled) }.store(in: &cancellables)
         $historySyncURL.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.historySyncURL) }.store(in: &cancellables)
         $numeralNormalizeEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.numeralNormalizeEnabled) }.store(in: &cancellables)
         $numeralConvertCounter.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.numeralConvertCounter) }.store(in: &cancellables)
+        $skipFormatForAI.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.skipFormatForAI) }.store(in: &cancellables)
         $numeralProtectWords.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.numeralProtectWords) }.store(in: &cancellables)
         // ライブ字幕は CaptionSettings 経由で書く（キーの正本を 1 か所に保つため）
         $captionAutoStart.dropFirst().sink { CaptionSettings.startsOnLaunch = $0 }.store(in: &cancellables)

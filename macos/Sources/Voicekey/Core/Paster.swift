@@ -227,6 +227,9 @@ enum Paster {
     @MainActor private static var pasteChain: Task<Bool, Never>?
     /// テスト用: ⌘V を送る瞬間（送らない設定でも同じ時点）にクリップボードを覗く。本番では nil
     @MainActor static var keystrokeProbe: ((NSPasteboard) -> Void)?
+    /// 原本の復元・消去でペーストボードへ書いた直後に呼ぶ（AppController がクリップボード履歴へ結線する）。
+    /// 復元した原本には印が付かないので、知らせないと履歴が新しいコピーとして記録してしまう
+    @MainActor static var onRestoreWrite: ((NSPasteboard) -> Void)?
     /// アクセシビリティ許可の直近の結果（貼り付けのたびに裏で更新・起動時は許可ありとみなす）。
     /// 許可を外された直後の 1 回は従来どおり送ってしまうが、2 回目以降は結果を消さずに残せる
     @MainActor static var axTrustedCache = true
@@ -297,6 +300,8 @@ enum Paster {
 
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
+        // 一時的な書き込みの印。voicekey 自身のクリップボード履歴にも、他のクリップボード管理アプリにも残させない
+        pasteboard.setData(Data(), forType: ClipboardHistoryStore.transientType)
 
         try? await Task.sleep(for: .seconds(pasteDelay))
         keystrokeProbe?(pasteboard)
@@ -370,11 +375,13 @@ enum Paster {
                 ActionLog.shared.write("paster", "クリップボード復元 スキップ（原本が大きすぎて退避できなかったため消去もしない）")
             case .restore(let original):
                 original.write(to: pasteboard)
+                onRestoreWrite?(pasteboard)
                 ActionLog.shared.write("paster", "クリップボード復元 完了")
             case .clear:
                 // 戻せる原本が無い（元々空だった）。ここで何もしないと
                 // 文字起こし結果がクリップボードに残ってしまうため明示的に空にする
                 pasteboard.clearContents()
+                onRestoreWrite?(pasteboard)
                 ActionLog.shared.write("paster", "クリップボード復元 原本なしのため消去")
             }
             injected = nil

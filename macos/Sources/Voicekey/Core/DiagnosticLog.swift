@@ -92,6 +92,8 @@ struct DictationTimeline {
     var sttMs: Int?
     var vadMs: Int?
     var formatMs: Int?
+    /// 整形を省いた理由（例: `AIDestination.skippedLabel`）。入っていれば整形欄に時間の代わりに出す
+    var formatSkipNote: String?
     var translateMs: Int?
     var pasteMs: Int?
     var pastedAt: TimeInterval?
@@ -126,7 +128,7 @@ struct DictationTimeline {
             "停止→確定=\(DiagnosticText.ms(from: stoppedAt, to: finalizedAt))",
             "STT=\(DiagnosticText.ms(sttMs))",
             "VAD=\(DiagnosticText.ms(vadMs))",
-            "整形=\(DiagnosticText.ms(formatMs))",
+            "整形=\(formatSkipNote ?? DiagnosticText.ms(formatMs))",
             "翻訳=\(DiagnosticText.ms(translateMs))",
             "貼付=\(DiagnosticText.ms(pasteMs))",
             "離鍵→貼付完了=\(DiagnosticText.ms(from: releasedAt, to: pastedAt))",
@@ -365,10 +367,14 @@ enum SettingsChangeLog {
         s["dockIconAlwaysVisible"] = "\(c.dockIconAlwaysVisible)"
         s["sideNotchEnabled"] = "\(c.sideNotchEnabled)"
         s["historyEnabled"] = "\(c.historyEnabled)"
+        s["historyLimit"] = "\(c.historyLimit)"
+        s["clipboardHistoryEnabled"] = "\(c.clipboardHistoryEnabled)"
+        s["clipboardHistoryLimit"] = "\(c.clipboardHistoryLimit)"
         s["historySyncEnabled"] = "\(c.historySyncEnabled)"
         s["historySyncURL"] = "長さ\(c.historySyncURL.count)"
         s["numeralNormalizeEnabled"] = "\(c.numeralNormalizeEnabled)"
         s["numeralConvertCounter"] = "\(c.numeralConvertCounter)"
+        s["skipFormatForAI"] = "\(c.skipFormatForAI)"
         s["numeralProtectWords"] = "件数\(c.numeralProtectWords.count)"
         s["translateInputEnabled"] = "\(c.translateInputEnabled)"
         s["translateInputTarget"] = c.translateInputTarget

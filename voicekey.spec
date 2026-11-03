@@ -6,6 +6,8 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 # src/ は同梱しない（Python ソース平文同梱の防止）。コードは PYZ アーカイブに入る。
 # src/ 内に実行時読み込みのデータファイルは無いことを確認済み（.py のみ）
 datas = []
+# 新ロゴ（設定画面のサイドバーに出す。凍結ビルドでは sys._MEIPASS 直下に置かれる）
+datas += [('icon.ico', '.')]
 binaries = []
 hiddenimports = ['tzdata']
 
@@ -25,6 +27,15 @@ elif sys.platform.startswith("win"):
     # ここで確実に取り込む）。
     hiddenimports += collect_submodules('pycaw')
     hiddenimports += collect_submodules('comtypes')
+    # PyAudioWPatch（ライブ字幕の代わりの取り込み＝出力デバイス全体のループバック）。
+    # src/caption/audio_capture.py が遅延 import するため静的解析で取りこぼす。拡張モジュールごと同梱する
+    try:
+        tmp_ret = collect_all('pyaudiowpatch')
+        datas += tmp_ret[0]
+        binaries += tmp_ret[1]
+        hiddenimports += tmp_ret[2]
+    except Exception:
+        pass
 
 # websockets は streaming_transcriber 内で遅延 import するため静的解析されない。
 # Deepgram ストリーミングに必須なので明示的に全サブモジュールを収集する

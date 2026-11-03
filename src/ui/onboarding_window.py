@@ -70,15 +70,6 @@ def _has_practice_input(text: str) -> bool:
     return bool(text.strip())
 
 
-# 文字起こしモード（バックエンド）→ 新語彙の表示名。
-# 即時入力=Deepgram / スタンダード=Groq（既定）。選択肢外（elevenlabs/openai）は
-# 内部利用のため「スタンダード」表示にフォールバックする。
-_BACKEND_LABELS = {
-    "deepgram": "即時入力",
-    "groq": "スタンダード",
-    "elevenlabs": "スタンダード",
-    "openai": "スタンダード",
-}
 # 録音のしかた（モード）→ 新語彙の表示名。
 _MODE_LABELS = {
     "hold": "押している間だけ",
@@ -307,7 +298,12 @@ class OnboardingWindow(QDialog):
         hotkey = str(slot.get("hotkey", "") or "未設定")
         backend = str(slot.get("backend", "") or "").lower()
         mode = str(slot.get("hotkey_mode", "") or "").lower()
-        backend_label = _BACKEND_LABELS.get(backend, "スタンダード")
+        # 実プロバイダー名 · モデル名（設定画面のエンジンのポップアップと同じ表記・Mac の personal と同じ方針）
+        from ..config import backends
+
+        if not backends.is_supported(backend):
+            backend = backends.GROQ
+        backend_label = backends.choice_title(backend, str(slot.get("api_model", "") or ""))
         mode_label = _MODE_LABELS.get(mode, mode)
 
         card = QFrame()

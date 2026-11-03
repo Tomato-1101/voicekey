@@ -10,6 +10,7 @@
 //    dist/voicekey.app/Contents/MacOS/voicekey --ui-snapshot <出力ディレクトリ> [--appearance light|dark] [--log-file <path>]
 //  出力: <home|タブ名>-<幅>x<高さ>-<light|dark>.png（760x600 と 1100x760 の 2 通り）
 //  --api-usage-sample を付けると API 料金の欄を見本データで撮り、縦長の 760x1500 も足す。
+//  --side-notch-sample を付けるとサイドノッチの履歴パネルを見本データで撮る（side-notch-<外観>.png）。
 //  最終行の [VERDICT] status=ok files=<数> を判定に使う。
 //
 //  AppController を作らない＝ホットキー監視・録音・マイク・文字起こし・履歴同期の通信を一切起動しない。
@@ -38,6 +39,7 @@ enum UISnapshotTestMode {
     private static let tabSlugs: [Int: String] = [
         0: "general", 1: "slot1", 2: "slot2", 8: "dictionary", 9: "caption",
         10: "translate-input", 11: "meeting", 6: "account", 7: "about", 5: "api-keys",
+        12: "prompt", 13: "input-basics",
     ]
 
     /// 標準出力と --log-file の両方へ書く（字幕側の writer は macOS 26 限定なので使わない）
@@ -146,7 +148,43 @@ enum UISnapshotTestMode {
                 failed += 1
             }
         }
+        // --side-notch-sample: サイドノッチの履歴パネルを見本データで撮る（一時ディレクトリと専用ペーストボード＝
+        // 本人の履歴・クリップボードは読みも書きもしない）
+        if arguments.contains("--side-notch-sample") {
+            let fileName = "side-notch-\(appearanceName).png"
+            let fileURL = outputDir.appendingPathComponent(fileName)
+            if let png = render(makeSampleSideNotch(), size: NSSize(
+                width: SideNotchHistoryView.panelWidth + 24, height: SideNotchHistoryView.panelHeight + 24),
+                appearance: appearance),
+               (try? png.write(to: fileURL, options: .atomic)) != nil {
+                emit("[FILE] \(fileURL.path)")
+                written += 1
+            } else {
+                emit("[FAIL] 描画できませんでした: \(fileName)")
+                failed += 1
+            }
+        }
         finish(written: written, failed: failed)
+    }
+
+    /// サイドノッチの見本（音声入力 3 件とクリップボード 3 件を交互の時刻で混ぜる）
+    private static func makeSampleSideNotch() -> some View {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voicekey-ui-snapshot-side-notch-\(UUID().uuidString)", isDirectory: true)
+        let history = HistoryStore(directory: dir)
+        let pasteboard = NSPasteboard(name: .init("voicekey-ui-snapshot-\(UUID().uuidString)"))
+        let clipboard = ClipboardHistoryStore(pasteboard: pasteboard, directory: dir)
+        clipboard.start()
+        let voice = ["明日の打ち合わせは 10 時からに変更になりました。", "了解です、資料はこちらで用意します。", "今週中に見積もりを送ります。"]
+        let clips = ["https://github.com/Tomato-1101/voicekey", "git push origin main", "〒150-0001 東京都渋谷区神宮前"]
+        for (v, c) in zip(voice, clips).reversed() {
+            history.add(v, appBundleID: "com.apple.Notes", appName: "メモ")
+            pasteboard.clearContents()
+            pasteboard.setString(c, forType: .string)
+            clipboard.checkNow()
+        }
+        return SideNotchHistoryView(history: history, clipboard: clipboard, onOpenHome: {}, onClose: {})
+            .tint(Brand.signal)
     }
 
     /// 料金の表示モードを、本人の UserDefaults を書き換えずにこのプロセスだけで上書きする（引数ドメイン）

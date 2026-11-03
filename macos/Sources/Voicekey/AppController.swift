@@ -44,8 +44,10 @@ final class AppController: ObservableObject {
 
     let config = ConfigStore()
     let hud = HudController()
-    /// 音声入力履歴（貼り付けたテキストを最大 200 件保持。設定の「履歴」タブで再コピー可）
-    let history = HistoryStore()
+    /// 音声入力履歴（貼り付けたテキストを最大 historyLimit 件保持。設定の「履歴」タブで再コピー可）
+    let history = HistoryStore(limit: ConfigStore.savedHistoryLimit())
+    /// クリップボード履歴（サイドノッチの履歴パネルに音声入力の履歴と並べて出す）
+    let clipboardHistory = ClipboardHistoryStore(limit: ConfigStore.savedClipboardHistoryLimit())
     /// Mac ⇄ Windows 履歴同期（認証層とは独立し、通信は専用直列キューで行う）
     let historySync: HistorySync
     /// 使用実績（節約時間・レベル・連続日数。設定の「実績」タブで表示。貼り付け後に集計する）
@@ -159,6 +161,7 @@ final class AppController: ObservableObject {
 
     private var configObservation: Any?
     private var historySyncObservations: Set<AnyCancellable> = []
+    private var historyLimitObservations: Set<AnyCancellable> = []
 
     /// オンボーディングの整形体験ステップ中だけ整形を強制 ON にする一時フラグ（保存しない）。
     /// true の間の録音は、スロットの formatEnabled 設定に関わらず整形を実行する
@@ -238,6 +241,22 @@ final class AppController: ObservableObject {
             .debounce(for: .milliseconds(800), scheduler: RunLoop.main)
             .sink { [weak sync] _ in sync?.applyConfig() }
             .store(in: &historySyncObservations)
+        // 履歴の件数・クリップボード記録の ON/OFF。@Published は購読時に現在値を流すので起動時の反映もここで済む
+        config.$historyLimit
+            .sink { [weak self] in self?.history.limit = $0 }
+            .store(in: &historyLimitObservations)
+        config.$clipboardHistoryLimit
+            .sink { [weak self] in self?.clipboardHistory.limit = $0 }
+            .store(in: &historyLimitObservations)
+        config.$clipboardHistoryEnabled
+            .sink { [weak self] enabled in
+                if enabled { self?.clipboardHistory.start() } else { self?.clipboardHistory.stop() }
+            }
+            .store(in: &historyLimitObservations)
+        // 音声入力の後に戻した原本を、クリップボード履歴が新しいコピーとして記録しないように知らせる
+        Paster.onRestoreWrite = { [weak self] pasteboard in
+            self?.clipboardHistory.noteSelfWrite(on: pasteboard, changeCount: pasteboard.changeCount)
+        }
         hud.enabled = config.hudEnabled
         hud.alwaysVisible = config.hudAlwaysVisible
         hud.logGeneration = { [weak self] in self?.recordingGeneration ?? 0 }
@@ -1029,7 +1048,10 @@ final class AppController: ObservableObject {
         let vadEnabled: Bool
         let splitEnabled: Bool
         let autoEnterDelayMs: Int
+        /// この録音で整形するか（貼り付け先が AI で省いた回は false が入っている）
         let formatEnabled: Bool
+        /// 貼り付け先が AI（`AIDestination`）だったので整形を省いた回か（ログの表記用）
+        let formatSkippedForAI: Bool
         let formatPrompt: String
         let formatModel: String
         /// 整形プリセット（standard/punctuation/clean/bullets）。サーバー統合整形・
@@ -1153,7 +1175,19 @@ final class AppController: ObservableObject {
         if timelines.count > 20, let oldest = timelines.keys.min() { timelines.removeValue(forKey: oldest) }
 
         // オンボーディング体験（整形ステップ）中はスロット設定に関わらず整形を強制 ON にする。
-        let effectiveFormatEnabled = practiceFormatOverride || slot.formatEnabled
+        let slotFormatEnabled = practiceFormatOverride || slot.formatEnabled
+        // 貼り付け先が AI（Claude・ChatGPT・ターミナル等）なら、この録音の整形を省く
+        // （AI は言いよどみ入りでも理解できる。Groq の往復ぶん速く・安くなる）。
+        // 判定は録音開始時の最前面アプリで行い、スナップショット（RecordContext）に載せる＝
+        // 貼り付け直前に問い合わせて待ち時間を足さない。前面アプリは整形が要る回だけ読む。
+        // 整形体験中は voicekey 自身が前面（判定先が直前のアプリになる）なので省かない
+        let checksAIDestination = slotFormatEnabled && !practiceFormatOverride && config.skipFormatForAI
+        let formatTarget = checksAIDestination ? frontApp.snapshot() : nil
+        let skipsFormatForAI = checksAIDestination && AIDestination.shouldSkipFormat(
+            formatEnabled: slotFormatEnabled, skipForAIEnabled: config.skipFormatForAI,
+            bundleID: formatTarget?.bundleID)
+        let effectiveFormatEnabled = slotFormatEnabled && !skipsFormatForAI
+        if skipsFormatForAI { timelines[generation]?.formatSkipNote = AIDestination.skippedLabel }
 
         // サーバー統合整形（Groq プロキシで STT と整形を 1 リクエストに）が使えるか。
         // 条件: activeTranscriber が groq（＝ハンズフリー EL 差し替えなら backend が .elevenlabs に
@@ -1170,6 +1204,7 @@ final class AppController: ObservableObject {
             splitEnabled: config.splitParallelEnabled,
             autoEnterDelayMs: config.autoEnterDelayMs,
             formatEnabled: effectiveFormatEnabled,
+            formatSkippedForAI: skipsFormatForAI,
             formatPrompt: config.autoFormatPrompt,
             formatModel: config.formatModel,
             formatPresetId: slot.formatPresetId,
@@ -1268,6 +1303,14 @@ final class AppController: ObservableObject {
         // 整形が有効なら整形 LLM への接続も録音中に温めておく
         if effectiveFormatEnabled {
             formatter.prewarm()
+        }
+        // AI 宛てで整形を省いた回は理由を残す（アプリ名・bundle ID だけ。本文は出さない）。
+        // ログの書き出しは非同期だが、念のため録音を仕掛けた後に回す
+        if skipsFormatForAI {
+            ActionLog.shared.write(
+                "app",
+                "[整形] gen=\(DiagnosticText.gen(generation)) 整形=省略(AI 宛て) "
+                    + "app=\(formatTarget?.name ?? "-") bundle=\(formatTarget?.bundleID ?? "-")")
         }
         // 翻訳する録音なら翻訳セッションも録音中に温める（初回のモデルロードを隠す）。
         // 訳さないときは何も生成しない＝他バックエンドのクリティカルパスに一切足さない。
@@ -2045,7 +2088,8 @@ final class AppController: ObservableObject {
             if !pasted, !isAbandoned(generation) { hud.notice(Self.pasteFailedNotice, isError: true) }
             let totalMs = Int((ProcessInfo.processInfo.systemUptime - restT0) * 1000)
             // 統合時は整形を STT と一緒に済ませたことが分かるよう「整形 サーバー統合」と表記する
-            let fmtDesc = didServerFormat ? "整形 サーバー統合" : "整形 \(fmtMs)"
+            let fmtDesc = didServerFormat
+                ? "整形 サーバー統合" : (context.formatSkippedForAI ? "整形 省略(AI 宛て)" : "整形 \(fmtMs)")
             log.info("[計測] \(transcriber.backend.label, privacy: .public) 録音停止→貼付 総計\(totalMs)ms（VAD \(vadMs) / 文字起こし \(sttMs) / \(fmtDesc, privacy: .public) / 貼付 \(pasteMs)）")
             // 入っていないのに Enter を送ると入力欄の別の内容を送信しかねないので、貼れたときだけ送る
             if autoEnter, pasted {

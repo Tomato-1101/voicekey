@@ -247,6 +247,25 @@ class TestMergedItems(_SyncTestBase):
         self.assertEqual(shared["text"], "local version")  # ローカルが勝つ
 
 
+    def test_display_limit_is_separate_from_cache_limit(self):
+        # 表示の上限は呼び出し側（ローカル履歴の保存件数）が決める。既定は従来どおり 200 件
+        hs = self._make(_forbidden_handler)
+        hs._cache = {
+            "cursor": "",
+            "items": [
+                {"id": f"c{i}", "text": f"cloud {i}", "date": "2026-09-01T00:00:00Z", "device": "mac"}
+                for i in range(200)
+            ],
+        }
+        local_items = [
+            {"id": f"l{i}", "text": f"local {i}", "date": "2026-09-02T00:00:00Z", "device": "windows"}
+            for i in range(300)
+        ]
+        self.assertEqual(len(hs.merged_items(local_items)), 200)
+        self.assertEqual(len(hs.merged_items(local_items, limit=1000)), 500)
+        self.assertEqual(len(hs.merged_items(local_items, limit=50)), 50)
+
+
 class TestDisabled(_SyncTestBase):
     """無効設定では通信が一切発生しないことを検証する。"""
 

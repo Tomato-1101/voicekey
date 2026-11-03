@@ -6,6 +6,8 @@
 3. スリットの録音状態トグル（値変化のみ再描画）。
 4. 履歴パネル: 検索フィルタで一覧が絞られる・空状態メッセージ。
 5. コントローラ: 表示トグル・録音状態中継・トグル開閉・「ホームを開く」中継。
+6. クリップボード履歴: すべて／音声入力／クリップボードの絞り込み・日時順の混在・空状態の文言・
+   クリップボード行の表示の切り詰め。
 
 Qt はオフスクリーンで動かし、実画面・実デバイス・DWM には触れない。
 """
@@ -20,10 +22,17 @@ import unittest
 from PySide6.QtWidgets import QApplication
 
 from src.ui.side_notch import (
+    CLIP_DISPLAY_CHARS,
+    FILTER_ALL,
+    FILTER_CLIPBOARD,
+    FILTER_VOICE,
     SideNotch,
     SideNotchHistoryPanel,
     SideNotchSlit,
+    display_text,
+    empty_message,
     filter_items,
+    merge_entries,
     relative_time,
 )
 
@@ -134,6 +143,99 @@ class HistoryPanelTests(unittest.TestCase):
         # 空状態ラベルが 1 つ入る（stretch を含めて 2 要素）
         self.assertEqual(panel._list_layout.count(), 2)
         panel.deleteLater()
+
+
+class HistoryRowTests(unittest.TestCase):
+    def test_text_is_plain_not_html(self):
+        # コピーした本文に HTML のタグがあっても装飾せずそのまま見せる
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QLabel
+
+        from src.ui.side_notch import _HistoryRow
+
+        row = _HistoryRow({"text": "<b>太字</b>", "date": ""}, is_dark=False)
+        labels = row.findChildren(QLabel)
+        text_label = next(label for label in labels if label.text() == "<b>太字</b>")
+        self.assertEqual(text_label.textFormat(), Qt.TextFormat.PlainText)
+        row.deleteLater()
+
+
+class _FakeClipboardHistory(_FakeHistory):
+    """items() と is_running だけ持つクリップボード履歴ストアのダミー。"""
+
+    def __init__(self, items, running=True):
+        super().__init__(items)
+        self.is_running = running
+
+
+_VOICE = [
+    {"text": "音声 新", "date": "2026-11-03T10:00:00+09:00"},
+    {"text": "音声 古", "date": "2026-11-03T08:00:00+09:00"},
+]
+_CLIPS = [
+    {"text": "コピー 中", "date": "2026-11-03T09:00:00+09:00", "app_name": "メモ帳"},
+]
+
+
+class ClipboardMergeTests(unittest.TestCase):
+    def test_all_merges_by_date_desc(self):
+        merged = merge_entries(_VOICE, _CLIPS, FILTER_ALL)
+        self.assertEqual([e["text"] for e in merged], ["音声 新", "コピー 中", "音声 古"])
+        self.assertEqual([e["kind"] for e in merged], ["voice", "clipboard", "voice"])
+
+    def test_single_kind_filters(self):
+        self.assertEqual([e["text"] for e in merge_entries(_VOICE, _CLIPS, FILTER_VOICE)], ["音声 新", "音声 古"])
+        self.assertEqual([e["text"] for e in merge_entries(_VOICE, _CLIPS, FILTER_CLIPBOARD)], ["コピー 中"])
+
+    def test_unparseable_date_goes_last(self):
+        merged = merge_entries([{"text": "日時なし", "date": ""}], _CLIPS, FILTER_ALL)
+        self.assertEqual([e["text"] for e in merged], ["コピー 中", "日時なし"])
+
+    def test_search_applies_to_both_kinds(self):
+        merged = merge_entries(_VOICE, _CLIPS, FILTER_ALL)
+        self.assertEqual([e["text"] for e in filter_items(merged, "メモ帳")], ["コピー 中"])
+        self.assertEqual(len(filter_items(merged, "音声")), 2)
+
+    def test_empty_messages(self):
+        self.assertIn("音声入力やコピーをすると", empty_message(FILTER_ALL, "", True))
+        self.assertIn("音声入力すると", empty_message(FILTER_VOICE, "", False))
+        self.assertNotIn("記録しない設定", empty_message(FILTER_VOICE, "", False))
+        self.assertIn("コピーすると", empty_message(FILTER_CLIPBOARD, "", True))
+        self.assertIn("記録しない設定", empty_message(FILTER_CLIPBOARD, "", False))
+        self.assertIn("記録しない設定", empty_message(FILTER_ALL, "", False))
+        self.assertEqual(empty_message(FILTER_ALL, "abc", False), "「abc」に一致する履歴はありません。")
+
+    def test_clipboard_display_truncated_and_joined(self):
+        long_text = "あ" * (CLIP_DISPLAY_CHARS + 100)
+        self.assertEqual(len(display_text({"text": long_text, "kind": "clipboard"})), CLIP_DISPLAY_CHARS)
+        self.assertEqual(display_text({"text": "一行目\n二行目", "kind": "clipboard"}), "一行目 二行目")
+        # 音声入力の行はそのまま
+        self.assertEqual(display_text({"text": "一行目\n二行目", "kind": "voice"}), "一行目\n二行目")
+
+    def test_panel_filter_switch(self):
+        panel = SideNotchHistoryPanel(_FakeHistory(_VOICE), is_dark=False, clipboard=_FakeClipboardHistory(_CLIPS))
+        panel.refresh()
+        self.assertEqual(panel._list_layout.count() - 1, 3)
+        panel.set_filter(FILTER_CLIPBOARD)
+        self.assertEqual(panel._list_layout.count() - 1, 1)
+        self.assertTrue(panel._filter_buttons[FILTER_CLIPBOARD].isChecked())
+        panel.set_filter(FILTER_VOICE)
+        self.assertEqual(panel._list_layout.count() - 1, 2)
+        panel.deleteLater()
+
+    def test_controller_opens_with_all(self):
+        ctrl = SideNotch(
+            history=_FakeHistory(_VOICE), is_dark=False, enabled=True, clipboard=_FakeClipboardHistory(_CLIPS)
+        )
+        ctrl.open_panel()
+        ctrl._panel.set_filter(FILTER_VOICE)
+        ctrl.toggle_panel()
+        ctrl._last_closed_at = 0.0
+        ctrl.open_panel()
+        # 開き直すと「すべて」に戻る（Mac はパネルを作り直すので同じ動き）
+        self.assertEqual(ctrl._panel._filter, FILTER_ALL)
+        self.assertEqual(ctrl._panel._list_layout.count() - 1, 3)
+        ctrl.set_enabled(False)
 
 
 class ControllerTests(unittest.TestCase):

@@ -661,6 +661,8 @@ struct HomeView: View {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(entry.text, forType: .string)
+        // 音声入力の履歴からのコピーをクリップボード履歴に記録し直さない（サイドノッチと同じ扱い）
+        pasteboard.setData(Data(), forType: ClipboardHistoryStore.transientType)
         copiedId = entry.id
         Task {
             try? await Task.sleep(for: .seconds(1.5))

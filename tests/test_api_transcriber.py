@@ -72,10 +72,11 @@ class TestRaiseForStatus(unittest.TestCase):
 
 class TestAvailableModels(unittest.TestCase):
     def test_model_sets(self):
+        # Mac の Backend.knownModels と同じ（2026-10-01 に旧 gpt-4o 系・whisper-large-v3 を外した）
         self.assertIn("nova-3", DeepgramTranscriber.available_models)
-        self.assertIn("scribe_v1", ElevenLabsTranscriber.available_models)
-        self.assertIn("gpt-4o-transcribe", OpenAITranscriber.available_models)
-        self.assertIn("whisper-large-v3-turbo", GroqTranscriber.available_models)
+        self.assertEqual(ElevenLabsTranscriber.available_models, ("scribe_v2", "scribe_v1"))
+        self.assertEqual(OpenAITranscriber.available_models, ("gpt-transcribe",))
+        self.assertEqual(GroqTranscriber.available_models, ("whisper-large-v3-turbo",))
 
 
 class TestServerRouting(unittest.TestCase):

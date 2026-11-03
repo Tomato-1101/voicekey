@@ -54,3 +54,8 @@ pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"
 # comtypes を依存として引き込む。無い/失敗時はダッキングを無害にスキップする実装のため
 # Windows 以外では不要（sys_platform マーカーで Windows 限定）。
 pycaw>=20230407; sys_platform == "win32"
+
+# Windows のライブ字幕・議事録: Process Loopback（アプリ単位）が使えない古い Windows で、
+# 既定の出力デバイス全体の音をループバックで拾う代わりの取り方（WASAPI ループバック対応の PyAudio）。
+# Windows 以外では不要（字幕の取り込みは遅延 import。テストは Linux でも回る）
+PyAudioWPatch>=0.2.12; sys_platform == "win32"

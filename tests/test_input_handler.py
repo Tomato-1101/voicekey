@@ -158,6 +158,55 @@ class TestClipboardRestoreGuard(_ClipboardTestBase):
         self.assertEqual(clip.value, "")  # 自分のテキストは消す
 
 
+class TestSelfWriteNotice(_ClipboardTestBase):
+    """自分の書き込み（一時貼り付け・原本の復元）を書く直前にクリップボード履歴へ知らせる。
+
+    pyperclip へのフォールバックや文字列だけの復元では除外の印が付かないので、印に頼らず本文で知らせる。
+    """
+
+    def test_notifies_before_injected_write_and_restore(self):
+        ih = InputHandler()
+        events = []
+        ih.on_self_write = lambda text: events.append(("notice", text))
+        clip = _FakeClipboard("USER")
+        original_copy = clip.copy
+        clip.copy = lambda text: (events.append(("copy", text)), original_copy(text))
+        self._insert(ih, clip, "HELLO")
+        self._fire(_FakeTimer.created[0], clip)
+        self.assertEqual(
+            events,
+            [("notice", "HELLO"), ("copy", "HELLO"), ("notice", "USER"), ("copy", "USER")],
+        )
+
+    def test_clear_and_user_copy_are_not_notified(self):
+        ih = InputHandler()
+        notices = []
+        ih.on_self_write = notices.append
+        # 原本なし → 消去（空文字）は知らせない
+        clip = _FakeClipboard("")
+        self._insert(ih, clip, "X")
+        self._fire(_FakeTimer.created[0], clip)
+        self.assertEqual(notices, ["X"])
+        # 復元待ちの間に利用者がコピーした → 復元しないので知らせない
+        clip = _FakeClipboard("USER")
+        self._insert(ih, clip, "Y")
+        clip.value = "利用者のコピー"
+        self._fire(_FakeTimer.created[1], clip)
+        self.assertEqual(notices, ["X", "Y"])
+
+    def test_notice_failure_does_not_break_paste(self):
+        ih = InputHandler()
+
+        def boom(_):
+            raise RuntimeError("x")
+
+        ih.on_self_write = boom
+        clip = _FakeClipboard("USER")
+        self.assertTrue(self._insert(ih, clip, "HELLO"))
+        self._fire(_FakeTimer.created[0], clip)
+        self.assertEqual(clip.value, "USER")
+
+
 class TestDecideRestore(unittest.TestCase):
     """復元判定（純ロジック）の境界。Mac 版 ClipboardRestorePolicyTests と対の内容。"""
 

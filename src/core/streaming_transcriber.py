@@ -129,8 +129,8 @@ class StreamingTranscriber:
         return self.language or "ja"
 
     def _resolve_api_key(self) -> Optional[str]:
-        """Deepgram の API キーを Keychain → 環境変数の順で解決する。"""
-        return secrets.get_api_key(secrets.SERVICE_DEEPGRAM) or os.environ.get("DEEPGRAM_API_KEY")
+        """Deepgram の API キーをアプリ保存値 → 環境変数 → 共有の置き場の順で解決する。"""
+        return secrets.api_key("deepgram")
 
     def start(self) -> bool:
         """
@@ -308,7 +308,7 @@ class StreamingTranscriber:
             key: 直叩き用の Deepgram API キー（未ログイン時に使う。ログイン時は None でも可）
             logged_in: True なら自社サーバーから短命 JWT を取得して Bearer で接続する
         """
-        from websockets.sync.client import connect
+        from .live_transcriber import open_websocket
 
         t_start = time.monotonic()
         # 製品版（ログイン済み）: サーバーから短命 JWT を取得し Bearer で接続。
@@ -347,11 +347,7 @@ class StreamingTranscriber:
 
         t_token = time.monotonic()
         try:
-            ws = connect(
-                url,
-                additional_headers={"Authorization": auth_header},
-                open_timeout=_OPEN_TIMEOUT,
-            )
+            ws = open_websocket(url, {"Authorization": auth_header}, _OPEN_TIMEOUT)
         except Exception as e:
             # 接続失敗 → finish() を解決して REST フォールバックに委ねる
             logger.warning(f"Deepgram ストリーミング接続に失敗: {e}")

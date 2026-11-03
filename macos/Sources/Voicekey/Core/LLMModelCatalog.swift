@@ -406,6 +406,12 @@ enum LLMModelCatalog {
         return result
     }
 
+    /// モデルの短い表示名（既知ならカタログの名前、知らなければ ID のまま）。
+    /// エンジンとモデルを 1 つにしたポップアップの、閉じているときの表示（「Groq · Qwen3.8 27B」）に使う
+    static func displayName(_ provider: LLMProvider, id: String) -> String {
+        known(provider).first { $0.id == id }?.name ?? id
+    }
+
     /// 選択中モデルの一言説明（Picker の項目名の下に出す）
     static func detail(_ provider: LLMProvider, id: String, available: [String]?) -> String {
         if isUnavailable(id, provider: provider, available: available) {
