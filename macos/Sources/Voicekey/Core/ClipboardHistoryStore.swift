@@ -61,6 +61,14 @@ final class ClipboardHistoryStore: ObservableObject {
     private var timer: Timer?
     /// 壊れたファイルを退避できなかった（＝元ファイルが残っている）ので保存しない
     private var saveBlocked = false
+    /// voicekey 自身（Paster の原本復元・消去）が書いた直後の changeCount。
+    /// 復元した原本は印が付かない（ユーザーの元の中身そのもの）ので、これが無いと音声入力のたびに
+    /// 原本が「新しいコピー」として履歴へ入る。本文ではなく changeCount で見るのは、
+    /// 同じ本文をユーザーが改めてコピーした場合まで捨てないため
+    private var selfWrittenChangeCount: Int?
+    /// ファイル書き込み専用の直列キュー。貼り付け・復元を担う MainActor を書き込みで待たせず、
+    /// 直列にすることで古い内容が新しい内容を後から上書きする順序の逆転も起こさない
+    private let saveQueue = DispatchQueue(label: "com.voicekey.clipboard-history.save")
 
     /// - Parameters:
     ///   - pasteboard: 監視するペーストボード（テストでは専用の名前付きペーストボードを注入する）
@@ -82,7 +90,13 @@ final class ClipboardHistoryStore: ObservableObject {
 
     /// 保存済み JSON を読み込む。読めなければ退避して空で開始する（HistoryStore と同じ方針）
     private static func load(from fileURL: URL) -> (items: [ClipboardItem], saveBlocked: Bool) {
-        guard let data = try? Data(contentsOf: fileURL) else { return ([], false) }
+        // 空で始めてよいのはファイルが無いときだけ。あるのに読めない（権限・一時的な I/O エラー）ときに
+        // 空のまま保存すると中身を上書きして消すので、退避もせず保存だけ止める
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return ([], false) }
+        guard let data = try? Data(contentsOf: fileURL) else {
+            log.error("クリップボード履歴ファイルを読めないため、上書きしないよう保存を止めます")
+            return ([], true)
+        }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         if let loaded = try? decoder.decode([ClipboardItem].self, from: data) {
@@ -118,10 +132,32 @@ final class ClipboardHistoryStore: ObservableObject {
         timer = nil
     }
 
-    /// 全件消去する
-    func clear() {
+    /// 全件消去する。ファイルへ書けたときだけ画面上も消す（失敗して画面だけ消えると、再起動で復活して
+    /// 消えたと思った履歴が戻ってくる）。結果を確かめるため、ここだけ同期で書き込む
+    /// - Returns: 消去できたら true
+    @discardableResult
+    func clear() -> Bool {
+        guard !saveBlocked else { return false }
+        do {
+            let data = try Self.encode([])
+            // 直列キューで書くので、先に積まれた保存が後からこの消去を上書きすることはない
+            try saveQueue.sync { try Self.write(data, to: fileURL) }
+        } catch {
+            log.error("クリップボード履歴の消去に失敗: \(error.localizedDescription)")
+            return false
+        }
         items = []
-        save()
+        return true
+    }
+
+    /// voicekey 自身がペーストボードへ書いた（Paster の原本復元・消去）ことを伝える。
+    /// その書き込みでの changeCount の変化は記録しない
+    /// - Parameters:
+    ///   - pasteboard: 書き込んだペーストボード（監視中のものと違えば無視する）
+    ///   - changeCount: 書き込み直後の changeCount
+    func noteSelfWrite(on pasteboard: NSPasteboard, changeCount: Int) {
+        guard pasteboard.name == self.pasteboard.name else { return }
+        selfWrittenChangeCount = changeCount
     }
 
     // MARK: ポーリング
@@ -132,6 +168,8 @@ final class ClipboardHistoryStore: ObservableObject {
         let count = pasteboard.changeCount
         guard count != lastChangeCount else { return }
         lastChangeCount = count
+        // 最後の変化が自分の書き込みなら記録しない（復元前の挿入テキストは TransientType で除外済み）
+        guard count != selfWrittenChangeCount else { return }
 
         let types = pasteboard.types ?? []
         guard !types.contains(where: { Self.ignoredTypes.contains($0) }) else { return }
@@ -162,18 +200,41 @@ final class ClipboardHistoryStore: ObservableObject {
         return true
     }
 
+    /// 保存する。エンコードは items を読むので MainActor で行い、ファイル書き込みだけ直列キューへ回す
     private func save() {
         guard !saveBlocked else { return }
+        let data: Data
+        do {
+            data = try Self.encode(items)
+        } catch {
+            log.error("クリップボード履歴の保存に失敗: \(error.localizedDescription)")
+            return
+        }
+        let fileURL = fileURL
+        saveQueue.async {
+            do {
+                try Self.write(data, to: fileURL)
+            } catch {
+                // 本文はログに出さない（エラーの種類だけ）
+                log.error("クリップボード履歴の保存に失敗: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// 積まれている保存が書き終わるまで待つ（テストで別インスタンスから読み直す前に使う）
+    func waitForPendingSaves() {
+        saveQueue.sync {}
+    }
+
+    private nonisolated static func encode(_ items: [ClipboardItem]) throws -> Data {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        do {
-            let data = try encoder.encode(items)
-            try data.write(to: fileURL, options: [.atomic])
-            // コピーした文字列にはパスワード以外の秘密も混ざりうるので、本人以外は読めないようにする
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
-        } catch {
-            // 本文はログに出さない（エラーの種類だけ）
-            log.error("クリップボード履歴の保存に失敗: \(error.localizedDescription)")
-        }
+        return try encoder.encode(items)
+    }
+
+    private nonisolated static func write(_ data: Data, to fileURL: URL) throws {
+        try data.write(to: fileURL, options: [.atomic])
+        // コピーした文字列にはパスワード以外の秘密も混ざりうるので、本人以外は読めないようにする
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
     }
 }

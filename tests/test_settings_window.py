@@ -214,6 +214,7 @@ class TestHistoryLimitAndClipboardSettings(_SettingsWindowTestBase):
 
             def clear(self):
                 self.cleared += 1
+                return True
 
         store = _Store()
         win = self._make_window(self._config({"language": "ja"}), clipboard_history=store)
@@ -224,6 +225,29 @@ class TestHistoryLimitAndClipboardSettings(_SettingsWindowTestBase):
             win._clear_clipboard_history()
         self.assertEqual(store.cleared, 1)
 
+    def test_clear_clipboard_history_failure_is_reported(self):
+        class _Store:
+            def clear(self):
+                return False  # 保存に失敗した
+
+        win = self._make_window(self._config({"language": "ja"}), clipboard_history=_Store())
+        with mock.patch.object(win, "_confirm_clear_clipboard", return_value=True), \
+             mock.patch("src.ui.settings_window.QMessageBox") as box:
+            win._clear_clipboard_history()
+        box.critical.assert_called_once()
+        self.assertIn("消去できませんでした", box.critical.call_args.args[2])
+
+    def test_clear_clipboard_history_success_shows_nothing(self):
+        class _Store:
+            def clear(self):
+                return True
+
+        win = self._make_window(self._config({"language": "ja"}), clipboard_history=_Store())
+        with mock.patch.object(win, "_confirm_clear_clipboard", return_value=True), \
+             mock.patch("src.ui.settings_window.QMessageBox") as box:
+            win._clear_clipboard_history()
+        box.critical.assert_not_called()
+
 
 class _FakeHistorySync:
     """history_sync.HistorySync の最小フェイク（Mac 側の履歴を 1 件足して返すだけ）。"""
@@ -232,7 +256,8 @@ class _FakeHistorySync:
         self._extra_items = extra_items
         self.enabled = True
 
-    def merged_items(self, local_items):
+    def merged_items(self, local_items, limit=200):
+        self.last_limit = limit
         return list(local_items) + self._extra_items
 
     def status(self):
@@ -318,6 +343,20 @@ class TestHistorySyncSettingsUI(_SettingsWindowTestBase):
         self.assertEqual(len(mac_previews), 1)
         self.assertIn("Mac の文", mac_previews[0])
         self.assertIn("Mac の文", texts)
+
+    def test_merged_history_uses_local_history_limit(self):
+        # 同期オンでも、表示件数は音声入力の保存件数（受信キャッシュの 200 件ではない）
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+        handle.close()
+        self._paths.append(handle.name)
+
+        from src.core.history import HistoryStore
+
+        history = HistoryStore(file_path=handle.name, limit=1000)
+        fake_sync = _FakeHistorySync([])
+        win = self._make_window(self._config({"language": "ja"}), history=history, history_sync=fake_sync)
+        win._history_entries()
+        self.assertEqual(fake_sync.last_limit, 1000)
 
 
 if __name__ == "__main__":

@@ -145,6 +145,21 @@ class HistoryPanelTests(unittest.TestCase):
         panel.deleteLater()
 
 
+class HistoryRowTests(unittest.TestCase):
+    def test_text_is_plain_not_html(self):
+        # コピーした本文に HTML のタグがあっても装飾せずそのまま見せる
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QLabel
+
+        from src.ui.side_notch import _HistoryRow
+
+        row = _HistoryRow({"text": "<b>太字</b>", "date": ""}, is_dark=False)
+        labels = row.findChildren(QLabel)
+        text_label = next(label for label in labels if label.text() == "<b>太字</b>")
+        self.assertEqual(text_label.textFormat(), Qt.TextFormat.PlainText)
+        row.deleteLater()
+
+
 class _FakeClipboardHistory(_FakeHistory):
     """items() と is_running だけ持つクリップボード履歴ストアのダミー。"""
 

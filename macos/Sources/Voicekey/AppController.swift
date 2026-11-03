@@ -253,6 +253,10 @@ final class AppController: ObservableObject {
                 if enabled { self?.clipboardHistory.start() } else { self?.clipboardHistory.stop() }
             }
             .store(in: &historyLimitObservations)
+        // 音声入力の後に戻した原本を、クリップボード履歴が新しいコピーとして記録しないように知らせる
+        Paster.onRestoreWrite = { [weak self] pasteboard in
+            self?.clipboardHistory.noteSelfWrite(on: pasteboard, changeCount: pasteboard.changeCount)
+        }
         hud.enabled = config.hudEnabled
         hud.alwaysVisible = config.hudAlwaysVisible
         hud.logGeneration = { [weak self] in self?.recordingGeneration ?? 0 }

@@ -53,6 +53,11 @@ def _format_name(fmt: str) -> str:
     return match.group(1) if match else (fmt or "")
 
 
+def _normalize_newlines(text: str) -> str:
+    """改行を LF に揃える（pyperclip が読む CF_UNICODETEXT は CRLF、Qt の text() は LF で返すため）。"""
+    return (text or "").replace("\r\n", "\n")
+
+
 def is_excluded(
     formats: Iterable[str],
     read_data: Optional[Callable[[str], Optional[bytes]]] = None,
@@ -117,6 +122,8 @@ class ClipboardHistoryStore:
         self._clipboard = None
         # 壊れたファイルを退避できなかった（＝元ファイルが残っている）ので保存しない
         self._save_blocked = False
+        # voicekey 自身が書く本文（書いた順）。次に来る変更がこの本文なら 1 回だけ記録しない
+        self._self_writes: List[str] = []
         self._items: List[Dict[str, object]] = self._load()
 
     # ---- 件数 ----
@@ -156,6 +163,9 @@ class ClipboardHistoryStore:
             clipboard = QGuiApplication.clipboard()
         if clipboard is None:
             return
+        # 止めている間に知らされた自分の書き込みは、変更通知が届かないまま残っているので捨てる
+        with self._lock:
+            self._self_writes.clear()
         clipboard.dataChanged.connect(self._on_data_changed)
         self._clipboard = clipboard
 
@@ -169,6 +179,35 @@ class ClipboardHistoryStore:
         except (RuntimeError, TypeError):
             pass
 
+    def ignore_next_change(self, text: str) -> None:
+        """voicekey 自身がこの本文をクリップボードへ書くことを知らせる（貼り付けの一時書き込み・原本の復元）。
+
+        時間のしきい値ではなく本文の一致で見る。除外の印は pyperclip へのフォールバックや
+        文字列だけの復元では付かないので、印だけに頼ると自分の書き込みが履歴に入る。
+
+        Args:
+            text: 書く本文
+        """
+        if not text or self._clipboard is None:
+            return
+        with self._lock:
+            self._self_writes.append(_normalize_newlines(text))
+
+    def _consume_self_write(self, text: str) -> bool:
+        """変更が自分の書き込みなら印を 1 回分使って True を返す。
+
+        一致しなければ残っている印は全部捨てる（書けずに終わった分が残り続けて、後で利用者が
+        同じ本文をコピーしたときに取りこぼさないように）。
+        """
+        normalized = _normalize_newlines(text)
+        with self._lock:
+            if normalized in self._self_writes:
+                # 届かなかった古い変更の分も含めて、一致したところまで使い切る
+                del self._self_writes[: self._self_writes.index(normalized) + 1]
+                return True
+            self._self_writes.clear()
+            return False
+
     def _on_data_changed(self) -> None:
         """クリップボードが変わったら中身を見て記録する。"""
         clipboard = self._clipboard
@@ -180,6 +219,9 @@ class ClipboardHistoryStore:
                 return
             formats = list(mime.formats())
             text = mime.text()
+            # 印の判定より先に見る（印付きの自分の書き込みでも、知らせた分はここで使い切る）
+            if self._consume_self_write(text):
+                return
             app_id, app_name = (None, None)
             # 印付き（パスワード等）なら前面アプリも調べない（無駄な Win32 呼び出しを省く）
             if is_excluded(formats, lambda fmt: bytes(mime.data(fmt))):
@@ -243,11 +285,17 @@ class ClipboardHistoryStore:
         with self._lock:
             return [dict(entry) for entry in self._items]
 
-    def clear(self) -> None:
-        """全件消去して保存する。"""
+    def clear(self) -> bool:
+        """全件消去して保存する。保存できたときだけメモリ上も消す（画面だけ消えて再起動で復活しないように）。
+
+        Returns:
+            消去できたら True
+        """
         with self._lock:
+            if not self._write([]):
+                return False
             self._items = []
-            self._save()
+            return True
 
     # ---- 保存 ----
     def _load(self) -> List[Dict[str, object]]:
@@ -277,16 +325,22 @@ class ClipboardHistoryStore:
 
     def _save(self) -> None:
         """履歴をファイルに保存する（_lock 保持中に呼ぶこと）。"""
+        self._write(self._items)
+
+    def _write(self, items: List[Dict[str, object]]) -> bool:
+        """一覧をファイルに書く（_lock 保持中に呼ぶこと）。書けたら True。"""
         if self._save_blocked:
-            return
+            return False
         try:
             # 書き込み途中のクラッシュでファイルが壊れないよう一時ファイル経由で置換
             tmp = self._path.with_name(self._path.name + ".tmp")
             tmp.write_text(
-                json.dumps(self._items, ensure_ascii=False, indent=2),
+                json.dumps(items, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
             tmp.replace(self._path)
+            return True
         except Exception as e:
             # 本文はログに出さない（エラーの種類だけ）
             logger.error(f"クリップボード履歴の保存に失敗: {type(e).__name__}")
+            return False

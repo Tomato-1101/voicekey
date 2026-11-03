@@ -184,6 +184,8 @@ class _HistoryRow(QPushButton):
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(3)
         text_label = QLabel(display_text(entry))
+        # コピーした本文に <b> などが入っていても装飾せずそのまま見せる（Qt 既定の AutoText は HTML と推測して解釈する）
+        text_label.setTextFormat(Qt.TextFormat.PlainText)
         text_label.setWordWrap(True)
         text_label.setStyleSheet(f"color: {primary}; font-size: 12px; background: transparent;")
         text_label.setMaximumHeight(38)  # 約 2 行に抑える

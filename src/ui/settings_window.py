@@ -1381,7 +1381,7 @@ class SettingsWindow(CaptionPagesMixin, QWidget):
         self._clipboard_history_check = self._make_toggle()
         _add_row(
             cl, "クリップボードの履歴を残す", self._clipboard_history_check,
-            caption="パスワード管理アプリからのコピーは残しません。",
+            caption="パスワード管理アプリなど、履歴に残さない印が付いたコピーは記録しません。",
         )
         self._clipboard_history_limit_combo = self._make_history_limit_combo()
         _add_row(cl, "クリップボードの保存件数", self._clipboard_history_limit_combo)
@@ -2228,7 +2228,8 @@ class SettingsWindow(CaptionPagesMixin, QWidget):
         """ローカル履歴に、同期がオンなら Mac 側の履歴もマージして返す（新しい順）。"""
         local = self._history.items() if self._history is not None else []
         if self._history_sync is not None and self._history_sync.enabled:
-            return self._history_sync.merged_items(local)
+            limit = self._history.limit if self._history is not None else 200
+            return self._history_sync.merged_items(local, limit=limit)
         return local
 
     def _make_history_item(self, entry: dict) -> QListWidgetItem:
@@ -2797,8 +2798,9 @@ class SettingsWindow(CaptionPagesMixin, QWidget):
         """確認のうえクリップボードの履歴をすべて消去する（保存ボタンを待たずにすぐ消す）。"""
         if self._clipboard_history is None:
             return
-        if self._confirm_clear_clipboard():
-            self._clipboard_history.clear()
+        if self._confirm_clear_clipboard() and not self._clipboard_history.clear():
+            # 保存できなかったときはメモリ上も残している（画面だけ消えて再起動で復活しないように）ので知らせる
+            QMessageBox.critical(self, "クリップボードの履歴", "消去できませんでした。")
 
     def _clear_history(self) -> None:
         """履歴をすべて消去して一覧を更新する。"""

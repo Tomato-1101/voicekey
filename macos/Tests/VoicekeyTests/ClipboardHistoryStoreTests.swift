@@ -105,6 +105,7 @@ final class ClipboardHistoryStoreTests: XCTestCase {
 
         store.limit = 2
         XCTAssertEqual(store.items.map(\.text), ["t4", "t3"])
+        store.waitForPendingSaves()
         let reloaded = ClipboardHistoryStore(pasteboard: board, directory: dir, limit: 200)
         XCTAssertEqual(reloaded.items.map(\.text), ["t4", "t3"])
     }
@@ -114,6 +115,7 @@ final class ClipboardHistoryStoreTests: XCTestCase {
         let store = makeStore()
         copy("keep me")
         store.checkNow()
+        store.waitForPendingSaves()
 
         let reloaded = ClipboardHistoryStore(pasteboard: board, directory: dir)
         XCTAssertEqual(reloaded.items.map(\.text), ["keep me"])
@@ -151,8 +153,94 @@ final class ClipboardHistoryStoreTests: XCTestCase {
     func testClear() {
         let store = makeStore()
         copy("x"); store.checkNow()
-        store.clear()
+        XCTAssertTrue(store.clear())
         XCTAssertTrue(store.items.isEmpty)
         XCTAssertTrue(ClipboardHistoryStore(pasteboard: board, directory: dir).items.isEmpty)
+    }
+
+    // 保存に失敗したら clear は false を返し、画面上の履歴も消さない（再起動で復活しないように）
+    func testClearFailureKeepsItems() throws {
+        let store = makeStore()
+        copy("x"); store.checkNow()
+        store.waitForPendingSaves()
+        // 保存先をディレクトリ（中身あり）に差し替えて、ファイルへの書き込みを失敗させる
+        let file = dir.appendingPathComponent("clipboard-history.json")
+        try FileManager.default.removeItem(at: file)
+        try FileManager.default.createDirectory(at: file, withIntermediateDirectories: true)
+        try Data().write(to: file.appendingPathComponent("block"))
+
+        XCTAssertFalse(store.clear())
+        XCTAssertEqual(store.items.map(\.text), ["x"])
+    }
+
+    // ファイルがあるのに読めないときは空で始めるが、記録しても上書きしない
+    func testUnreadableFileIsNotOverwritten() throws {
+        let path = dir.appendingPathComponent("clipboard-history.json").path
+        let original = #"[{"id":"00000000-0000-0000-0000-000000000001","text":"残す","date":"2026-01-01T00:00:00Z"}]"#
+        try Data(original.utf8).write(to: URL(fileURLWithPath: path))
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path) }
+
+        let store = makeStore()
+        XCTAssertTrue(store.items.isEmpty)
+        copy("new"); store.checkNow()
+        XCTAssertEqual(store.items.map(\.text), ["new"])
+        store.waitForPendingSaves()
+        XCTAssertFalse(store.clear(), "読めないファイルを消去で上書きしてはいけない")
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+        XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), original)
+    }
+
+    // 自分の書き込み（Paster の原本復元）と伝えた changeCount の変化は記録しない。その後のコピーは記録する
+    func testSelfWriteIsNotRecorded() {
+        copy("A")  // 起動前からある中身
+        let store = makeStore()
+        // 音声入力の一時貼り付け（Transient 付き）→ 原本 A の復元
+        copy("dictated", extraTypes: [ClipboardHistoryStore.transientType.rawValue])
+        store.checkNow()
+        copy("A")
+        store.noteSelfWrite(on: board, changeCount: board.changeCount)
+        store.checkNow()
+        XCTAssertTrue(store.items.isEmpty)
+
+        // ユーザーが同じ A を改めてコピーしたら記録する（本文ではなく changeCount で見ているため）
+        copy("A"); store.checkNow()
+        XCTAssertEqual(store.items.map(\.text), ["A"])
+    }
+
+    // 別のペーストボードへの書き込みを伝えられても無視する
+    func testSelfWriteOnOtherPasteboardIsIgnored() {
+        let store = makeStore()
+        let other = NSPasteboard(name: .init("voicekey-test-other-\(UUID().uuidString)"))
+        defer { other.releaseGlobally() }
+        copy("A")
+        store.noteSelfWrite(on: other, changeCount: board.changeCount)
+        store.checkNow()
+        XCTAssertEqual(store.items.map(\.text), ["A"])
+    }
+
+    // Paster が原本を戻しても、結線していればクリップボード履歴に入らない（履歴を全消去した後も含む）
+    func testPasterRestoreIsNotRecorded() async throws {
+        copy("A")
+        let store = makeStore()
+        let board = self.board!
+        Paster.onRestoreWrite = { [weak store] pb in store?.noteSelfWrite(on: pb, changeCount: pb.changeCount) }
+        defer { Paster.onRestoreWrite = nil }
+        _ = await Paster.paste("DICTATED", pasteboard: board, sendKeystroke: false)
+        store.checkNow()
+        try await Task.sleep(for: .milliseconds(1300))  // 復元（1 秒後）を待つ
+        XCTAssertEqual(board.string(forType: .string), "A")
+        store.checkNow()
+        XCTAssertTrue(store.items.isEmpty)
+    }
+
+    // 保存はバックグラウンドで行うが、書き込み順は保たれる（最後の状態がファイルに残る）
+    func testBackgroundSavesKeepOrder() {
+        let store = makeStore()
+        for i in 0..<20 { copy("t\(i)"); store.checkNow() }
+        store.waitForPendingSaves()
+        let reloaded = ClipboardHistoryStore(pasteboard: board, directory: dir)
+        XCTAssertEqual(reloaded.items.map(\.text), store.items.map(\.text))
     }
 }

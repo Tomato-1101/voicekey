@@ -109,7 +109,13 @@ final class HistoryStore: ObservableObject {
     /// 保存済み JSON を読み込む。新形式（構造体配列）を第一に試し、読めなければ
     /// 旧・単純な文字列配列としても試す。どちらでも読めなければ空で開始（クラッシュしない）。
     private static func load(from fileURL: URL, limit: Int) -> (items: [HistoryItem], saveBlocked: Bool) {
-        guard let data = try? Data(contentsOf: fileURL) else { return ([], false) }
+        // 空で始めてよいのはファイルが無いときだけ。あるのに読めない（権限・一時的な I/O エラー）ときに
+        // 空のまま保存すると中身を上書きして消すので、退避もせず保存だけ止める
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return ([], false) }
+        guard let data = try? Data(contentsOf: fileURL) else {
+            log.error("履歴ファイルを読めないため、上書きしないよう保存を止めます")
+            return ([], true)
+        }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         // 新形式（[HistoryItem]）。HistoryItem.init(from:) が旧「id/text/date のみ」も吸収する

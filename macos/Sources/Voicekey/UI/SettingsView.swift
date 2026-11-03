@@ -495,8 +495,9 @@ struct MainWindowView: View {
     }
 
     /// 設定の「クリップボードの履歴を消去」。ストアは AppController が持つ（UI 撮影では controller が無いので何もしない）
-    private func clearClipboardHistory() {
-        controller?.clipboardHistory.clear()
+    /// - Returns: 消去できたか（保存に失敗したら false。画面に失敗を出すため）
+    private func clearClipboardHistory() -> Bool {
+        controller?.clipboardHistory.clear() ?? true
     }
 
     /// 選択中の設定ページ（タグは旧 SettingsView と同じ値を踏襲・既存タブ View を使い回す）
@@ -707,8 +708,10 @@ private struct GeneralSettingsTab: View {
     @ObservedObject var config: ConfigStore
     @ObservedObject var historySync: HistorySync
     /// 「クリップボードの履歴を消去」の確認後に呼ぶ
-    let onClearClipboardHistory: () -> Void
+    let onClearClipboardHistory: () -> Bool
     @State private var confirmingClipboardClear = false
+    /// 消去に失敗したときだけ出す（成功は一覧が空になるので見れば分かる）
+    @State private var clipboardClearMessage: String?
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     /// 共有トークンは既存値を画面へ戻さず、保存後も即座に消す。
     @State private var syncTokenInput = ""
@@ -773,7 +776,7 @@ private struct GeneralSettingsTab: View {
                 Toggle(isOn: $config.clipboardHistoryEnabled) {
                     SettingRowLabel(
                         title: "クリップボードの履歴を残す",
-                        detail: "パスワード管理アプリからのコピーは残しません。"
+                        detail: "パスワード管理アプリなど、履歴に残さない印が付いたコピーは記録しません。"
                     )
                 }
                 Picker(selection: $config.clipboardHistoryLimit) {
@@ -787,13 +790,15 @@ private struct GeneralSettingsTab: View {
                             "クリップボードの履歴をすべて消去しますか？",
                             isPresented: $confirmingClipboardClear
                         ) {
-                            Button("消去", role: .destructive) { onClearClipboardHistory() }
+                            Button("消去", role: .destructive) {
+                                clipboardClearMessage = onClearClipboardHistory() ? nil : "消去できませんでした"
+                            }
                             Button("キャンセル", role: .cancel) {}
                         } message: {
                             Text("この操作は取り消せません。")
                         }
                 } label: {
-                    SettingRowLabel(title: "クリップボードの履歴を消去")
+                    SettingRowLabel(title: "クリップボードの履歴を消去", detail: clipboardClearMessage)
                 }
                 Toggle("Windows 版と履歴を共有", isOn: $config.historySyncEnabled)
 

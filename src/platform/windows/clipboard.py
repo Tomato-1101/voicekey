@@ -133,16 +133,67 @@ def _win32():
     kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
     kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
     kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+    user32.CreateWindowExW.argtypes = [
+        wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID,
+    ]
+    user32.CreateWindowExW.restype = wintypes.HWND
+    user32.DestroyWindow.argtypes = [wintypes.HWND]
+    user32.DestroyWindow.restype = wintypes.BOOL
     return user32, kernel32
 
 
-def _open(user32) -> bool:
-    """クリップボードを開く（他のアプリが開いていることがあるので数回だけ待って再試行する）。"""
+# メッセージ専用ウィンドウの親に渡す特別な値（HWND_MESSAGE）
+_HWND_MESSAGE = -3
+
+
+def _create_owner_window(user32):
+    """書き込み用の持ち主ウィンドウ（画面に出ないメッセージ専用ウィンドウ）を作る（作れなければ None）。
+
+    NULL で開いて EmptyClipboard すると持ち主が NULL になり、SetClipboardData が失敗する
+    （Microsoft の OpenClipboard の仕様。pyperclip が隠しウィンドウを作るのも同じ理由）。
+    書き込みのたびに作って閉じたら壊す。使い回すと、メッセージを処理しないワーカースレッドの
+    ウィンドウが持ち主のまま残り、他のアプリの EmptyClipboard が送る WM_DESTROYCLIPBOARD を
+    受け取れず相手を待たせるため（pyperclip も同じく毎回作って壊す）。
+    """
+    return user32.CreateWindowExW(
+        0, "STATIC", None, 0, 0, 0, 0, 0, _HWND_MESSAGE, None, None, None
+    ) or None
+
+
+def _open(user32, owner=None) -> bool:
+    """クリップボードを開く（他のアプリが開いていることがあるので数回だけ待って再試行する）。
+
+    Args:
+        owner: 書き込む（EmptyClipboard → SetClipboardData）ときの持ち主ウィンドウ。
+            読むだけなら None のままでよい
+    """
     for _ in range(10):
-        if user32.OpenClipboard(None):
+        if user32.OpenClipboard(owner):
             return True
         time.sleep(0.01)
     return False
+
+
+def _open_for_write(user32):
+    """書き込み用にクリップボードを開き、持ち主ウィンドウを返す（開けなければ None）。
+
+    呼び出し側は CloseClipboard の後に _close_for_write で閉じること。
+    """
+    owner = _create_owner_window(user32)
+    if not owner:
+        return None
+    if not _open(user32, owner):
+        user32.DestroyWindow(owner)
+        return None
+    return owner
+
+
+def _close_for_write(user32, owner) -> None:
+    """書き込み用に開いたクリップボードを閉じ、持ち主ウィンドウを壊す（書いた中身はそのまま残る）。"""
+    user32.CloseClipboard()
+    user32.DestroyWindow(owner)
 
 
 def take_snapshot() -> Optional[ClipboardSnapshot]:
@@ -205,7 +256,8 @@ def restore_snapshot(snapshot: ClipboardSnapshot) -> bool:
         user32, kernel32 = _win32()
     except Exception:
         return False
-    if not _open(user32):
+    owner = _open_for_write(user32)
+    if not owner:
         return False
     try:
         user32.EmptyClipboard()
@@ -230,7 +282,7 @@ def restore_snapshot(snapshot: ClipboardSnapshot) -> bool:
         logger.debug(f"クリップボードの復元に失敗: {e}")
         return False
     finally:
-        user32.CloseClipboard()
+        _close_for_write(user32, owner)
 
 
 def copy_text_excluded(text: str) -> bool:
@@ -247,7 +299,8 @@ def copy_text_excluded(text: str) -> bool:
         user32, kernel32 = _win32()
     except Exception:
         return False
-    if not _open(user32):
+    owner = _open_for_write(user32)
+    if not owner:
         return False
 
     def put(fmt: int, data: bytes) -> bool:
@@ -280,4 +333,4 @@ def copy_text_excluded(text: str) -> bool:
         logger.debug(f"印付きのクリップボード書き込みに失敗: {e}")
         return False
     finally:
-        user32.CloseClipboard()
+        _close_for_write(user32, owner)

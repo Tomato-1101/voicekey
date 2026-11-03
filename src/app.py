@@ -341,6 +341,8 @@ class VoicekeyApp(QObject):
             limit=int(self._config.get("clipboard_history_limit", 200)),
             app_provider=self._platform.foreground_app,
         )
+        # 音声入力の一時書き込みと原本の復元を、クリップボード履歴が自分のコピーとして記録しないように
+        self._input_handler.on_self_write = self._clipboard_history.ignore_next_change
 
         # --- 使用実績（節約時間・レベル・連続日数。設定の「実績」タブで表示。貼り付け後に集計する） ---
         self._stats = StatsStore()

@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 from enum import Enum
-from typing import Optional
+from typing import Callable, Optional
 
 import pyperclip
 from pynput.keyboard import Controller, Key
@@ -146,6 +146,22 @@ class InputHandler:
         self._saved_original: Optional[str] = None
         # Windows の全形式の退避（画像・ファイル等。文字列だけの _saved_original を補う）
         self._saved_snapshot = None
+        # 自分がクリップボードへ書く本文を知らせる先（app.py がクリップボード履歴へ結線する）。
+        # 除外の印は pyperclip へのフォールバックや文字列だけの復元では付かないので、印に頼らず
+        # 「次に来るこの本文の変更は自分の書き込み」と伝えて履歴に記録させない
+        self.on_self_write: Optional[Callable[[str], None]] = None
+
+    def _notify_self_write(self, text: str) -> None:
+        """これから書く本文をクリップボード履歴へ知らせる（空なら何もしない）。
+
+        書いた後に知らせると、UI スレッドの変更通知が先に届いて記録される隙ができるので、書く直前に呼ぶ。
+        """
+        if not text or self.on_self_write is None:
+            return
+        try:
+            self.on_self_write(text)
+        except Exception as e:
+            logger.debug(f"クリップボード履歴への通知に失敗: {type(e).__name__}")
 
     def insert_text(self, text: str) -> bool:
         """
@@ -190,6 +206,7 @@ class InputHandler:
                 self._injected_text = text
 
             # クリップボードにコピー（Windows は履歴に残さない印付き。書けなければ従来どおり）
+            self._notify_self_write(text)
             if not _copy_injected_text(text):
                 pyperclip.copy(text)
 
@@ -260,6 +277,10 @@ class InputHandler:
                 self._saved_original = None
                 self._saved_snapshot = None
 
+            if decision in (RestoreDecision.RESTORE_SNAPSHOT, RestoreDecision.RESTORE):
+                # 戻す原本は利用者のコピーそのもので印が付かない（除外印付きのパスワードも文字列だけで戻すと
+                # 印が外れる）ので、自分の書き込みとして知らせて履歴に記録させない
+                self._notify_self_write(original or "")
             if decision is RestoreDecision.RESTORE_SNAPSHOT:
                 if not _restore_full_snapshot(snapshot) and original:
                     # 全形式で戻せなかったら、せめて文字列だけでも戻す

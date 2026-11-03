@@ -84,6 +84,26 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertTrue(store.items.isEmpty)
     }
 
+    // ファイルがあるのに読めないときは、空で始めても上書きしない（再起動で読めるようになれば残っている）
+    func testUnreadableFileIsNotOverwritten() throws {
+        let dir = makeTempDir()
+        let path = dir.appendingPathComponent("history.json").path
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+            try? FileManager.default.removeItem(at: dir)
+        }
+        let original = #"[{"id":"00000000-0000-0000-0000-000000000001","text":"残す","date":"2026-01-01T00:00:00Z"}]"#
+        write(original, to: dir)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: path)
+
+        let store = HistoryStore(directory: dir)
+        XCTAssertTrue(store.items.isEmpty)
+        store.add("新しい入力")
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+        XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), original)
+    }
+
     // add は 200 件を超えたら古いものを捨てる（新しい順を保つ）
     func testAddCapsAt200() {
         let dir = makeTempDir()

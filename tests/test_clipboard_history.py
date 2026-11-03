@@ -157,6 +157,21 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(store.items(), [])
         self.assertEqual(ClipboardHistoryStore(self.path).items(), [])
 
+    def test_clear_failure_keeps_items(self):
+        # 保存できなかったら False を返し、メモリ上も消さない（画面だけ消えて再起動で復活しないように）
+        store = ClipboardHistoryStore(self.path)
+        store.record("残る")
+        self.path.unlink()
+        self.path.mkdir()
+        (self.path / "block").write_text("x", encoding="utf-8")  # 置換先が中身のあるディレクトリ＝書けない
+        self.assertFalse(store.clear())
+        self.assertEqual(self.texts(store), ["残る"])
+
+    def test_clear_returns_true(self):
+        store = ClipboardHistoryStore(self.path)
+        store.record("消える")
+        self.assertTrue(store.clear())
+
     def test_corrupt_file_is_quarantined(self):
         self.path.write_text("{壊れた", encoding="utf-8")
         store = ClipboardHistoryStore(self.path)
@@ -242,6 +257,59 @@ class MonitorTests(unittest.TestCase):
         mime2.setData(CAN_INCLUDE_MIME, b"\0\0\0\0")
         self.clipboard.set(mime2)
         self.assertEqual(self.store.items(), [])
+
+    def test_self_write_is_ignored_once(self):
+        # 印の付かない自分の書き込み（pyperclip のフォールバック・文字列だけの復元）も記録しない
+        self.store.start(self.clipboard)
+        self.store.ignore_next_change("音声入力の結果")
+        self.clipboard.set(_text_mime("音声入力の結果"))
+        self.store.ignore_next_change("原本")
+        self.clipboard.set(_text_mime("原本"))
+        self.assertEqual(self.store.items(), [])
+        # 1 回限り: 利用者が同じ本文を改めてコピーしたら記録する
+        self.clipboard.set(_text_mime("原本"))
+        self.assertEqual([e["text"] for e in self.store.items()], ["原本"])
+
+    def test_self_write_with_marks_consumes_notice(self):
+        # 印付きの書き込みでも知らせた分は使い切る（残して後の同じ本文のコピーを取りこぼさない）
+        self.store.start(self.clipboard)
+        self.store.ignore_next_change("パスワード")
+        mime = _text_mime("パスワード")
+        mime.setData(EXCLUDE_MIME, b"\0\0\0\0")
+        self.clipboard.set(mime)
+        self.clipboard.set(_text_mime("パスワード"))
+        self.assertEqual([e["text"] for e in self.store.items()], ["パスワード"])
+
+    def test_unmatched_notice_is_dropped(self):
+        # 書けずに終わった分の印は、次の変更が違う本文なら捨てる
+        self.store.start(self.clipboard)
+        self.store.ignore_next_change("書けなかった")
+        self.clipboard.set(_text_mime("別のコピー"))
+        self.clipboard.set(_text_mime("書けなかった"))
+        self.assertEqual([e["text"] for e in self.store.items()], ["書けなかった", "別のコピー"])
+
+    def test_delayed_notifications_are_matched_in_order(self):
+        # 変更通知が遅れて 2 回分まとめて届いても、どちらも自分の書き込みとして扱う
+        self.store.start(self.clipboard)
+        self.store.ignore_next_change("一時")
+        self.store.ignore_next_change("原本")
+        self.clipboard.set(_text_mime("一時"))
+        self.clipboard.set(_text_mime("原本"))
+        self.assertEqual(self.store.items(), [])
+
+    def test_crlf_and_lf_match(self):
+        # pyperclip は CRLF、Qt の text() は LF で返すので改行を揃えて比べる
+        self.store.start(self.clipboard)
+        self.store.ignore_next_change("1 行目\r\n2 行目")
+        self.clipboard.set(_text_mime("1 行目\n2 行目"))
+        self.assertEqual(self.store.items(), [])
+
+    def test_notice_while_stopped_is_dropped(self):
+        # 止めている間の知らせは届く変更が無いので残さない（再開後の同じ本文のコピーを捨てない）
+        self.store.ignore_next_change("止めている間")
+        self.store.start(self.clipboard)
+        self.clipboard.set(_text_mime("止めている間"))
+        self.assertEqual([e["text"] for e in self.store.items()], ["止めている間"])
 
     def test_side_notch_copy_is_not_recorded(self):
         # サイドノッチからのコピーは印付きなので、自分の履歴に記録し直さない
