@@ -87,9 +87,9 @@
 
 ## クリップボード履歴（11-03 更新）
 - 目的: Maccy のようなクリップボード履歴をサイドノッチの履歴パネルに入れる（音声入力の履歴と並べる・保存件数を選べる）。
-- 現状: Mac 4f6081e / Windows 501ca92 / スナップショット c6ad627 / Codex レビュー指摘の修正 f80d17f（ブランチ
-  `claude/voicekey-clipboard-history-8f9f04`・`claude/elegant-pasteur-gw80nl` の上に rebase 済み）。既定は履歴 ON・
+- 現状: Mac 4f6081e / Windows 501ca92 / スナップショット c6ad627 / Codex レビュー指摘の修正 f80d17f。常用ブランチ
+  `claude/elegant-pasteur-gw80nl` へ早送りで統合し push 済み（11-03）。既定は履歴 ON・
   音声/クリップボードとも 200 件。常用アプリは f80d17f で差し替え済み（旧版の退避: scratchpad の voicekey-backup.app）。
   swift test 601 件通過・Python 868 件中の失敗は既知の 2 件（meetbot / stage2）だけ。
-- 次: 常用ブランチへの統合と push は本人の判断待ち。Windows 実機での確認（メッセージ専用ウィンドウでの書き込み・改行・
+- 次: Windows 実機での確認（メッセージ専用ウィンドウでの書き込み・改行・
   除外の印で Win+V に残らないか・パスワード管理アプリの除外・前面アプリ名）がまだ。
