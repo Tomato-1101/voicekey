@@ -1915,7 +1915,8 @@ private struct DictionaryTab: View {
                     )) {
                         HStack(spacing: 8) {
                             Text(group.name)
-                            Text(group.characters)
+                            // 「,，」のように詰めると読めないので 1 文字ずつ空けて見せる
+                            Text(group.characters.map(String.init).joined(separator: " "))
                                 .foregroundStyle(.secondary)
                         }
                     }

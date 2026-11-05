@@ -3088,7 +3088,7 @@ class SettingsWindow(CaptionPagesMixin, QWidget):
         kbl.setSpacing(6)
         self._symbol_keep_checks = {}
         for gid, name, chars in symbol_filter.GROUPS:
-            check = QCheckBox(f"{name}  {chars}")
+            check = QCheckBox(f"{name}  {' '.join(chars)}")
             self._symbol_keep_checks[gid] = check
             kbl.addWidget(check)
         _add_block(sl, keep_block)
