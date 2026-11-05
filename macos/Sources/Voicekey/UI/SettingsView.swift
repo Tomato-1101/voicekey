@@ -627,6 +627,33 @@ private struct InputBasicsTab: View {
                 }
 
                 LabeledContent {
+                    HStack(spacing: 8) {
+                        HotkeyRecorderView(hotkey: $config.screenshotKey)
+                            .frame(width: 200)  // 他のキー設定の欄と同じ幅
+                        if !config.screenshotKey.isEmpty {
+                            Button("外す") { config.screenshotKey = [] }
+                        }
+                    }
+                } label: {
+                    SettingRowLabel(
+                        title: "スクリーンショットを添付するキー",
+                        detail: "録音中に押して離すと、範囲を選んで画面を撮れます（Esc で取り消し）。何枚でも撮れ、文の中に [画像1] のような印が入ります。"
+                            + "撮ると録音はハンズフリーに切り替わるので、録音キーでもう一度止めます。"
+                    )
+                }
+                // 録音キー・ハンズフリーキー・1 回翻訳キーと重なると黙って効かなくなるので、ここで知らせる
+                ForEach(ScreenshotAttach.keyWarnings(
+                    key: config.screenshotKey,
+                    slotHotkeys: [config.slot(1).hotkey, config.slot(2).hotkey],
+                    handsfreeKey: config.handsfreeKey,
+                    translateOnceKey: config.translateOnceKey
+                ), id: \.self) { warning in
+                    Label(warning, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+
+                LabeledContent {
                     HStack(spacing: 6) {
                         TextField(
                             "",

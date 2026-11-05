@@ -11,6 +11,7 @@
 //  出力: <home|タブ名>-<幅>x<高さ>-<light|dark>.png（760x600 と 1100x760 の 2 通り）
 //  --api-usage-sample を付けると API 料金の欄を見本データで撮り、縦長の 760x1500 も足す。
 //  --side-notch-sample を付けるとサイドノッチの履歴パネルを見本データで撮る（side-notch-<外観>.png）。
+//  --hud-screenshot-sample を付けると録音中のピルにスクリーンショット枚数のバッジを出した見本を撮る（hud-screenshot-<外観>.png）。
 //  最終行の [VERDICT] status=ok files=<数> を判定に使う。
 //
 //  AppController を作らない＝ホットキー監視・録音・マイク・文字起こし・履歴同期の通信を一切起動しない。
@@ -156,6 +157,27 @@ enum UISnapshotTestMode {
             if let png = render(makeSampleSideNotch(), size: NSSize(
                 width: SideNotchHistoryView.panelWidth + 24, height: SideNotchHistoryView.panelHeight + 24),
                 appearance: appearance),
+               (try? png.write(to: fileURL, options: .atomic)) != nil {
+                emit("[FILE] \(fileURL.path)")
+                written += 1
+            } else {
+                emit("[FAIL] 描画できませんでした: \(fileName)")
+                failed += 1
+            }
+        }
+        // --hud-screenshot-sample: 録音中のピルにスクリーンショットの枚数バッジ（2 枚）を出した見本を撮る
+        if arguments.contains("--hud-screenshot-sample") {
+            let fileName = "hud-screenshot-\(appearanceName).png"
+            let fileURL = outputDir.appendingPathComponent(fileName)
+            let hudModel = HudModel()
+            // 撮影するとハンズフリーに切り替わるので、その見た目で撮る
+            hudModel.mode = .recording(autoEnter: false, handsFree: true)
+            hudModel.levels = (0..<HudView.barCount).map { Float(abs(sin(Double($0) * 0.7))) * 0.8 }
+            hudModel.screenshotCount = 2
+            // パネルの高さちょうどだとカプセルの下端が切れて写るので、下に余白を足して撮る
+            if let png = render(HudView(model: hudModel).padding(.bottom, 24),
+                                size: NSSize(width: HudView.width, height: HudView.height + 24),
+                                appearance: appearance),
                (try? png.write(to: fileURL, options: .atomic)) != nil {
                 emit("[FILE] \(fileURL.path)")
                 written += 1

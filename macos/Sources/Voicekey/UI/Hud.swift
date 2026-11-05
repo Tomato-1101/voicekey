@@ -47,6 +47,8 @@ final class HudModel: ObservableObject {
     @Published var liveText: String = ""
     /// この録音が翻訳される回の印（"→EN" など。空なら非表示）
     @Published var translateBadge: String = ""
+    /// この録音で撮ったスクリーンショットの枚数（0 なら非表示）
+    @Published var screenshotCount = 0
 
     func pushLevel(_ value: Float) {
         levels.removeFirst()
@@ -295,11 +297,17 @@ final class HudController {
         model.resetLevels()
         model.liveText = ""
         model.translateBadge = ""
+        model.screenshotCount = 0
     }
 
     /// 翻訳する録音の印を出す（録音が終わると clearRecordingContent で消える）
     func setTranslateBadge(_ text: String) {
         model.translateBadge = text
+    }
+
+    /// 撮ったスクリーンショットの枚数を出す（録音が終わると clearRecordingContent で消える）
+    func setScreenshotCount(_ n: Int) {
+        model.screenshotCount = n
     }
 
     /// エラー通知の表示時間。2 秒では読み切る前に消え、何が起きたか分からなかった
@@ -744,6 +752,17 @@ struct HudView: View {
                     .font(.system(size: 10, weight: .bold, design: .rounded))
                     .foregroundStyle(Brand.signal)
                     .fixedSize()
+            }
+            // 撮ったスクリーンショットの枚数（撮れたかを録音中に確かめられるように）
+            if model.screenshotCount > 0 {
+                HStack(spacing: 2) {
+                    Image(systemName: "camera.viewfinder")
+                        .font(.system(size: 11, weight: .bold))
+                    Text("\(model.screenshotCount)")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                }
+                .foregroundStyle(Brand.signal)
+                .fixedSize()
             }
             // personal のライブ字幕（ストリーミング暫定テキスト）。幅を固定して横揺れを防ぎ、
             // tail 側（最新語）を head トランケーションで見せる。空なら要素ごと出さない。

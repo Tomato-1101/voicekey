@@ -60,6 +60,8 @@ struct DictationTimeline {
         static let noSpeech = "無音"
         static let emptyResult = "空結果"
         static let liveEmptyCompleted = "ライブ空(正常終了)"
+        /// 記号の自動削除などを通した最終の文が空になり、画像も無いので何も貼らなかった
+        static let emptyAfterCleanup = "空(加工後)"
         static let transcribeFailed = "文字起こし失敗"
         static let recordStartFailed = "録音開始失敗"
         static let recordStartTimeout = "録音開始タイムアウト"

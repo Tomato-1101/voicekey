@@ -707,6 +707,24 @@ final class AppController: ObservableObject {
             return
         }
 
+        // 撮影キーを押したまま別のキーも押された（⌃C などの組み合わせ）。撮影の操作ではないので、
+        // 離したときに範囲選択を始めないよう取り消す（録音はハンズフリーのまま続ける）
+        if let session = recordContext?.screenshots, session.armedShot != nil,
+           !ScreenshotAttach.isToken(token, key: config.screenshotKey) {
+            session.cancelArmed()
+            hud.setScreenshotCount(session.visibleCount)
+            ActionLog.shared.write("app", "[撮影] gen=\(DiagnosticText.gen(recordingGeneration)) 別のキーと一緒に押されたため取消")
+        }
+        // 録音中（2 打目待ちの保留中も含む）に撮影キーが押された。1 回翻訳キーと同じく保留分岐より先に見る
+        if let slotId = recordingSlot, recordContext != nil,
+           ScreenshotAttach.isToken(token, key: config.screenshotKey),
+           ScreenshotAttach.isRequested(
+               key: config.screenshotKey, slotHotkey: config.slot(slotId).hotkey + config.handsfreeKey,
+               pressed: pressed) {
+            armScreenshot()
+            return
+        }
+
         // 1 打目を離した後、録音を止めずに 2 打目を待っている状態。
         // 下の「録音中」分岐より先に見る（recordingSlot は入ったままなので、
         // ここで拾わないと 2 打目が「録音中の再押下」に食われて無視される）。
@@ -789,6 +807,12 @@ final class AppController: ObservableObject {
             }
             onHotkeyHeldChanged?(held)
             return
+        }
+
+        // 撮影キーが離された → 範囲選択を始める（録音は armScreenshot でハンズフリーに固定済み）
+        if recordingSlot != nil, let session = recordContext?.screenshots, let shot = session.armedShot,
+           ScreenshotAttach.isToken(token, key: config.screenshotKey) {
+            startScreenshotCapture(session, shot: shot)
         }
 
         guard let slotId = recordingSlot else { return }
@@ -1069,6 +1093,8 @@ final class AppController: ObservableObject {
         /// 翻訳エンジンと出力言語（録音開始時に固定。録音中に設定を変えても進行中の録音は変わらない）
         let translateEngine: DictationTranslationEngine
         let translateTarget: String
+        /// この録音で撮ったスクリーンショット。撮影キーを初めて押したときに作る（撮らない録音は nil のまま）
+        var screenshots: ScreenshotSession? = nil
     }
 
     /// 判定に使う 1 回翻訳キー。macOS 26 未満は翻訳できないので空（＝押しても何も起きない）にする
@@ -1102,6 +1128,157 @@ final class AppController: ObservableObject {
         if #available(macOS 26.0, *) {
             let translator = dictationTranslator(engine: context.translateEngine, target: context.translateTarget)
             Task { await translator.prepare() }
+        }
+    }
+
+    // MARK: - スクリーンショット添付
+
+    /// 録音中に撮影キーが押された。押した時点を印の位置として控え、録音をハンズフリーに固定する
+    /// （範囲を選ぶ間に録音キーを離しても止まらないように。もう一度録音キーを押すと確定）
+    private func armScreenshot() {
+        guard var context = recordContext else { return }
+        let session: ScreenshotSession
+        if let existing = context.screenshots {
+            session = existing
+        } else {
+            session = ScreenshotSession()
+            context.screenshots = session
+            recordContext = context
+        }
+        // 撮影中（範囲選択中）の再押下は無視する
+        guard !session.isBusy else { return }
+        if recordingEffectiveMode != .toggle {
+            // 2 打目待ちの保留も解く（解かないと保留の期限切れで録音が確定してしまう）
+            pendingFinishTask?.cancel()
+            pendingFinishTask = nil
+            pendingDoubleTap = nil
+            recordingEffectiveMode = .toggle
+            emitState()
+        }
+        let elapsed = ProcessInfo.processInfo.systemUptime - recordingStartedAt
+        session.arm(ScreenshotAttach.ShotMark(elapsed: elapsed, liveText: hud.model.liveText))
+        hud.setScreenshotCount(session.visibleCount)
+        ActionLog.shared.write(
+            "app", "[撮影] gen=\(DiagnosticText.gen(recordingGeneration)) 撮影キー 押下 \(secText(elapsed))s")
+    }
+
+    /// 撮影キーが離された。標準の範囲選択でスクリーンショットを撮る（押した瞬間に始めないのは、
+    /// ⌃ を押したまま選ぶとクリップボード行きになる等、修飾キーが選択操作に干渉するため）
+    private func startScreenshotCapture(_ session: ScreenshotSession, shot: ScreenshotSession.Shot) {
+        let generation = recordingGeneration
+        let gen = DiagnosticText.gen(generation)
+        // 画面収録の許可は撮るときだけ確かめる（初回起動では要求しない）
+        guard CGPreflightScreenCaptureAccess() else {
+            session.finish(shot, capture: nil)
+            hud.setScreenshotCount(session.visibleCount)
+            ActionLog.shared.write("app", "[撮影] gen=\(gen) 画面収録の許可なし")
+            _ = CGRequestScreenCaptureAccess()
+            hud.notice("画面収録の許可が必要です。システム設定で voicekey を許可してから voicekey を再起動してください",
+                       isError: true)
+            return
+        }
+        session.markCapturing(shot)
+        ActionLog.shared.write("app", "[撮影] gen=\(gen) 範囲選択を開始")
+        Task { [weak self] in
+            let capture = await ScreenshotSession.captureInteractively()
+            session.finish(shot, capture: capture)
+            ActionLog.shared.write("app", "[撮影] gen=\(gen) " + (capture.map { "撮影 \($0.png.count) バイト" } ?? "取消"))
+            // 録音が続いている間だけピルの枚数を直す（確定後のピルは変換中の表示）
+            guard let self, self.recordingGeneration == generation, self.recordingSlot != nil else { return }
+            self.hud.setScreenshotCount(session.visibleCount)
+        }
+    }
+
+    /// 撮影が終わるまで待ってから、撮れた画像のある記録を返す（1 枚も無ければ nil）
+    ///
+    /// 範囲選択は人の操作で長くかかりうるので、待つ間は文字起こしの見張りを止め、待ち終えたら張り直す。
+    private func settledScreenshots(_ session: ScreenshotSession?, generation: Int, backend: Backend?) async
+        -> ScreenshotSession? {
+        guard let session else { return nil }
+        if session.isBusy {
+            let watchdog = transcribeWatchdogs.removeValue(forKey: generation)
+            watchdog?.cancel()
+            ActionLog.shared.write("app", "[撮影] gen=\(DiagnosticText.gen(generation)) 撮影の終わりを待つ")
+            await session.waitUntilSettled()
+            if watchdog != nil, !isAbandoned(generation) {
+                startTranscribeWatchdog(generation: generation, backend: backend)
+            }
+        }
+        return session.completed.isEmpty ? nil : session
+    }
+
+    /// 貼り付けの結果
+    private enum PasteResult {
+        case pasted
+        case failed
+        /// 文が空で画像も無いので、何も貼らなかった
+        case nothingToPaste
+    }
+
+    /// 最終の文（と撮った画像）を前面アプリへ貼る。ストリーミング／REST の両経路の共通部分
+    ///
+    /// 履歴への記録・計測の記録・失敗の通知までをここで行う。Enter と実績の集計は呼び出し側。
+    private func pasteOutput(_ output: String, screenshots: ScreenshotSession?, generation: Int) async
+        -> (result: PasteResult, target: FrontAppTracker.Snapshot) {
+        // 貼り付け先アプリを貼り付け直前に再取得する（録音中に切り替えた場合は今の前面が正）
+        let target = frontApp.snapshot()
+        let captures = screenshots?.completed ?? []
+        // 文が空で画像も無ければ何も貼らない（空の貼り付けは成功扱いになり、Enter だけが送られてしまう）
+        if ScreenshotAttach.isNothingToPaste(text: output, imageCount: captures.count) {
+            ActionLog.shared.write(
+                "app", "[貼付] gen=\(DiagnosticText.gen(generation)) 最終の文が空のため貼り付けと Enter をしない")
+            timelines[generation]?.outcome = DictationTimeline.Outcome.emptyAfterCleanup
+            return (.nothingToPaste, target)
+        }
+        // 整形・翻訳で印が崩れていたら置き直す（画像が無ければ素通し）
+        let text: String
+        if let screenshots, !captures.isEmpty {
+            let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            text = trimmed.isEmpty ? "" : screenshots.ensureMarkers(in: output)
+        } else {
+            text = output
+        }
+        // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する（履歴保存 OFF はスキップ）。
+        // 画像は保存しない（印入りの文だけ）
+        if config.historyEnabled, !text.isEmpty {
+            history.add(text, appBundleID: target.bundleID, appName: target.name)
+        }
+        let pasteStart = ProcessInfo.processInfo.systemUptime
+        let pasted: Bool
+        if let screenshots, !captures.isEmpty {
+            let items = screenshots.pasteItems(text: text, terminal: ScreenshotAttach.isTerminal(bundleID: target.bundleID))
+            pasted = await Paster.pasteSequence(items, fallbackText: text, logGeneration: generation)
+        } else {
+            pasted = await Paster.paste(text, logGeneration: generation)
+        }
+        let pastedAt = ProcessInfo.processInfo.systemUptime
+        timelines[generation]?.pasteMs = Int((pastedAt - pasteStart) * 1000)
+        timelines[generation]?.pastedAt = pastedAt
+        timelines[generation]?.characters = text.count
+        timelines[generation]?.targetBundleID = target.bundleID
+        timelines[generation]?.outcome = pasted
+            ? DictationTimeline.Outcome.pasted : DictationTimeline.Outcome.pasteFailed
+        // 結果はクリップボードに残してあるので、手で貼るよう知らせる
+        if !pasted, !isAbandoned(generation) { hud.notice(Self.pasteFailedNotice, isError: true) }
+        return (pasted ? .pasted : .failed, target)
+    }
+
+    /// 文が取れなかった録音（無音・短すぎ・空の結果）でも、撮った画像があれば画像だけ貼る。
+    /// 撮影ゼロ枚なら何もしない（今の経路を変えない）
+    private func pasteScreenshotsOnly(
+        context: RecordContext?, generation: Int, autoEnter: Bool, delayMs: Int
+    ) async {
+        guard context?.screenshots != nil else { return }
+        guard let shots = await settledScreenshots(
+            context?.screenshots, generation: generation, backend: context?.transcriber?.backend) else { return }
+        if discardIfAbandoned(generation) { return }
+        let (result, _) = await pasteOutput("", screenshots: shots, generation: generation)
+        // 入っていないのに Enter を送ると入力欄の別の内容を送信しかねないので、貼れたときだけ送る
+        if autoEnter, result == .pasted {
+            try? await Task.sleep(for: .milliseconds(max(0, delayMs)))
+            if !isAbandoned(generation), !(await Paster.pressEnter(logGeneration: generation)) {
+                hud.notice(Self.enterFailedNotice, isError: true)
+            }
         }
     }
 
@@ -1688,11 +1865,15 @@ final class AppController: ObservableObject {
                 + "target=\(context.translateTarget) \(elapsedMs)ms "
                 + "結果=\(result.didTranslate ? "ok" : "失敗(\(DiagnosticText.clip(result.failureReason ?? "不明", 80)))")")
         // 翻訳 LLM は記号を足すことがあるので、訳せたときは訳文にも記号の自動削除をかける
+        // 撮った画像があるときは訳文に残った `[画像N]` 等の印も避ける（崩れた印は貼る直前に置き直す）
+        let hasShots = context.screenshots?.completed.isEmpty == false
         let translated = result.didTranslate
-            ? SymbolFilter.filter(
-                result.text, enabled: config.symbolRemovalEnabled, keepGroups: config.symbolKeepGroups,
-                // 辞書置換でわざと入れた記号は訳文でも消さない
-                protect: config.replacements.filter { $0.enabled && !$0.from.isEmpty }.map(\.to))
+            ? ScreenshotAttach.preservingMarkers(in: result.text, active: hasShots) { segment in
+                SymbolFilter.filter(
+                    segment, enabled: config.symbolRemovalEnabled, keepGroups: config.symbolKeepGroups,
+                    // 辞書置換でわざと入れた記号は訳文でも消さない
+                    protect: config.replacements.filter { $0.enabled && !$0.from.isEmpty }.map(\.to))
+            }
             : result.text
         return (translated, elapsedMs)
     }
@@ -1754,6 +1935,13 @@ final class AppController: ObservableObject {
         // 録音部が末尾まで送ってから外す。activeStreamer は stop の完了まで下のクロージャが保持する
         let activeStreamer = streamer
         let context = recordContext  // 録音開始時に確定した処理コンテキスト
+        if let session = context?.screenshots {
+            // 撮影キーを押したまま確定した 1 枚は撮らない。印の位置の割合の分母（ライブ文字・録音の長さ）を
+            // ピルが変換中に変わってライブ文字が消える前に控える
+            session.cancelArmed()
+            session.finalLiveText = hud.model.liveText
+            session.recordingSeconds = ProcessInfo.processInfo.systemUptime - recordingStartedAt
+        }
         streamer = nil
         recordContext = nil
         recordingSlot = nil
@@ -1882,6 +2070,11 @@ final class AppController: ObservableObject {
                     if discardIfAbandoned(generation) { return }
                 }
                 if !streamed.isEmpty {
+                    // 撮った画像があれば、撮影の終わりを待ってから整形・翻訳の前に `[画像N]` を入れる
+                    let shots = await settledScreenshots(
+                        context.screenshots, generation: generation, backend: transcriber.backend)
+                    if discardIfAbandoned(generation) { return }
+                    if let shots { streamed = shots.insertMarkers(into: streamed) }
                     // 整形が有効なら貼り付け前に LLM で整形（失敗時は原文が返る）
                     let streamFmtStart = ProcessInfo.processInfo.systemUptime
                     let formatted = formatEnabled
@@ -1895,40 +2088,30 @@ final class AppController: ObservableObject {
                     // 数字表記を半角アラビア数字へ正規化してからユーザー辞書置換を適用
                     // （全角→半角・連続漢数字→算用数字。置換はその後＝正規化後テキストに効かせる）
                     // 記号の自動削除は数字の正規化の後・辞書置換の前（辞書でわざと入れた記号を消さないため）
-                    let corrected = config.applyReplacements(SymbolFilter.filter(
-                        NumeralNormalizer.normalize(
-                            formatted,
-                            enabled: config.numeralNormalizeEnabled,
-                            convertCounter: config.numeralConvertCounter,
-                            protectWords: Set(config.numeralProtectWords)
-                        ),
-                        enabled: config.symbolRemovalEnabled, keepGroups: config.symbolKeepGroups))
+                    // 撮った画像があるときは `[画像N]` の角かっこを消さないよう、印を避けて加工する
+                    let corrected = config.applyReplacements(ScreenshotAttach.preservingMarkers(
+                        in: formatted, active: shots != nil) { segment in
+                        SymbolFilter.filter(
+                            NumeralNormalizer.normalize(
+                                segment,
+                                enabled: config.numeralNormalizeEnabled,
+                                convertCounter: config.numeralConvertCounter,
+                                protectWords: Set(config.numeralProtectWords)
+                            ),
+                            enabled: config.symbolRemovalEnabled, keepGroups: config.symbolKeepGroups)
+                    })
                     // 「翻訳して入力」が ON なら、この最終テキストを 1 回だけ訳す
                     // （正規化・ユーザー辞書は原文の誤認識を直すためのものなので、翻訳より前に効かせる）
                     let (output, streamTranslateMs) = await self.translateIfEnabled(corrected, generation: generation, context: context)
                     timelines[generation]?.translateMs = streamTranslateMs
                     // 整形・翻訳を待っている間に打ち切られていたら貼り付けない（打ち切った入力が後から入るのを防ぐ）
                     if discardIfAbandoned(generation) { return }
-                    // 貼り付け先アプリを貼り付け直前に再取得する（録音中に切り替えた場合は今の前面が正）
-                    let target = frontApp.snapshot()
-                    // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する（履歴保存 OFF はスキップ）
-                    if config.historyEnabled {
-                        history.add(output, appBundleID: target.bundleID, appName: target.name)
-                    }
-                    let streamPasteStart = ProcessInfo.processInfo.systemUptime
-                    let streamPasted = await Paster.paste(output, logGeneration: generation)
-                    let streamPastedAt = ProcessInfo.processInfo.systemUptime
-                    timelines[generation]?.pasteMs = Int((streamPastedAt - streamPasteStart) * 1000)
-                    timelines[generation]?.pastedAt = streamPastedAt
-                    timelines[generation]?.characters = output.count
-                    timelines[generation]?.targetBundleID = target.bundleID
-                    timelines[generation]?.outcome = streamPasted
-                        ? DictationTimeline.Outcome.pasted : DictationTimeline.Outcome.pasteFailed
-                    if !streamPasted {
-                        // 結果はクリップボードに残してある。入っていないのに Enter を送ると
-                        // 入力欄の別の内容を送信しかねないので、auto_enter も送らない
-                        if !isAbandoned(generation) { hud.notice(Self.pasteFailedNotice, isError: true) }
-                    } else {
+                    let (streamResult, target) = await pasteOutput(output, screenshots: shots, generation: generation)
+                    // 記号の自動削除で文が空になり画像も無い。何も貼っていないので Enter も集計もしない
+                    if streamResult == .nothingToPaste { return }
+                    // 貼れなかったときは結果をクリップボードに残してある（通知は pasteOutput が出す）。
+                    // 入っていないのに Enter を送ると入力欄の別の内容を送信しかねないので、auto_enter も送らない
+                    if streamResult == .pasted {
                         // 接続がエラー・切断で途中で壊れたときは、入ったのが途中までかもしれないと知らせる
                         // （喋った分は捨てずに貼る）。タイムアウトは確定待ちが長引いただけなので知らせない
                         // 録音全体の再送で救えたときは全文が入っているので知らせない
@@ -1957,6 +2140,7 @@ final class AppController: ObservableObject {
                 if ending == .completed {
                     ActionLog.shared.write("transcriber", "ライブの確定が空（正常終了）のため入力なし")
                     timelines[generation]?.outcome = DictationTimeline.Outcome.liveEmptyCompleted
+                    await pasteScreenshotsOnly(context: context, generation: generation, autoEnter: autoEnter, delayMs: delayMs)
                     return
                 }
                 // 確定が空（接続失敗・無音など）→ 取得済みバッファで REST にフォールバック
@@ -1978,6 +2162,7 @@ final class AppController: ObservableObject {
             guard duration >= kMinAudioSec else {
                 log.info("録音が短すぎるためスキップ (\(String(format: "%.2f", duration))s)")
                 timelines[generation]?.outcome = DictationTimeline.Outcome.tooShort
+                await pasteScreenshotsOnly(context: context, generation: generation, autoEnter: autoEnter, delayMs: delayMs)
                 return
             }
 
@@ -1990,6 +2175,7 @@ final class AppController: ObservableObject {
                 if !quietIfNoSpeech, !isAbandoned(generation) {
                     hud.notice("音声が検出されませんでした")
                 }
+                await pasteScreenshotsOnly(context: context, generation: generation, autoEnter: autoEnter, delayMs: delayMs)
                 return
             }
             let vadMs = Int((ProcessInfo.processInfo.systemUptime - restT0) * 1000)
@@ -1999,7 +2185,7 @@ final class AppController: ObservableObject {
             // 単発送信かつサーバー統合整形が使えるときは、STT と整形を 1 リクエストで済ませる
             // （didServerFormat=true で返る）。分割送信のときは各セグメント整形なし→結合後にクライアント整形。
             let sttStart = ProcessInfo.processInfo.systemUptime
-            let text: String
+            var text: String
             let didServerFormat: Bool
             // ここで REST（Soniox は録音全体の再送）へ実際に送ることが確定する
             timelines[generation]?.route = DictationTimeline.route(
@@ -2050,8 +2236,14 @@ final class AppController: ObservableObject {
             guard !text.isEmpty else {
                 log.info("文字起こし結果が空でした")
                 timelines[generation]?.outcome = DictationTimeline.Outcome.emptyResult
+                await pasteScreenshotsOnly(context: context, generation: generation, autoEnter: autoEnter, delayMs: delayMs)
                 return
             }
+            // 撮った画像があれば、撮影の終わりを待ってから整形・翻訳の前に `[画像N]` を入れる
+            let shots = await settledScreenshots(
+                context.screenshots, generation: generation, backend: transcriber.backend)
+            if discardIfAbandoned(generation) { return }
+            if let shots { text = shots.insertMarkers(into: text) }
 
             // 4. テキスト貼り付け（+ ダブルタップ時は Enter 自動送信）
             // 整形: サーバー統合済み（didServerFormat）なら再整形しない。サーバーが整形失敗
@@ -2073,36 +2265,28 @@ final class AppController: ObservableObject {
             // 数字表記を半角アラビア数字へ正規化してからユーザー辞書置換を適用
             // （全角→半角・連続漢数字→算用数字。置換はその後＝正規化後テキストに効かせる）
             // 記号の自動削除は数字の正規化の後・辞書置換の前（辞書でわざと入れた記号を消さないため）
-            let corrected = config.applyReplacements(SymbolFilter.filter(
-                NumeralNormalizer.normalize(
-                    formatted,
-                    enabled: config.numeralNormalizeEnabled,
-                    convertCounter: config.numeralConvertCounter,
-                    protectWords: Set(config.numeralProtectWords)
-                ),
-                enabled: config.symbolRemovalEnabled, keepGroups: config.symbolKeepGroups))
+            // 撮った画像があるときは `[画像N]` の角かっこを消さないよう、印を避けて加工する
+            let corrected = config.applyReplacements(ScreenshotAttach.preservingMarkers(
+                in: formatted, active: shots != nil) { segment in
+                SymbolFilter.filter(
+                    NumeralNormalizer.normalize(
+                        segment,
+                        enabled: config.numeralNormalizeEnabled,
+                        convertCounter: config.numeralConvertCounter,
+                        protectWords: Set(config.numeralProtectWords)
+                    ),
+                    enabled: config.symbolRemovalEnabled, keepGroups: config.symbolKeepGroups)
+            })
             // 「翻訳して入力」が ON なら、この最終テキストを 1 回だけ訳す（OFF なら素通り）
             let (output, restTranslateMs) = await self.translateIfEnabled(corrected, generation: generation, context: context)
             timelines[generation]?.translateMs = restTranslateMs
             // 整形・翻訳を待っている間に打ち切られていたら貼り付けない（打ち切った入力が後から入るのを防ぐ）
             if discardIfAbandoned(generation) { return }
-            // 貼り付け先アプリを貼り付け直前に再取得する（録音中に切り替えた場合は今の前面が正）
-            let target = frontApp.snapshot()
-            // 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する（履歴保存 OFF はスキップ）
-            if config.historyEnabled {
-                history.add(output, appBundleID: target.bundleID, appName: target.name)
-            }
-            let pasteStart = ProcessInfo.processInfo.systemUptime
-            let pasted = await Paster.paste(output, logGeneration: generation)
-            let pasteMs = Int((ProcessInfo.processInfo.systemUptime - pasteStart) * 1000)
-            timelines[generation]?.pasteMs = pasteMs
-            timelines[generation]?.pastedAt = ProcessInfo.processInfo.systemUptime
-            timelines[generation]?.characters = output.count
-            timelines[generation]?.targetBundleID = target.bundleID
-            timelines[generation]?.outcome = pasted
-                ? DictationTimeline.Outcome.pasted : DictationTimeline.Outcome.pasteFailed
-            // 結果はクリップボードに残してあるので、手で貼るよう知らせる
-            if !pasted, !isAbandoned(generation) { hud.notice(Self.pasteFailedNotice, isError: true) }
+            let (restResult, target) = await pasteOutput(output, screenshots: shots, generation: generation)
+            // 記号の自動削除で文が空になり画像も無い。何も貼っていないので Enter も集計もしない
+            if restResult == .nothingToPaste { return }
+            let pasted = restResult == .pasted
+            let pasteMs = timelines[generation]?.pasteMs ?? 0
             let totalMs = Int((ProcessInfo.processInfo.systemUptime - restT0) * 1000)
             // 統合時は整形を STT と一緒に済ませたことが分かるよう「整形 サーバー統合」と表記する
             let fmtDesc = didServerFormat

@@ -377,6 +377,10 @@ final class ConfigStore: ObservableObject {
     ///
     /// 翻訳はたまに 1 回だけ使う用途が多く、常時 ON のトグルを毎回切り替えるのが手間なため。
     @Published var translateOnceKey: [String]
+    /// 撮影キー（録音中に押して離すと範囲を選んでスクリーンショットを撮り、文と一緒に貼る。空＝無効。既定 左⌃）
+    ///
+    /// fn は押すだけで絵文字パネル・入力切替が出るので既定にしない（docs/SCREENSHOT_ATTACH_PLAN.md）。
+    @Published var screenshotKey: [String]
 
     /// 保護リストの既定シード（一人／二人＝ひとり・ふたり、十分＝じゅうぶん 等の誤変換を守る）
     static let defaultNumeralProtectWords = [
@@ -428,6 +432,7 @@ final class ConfigStore: ObservableObject {
         static let duckMediaEnabled = "duckMediaEnabled"
         static let repasteKey = "repasteKey"
         static let translateOnceKey = "translateOnceKey"
+        static let screenshotKey = "screenshotKey"
         static let hudAlwaysVisible = "hudAlwaysVisible"
         static let dockIconAlwaysVisible = "dockIconAlwaysVisible"
         static let sideNotchEnabled = "sideNotchEnabled"
@@ -524,6 +529,10 @@ final class ConfigStore: ObservableObject {
         translateOnceKey = defaults.object(forKey: Keys.translateOnceKey) == nil
             ? ["shift_r"]
             : ((defaults.array(forKey: Keys.translateOnceKey) as? [String]) ?? [])
+        // 未保存なら既定 左⌃（空配列は「ユーザーが明示的に無効化した」を表すので translateOnceKey と同じく区別する）
+        screenshotKey = defaults.object(forKey: Keys.screenshotKey) == nil
+            ? ScreenshotAttach.defaultKey
+            : ((defaults.array(forKey: Keys.screenshotKey) as? [String]) ?? [])
         sideNotchEnabled = defaults.object(forKey: Keys.sideNotchEnabled) as? Bool ?? true
         historyEnabled = defaults.object(forKey: Keys.historyEnabled) as? Bool ?? true
         historyLimit = Self.savedHistoryLimit(defaults: defaults)
@@ -629,6 +638,7 @@ final class ConfigStore: ObservableObject {
         $translateInputEngine.dropFirst().sink { DictationTranslation.engine = $0 }.store(in: &cancellables)
         $translateInputGroqModel.dropFirst().sink { DictationTranslation.groqModelID = $0 }.store(in: &cancellables)
         $translateOnceKey.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.translateOnceKey) }.store(in: &cancellables)
+        $screenshotKey.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.screenshotKey) }.store(in: &cancellables)
     }
 
     /// ユーザー辞書の確定置換を最終テキストに適用する。
