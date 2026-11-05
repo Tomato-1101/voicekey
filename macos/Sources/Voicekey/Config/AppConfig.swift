@@ -328,6 +328,10 @@ final class ConfigStore: ObservableObject {
     @Published var numeralConvertCounter: Bool
     /// 数字に変換しない語（数字漢字で始まる語をラン先頭にアンカー照合して守る）
     @Published var numeralProtectWords: [String]
+    /// 入力文から記号を自動で消すか（マスター。false なら完全パススルー）
+    @Published var symbolRemovalEnabled: Bool
+    /// 消さずに残す記号グループの id（SymbolFilter.groups。既定は読点・句点・カンマ・ドット）
+    @Published var symbolKeepGroups: [String]
 
     // MARK: - ライブ字幕（personal・macOS 26 以降）
 
@@ -437,6 +441,8 @@ final class ConfigStore: ObservableObject {
         static let numeralConvertCounter = "numeralConvertCounter"
         static let skipFormatForAI = "skipFormatForAI"
         static let numeralProtectWords = "numeralProtectWords"
+        static let symbolRemovalEnabled = "symbolRemovalEnabled"
+        static let symbolKeepGroups = "symbolKeepGroups"
         /// モード別整形既定の一回限りマイグレーション済みフラグ（v1.8）
         static let didMigrateModeDefaultsV18 = "didMigrateModeDefaultsV18"
         /// 廃止モデル→既定モデルの一回限りマイグレーション済みフラグ（2026-10-01 のエンジン入れ替え）
@@ -529,6 +535,9 @@ final class ConfigStore: ObservableObject {
         // 保存済みなら空配列も含めそのまま尊重する（repasteKey と同じ「未保存判定」方式）
         numeralNormalizeEnabled = defaults.object(forKey: Keys.numeralNormalizeEnabled) as? Bool ?? true
         numeralConvertCounter = defaults.object(forKey: Keys.numeralConvertCounter) as? Bool ?? true
+        // 記号の自動削除: マスターは既定 ON。残すグループは未保存なら既定の4つ、保存済みなら空配列も尊重する
+        symbolRemovalEnabled = defaults.object(forKey: Keys.symbolRemovalEnabled) as? Bool ?? true
+        symbolKeepGroups = defaults.stringArray(forKey: Keys.symbolKeepGroups) ?? SymbolFilter.defaultKeepGroups
         // 貼り付け先が AI のときは整形しない: 未保存なら ON（速さ優先。設定のプロンプトページで切れる）
         skipFormatForAI = defaults.object(forKey: Keys.skipFormatForAI) as? Bool ?? true
         numeralProtectWords = defaults.object(forKey: Keys.numeralProtectWords) == nil
@@ -595,6 +604,8 @@ final class ConfigStore: ObservableObject {
         $historySyncURL.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.historySyncURL) }.store(in: &cancellables)
         $numeralNormalizeEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.numeralNormalizeEnabled) }.store(in: &cancellables)
         $numeralConvertCounter.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.numeralConvertCounter) }.store(in: &cancellables)
+        $symbolRemovalEnabled.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.symbolRemovalEnabled) }.store(in: &cancellables)
+        $symbolKeepGroups.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.symbolKeepGroups) }.store(in: &cancellables)
         $skipFormatForAI.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.skipFormatForAI) }.store(in: &cancellables)
         $numeralProtectWords.dropFirst().sink { [weak self] in self?.defaults.set($0, forKey: Keys.numeralProtectWords) }.store(in: &cancellables)
         // ライブ字幕は CaptionSettings 経由で書く（キーの正本を 1 か所に保つため）

@@ -142,6 +142,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "一番", "一度",
     ],
 
+    # 入力文から記号を自動で消す（symbol_filter・Mac 版 ConfigStore と同義）。
+    # symbol_removal_enabled: マスター（False で完全パススルー）
+    # symbol_keep_groups: 消さずに残す記号グループの id（core/symbol_filter.GROUPS。既定は読点・句点・カンマ・ドット）
+    "symbol_removal_enabled": True,
+    "symbol_keep_groups": ["comma", "period", "touten", "kuten"],
+
     # ホットキー1 設定＝メイン（新規インストールの既定: Soniox stt-rt-v5 のライブ型・押している間・整形 OFF）。
     # Mac の新規インストール（Apple ローカルが無い環境）と同じ。保存済みの設定がある人は保存値が優先される
     "hotkey1": {

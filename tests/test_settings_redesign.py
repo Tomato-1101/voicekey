@@ -58,6 +58,24 @@ class TestSidebar(_SettingsWindowTestBase):
         self.assertTrue(win._page_subtitle.text())
 
 
+class TestSymbolRemovalSettings(_SettingsWindowTestBase):
+    def test_defaults_load_and_roundtrip(self):
+        cm = self._config({})
+        win = self._make_window(cm)
+        # 既定: マスターオン・残すのは読点/句点/カンマ/ドットだけ
+        self.assertTrue(win._symbol_removal_check.isChecked())
+        checked = sorted(g for g, c in win._symbol_keep_checks.items() if c.isChecked())
+        self.assertEqual(checked, ["comma", "kuten", "period", "touten"])
+        # 変更して保存 → 読み直しで同じ
+        win._symbol_keep_checks["question"].setChecked(True)
+        win._symbol_keep_checks["comma"].setChecked(False)
+        win._symbol_removal_check.setChecked(False)
+        _save(win)
+        reloaded = ConfigManager(config_path=cm.config_path)
+        self.assertFalse(reloaded.get("symbol_removal_enabled"))
+        self.assertEqual(reloaded.get("symbol_keep_groups"), ["touten", "kuten", "period", "question"])
+
+
 class TestEnginePopup(_SettingsWindowTestBase):
     def test_keeps_saved_deepgram_and_saves_choice(self):
         cm = self._config({

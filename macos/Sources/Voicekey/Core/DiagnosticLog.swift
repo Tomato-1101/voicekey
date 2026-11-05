@@ -374,6 +374,8 @@ enum SettingsChangeLog {
         s["historySyncURL"] = "長さ\(c.historySyncURL.count)"
         s["numeralNormalizeEnabled"] = "\(c.numeralNormalizeEnabled)"
         s["numeralConvertCounter"] = "\(c.numeralConvertCounter)"
+        s["symbolRemovalEnabled"] = "\(c.symbolRemovalEnabled)"
+        s["symbolKeepGroups"] = c.symbolKeepGroups.joined(separator: ",")
         s["skipFormatForAI"] = "\(c.skipFormatForAI)"
         s["numeralProtectWords"] = "件数\(c.numeralProtectWords.count)"
         s["translateInputEnabled"] = "\(c.translateInputEnabled)"

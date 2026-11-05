@@ -1895,6 +1895,34 @@ private struct DictionaryTab: View {
                     }
                 }
             }
+
+            Section("記号") {
+                // マスター。OFF なら記号を一切消さない（完全パススルー）
+                Toggle(isOn: $config.symbolRemovalEnabled) {
+                    SettingRowLabel(
+                        title: "記号を自動で消す",
+                        detail: "チェックした記号だけ残し、それ以外の記号を入力から消します。"
+                    )
+                }
+                // 残す記号。チェックしたグループは消さない（マスター OFF のときは無効表示）
+                ForEach(SymbolFilter.groups, id: \.id) { group in
+                    Toggle(isOn: Binding(
+                        get: { config.symbolKeepGroups.contains(group.id) },
+                        set: { keep in
+                            config.symbolKeepGroups.removeAll { $0 == group.id }
+                            if keep { config.symbolKeepGroups.append(group.id) }
+                        }
+                    )) {
+                        HStack(spacing: 8) {
+                            Text(group.name)
+                            Text(group.characters)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .toggleStyle(.checkbox)
+                    .disabled(!config.symbolRemovalEnabled)
+                }
+            }
         }
         .scrollContentBackground(.hidden)  // grouped Form の不透明背景を消してすりガラス下地を透かす
         .glassFormRows()                   // 行フィルを半透明化して島の中で「ガラスの棚」に見せる

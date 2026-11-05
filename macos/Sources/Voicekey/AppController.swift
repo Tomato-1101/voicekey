@@ -1235,12 +1235,16 @@ final class AppController: ObservableObject {
                 let numEnabled = config.numeralNormalizeEnabled
                 let numCounter = config.numeralConvertCounter
                 let numProtect = Set(config.numeralProtectWords)
+                let symEnabled = config.symbolRemovalEnabled
+                let symKeep = config.symbolKeepGroups
                 stream.onInterim = { [weak self] text in
                     // ライブ字幕にも確定入力と同じ数字正規化（漢数字/全角→半角アラビア）をかけて、
                     // 「喋っている最中は漢数字→確定で半角に変わる」チラつき（不一致）を無くす。
                     // NumeralNormalizer は純関数なので受信キューから直接呼んで描画直前に一枚噛ませる。
-                    let normalized = NumeralNormalizer.normalize(
-                        text, enabled: numEnabled, convertCounter: numCounter, protectWords: numProtect)
+                    let normalized = SymbolFilter.filter(
+                        NumeralNormalizer.normalize(
+                            text, enabled: numEnabled, convertCounter: numCounter, protectWords: numProtect),
+                        enabled: symEnabled, keepGroups: symKeep)
                     DispatchQueue.main.async {
                         // 前の録音の遅れて届いた更新は捨てる（新しいピルに前回の文字を残さない）
                         guard let self, self.recordingGeneration == generation else { return }
@@ -1683,7 +1687,11 @@ final class AppController: ObservableObject {
             "[翻訳] gen=\(DiagnosticText.gen(generation)) engine=\(context.translateEngine.rawValue) "
                 + "target=\(context.translateTarget) \(elapsedMs)ms "
                 + "結果=\(result.didTranslate ? "ok" : "失敗(\(DiagnosticText.clip(result.failureReason ?? "不明", 80)))")")
-        return (result.text, elapsedMs)
+        // 翻訳 LLM は記号を足すことがあるので、訳せたときは訳文にも記号の自動削除をかける
+        let translated = result.didTranslate
+            ? SymbolFilter.filter(result.text, enabled: config.symbolRemovalEnabled, keepGroups: config.symbolKeepGroups)
+            : result.text
+        return (translated, elapsedMs)
     }
 
     /// 指定の構成に合う翻訳器を返す（構成が変わらない限り使い回す）。
@@ -1883,12 +1891,15 @@ final class AppController: ObservableObject {
                     }
                     // 数字表記を半角アラビア数字へ正規化してからユーザー辞書置換を適用
                     // （全角→半角・連続漢数字→算用数字。置換はその後＝正規化後テキストに効かせる）
-                    let corrected = config.applyReplacements(NumeralNormalizer.normalize(
-                        formatted,
-                        enabled: config.numeralNormalizeEnabled,
-                        convertCounter: config.numeralConvertCounter,
-                        protectWords: Set(config.numeralProtectWords)
-                    ))
+                    // 記号の自動削除は数字の正規化の後・辞書置換の前（辞書でわざと入れた記号を消さないため）
+                    let corrected = config.applyReplacements(SymbolFilter.filter(
+                        NumeralNormalizer.normalize(
+                            formatted,
+                            enabled: config.numeralNormalizeEnabled,
+                            convertCounter: config.numeralConvertCounter,
+                            protectWords: Set(config.numeralProtectWords)
+                        ),
+                        enabled: config.symbolRemovalEnabled, keepGroups: config.symbolKeepGroups))
                     // 「翻訳して入力」が ON なら、この最終テキストを 1 回だけ訳す
                     // （正規化・ユーザー辞書は原文の誤認識を直すためのものなので、翻訳より前に効かせる）
                     let (output, streamTranslateMs) = await self.translateIfEnabled(corrected, generation: generation, context: context)
@@ -2058,12 +2069,15 @@ final class AppController: ObservableObject {
             if !didServerFormat && formatEnabled { timelines[generation]?.formatMs = fmtMs }
             // 数字表記を半角アラビア数字へ正規化してからユーザー辞書置換を適用
             // （全角→半角・連続漢数字→算用数字。置換はその後＝正規化後テキストに効かせる）
-            let corrected = config.applyReplacements(NumeralNormalizer.normalize(
-                formatted,
-                enabled: config.numeralNormalizeEnabled,
-                convertCounter: config.numeralConvertCounter,
-                protectWords: Set(config.numeralProtectWords)
-            ))
+            // 記号の自動削除は数字の正規化の後・辞書置換の前（辞書でわざと入れた記号を消さないため）
+            let corrected = config.applyReplacements(SymbolFilter.filter(
+                NumeralNormalizer.normalize(
+                    formatted,
+                    enabled: config.numeralNormalizeEnabled,
+                    convertCounter: config.numeralConvertCounter,
+                    protectWords: Set(config.numeralProtectWords)
+                ),
+                enabled: config.symbolRemovalEnabled, keepGroups: config.symbolKeepGroups))
             // 「翻訳して入力」が ON なら、この最終テキストを 1 回だけ訳す（OFF なら素通り）
             let (output, restTranslateMs) = await self.translateIfEnabled(corrected, generation: generation, context: context)
             timelines[generation]?.translateMs = restTranslateMs

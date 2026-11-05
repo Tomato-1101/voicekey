@@ -231,6 +231,7 @@ class TestInsertRecordsHistoryWithApp(unittest.TestCase):
             _last_inserted_text=None,
         )
         app._apply_replacements = lambda t: t
+        app._remove_symbols = lambda t: t
         app._maybe_translate = lambda t, ctx: t
         ctx = _ctx()
         self.assertTrue(VoicekeyApp._insert_and_enter(app, "こんにちは", False, ctx))
@@ -250,6 +251,7 @@ class TestInsertRecordsHistoryWithApp(unittest.TestCase):
             _last_inserted_text=None,
         )
         app._apply_replacements = lambda t: t
+        app._remove_symbols = lambda t: t
         app._maybe_translate = lambda t, ctx: t
         self.assertFalse(VoicekeyApp._insert_and_enter(app, "x", True, _ctx()))
         history.add.assert_not_called()

@@ -70,7 +70,7 @@ from PySide6.QtWidgets import (
 from ..config import ConfigManager, HotkeyMode, TranscriptionBackend
 from ..config import backends, llm_models
 from ..config.constants import APP_VERSION, DEFAULT_HISTORY_LIMIT, HISTORY_LIMIT_OPTIONS
-from ..core import text_formatter
+from ..core import symbol_filter, text_formatter
 from ..core.audio_recorder import AudioRecorder
 from ..core.clipboard_history import ClipboardHistoryStore
 from ..core.history import MAX_ITEMS as HISTORY_MAX_ITEMS, HistoryStore
@@ -3074,6 +3074,29 @@ class SettingsWindow(CaptionPagesMixin, QWidget):
         _add_block(cl, protect_block)
         layout.addWidget(card)
 
+        # --- 記号（入力文から記号を自動で消す・Mac 版と同じ） ---
+        layout.addWidget(self._section_title("記号"))
+        sym_card, sl = _make_card()
+        self._symbol_removal_check = self._make_toggle()
+        _add_row(
+            sl, "記号を自動で消す", self._symbol_removal_check,
+            caption="チェックした記号だけ残し、それ以外の記号を入力から消します。",
+        )
+        keep_block = QWidget()
+        kbl = QVBoxLayout(keep_block)
+        kbl.setContentsMargins(0, 0, 0, 0)
+        kbl.setSpacing(6)
+        self._symbol_keep_checks = {}
+        for gid, name, chars in symbol_filter.GROUPS:
+            check = QCheckBox(f"{name}  {chars}")
+            self._symbol_keep_checks[gid] = check
+            kbl.addWidget(check)
+        _add_block(sl, keep_block)
+        # マスターが OFF のときは残す記号の一覧を無効化する（機能全体が止まるため）
+        self._symbol_removal_check.toggled.connect(keep_block.setEnabled)
+        self._symbol_keep_block = keep_block
+        layout.addWidget(sym_card)
+
         layout.addStretch()
         return self._wrap_scroll(page)
 
@@ -3818,6 +3841,14 @@ class SettingsWindow(CaptionPagesMixin, QWidget):
         for word in config.get("numeral_protect_words", []) or []:
             if isinstance(word, str) and word:
                 self._numeral_protect_list.addItem(word)
+        # 記号の自動削除（マスター / 残すグループ）
+        self._symbol_removal_check.setChecked(
+            bool(config.get("symbol_removal_enabled", True))
+        )
+        self._symbol_keep_block.setEnabled(self._symbol_removal_check.isChecked())
+        keep_groups = config.get("symbol_keep_groups", symbol_filter.DEFAULT_KEEP_GROUPS)
+        for gid, check in self._symbol_keep_checks.items():
+            check.setChecked(gid in keep_groups)
         self._handsfree_input.setText(config.get("handsfree_key", ""))
         self._auto_enter_delay_slider.setValue(config.get("auto_enter_delay_ms", 50))
         self._populate_input_devices()
@@ -3893,6 +3924,12 @@ class SettingsWindow(CaptionPagesMixin, QWidget):
             "numeral_normalize_enabled": self._numeral_enabled_check.isChecked(),
             "numeral_convert_counter": self._numeral_counter_check.isChecked(),
             "numeral_protect_words": self._collect_protect_words(),
+            # 記号の自動削除（Mac 版 ConfigStore と同義）。残すグループは表示順で保存する
+            "symbol_removal_enabled": self._symbol_removal_check.isChecked(),
+            "symbol_keep_groups": [
+                gid for gid, _name, _chars in symbol_filter.GROUPS
+                if self._symbol_keep_checks[gid].isChecked()
+            ],
             # vad_filter / vad_min_silence_duration_ms / split_parallel_enabled /
             # streaming_enabled / hud_enabled / audio_preprocess.volume_normalize は
             # 常時 ON 固定（UI 撤去）。ここでは保存せず config_manager 側で True を強制する。
