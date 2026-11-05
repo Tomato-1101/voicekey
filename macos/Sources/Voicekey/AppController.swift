@@ -1689,7 +1689,10 @@ final class AppController: ObservableObject {
                 + "結果=\(result.didTranslate ? "ok" : "失敗(\(DiagnosticText.clip(result.failureReason ?? "不明", 80)))")")
         // 翻訳 LLM は記号を足すことがあるので、訳せたときは訳文にも記号の自動削除をかける
         let translated = result.didTranslate
-            ? SymbolFilter.filter(result.text, enabled: config.symbolRemovalEnabled, keepGroups: config.symbolKeepGroups)
+            ? SymbolFilter.filter(
+                result.text, enabled: config.symbolRemovalEnabled, keepGroups: config.symbolKeepGroups,
+                // 辞書置換でわざと入れた記号は訳文でも消さない
+                protect: config.replacements.filter { $0.enabled && !$0.from.isEmpty }.map(\.to))
             : result.text
         return (translated, elapsedMs)
     }

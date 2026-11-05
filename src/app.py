@@ -30,7 +30,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
-from typing import Callable, Dict, Optional, Set
+from typing import Callable, Dict, List, Optional, Set
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -1200,9 +1200,16 @@ class VoicekeyApp(QObject):
         # 「喋っている最中は記号あり→確定で消える」チラつきを無くす）
         sym_enabled = bool(self._config.get("symbol_removal_enabled", True))
         sym_keep = self._config.get("symbol_keep_groups", None)
+        # 確定入力と同じ順（数字の正規化 → 記号の削除）。数字の設定も録音開始時で固定する
+        num_enabled = bool(self._config.get("numeral_normalize_enabled", True))
+        num_counter = bool(self._config.get("numeral_convert_counter", True))
+        num_protect = self._config.get("numeral_protect_words", None)
 
         def on_interim(text: str) -> None:
             # 受信スレッド → シグナルでメインへ
+            text = numeral_normalizer.normalize(
+                text, enabled=num_enabled, convert_counter=num_counter, protect_words=num_protect,
+            )
             self.interim_text.emit(symbol_filter.filter_symbols(text, sym_enabled, sym_keep))
         if slot.backend == backends.SONIOX:
             session = SonioxLiveSession(
@@ -1633,7 +1640,14 @@ class VoicekeyApp(QObject):
         if not result.did_translate and result.failure_reason not in (None, "empty"):
             self.notice.emit("翻訳できなかったため、原文を入力しました")
         # 翻訳 LLM は記号を足すことがあるので、訳せたときは訳文にも記号の自動削除をかける
-        return self._remove_symbols(result.text) if result.did_translate else result.text
+        if not result.did_translate:
+            return result.text
+        # 辞書置換でわざと入れた記号は訳文でも消さない
+        protect = [
+            r.get("to", "") for r in (self._config.get("replacements", []) or [])
+            if isinstance(r, dict) and r.get("enabled", True) and r.get("from", "")
+        ]
+        return self._remove_symbols(result.text, protect)
 
     def _record_stats(self, text: str, audio) -> None:
         """音声入力 1 回分を実績に記録する（録音長は生の録音バッファ長から算出）。"""
@@ -1669,12 +1683,13 @@ class VoicekeyApp(QObject):
                 result = result.replace(src, rule.get("to", ""))
         return result
 
-    def _remove_symbols(self, text: str) -> str:
+    def _remove_symbols(self, text: str, protect: Optional[List[str]] = None) -> str:
         """設定どおりに記号を自動で消す（Mac の SymbolFilter.filter と同じ規則）。"""
         return symbol_filter.filter_symbols(
             text,
             enabled=bool(self._config.get("symbol_removal_enabled", True)),
             keep_groups=self._config.get("symbol_keep_groups", None),
+            protect=protect,
         )
 
     def _insert_and_enter(self, text: str, auto_enter: bool, ctx: Optional[TaskContext] = None) -> bool:
@@ -1699,6 +1714,12 @@ class VoicekeyApp(QObject):
         # 「翻訳して入力」の回なら、この最終テキストを 1 回だけ訳す
         text = self._maybe_translate(text, ctx)
         tl = ctx.timeline if ctx is not None else None
+        # 記号を消した結果が空（「！」だけ等）なら何も貼らず、Enter も送らない
+        if not text.strip():
+            logger.info("最終テキストが空のため貼り付けをスキップ")
+            if tl is not None:
+                tl.outcome = diagnostics.Outcome.EMPTY_RESULT
+            return False
         # 貼り付け先アプリを貼り付け直前に取る（録音中に切り替えた場合は今の前面が正）
         try:
             app_id, app_name = self._platform.foreground_app()

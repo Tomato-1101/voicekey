@@ -156,7 +156,7 @@ struct MainWindowView: View {
             .init(id: TabID.prompt, title: "プロンプト", icon: "wand.and.stars", section: "音声入力",
                   subtitle: "文章を整えるときに AI へ渡す指示です。録音キー 1・2 で共通です。"),
             .init(id: TabID.dictionary, title: "辞書と数字", icon: "character.book.closed", section: "音声入力",
-                  subtitle: "聞き間違えやすい言葉の直し方と、数字の書き方を決めます。"),
+                  subtitle: "聞き間違えやすい言葉の直し方と、記号・数字の書き方を決めます。"),
         ]
         // ライブ字幕は personal 限定・macOS 26 以降でしか動かないので、使える環境でだけ出す
         if EmbeddedKeys.isPersonal, #available(macOS 26.0, *) {
@@ -1851,6 +1851,38 @@ private struct DictionaryTab: View {
                 }
             }
 
+            Section("記号") {
+                // マスター。OFF なら記号を一切消さない（完全パススルー）
+                Toggle(isOn: $config.symbolRemovalEnabled) {
+                    SettingRowLabel(
+                        title: "記号を自動で消す",
+                        detail: "下の一覧でチェックを外した記号を入力から消します。一覧にない記号は変えません。英数字の途中にある一部の記号は保護します。"
+                    )
+                }
+                // 残す記号。チェックしたグループは消さない（マスター OFF のときは無効表示）
+                Text("残す記号")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                ForEach(SymbolFilter.groups, id: \.id) { group in
+                    Toggle(isOn: Binding(
+                        get: { config.symbolKeepGroups.contains(group.id) },
+                        set: { keep in
+                            config.symbolKeepGroups.removeAll { $0 == group.id }
+                            if keep { config.symbolKeepGroups.append(group.id) }
+                        }
+                    )) {
+                        HStack(spacing: 8) {
+                            Text(group.name)
+                            // 「,，」のように詰めると読めないので 1 文字ずつ空けて見せる
+                            Text(group.characters.map(String.init).joined(separator: " "))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .toggleStyle(.checkbox)
+                    .disabled(!config.symbolRemovalEnabled)
+                }
+            }
+
             Section("数字の書き方") {
                 // マスター。OFF なら数字の正規化を一切しない（完全パススルー）
                 Toggle(isOn: $config.numeralNormalizeEnabled) {
@@ -1893,35 +1925,6 @@ private struct DictionaryTab: View {
                         .buttonStyle(.borderless)
                         .help("この語を削除")
                     }
-                }
-            }
-
-            Section("記号") {
-                // マスター。OFF なら記号を一切消さない（完全パススルー）
-                Toggle(isOn: $config.symbolRemovalEnabled) {
-                    SettingRowLabel(
-                        title: "記号を自動で消す",
-                        detail: "チェックした記号だけ残し、それ以外の記号を入力から消します。"
-                    )
-                }
-                // 残す記号。チェックしたグループは消さない（マスター OFF のときは無効表示）
-                ForEach(SymbolFilter.groups, id: \.id) { group in
-                    Toggle(isOn: Binding(
-                        get: { config.symbolKeepGroups.contains(group.id) },
-                        set: { keep in
-                            config.symbolKeepGroups.removeAll { $0 == group.id }
-                            if keep { config.symbolKeepGroups.append(group.id) }
-                        }
-                    )) {
-                        HStack(spacing: 8) {
-                            Text(group.name)
-                            // 「,，」のように詰めると読めないので 1 文字ずつ空けて見せる
-                            Text(group.characters.map(String.init).joined(separator: " "))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .toggleStyle(.checkbox)
-                    .disabled(!config.symbolRemovalEnabled)
                 }
             }
         }

@@ -71,6 +71,13 @@ final class SymbolFilterTests: XCTestCase {
 
     // MARK: - 設定の既定値と保存・読み込み
 
+    func testProtectKeepsDictionarySymbols() {
+        // 辞書置換で入れた記号は、訳文にかけ直しても消さない（Windows と同じ表）
+        XCTAssertEqual(SymbolFilter.filter("Use【重要】now!", protect: ["【重要】"]), "Use【重要】now")
+        XCTAssertEqual(SymbolFilter.filter("a「b」c「b」", protect: ["「b」"]), "a「b」c「b」")
+        XCTAssertEqual(SymbolFilter.filter("(x) (y)", protect: ["(x)", ""]), "(x) y")
+    }
+
     func testConfigDefaults() {
         let suite = testDefaultsSuite()
         let defaults = UserDefaults(suiteName: suite)!

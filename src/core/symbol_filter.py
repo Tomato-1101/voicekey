@@ -53,6 +53,7 @@ def filter_symbols(
     text: str,
     enabled: bool = True,
     keep_groups: Optional[Iterable[str]] = None,
+    protect: Optional[Iterable[str]] = None,
 ) -> str:
     """記号を消す。``enabled`` が False なら完全に素通し。
 
@@ -60,6 +61,8 @@ def filter_symbols(
         text: 入力文
         enabled: マスタースイッチ
         keep_groups: 残すグループ id（None なら既定の4つ）
+        protect: この文字列が現れた範囲は消さない（辞書置換でわざと入れた記号を、
+            訳文にかけ直すときも守るため）
     """
     if not enabled or not text:
         return text
@@ -70,6 +73,17 @@ def filter_symbols(
             remove.update(chars)
     if not remove:
         return text
+
+    # 守る範囲（protect の各文字列が現れた位置）を文字単位の印にする
+    guarded = [False] * len(text)
+    for word in protect or ():
+        if not word:
+            continue
+        start = text.find(word)
+        while start != -1:
+            for j in range(start, start + len(word)):
+                guarded[j] = True
+            start = text.find(word, start + len(word))
 
     out = []
     # 直前の出力以降に削除があったか（スペースの詰め・落としの判断に使う）
@@ -84,7 +98,7 @@ def filter_symbols(
 
     n = len(text)
     for i, ch in enumerate(text):
-        if ch in remove:
+        if ch in remove and not guarded[i]:
             prev = text[i - 1] if i > 0 else None
             nxt = text[i + 1] if i + 1 < n else None
             keep_inner = ch in _INNER_KEPT and _is_ascii_alnum(prev) and _is_ascii_alnum(nxt)

@@ -258,6 +258,26 @@ class TestInsertRecordsHistoryWithApp(unittest.TestCase):
         handler.press_enter.assert_not_called()  # 貼れていないのに Enter を送らない
         self.assertIn("Ctrl+V", app.notice.calls[-1][0])
 
+    def test_empty_after_symbol_removal_skips_paste_and_enter(self):
+        # 「！」だけの発話は記号を消すと空になる。空を貼ったり Enter だけ送ったりしない
+        history = mock.Mock()
+        handler = mock.Mock()
+        app = SimpleNamespace(
+            _config={"history_enabled": True, "numeral_normalize_enabled": False},
+            _history=history, _input_handler=handler, notice=_Signal(),
+            _platform=SimpleNamespace(foreground_app=lambda: (None, None)),
+            _last_inserted_text=None,
+        )
+        app._apply_replacements = lambda t: t
+        app._remove_symbols = lambda t: ""
+        app._maybe_translate = lambda t, ctx: t
+        ctx = _ctx()
+        self.assertFalse(VoicekeyApp._insert_and_enter(app, "！", True, ctx))
+        handler.insert_text.assert_not_called()
+        handler.press_enter.assert_not_called()
+        history.add.assert_not_called()
+        self.assertEqual(ctx.timeline.outcome, diagnostics.Outcome.EMPTY_RESULT)
+
 
 
 class TestWindowsKeyNormalize(unittest.TestCase):

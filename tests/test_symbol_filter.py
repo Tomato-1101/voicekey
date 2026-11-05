@@ -51,6 +51,13 @@ class TestSymbolFilter(unittest.TestCase):
         # 空リストなら全グループを消す
         self.assertEqual(filter_symbols("あ、い。う", keep_groups=[]), "あいう")
 
+    def test_protect_keeps_dictionary_symbols(self):
+        # 辞書置換で入れた記号は、訳文にかけ直しても消さない
+        self.assertEqual(filter_symbols("Use【重要】now!", protect=["【重要】"]), "Use【重要】now")
+        self.assertEqual(filter_symbols("a「b」c「b」", protect=["「b」"]), "a「b」c「b」")
+        # 守る語が無い所の同じ記号は消す・空文字は無視
+        self.assertEqual(filter_symbols("(x) (y)", protect=["(x)", ""]), "(x) y")
+
     def test_idempotent(self):
         for src, _ in DEFAULT_TABLE:
             once = filter_symbols(src)

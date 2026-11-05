@@ -61,7 +61,10 @@ enum SymbolFilter {
     }
 
     /// 記号を消す。`enabled` が false なら完全に素通し。
-    static func filter(_ text: String, enabled: Bool = true, keepGroups: [String] = defaultKeepGroups) -> String {
+    /// `protect` の各文字列が現れた範囲は消さない（辞書置換でわざと入れた記号を、訳文にかけ直すときも守るため）。
+    static func filter(
+        _ text: String, enabled: Bool = true, keepGroups: [String] = defaultKeepGroups, protect: [String] = []
+    ) -> String {
         guard enabled, !text.isEmpty else { return text }
         let keep = Set(keepGroups)
         var remove = Set<Unicode.Scalar>()
@@ -71,6 +74,20 @@ enum SymbolFilter {
         if remove.isEmpty { return text }
 
         let src = Array(text.unicodeScalars)
+        // 守る範囲（protect の各文字列が現れた位置）を scalar 単位の印にする
+        var guarded = [Bool](repeating: false, count: src.count)
+        for word in protect where !word.isEmpty {
+            let w = Array(word.unicodeScalars)
+            var start = 0
+            while start + w.count <= src.count {
+                if Array(src[start..<(start + w.count)]) == w {
+                    for j in start..<(start + w.count) { guarded[j] = true }
+                    start += w.count
+                } else {
+                    start += 1
+                }
+            }
+        }
         var out = String.UnicodeScalarView()
         // 直前の出力以降に削除があったか（スペースの詰め・落としの判断に使う）
         var deletedSinceOutput = false
@@ -84,7 +101,7 @@ enum SymbolFilter {
         }
 
         for (i, ch) in src.enumerated() {
-            if remove.contains(ch) {
+            if remove.contains(ch) && !guarded[i] {
                 let prev: Unicode.Scalar? = i > 0 ? src[i - 1] : nil
                 let next: Unicode.Scalar? = i + 1 < src.count ? src[i + 1] : nil
                 let keepInner = innerKept.contains(ch) && isAsciiAlnum(prev) && isAsciiAlnum(next)

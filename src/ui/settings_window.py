@@ -162,7 +162,7 @@ _PAGE_SUBTITLES = {
     "録音キー 1": "メインの録音キー。押して話すと、いま使っているアプリに文字が入ります。",
     "録音キー 2": "2 つ目の録音キー。エンジンや押し方を 1 と変えて使い分けられます。",
     "プロンプト": "文章を整えるときに AI へ渡す指示です。録音キー 1・2 で共通です。",
-    "辞書と数字": "聞き間違えやすい言葉の直し方と、数字の書き方を決めます。",
+    "辞書と数字": "聞き間違えやすい言葉の直し方と、記号・数字の書き方を決めます。",
     "翻訳して入力": "話した内容を別の言語に訳してから入力します。",
     "ライブ字幕": "パソコンで流れている音声に、字幕（翻訳・文字起こし）を付けます。",
     "議事録・会議": "Google Meet にボットを参加させて、議事録を残します。",
@@ -2979,7 +2979,7 @@ class SettingsWindow(CaptionPagesMixin, QWidget):
     # ------------------------------------------------------------------
 
     def _create_dictionary_page(self) -> QWidget:
-        """辞書と数字ページ（置き換えを追加 / 登録済みの置き換え / 数字の書き方・Mac と同じ構成）。"""
+        """辞書と数字ページ（置き換えを追加 / 登録済みの置き換え / 記号 / 数字の書き方・Mac と同じ構成）。"""
         page, layout = self._new_page()
 
         # --- 置き換えを追加（常に出ている入力欄） ---
@@ -3031,6 +3031,30 @@ class SettingsWindow(CaptionPagesMixin, QWidget):
         layout.addWidget(self._dict_empty_label)
         self._update_dict_empty_label()
 
+        # --- 記号（入力文から記号を自動で消す・Mac 版と同じ） ---
+        layout.addWidget(self._section_title("記号"))
+        sym_card, sl = _make_card()
+        self._symbol_removal_check = self._make_toggle()
+        _add_row(
+            sl, "記号を自動で消す", self._symbol_removal_check,
+            caption="下の一覧でチェックを外した記号を入力から消します。一覧にない記号は変えません。英数字の途中にある一部の記号は保護します。",
+        )
+        keep_block = QWidget()
+        kbl = QVBoxLayout(keep_block)
+        kbl.setContentsMargins(0, 0, 0, 0)
+        kbl.setSpacing(6)
+        kbl.addWidget(QLabel("残す記号"))
+        self._symbol_keep_checks = {}
+        for gid, name, chars in symbol_filter.GROUPS:
+            check = QCheckBox(f"{name}  {' '.join(chars)}")
+            self._symbol_keep_checks[gid] = check
+            kbl.addWidget(check)
+        _add_block(sl, keep_block)
+        # マスターが OFF のときは残す記号の一覧を無効化する（機能全体が止まるため）
+        self._symbol_removal_check.toggled.connect(keep_block.setEnabled)
+        self._symbol_keep_block = keep_block
+        layout.addWidget(sym_card)
+
         # --- 数字の書き方（旧 一般 の数字入力） ---
         layout.addWidget(self._section_title("数字の書き方"))
         card, cl = _make_card()
@@ -3073,29 +3097,6 @@ class SettingsWindow(CaptionPagesMixin, QWidget):
         pbl.addLayout(protect_add_row)
         _add_block(cl, protect_block)
         layout.addWidget(card)
-
-        # --- 記号（入力文から記号を自動で消す・Mac 版と同じ） ---
-        layout.addWidget(self._section_title("記号"))
-        sym_card, sl = _make_card()
-        self._symbol_removal_check = self._make_toggle()
-        _add_row(
-            sl, "記号を自動で消す", self._symbol_removal_check,
-            caption="チェックした記号だけ残し、それ以外の記号を入力から消します。",
-        )
-        keep_block = QWidget()
-        kbl = QVBoxLayout(keep_block)
-        kbl.setContentsMargins(0, 0, 0, 0)
-        kbl.setSpacing(6)
-        self._symbol_keep_checks = {}
-        for gid, name, chars in symbol_filter.GROUPS:
-            check = QCheckBox(f"{name}  {' '.join(chars)}")
-            self._symbol_keep_checks[gid] = check
-            kbl.addWidget(check)
-        _add_block(sl, keep_block)
-        # マスターが OFF のときは残す記号の一覧を無効化する（機能全体が止まるため）
-        self._symbol_removal_check.toggled.connect(keep_block.setEnabled)
-        self._symbol_keep_block = keep_block
-        layout.addWidget(sym_card)
 
         layout.addStretch()
         return self._wrap_scroll(page)
@@ -3846,7 +3847,10 @@ class SettingsWindow(CaptionPagesMixin, QWidget):
             bool(config.get("symbol_removal_enabled", True))
         )
         self._symbol_keep_block.setEnabled(self._symbol_removal_check.isChecked())
-        keep_groups = config.get("symbol_keep_groups", symbol_filter.DEFAULT_KEEP_GROUPS)
+        keep_groups = config.get("symbol_keep_groups")
+        # null（手編集など）は既定に戻す。空リストは「何も残さない」なのでそのまま使う
+        if keep_groups is None:
+            keep_groups = symbol_filter.DEFAULT_KEEP_GROUPS
         for gid, check in self._symbol_keep_checks.items():
             check.setChecked(gid in keep_groups)
         self._handsfree_input.setText(config.get("handsfree_key", ""))
