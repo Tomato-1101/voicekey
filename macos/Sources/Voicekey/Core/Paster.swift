@@ -219,6 +219,8 @@ enum Paster {
     @MainActor private static var generation = 0
     /// 直近に自分がコピーしたテキスト（復元可否の判定に使う）
     @MainActor private static var injected: String?
+    /// 直近に自分がコピーした画像（PNG）。スクリーンショット添付の最後の 1 手が画像のときの復元可否の判定に使う
+    @MainActor private static var injectedImage: Data?
     /// 復元すべきユーザーの真のクリップボード内容
     @MainActor private static var savedOriginal: ClipboardSnapshot?
     /// 実行中の貼り付け（次の貼り付けはこれの完了を待ってから始める）。
@@ -227,6 +229,11 @@ enum Paster {
     @MainActor private static var pasteChain: Task<Bool, Never>?
     /// テスト用: ⌘V を送る瞬間（送らない設定でも同じ時点）にクリップボードを覗く。本番では nil
     @MainActor static var keystrokeProbe: ((NSPasteboard) -> Void)?
+    /// テスト用: pasteSequence の 1 手ごとに、キーを送る瞬間のクリップボードと ⌃V かどうかを覗く。本番では nil
+    @MainActor static var sequenceProbe: ((NSPasteboard, Bool) -> Void)?
+    /// 原本の復元・消去でペーストボードへ書いた直後に呼ぶ（AppController がクリップボード履歴へ結線する）。
+    /// 復元した原本には印が付かないので、知らせないと履歴が新しいコピーとして記録してしまう
+    @MainActor static var onRestoreWrite: ((NSPasteboard) -> Void)?
     /// アクセシビリティ許可の直近の結果（貼り付けのたびに裏で更新・起動時は許可ありとみなす）。
     /// 許可を外された直後の 1 回は従来どおり送ってしまうが、2 回目以降は結果を消さずに残せる
     @MainActor static var axTrustedCache = true
@@ -287,16 +294,19 @@ enum Paster {
         generation += 1
         let gen = generation
         let original: ClipboardSnapshot?
-        if let inj = injected, current == inj, savedOriginal != nil {
+        if savedOriginal != nil, isStillInjected(pasteboard, currentString: current) {
             original = savedOriginal
         } else {
             original = ClipboardSnapshot.capture(pasteboard)
         }
         savedOriginal = original
         injected = text
+        injectedImage = nil
 
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
+        // 一時的な書き込みの印。voicekey 自身のクリップボード履歴にも、他のクリップボード管理アプリにも残させない
+        pasteboard.setData(Data(), forType: ClipboardHistoryStore.transientType)
 
         try? await Task.sleep(for: .seconds(pasteDelay))
         keystrokeProbe?(pasteboard)
@@ -370,14 +380,181 @@ enum Paster {
                 ActionLog.shared.write("paster", "クリップボード復元 スキップ（原本が大きすぎて退避できなかったため消去もしない）")
             case .restore(let original):
                 original.write(to: pasteboard)
+                onRestoreWrite?(pasteboard)
                 ActionLog.shared.write("paster", "クリップボード復元 完了")
             case .clear:
                 // 戻せる原本が無い（元々空だった）。ここで何もしないと
                 // 文字起こし結果がクリップボードに残ってしまうため明示的に空にする
                 pasteboard.clearContents()
+                onRestoreWrite?(pasteboard)
                 ActionLog.shared.write("paster", "クリップボード復元 原本なしのため消去")
             }
             injected = nil
+            savedOriginal = nil
+        }
+        return true
+    }
+
+    /// クリップボードが、まだ自分が入れたもの（文字か画像）のままか。連続貼り付けで原本を引き継ぐ判定に使う
+    @MainActor
+    private static func isStillInjected(_ pasteboard: NSPasteboard, currentString: String?) -> Bool {
+        if let inj = injected, currentString == inj { return true }
+        // 画像を読むのは直前に画像を入れたときだけ（ふだんの貼り付けに問い合わせを足さない）
+        if let image = injectedImage, pasteboard.data(forType: .png) == image { return true }
+        return false
+    }
+
+    /// 貼り付けの 1 手（スクリーンショット添付で使う）
+    struct SequenceItem {
+        enum Content {
+            case text(String)
+            /// PNG と、PNG を読めないアプリ向けの TIFF を両方載せる
+            case image(png: Data, tiff: Data?)
+        }
+        let content: Content
+        /// ⌘V ではなく ⌃V で貼る（ターミナルの Claude Code が画像を受けるキー）
+        let controlV: Bool
+    }
+
+    /// 画像を ⌘V した後、次の手でクリップボードを書き換えるまでの待ち（秒）。貼り付け先が画像を
+    /// 読み終える前に書き換えると、次の手の中身が貼られる（計画書の目安 350ms）
+    private static let imageSettleDelay: TimeInterval = 0.35
+    /// ターミナルで ⌃V した画像の待ち（秒）。Claude Code は ⌃V を受けてから別プロセスで
+    /// クリップボードを読みに行くので、⌘V で読むアプリより遅い（推定値。本人の実機確認で詰める）
+    private static let terminalImageSettleDelay: TimeInterval = 0.8
+    /// 文を貼った後、次の手でクリップボードを書き換えるまでの待ち（秒。計画書の目安 120ms）
+    private static let textSettleDelay: TimeInterval = 0.12
+
+    /// 画像と文を順番に貼る（スクリーンショット添付）。クリップボードの退避は最初に 1 回、復元は最後に 1 回だけ
+    ///
+    /// - Parameters:
+    ///   - items: 貼る順の手
+    ///   - fallbackText: キーを送れなかったときにクリップボードへ残す文（手で ⌘V してもらう）
+    ///   - pasteboard / sendKeystroke / logGeneration: paste() と同じ
+    /// - Returns: 全部の手でキーを送れたか（送らない設定は true）
+    @MainActor
+    @discardableResult
+    static func pasteSequence(_ items: [SequenceItem],
+                              fallbackText: String,
+                              pasteboard: NSPasteboard = .general,
+                              sendKeystroke: Bool = true,
+                              logGeneration: Int = 0) async -> Bool {
+        // paste() と同じ鎖に並べる（前後の貼り付けとクリップボードを取り合わない）
+        let previous = pasteChain
+        let current = Task { @MainActor () -> Bool in
+            _ = await previous?.value
+            return await pasteSequenceSerially(items, fallbackText: fallbackText, pasteboard: pasteboard,
+                                               sendKeystroke: sendKeystroke, logGeneration: logGeneration)
+        }
+        pasteChain = current
+        return await current.value
+    }
+
+    /// pasteSequence の本体（直列化してから呼ぶ）
+    @MainActor
+    private static func pasteSequenceSerially(_ items: [SequenceItem],
+                                              fallbackText: String,
+                                              pasteboard: NSPasteboard,
+                                              sendKeystroke: Bool,
+                                              logGeneration: Int) async -> Bool {
+        let genText = DiagnosticText.gen(logGeneration)
+        guard let lastItem = items.last else { return true }
+        let imageCount = items.filter { if case .image = $0.content { return true } else { return false } }.count
+        // 本文・画像は残さない（枚数と手数だけ）
+        ActionLog.shared.write("paster", "[貼付] gen=\(genText) 画像付きで貼り付け 画像=\(imageCount)枚 手数=\(items.count)")
+
+        generation += 1
+        let gen = generation
+        let original: ClipboardSnapshot?
+        if savedOriginal != nil, isStillInjected(pasteboard, currentString: pasteboard.string(forType: .string)) {
+            original = savedOriginal
+        } else {
+            original = ClipboardSnapshot.capture(pasteboard)
+        }
+        savedOriginal = original
+
+        for (index, item) in items.enumerated() {
+            pasteboard.clearContents()
+            switch item.content {
+            case .text(let text):
+                pasteboard.setString(text, forType: .string)
+                injected = text
+                injectedImage = nil
+            case .image(let png, let tiff):
+                pasteboard.setData(png, forType: .png)
+                if let tiff { pasteboard.setData(tiff, forType: .tiff) }
+                injected = nil
+                injectedImage = png
+            }
+            // 一時的な書き込みの印（クリップボード履歴に残させない）
+            pasteboard.setData(Data(), forType: ClipboardHistoryStore.transientType)
+
+            try? await Task.sleep(for: .seconds(pasteDelay))
+            sequenceProbe?(pasteboard, item.controlV)
+            if sendKeystroke {
+                let flags: CGEventFlags = item.controlV ? .maskControl : .maskCommand
+                let what = item.controlV ? "⌃V" : "⌘V"
+                var sent = false
+                if axTrustedCache {
+                    sent = postKeystroke(keyV, flags: flags, what: what, generation: logGeneration)
+                    if !sent {
+                        sent = await retryKeystroke(keyV, flags: flags, what: what, generation: logGeneration)
+                        if gen != generation { return false }
+                    }
+                }
+                guard sent else {
+                    // paste() と同じく、届いていないのに復元すると文が消えるので、文を残して手で貼ってもらう
+                    pasteboard.clearContents()
+                    pasteboard.setString(fallbackText, forType: .string)
+                    injected = nil
+                    injectedImage = nil
+                    savedOriginal = nil
+                    ActionLog.shared.write(
+                        "paster", "[貼付] gen=\(genText) 画像付き貼り付け失敗（\(index + 1) 手目）文をクリップボードに残す")
+                    return false
+                }
+            }
+            guard index < items.count - 1 else { break }
+            // 貼り付け先が読み終えるまで次の手で書き換えない
+            let settle: TimeInterval
+            switch item.content {
+            case .text: settle = textSettleDelay
+            case .image: settle = item.controlV ? terminalImageSettleDelay : imageSettleDelay
+            }
+            try? await Task.sleep(for: .seconds(settle))
+            // 待つ間に別の貼り付けが割り込んだら、クリップボードはもうその回のもの（鎖で並ぶので通常は起きない）
+            if gen != generation { return false }
+        }
+        ActionLog.shared.write("paster", "[貼付] gen=\(genText) 画像付き貼り付け完了")
+
+        // 最後の手で入れたものがまだ残っているときだけ原本へ戻す（判定は paste() と同じ）
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(restoreDelay))
+            let stillOurs: Bool
+            switch lastItem.content {
+            case .text(let text): stillOurs = pasteboard.string(forType: .string) == text
+            case .image(let png, _): stillOurs = pasteboard.data(forType: .png) == png
+            }
+            let decision = ClipboardRestorePolicy.decide(currentGeneration: generation,
+                                                         taskGeneration: gen,
+                                                         clipboardIsStillOurs: stillOurs,
+                                                         original: original)
+            switch decision {
+            case .skip:
+                return
+            case .leaveUserContent, .leaveTruncatedOriginal:
+                ActionLog.shared.write("paster", "クリップボード復元 スキップ（画像付き貼り付け）")
+            case .restore(let original):
+                original.write(to: pasteboard)
+                onRestoreWrite?(pasteboard)
+                ActionLog.shared.write("paster", "クリップボード復元 完了（画像付き貼り付け）")
+            case .clear:
+                pasteboard.clearContents()
+                onRestoreWrite?(pasteboard)
+                ActionLog.shared.write("paster", "クリップボード復元 原本なしのため消去（画像付き貼り付け）")
+            }
+            injected = nil
+            injectedImage = nil
             savedOriginal = nil
         }
         return true

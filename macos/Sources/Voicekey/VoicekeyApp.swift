@@ -81,6 +81,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if DictationTestMode.runIfRequested() { return }
         // 貼り付け後のクリップボード復元の検証ハーネス。同じく素通り。
         if PasteRestoreTestMode.runIfRequested() { return }
+        // スクリーンショット添付の貼り付け経路（順番・⌘V/⌃V・復元）の検証ハーネス。同じく素通り。
+        if ScreenshotAttachTestMode.runIfRequested() { return }
         // 録音開始の待ち時間と集約デバイスの増減を測るハーネス（AUHAL 化の回帰判定）。同じく素通り。
         if AudioEngineCostTestMode.runIfRequested() { return }
         // メインウィンドウ（ホーム＋全設定タブ）を画面に出さずに PNG へ書き出す撮影ハーネス。同じく素通り。
@@ -537,6 +539,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         // 画面端のサイドノッチ（履歴スリット）を常駐させる。「ホームを開く」は統合メインウィンドウへ。
         sideNotch = SideNotchController(
             history: controller.history,
+            clipboard: controller.clipboardHistory,
             config: controller.config,
             onOpenHome: { [weak self] in self?.showHome() },
             onRequestFetch: { [weak controller] in controller?.historySync.requestFetch() }

@@ -40,7 +40,7 @@ class _SettingsWindowTestBase(unittest.TestCase):
         self._paths.append(handle.name)
         return ConfigManager(config_path=handle.name)
 
-    def _make_window(self, cm, history=None, history_sync=None):
+    def _make_window(self, cm, history=None, history_sync=None, clipboard_history=None):
         # 重い/副作用のある依存をモックしてオフスクリーン構築する。
         # 構築時にアカウントページが login_coordinator.shared() を生成し、その __init__ が
         # secrets.get_auth_session()（実 keyring）を読むため、ここも必ずモックする。実機の
@@ -58,7 +58,9 @@ class _SettingsWindowTestBase(unittest.TestCase):
         ):
             from src.ui.settings_window import SettingsWindow
 
-            win = SettingsWindow(config_manager=cm, history=history, history_sync=history_sync)
+            win = SettingsWindow(
+                config_manager=cm, history=history, history_sync=history_sync, clipboard_history=clipboard_history
+            )
         self._windows.append(win)
         return win
 
@@ -179,6 +181,74 @@ class TestUnassignedHotkeyPersists(_SettingsWindowTestBase):
         self.assertEqual(reloaded.get("hotkey2")["hotkey"], "<f3>")
 
 
+class TestHistoryLimitAndClipboardSettings(_SettingsWindowTestBase):
+    """一般 › 履歴 の保存件数とクリップボードの履歴（Mac の 4 項目と同じ）の読み込み・保存・消去。"""
+
+    def test_load_and_save_round_trip(self):
+        cm = self._config({"history_limit": 500, "clipboard_history_enabled": False, "clipboard_history_limit": 50})
+        win = self._make_window(cm)
+        self.assertEqual(win._history_limit_combo.currentData(), 500)
+        self.assertFalse(win._clipboard_history_check.isChecked())
+        self.assertEqual(win._clipboard_history_limit_combo.currentData(), 50)
+        self.assertEqual(
+            [win._history_limit_combo.itemText(i) for i in range(win._history_limit_combo.count())],
+            ["50 件", "100 件", "200 件", "500 件", "1000 件"],
+        )
+
+        win._history_limit_combo.setCurrentIndex(win._history_limit_combo.findData(1000))
+        win._clipboard_history_check.setChecked(True)
+        win._clipboard_history_limit_combo.setCurrentIndex(win._clipboard_history_limit_combo.findData(100))
+        with mock.patch("src.ui.settings_window.autostart.is_supported", return_value=False), \
+             mock.patch.object(win, "close"), \
+             mock.patch("src.ui.settings_window.QMessageBox"):
+            win._save_settings()
+
+        reloaded = ConfigManager(config_path=cm.config_path)
+        self.assertEqual(reloaded.get("history_limit"), 1000)
+        self.assertTrue(reloaded.get("clipboard_history_enabled"))
+        self.assertEqual(reloaded.get("clipboard_history_limit"), 100)
+
+    def test_clear_clipboard_history_asks_first(self):
+        class _Store:
+            cleared = 0
+
+            def clear(self):
+                self.cleared += 1
+                return True
+
+        store = _Store()
+        win = self._make_window(self._config({"language": "ja"}), clipboard_history=store)
+        with mock.patch.object(win, "_confirm_clear_clipboard", return_value=False):
+            win._clear_clipboard_history()
+        self.assertEqual(store.cleared, 0)  # キャンセルなら消さない
+        with mock.patch.object(win, "_confirm_clear_clipboard", return_value=True):
+            win._clear_clipboard_history()
+        self.assertEqual(store.cleared, 1)
+
+    def test_clear_clipboard_history_failure_is_reported(self):
+        class _Store:
+            def clear(self):
+                return False  # 保存に失敗した
+
+        win = self._make_window(self._config({"language": "ja"}), clipboard_history=_Store())
+        with mock.patch.object(win, "_confirm_clear_clipboard", return_value=True), \
+             mock.patch("src.ui.settings_window.QMessageBox") as box:
+            win._clear_clipboard_history()
+        box.critical.assert_called_once()
+        self.assertIn("消去できませんでした", box.critical.call_args.args[2])
+
+    def test_clear_clipboard_history_success_shows_nothing(self):
+        class _Store:
+            def clear(self):
+                return True
+
+        win = self._make_window(self._config({"language": "ja"}), clipboard_history=_Store())
+        with mock.patch.object(win, "_confirm_clear_clipboard", return_value=True), \
+             mock.patch("src.ui.settings_window.QMessageBox") as box:
+            win._clear_clipboard_history()
+        box.critical.assert_not_called()
+
+
 class _FakeHistorySync:
     """history_sync.HistorySync の最小フェイク（Mac 側の履歴を 1 件足して返すだけ）。"""
 
@@ -186,7 +256,8 @@ class _FakeHistorySync:
         self._extra_items = extra_items
         self.enabled = True
 
-    def merged_items(self, local_items):
+    def merged_items(self, local_items, limit=200):
+        self.last_limit = limit
         return list(local_items) + self._extra_items
 
     def status(self):
@@ -272,6 +343,20 @@ class TestHistorySyncSettingsUI(_SettingsWindowTestBase):
         self.assertEqual(len(mac_previews), 1)
         self.assertIn("Mac の文", mac_previews[0])
         self.assertIn("Mac の文", texts)
+
+    def test_merged_history_uses_local_history_limit(self):
+        # 同期オンでも、表示件数は音声入力の保存件数（受信キャッシュの 200 件ではない）
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+        handle.close()
+        self._paths.append(handle.name)
+
+        from src.core.history import HistoryStore
+
+        history = HistoryStore(file_path=handle.name, limit=1000)
+        fake_sync = _FakeHistorySync([])
+        win = self._make_window(self._config({"language": "ja"}), history=history, history_sync=fake_sync)
+        win._history_entries()
+        self.assertEqual(fake_sync.last_limit, 1000)
 
 
 if __name__ == "__main__":

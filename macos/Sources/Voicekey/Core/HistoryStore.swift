@@ -2,7 +2,7 @@
 //  HistoryStore.swift
 //  音声入力履歴の保持と永続化
 //
-//  文字起こし（整形後）のテキストを新しい順に最大 200 件保持し、設定・ホーム・
+//  文字起こし（整形後）のテキストを新しい順に最大 limit 件（既定 200・設定で変更可）保持し、設定・ホーム・
 //  サイドノッチから再コピー/再貼り付けできるようにする。各エントリには貼り付け先
 //  アプリ（bundleID・名前）と文字数のメタデータを持たせる。
 //  アプリを再起動しても残るよう Application Support に JSON で保存する。
@@ -49,8 +49,19 @@ extension HistoryItem {
 @MainActor
 final class HistoryStore: ObservableObject {
 
-    /// 保持する最大件数（超過分は古いものから捨てる）
-    static let maxItems = 200
+    /// 保持する最大件数（超過分は古いものから捨てる）。設定で変えられ、下げたら即座に切り詰めて保存する
+    var limit: Int {
+        didSet {
+            guard limit != oldValue else { return }
+            if items.count > limit {
+                items.removeLast(items.count - limit)
+                save()
+            } else {
+                // 増やしたときもクラウド分を含む表示用一覧の上限が変わるので作り直す
+                recomputeAllItems()
+            }
+        }
+    }
 
     /// 履歴（新しい順）
     @Published private(set) var items: [HistoryItem] = [] {
@@ -61,14 +72,14 @@ final class HistoryStore: ObservableObject {
         didSet { recomputeAllItems() }
     }
 
-    /// ローカルを優先してクラウド履歴を重ねた表示用一覧（日時降順・最大 200 件）。
+    /// ローカルを優先してクラウド履歴を重ねた表示用一覧（日時降順・最大 limit 件）。
     /// アクセスのたびに sort/filter するのは重いので、items/cloudItems の didSet でだけ再計算する。
     @Published private(set) var allItems: [HistoryItem] = []
 
     private func recomputeAllItems() {
         let localIDs = Set(items.map(\.id))
         let remote = cloudItems.filter { !localIDs.contains($0.id) && $0.device != "mac" }
-        allItems = Array((items + remote).sorted { $0.date > $1.date }.prefix(Self.maxItems))
+        allItems = Array((items + remote).sorted { $0.date > $1.date }.prefix(limit))
     }
 
     /// 追加完了通知。同期クライアントはここから非同期キューへ積むだけにする。
@@ -80,13 +91,15 @@ final class HistoryStore: ObservableObject {
 
     /// - Parameter directory: 保存先ディレクトリ（テスト時に一時ディレクトリを注入する）。
     ///   nil なら本番の ~/Library/Application Support/voicekey を使う。
-    init(directory: URL? = nil) {
+    /// - Parameter limit: 保持する最大件数
+    init(directory: URL? = nil, limit: Int = 200) {
+        self.limit = limit
         let dir = directory ?? FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("voicekey", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         fileURL = dir.appendingPathComponent("history.json")
-        let loaded = Self.load(from: fileURL)
+        let loaded = Self.load(from: fileURL, limit: limit)
         items = loaded.items
         saveBlocked = loaded.saveBlocked
         // 自身の init 内の代入では didSet が走らないため、表示用一覧をここで一度作る
@@ -95,17 +108,23 @@ final class HistoryStore: ObservableObject {
 
     /// 保存済み JSON を読み込む。新形式（構造体配列）を第一に試し、読めなければ
     /// 旧・単純な文字列配列としても試す。どちらでも読めなければ空で開始（クラッシュしない）。
-    private static func load(from fileURL: URL) -> (items: [HistoryItem], saveBlocked: Bool) {
-        guard let data = try? Data(contentsOf: fileURL) else { return ([], false) }
+    private static func load(from fileURL: URL, limit: Int) -> (items: [HistoryItem], saveBlocked: Bool) {
+        // 空で始めてよいのはファイルが無いときだけ。あるのに読めない（権限・一時的な I/O エラー）ときに
+        // 空のまま保存すると中身を上書きして消すので、退避もせず保存だけ止める
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return ([], false) }
+        guard let data = try? Data(contentsOf: fileURL) else {
+            log.error("履歴ファイルを読めないため、上書きしないよう保存を止めます")
+            return ([], true)
+        }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         // 新形式（[HistoryItem]）。HistoryItem.init(from:) が旧「id/text/date のみ」も吸収する
         if let loaded = try? decoder.decode([HistoryItem].self, from: data) {
-            return (Array(loaded.prefix(maxItems)), false)
+            return (Array(loaded.prefix(limit)), false)
         }
         // さらに古い「文字列配列」形式のフォールバック（Windows 版由来の互換）
         if let strings = try? decoder.decode([String].self, from: data) {
-            let items = strings.prefix(maxItems).map {
+            let items = strings.prefix(limit).map {
                 HistoryItem(id: UUID(), text: $0, date: Date(),
                             device: nil, appBundleID: nil, appName: nil, characters: $0.count)
             }
@@ -125,8 +144,8 @@ final class HistoryStore: ObservableObject {
             device: "mac", appBundleID: appBundleID, appName: appName, characters: text.count
         )
         items.insert(item, at: 0)
-        if items.count > Self.maxItems {
-            items.removeLast(items.count - Self.maxItems)
+        if items.count > limit {
+            items.removeLast(items.count - limit)
         }
         save()
         onAdd?(item)

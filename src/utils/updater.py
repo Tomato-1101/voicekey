@@ -1,8 +1,15 @@
 """
-自動アップデートモジュール（Windows 配布ビルド用）
+自動アップデートモジュール（Windows 配布ビルド用・現在は停止中）
 
-voicekey-releases リポジトリの version.json を定期チェックし、新しいバージョンが
-あればトレイ通知とメニュー項目で知らせる。インストールはユーザーがメニューを
+更新フィード（version.json）を定期チェックし、新しいバージョンが
+あればトレイ通知とメニュー項目で知らせる。
+
+2026-10-19 時点で Windows 版は配布していない（CLAUDE.md「Windows は配布しない・ソースから」）。
+GitHub Releases に Windows 版は置かれず、旧フィード（削除済みの旧配布リポ・Vercel の
+/windows/version.json）も存在しないため、VERSION_URL を空にして更新確認そのものを止めている
+（存在しない URL を見続けて毎日警告ログを出さないため）。ソースから動かす人は `git pull` で更新する。
+将来 Windows も配布するときは VERSION_URL にフィードの URL を入れれば、下の仕組みがそのまま動く。
+インストールはユーザーがメニューを
 選んだときに、インストーラをダウンロード → 固定公開鍵による Ed25519 署名検証
 ＋ SHA256 検証 → サイレント実行 → アプリ終了、の順で行う（Inno Setup が旧プロセスを
 閉じて上書きし、新版を再起動する）。署名検証により、フィードが改竄・MITM されても
@@ -33,8 +40,11 @@ from .update_signing import verify_ed25519
 
 logger = get_logger(__name__)
 
-# 更新情報の取得元（配布ページと同じ Vercel サイト。GitHub はテスターから見えない構成）
-VERSION_URL = "https://voicekey.vercel.app/windows/version.json"
+# 更新情報の取得元。空＝更新確認を行わない（Windows 版は配布していないため・上の説明参照）
+VERSION_URL = ""
+
+# 更新確認を止めているときに設定画面へ出す説明
+DISABLED_MESSAGE = "Windows 版は配布していないため、更新はソースで git pull して行ってください"
 
 # 起動直後はアプリ初期化と被らないよう 60 秒待ってから初回チェックする
 FIRST_CHECK_DELAY_MS = 60_000
@@ -84,8 +94,16 @@ class Updater(QObject):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.check_now)
 
+    @staticmethod
+    def is_enabled() -> bool:
+        """更新確認が有効か（更新フィードの URL が設定されているか）。"""
+        return bool(VERSION_URL)
+
     def start(self) -> None:
-        """定期チェックを開始する（DIST ビルド以外は何もしない）。"""
+        """定期チェックを開始する（DIST ビルド以外・フィード未設定なら何もしない）。"""
+        if not self.is_enabled():
+            logger.info("自動アップデートは無効です（Windows 版は配布していないため・git pull で更新）")
+            return
         if not secrets.is_dist_build():
             logger.info("開発ビルドのため自動アップデートは無効です")
             return
@@ -100,6 +118,11 @@ class Updater(QObject):
             manual: 設定画面の「アップデートを確認」から手動実行された場合 True。
                 手動時はネットワーク失敗も update_failed で通知する（定期チェック時はログのみ）。
         """
+        if not self.is_enabled():
+            # フィードが無いのに通信しない。手動確認には理由を返す（押したのに無反応にしない）
+            if manual:
+                self.update_failed.emit(DISABLED_MESSAGE)
+            return
         threading.Thread(
             target=self._check, args=(manual,), daemon=True, name="UpdateCheck"
         ).start()
@@ -124,6 +147,8 @@ class Updater(QObject):
         Args:
             manual: 手動チェック（設定画面）からの実行か。失敗通知の有無を分ける。
         """
+        if not VERSION_URL:
+            return
         try:
             with urllib.request.urlopen(VERSION_URL, timeout=15) as res:
                 # version.json は Windows PowerShell が BOM 付き UTF-8 で書き出すことがある。
