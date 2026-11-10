@@ -93,3 +93,10 @@
   swift test 601 件通過・Python 868 件中の失敗は既知の 2 件（meetbot / stage2）だけ。
 - 次: Windows 実機での確認（メッセージ専用ウィンドウでの書き込み・改行・
   除外の印で Win+V に残らないか・パスワード管理アプリの除外・前面アプリ名）がまだ。
+
+## 記号の自動削除・スクショ添付（11-10 14:55 更新）
+- 記号の自動削除（Mac・Windows・既定 ON・、。,.，． を残す）: 053ca2b / 1ae9d5c / a698e1f。
+  スクショ添付（Mac のみ・撮影キー既定 左⌃・`docs/SCREENSHOT_ATTACH_PLAN.md`）: f5b3cf9。
+- 常用ブランチ `claude/elegant-pasteur-gw80nl` を f5b3cf9 まで早送りして push 済み。常用アプリも差し替え済み（11-10 14:52 起動）。
+  swift test 637 件で失敗 0。Python は 877 件中、既知の 4 件だけ失敗（meetbot・stage2・text_formatter 2 件）。
+- 次: 本人が実機で確認する。範囲選択と Esc、画面収録の許可、Claude/ChatGPT で画像→文の順、ターミナルで ⌃V と 0.8 秒の待ち、撮影後に元のアプリへ戻るか。
