@@ -245,8 +245,13 @@ final class Transcriber: @unchecked Sendable {
     ///   - serverFormat: groq × ログイン済みプロキシ経路のときだけ有効。true にすると
     ///     サーバー内で STT→整形まで統合実行し整形済みテキストを返す（他バックエンド・直叩きは無視）。
     ///   - presetId: 統合整形時の整形プリセット（serverFormat=true の groq 経路でのみ実効）。
+    ///   - onReplayEnding: Soniox の再送（録音全体の流し直し）を行ったときだけ、その終わり方を受け取る。
+    ///     再送が途中までしか取れていないかを呼び出し側が見分けるためのもの（他の経路では呼ばれない）。
     /// - Returns: 文字起こし結果（前後空白除去済み。serverFormat 時は整形済み）
-    func transcribe(samples: [Float], serverFormat: Bool = false, presetId: String = "standard") async throws -> String {
+    func transcribe(
+        samples: [Float], serverFormat: Bool = false, presetId: String = "standard",
+        onReplayEnding: ((LiveEnding) -> Void)? = nil
+    ) async throws -> String {
         guard !samples.isEmpty else { return "" }
 
         // ローカル（Apple）は API を一切叩かない。オンデバイスで 1 回だけ書き起こす。
@@ -298,7 +303,7 @@ final class Transcriber: @unchecked Sendable {
 
         // Soniox は REST を持たない（ライブ専用）。ここに来るのはライブ接続で文字が取れなかったときだけ
         if backend == .soniox {
-            return try await transcribeSonioxReplay(samples: samples, apiKey: apiKey)
+            return try await transcribeSonioxReplay(samples: samples, apiKey: apiKey, onEnding: onReplayEnding)
         }
 
         // 送信形式と応答の解析形式は同じ判定を使う（途中でモデル設定が変わっても食い違わないよう 1 回だけ評価）
@@ -387,6 +392,19 @@ final class Transcriber: @unchecked Sendable {
         return failure != .timeout
     }
 
+    /// ライブが途中で切れて録音全体を再送したあと、ライブ分と再送分のどちらを貼るか。
+    /// 再送が正常に終わっていれば全文なので再送分を使う。再送もタイムアウト・失敗で終わったときは
+    /// どちらも途中までなので長い方を残す（再送の途中文で、ライブで取れていた分を短くしない）。
+    /// - Parameters:
+    ///   - replayed: 再送で取れた文（再送が投げたときは nil）
+    ///   - replayCompleted: 再送がサーバー側で最後まで処理されて終わったか
+    /// - Returns: 貼る文と、それが全文か（false なら「途中までの入力」と知らせる）
+    static func resolveReplay(live: String, replayed: String?, replayCompleted: Bool) -> (text: String, isComplete: Bool) {
+        guard let replayed, !replayed.isEmpty else { return (live, false) }
+        if replayCompleted { return (replayed, true) }
+        return (replayed.count > live.count ? replayed : live, false)
+    }
+
     /// Soniox の失敗がキーの無効（401/403）か。設定 › API キー へ案内するかの判定に使う
     static func isInvalidKeyFailure(_ failure: LiveFailure) -> Bool {
         if case .error(let code?, _) = failure { return code == "401" || code == "403" }
@@ -396,7 +414,9 @@ final class Transcriber: @unchecked Sendable {
     /// 録音中のライブ接続が失敗して文字が取れなかったときに、手元の録音を新しいセッションへ流し直す。
     /// 録音はもう終わっているので実時間は待たず、100ms 分ずつ続けて送信キューへ積む。
     /// 正常に終わって空なら空文字（本当に無言）。失敗して何も取れなければ原因別の文言で投げる
-    private func transcribeSonioxReplay(samples: [Float], apiKey: String) async throws -> String {
+    private func transcribeSonioxReplay(
+        samples: [Float], apiKey: String, onEnding: ((LiveEnding) -> Void)? = nil
+    ) async throws -> String {
         let session = SonioxLiveTranscriber(model: model, language: language, prompt: prompt)
         guard session.start(apiKey: apiKey) else {
             throw TranscriptionError(message: Self.missingKeyMessage(for: backend), needsApiKey: true)
@@ -414,6 +434,7 @@ final class Transcriber: @unchecked Sendable {
             timeout: SonioxLiveTranscriber.replayFinishTimeout(audioSeconds: audioSeconds)
         )
         let ending = session.ending
+        onEnding?(ending)
         // 実時間より速く送ったときの処理時間は公式に明記が無い。待ち上限を実測で詰めるために必ず残す
         let elapsed = Int(Date().timeIntervalSince(start) * 1000)
         let summary = "Soniox 再送: 音声 \(String(format: "%.1f", audioSeconds))s → \(elapsed)ms, "

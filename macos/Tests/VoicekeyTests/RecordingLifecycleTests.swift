@@ -73,4 +73,39 @@ final class RecordingLifecycleTests: XCTestCase {
         XCTAssertFalse(Transcriber.shouldReplayAfterLiveFailure(
             backend: .openaiLive, ending: .failed(.disconnect), streamedIsEmpty: false))
     }
+
+    // 再送が正常に終わったら再送分（全文）を使い、途中までの通知は出さない
+    func testCompletedReplayReplacesLiveText() {
+        let resolved = Transcriber.resolveReplay(live: "前半だけ", replayed: "全文", replayCompleted: true)
+        XCTAssertEqual(resolved.text, "全文")
+        XCTAssertTrue(resolved.isComplete)
+    }
+
+    // 再送もタイムアウト・失敗で終わったら、ライブ分より短い文で置き換えない（長い方を残して通知する）
+    func testIncompleteReplayKeepsLongerText() {
+        let shorter = Transcriber.resolveReplay(live: "ライブで取れた長い文", replayed: "短い", replayCompleted: false)
+        XCTAssertEqual(shorter.text, "ライブで取れた長い文")
+        XCTAssertFalse(shorter.isComplete)
+        let longer = Transcriber.resolveReplay(live: "短い", replayed: "再送で取れた長い文", replayCompleted: false)
+        XCTAssertEqual(longer.text, "再送で取れた長い文")
+        XCTAssertFalse(longer.isComplete)
+    }
+
+    // 再送が投げた・空だったときはライブ分をそのまま使い、途中までと知らせる
+    func testFailedOrEmptyReplayKeepsLiveText() {
+        for replayed in [nil, ""] as [String?] {
+            for completed in [true, false] {
+                let resolved = Transcriber.resolveReplay(live: "ライブ分", replayed: replayed, replayCompleted: completed)
+                XCTAssertEqual(resolved.text, "ライブ分")
+                XCTAssertFalse(resolved.isComplete)
+            }
+        }
+    }
+
+    // 短いタップで離鍵後に届いた開始失敗は通知する。見張りが打ち切った世代は通知を重ねない
+    func testLateStartFailureNotifiesUnlessTimedOut() {
+        XCTAssertTrue(StallPolicy.lateStartFailureNotifies(timedOutGeneration: nil, failedGeneration: 5))
+        XCTAssertTrue(StallPolicy.lateStartFailureNotifies(timedOutGeneration: 4, failedGeneration: 5))
+        XCTAssertFalse(StallPolicy.lateStartFailureNotifies(timedOutGeneration: 5, failedGeneration: 5))
+    }
 }

@@ -306,6 +306,9 @@ enum Paster {
         let frontName = front?.localizedName ?? "-"
         var sent = true
         if sendKeystroke {
+            // 控えは貼り付けの後にしか更新されないので、許可を付け直した直後の 1 回が必ず失敗になる。
+            // 「許可なし」と控えているときだけここで引き直す（許可ありの普段の経路には何も足さない）
+            if !axTrustedCache { axTrustedCache = AXIsProcessTrusted() }
             if !axTrustedCache {
                 // アクセシビリティ許可が無いと合成キーは OS に黙って捨てられる（post は成否を返さない）。
                 // 送ったつもりで復元すると結果が消えるので、送信失敗として扱いクリップボードに残す

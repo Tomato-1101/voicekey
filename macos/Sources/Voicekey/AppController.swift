@@ -143,6 +143,8 @@ final class AppController: ObservableObject {
     /// **録音中かどうかとは別に持つ**: 短いタップだと開始完了より先に離鍵が来るので、
     /// recordingSlot を見て判断するとキューの詰まりを取り逃がす
     private var pendingStartGeneration: Int?
+    /// 開始の見張りが打ち切った直近の世代。その世代の開始失敗が遅れて届いても通知を重ねないために控える
+    private var startTimedOutGeneration: Int?
     /// 文字起こしが返ってこないことを見張るタイマー（録音世代ごと）
     private var transcribeWatchdogs: [Int: Task<Void, Never>] = [:]
     /// ウォッチドッグで打ち切った世代。遅れて届いた結果はここと突き合わせて捨てる
@@ -1309,6 +1311,15 @@ final class AppController: ObservableObject {
             // 打ち切ったあとにブロックが解けて遅れて届いた完了。ここで UI を触ると
             // 待機に戻したピルに古い録音の通知が出る
             ActionLog.shared.write("audio", "遅れて届いた録音開始完了を破棄 gen=\(generation)")
+            // 短いタップでは開始の完了より先に離鍵して録音セッションが畳まれている。失敗を黙って
+            // 捨てると何も起きないまま終わるので、通知だけは出す（状態には触らない）。
+            // 別の録音がもう始まっているときは出さない（通知が録音中の表示を数秒隠してしまう）
+            if let failure, recordingSlot == nil, StallPolicy.lateStartFailureNotifies(
+                timedOutGeneration: startTimedOutGeneration, failedGeneration: generation) {
+                ActionLog.shared.write(
+                    "audio", "[録音] gen=\(DiagnosticText.gen(generation)) 開始失敗（離鍵後に判明） 種別=\(failure)")
+                hud.notice(failure.noticeText, isError: true)
+            }
             return
         }
         guard let failure else { return }
@@ -1350,6 +1361,7 @@ final class AppController: ObservableObject {
         // 開始完了を受け取っていれば見張りは役目を終えている（＝何もしない）
         guard pendingStartGeneration == generation else { return }
         pendingStartGeneration = nil
+        startTimedOutGeneration = generation
         recordStartWatchdog?.cancel()
         recordStartWatchdog = nil
 
@@ -1380,6 +1392,10 @@ final class AppController: ObservableObject {
         recordContext = nil
         recorder.chunkHandler = nil
         recordingSlot = nil
+        // 詰まっている start が後から成功すると、誰も止めないままマイクが点きっぱなしになり、
+        // 次の押下の start も「録音中」で素通りする。stop を 1 つだけ積んでおく（制御キューは FIFO
+        // なので start の直後に走る。音声は捨てる。積むだけで待たない・再試行もしない）
+        recorder.stop { _ in }
         autoEnter = false
         pendingFinishTask?.cancel()
         pendingFinishTask = nil
@@ -1821,10 +1837,15 @@ final class AppController: ObservableObject {
                 if Transcriber.shouldReplayAfterLiveFailure(
                     backend: transcriber.backend, ending: ending, streamedIsEmpty: streamed.isEmpty) {
                     ActionLog.shared.write("transcriber", "ライブが途中で切れたため録音全体を再送 取れた分=\(streamed.count) 文字")
-                    if let replayed = try? await transcriber.transcribe(samples: samples), !replayed.isEmpty {
-                        streamed = replayed
-                        replayedAfterFailure = true
-                    }
+                    // 再送もタイムアウト・失敗で途中までしか取れないことがある。終わり方を受け取り、
+                    // 正常に終わらなかった再送でライブ分より短い文に置き換えない
+                    var replayEnding = LiveEnding.unknown
+                    let replayed = try? await transcriber.transcribe(
+                        samples: samples, onReplayEnding: { replayEnding = $0 })
+                    let resolved = Transcriber.resolveReplay(
+                        live: streamed, replayed: replayed, replayCompleted: replayEnding == .completed)
+                    streamed = resolved.text
+                    replayedAfterFailure = resolved.isComplete
                     if discardIfAbandoned(generation) { return }
                 }
                 if !streamed.isEmpty {
@@ -1874,7 +1895,7 @@ final class AppController: ObservableObject {
                     } else {
                         // 接続がエラー・切断で途中で壊れたときは、入ったのが途中までかもしれないと知らせる
                         // （喋った分は捨てずに貼る）。タイムアウトは確定待ちが長引いただけなので知らせない
-                        // 録音全体の再送で救えたときは全文が入っているので知らせない
+                        // 録音全体の再送で救えたとき（再送が正常に終わったとき）は全文が入っているので知らせない
                         if case .failed(let failure) = ending, failure != .timeout, !replayedAfterFailure,
                            !isAbandoned(generation) {
                             hud.notice("接続が途中で切れたため、途中までの入力です", isError: true)

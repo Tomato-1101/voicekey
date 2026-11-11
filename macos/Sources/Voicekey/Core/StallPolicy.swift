@@ -39,6 +39,13 @@ enum StallPolicy {
         pendingGeneration == completedGeneration
     }
 
+    /// 録音セッションが畳まれたあとに届いた録音開始の失敗を、通知だけは出すか。
+    /// 開始の見張りが打ち切った世代は「応答しません」を既に出しているので重ねない。
+    /// それ以外（短いタップで完了より先に離鍵した等）は、出さないと無言で終わる
+    static func lateStartFailureNotifies(timedOutGeneration: Int?, failedGeneration: Int) -> Bool {
+        timedOutGeneration != failedGeneration
+    }
+
     /// 文字起こしが返るまでの上限（秒）。長い録音の分割並列送信やリトライを含めても
     /// 正当に 60 秒を超えることはない。
     static let transcribeTimeout: TimeInterval = 60
