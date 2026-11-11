@@ -293,6 +293,7 @@ class VoicekeyApp(QObject):
         # 設定「一般」の「セットアップガイドを開く」からもう一度オンボーディングを表示する
         self._settings_window.open_onboarding_requested.connect(self.show_onboarding)
         self._tray = SystemTray(platform_adapter=self._platform)
+        self._tray.open_home.connect(self._open_home)
         self._tray.open_settings.connect(self._open_settings)
         self._tray.force_reset.connect(self._force_restart)
         self._tray.quit_app.connect(self._quit_app)
