@@ -2,8 +2,7 @@
 フィードバック入力ダイアログ
 
 メニューの「フィードバックを送る…」から開く小さな入力フォーム。
-本文を自社サーバー（/api/v1/feedback）へ送信する。ログイン済みならアカウントに
-紐づき、未ログインでも匿名（device_id + app_version）で送れる。
+本文を voicekey のサイト（/api/v1/feedback）へ匿名（device_id + app_version）で送信する。
 送信は通信ブロッキングのためワーカースレッドで行い、成功/失敗を画面に明示する。
 """
 
@@ -17,7 +16,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..core import backend_client
+from ..core import feedback_client
 from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -39,9 +38,9 @@ class _SubmitWorker(QThread):
 
     def run(self) -> None:
         try:
-            backend_client.submit_feedback(self._message)
+            feedback_client.submit_feedback(self._message)
             self.result_ready.emit(True, "")
-        except backend_client.BackendError as e:
+        except feedback_client.FeedbackError as e:
             self.result_ready.emit(False, str(e))
         except Exception as e:  # 予期しない失敗も握ってユーザーに表示する
             logger.warning(f"フィードバック送信で予期しないエラー: {e}")
@@ -68,11 +67,8 @@ class FeedbackDialog(QDialog):
         description.setWordWrap(True)
         layout.addWidget(description)
 
-        # ログイン状態に応じた紐付けの説明（アカウント連携の有無を明示）
-        if backend_client.is_logged_in():
-            hint_text = "お使いのアカウントに紐づけて送信されます。"
-        else:
-            hint_text = "未ログインのため匿名で送信されます。"
+        # 何が送られるかを明示する（アカウントは無く、常に匿名）
+        hint_text = "匿名で送信されます。"
         hint = QLabel(hint_text)
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #8E8E93; font-size: 11px;")

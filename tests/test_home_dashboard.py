@@ -74,8 +74,6 @@ class HomeRefreshTests(unittest.TestCase):
     def setUp(self):
         self._paths = []
         self._windows = []
-        from src.core import login_coordinator
-        login_coordinator._shared = None
 
     def tearDown(self):
         for w in self._windows:
@@ -103,8 +101,6 @@ class HomeRefreshTests(unittest.TestCase):
             "src.ui.settings_window.autostart.is_supported", return_value=True
         ), mock.patch(
             "src.ui.settings_window.autostart.is_enabled", return_value=False
-        ), mock.patch(
-            "src.utils.secrets.get_auth_session", return_value=None
         ):
             win = SettingsWindow(config_manager=cm, stats=stats, history=history)
         self._windows.append(win)

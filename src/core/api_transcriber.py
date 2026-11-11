@@ -22,7 +22,6 @@ import httpx
 import numpy as np
 import numpy.typing as npt
 
-from . import backend_client
 from .audio_utils import numpy_to_wav_bytes
 from .text_utils import strip_cjk_spaces
 from ..config.constants import SAMPLE_RATE
@@ -115,7 +114,7 @@ class ApiTranscriber:
         """Whisper（Groq/OpenAI）へ送る文字起こしプロンプトを組み立てる。
 
         数字を半角で出させる固定 style ヒントを先頭に置き、ユーザー設定のプロンプト（あれば）を
-        続ける（release はプロンプト非選択＝self.prompt は空なので style ヒントのみになる）。
+        続ける（未設定なら style ヒントのみになる）。
         """
         user = self.prompt.strip()
         return f"{_NUMERAL_STYLE_PROMPT} {user}" if user else _NUMERAL_STYLE_PROMPT
@@ -176,33 +175,6 @@ class ApiTranscriber:
         """API キーが設定されており利用可能かを返す。"""
         return bool(self._resolve_api_key())
 
-    def _dist_guard(self, server_supported: bool) -> None:
-        """配布（DIST）ビルドのゲート: 文字起こしにはログインを必須にする。
-
-        配布版はアプリに長期キーを埋め込まない。ログイン後はまず無料体験枠で使え、
-        枠を使い切るとアクティベーションキーの登録が必要になる。無料枠/キー/サブスクの
-        有効性判定はサーバー側（ephemeral/proxy が 402/403 を返す）で行うため、ここでは
-        「ログイン済みか」と「この方式がサーバー経由に対応しているか」だけを見る。
-
-        開発（dev）ビルドでは何もしない（埋め込み/設定キー直叩きの並存を維持）。
-
-        Args:
-            server_supported: この文字起こし方式がサーバー経由に対応しているか
-                              （Deepgram=短命JWT / ElevenLabs=プロキシ は True、
-                               OpenAI/Groq の文字起こしは配布版で非対応＝False）
-
-        Raises:
-            TranscriptionError: 配布版で未ログイン、または非対応方式を選んだ場合
-        """
-        if not secrets.is_dist_build():
-            return
-        if not backend_client.is_logged_in():
-            raise TranscriptionError(
-                "ログインすると無料体験で使えます（設定 → アカウント）"
-            )
-        if not server_supported:
-            raise TranscriptionError("この文字起こし方式は配布版では利用できません")
-
     def _get_client(self) -> httpx.Client:
         """
         認証ヘッダー付き httpx クライアントを取得または生成する。
@@ -250,17 +222,12 @@ class ApiTranscriber:
         except Exception as e:
             logger.debug(f"{self.display_name} プリウォーム失敗（無視）: {e}")
 
-    def transcribe(
-        self, audio_data: npt.NDArray[np.float32], server_format: bool = False
-    ) -> str:
+    def transcribe(self, audio_data: npt.NDArray[np.float32]) -> str:
         """
         音声を文字起こしする。
 
         Args:
             audio_data: 音声データ（float32、モノラルの NumPy 配列）
-            server_format: サーバー統合整形（STT と整形を 1 リクエストで）を依頼するか。
-                基底実装（直叩き）では無視する。groq × ログイン済みプロキシ経路のみが実効
-                （GroqTranscriber が backend_client へ伝搬する）。
 
         Returns:
             文字起こし結果のテキスト（前後空白除去済み）。空音声なら空文字
@@ -270,9 +237,6 @@ class ApiTranscriber:
         """
         if len(audio_data) == 0:
             return ""
-
-        # 配布版ゲート: OpenAI/Groq の文字起こしはサーバー非対応＝配布版では使えない
-        self._dist_guard(server_supported=False)
 
         wav_bytes = numpy_to_wav_bytes(audio_data, self.sample_rate)
         client = self._get_client()
@@ -335,12 +299,7 @@ class OpenAITranscriber(ApiTranscriber):
 
 
 class GroqTranscriber(ApiTranscriber):
-    """Groq Cloud の Whisper API（OpenAI 互換エンドポイント）。
-
-    製品版(release)の「高速」＝普通入力。Groq は Deepgram のような短命トークンが無いため、
-    ログイン済み(製品版)ではサーバープロキシ(/api/v1/transcribe/groq)経由で文字起こしする。
-    未ログイン(開発直叩き)では OpenAI 互換 REST を親クラスで直叩きする（並存ガード）。
-    """
+    """Groq Cloud の Whisper API（OpenAI 互換エンドポイント）。基底の直叩き実装をそのまま使う。"""
 
     display_name = "高速"  # 製品版(release)の文字起こし 2 択名（提供元名は伏せる）
     base_url = "https://api.groq.com/openai/v1"
@@ -350,40 +309,6 @@ class GroqTranscriber(ApiTranscriber):
         "whisper-large-v3-turbo",  # 最速（リアルタイムの 200 倍超）
         "whisper-large-v3",        # 高精度
     )
-
-    def transcribe(
-        self, audio_data: npt.NDArray[np.float32], server_format: bool = False
-    ) -> str:
-        """音声を Groq で文字起こしする（製品版はプロキシ経由・開発は直叩き）。
-
-        server_format=True かつプロキシ経路のときは、STT→整形をサーバーで統合実行させ
-        整形済みテキストを受け取る（呼び出し側は再整形しない＝単発送信時のみ使う）。
-        """
-        if len(audio_data) == 0:
-            return ""
-
-        # 配布版ゲート: ログイン＋アクティベーション必須（Groq はプロキシ対応＝True）
-        self._dist_guard(server_supported=True)
-
-        # 製品版（ログイン済み）はサーバープロキシ経由で文字起こしする。
-        # Groq バッチも短命キー非対応のためプロキシを使う（EL と同じ並存ガード）。
-        if backend_client.is_logged_in():
-            wav_bytes = numpy_to_wav_bytes(audio_data, self.sample_rate)
-            try:
-                # プロキシ経由でも直叩きと同じ正規化を通す（#21・CJK 隣接スペース除去）。
-                # 数字を半角で出させる Whisper style プロンプトを渡す（サーバーが Groq へ転送する）。
-                return strip_cjk_spaces(
-                    backend_client.transcribe_groq(
-                        wav_bytes, self.language or "", server_format=server_format,
-                        prompt=self._whisper_prompt(),
-                    )
-                )
-            except backend_client.BackendError as e:
-                raise TranscriptionError(str(e))
-
-        # 未ログイン（開発直叩き）: OpenAI 互換 REST を親クラスで叩く（server_format は無視）。
-        # 親の _dist_guard(server_supported=False) は dev ビルドでは no-op なので安全。
-        return super().transcribe(audio_data)
 
 
 class ElevenLabsTranscriber(ApiTranscriber):
@@ -413,29 +338,12 @@ class ElevenLabsTranscriber(ApiTranscriber):
         """ElevenLabs は Bearer ではなく xi-api-key ヘッダーで認証する。"""
         return {"xi-api-key": api_key}
 
-    def transcribe(
-        self, audio_data: npt.NDArray[np.float32], server_format: bool = False
-    ) -> str:
-        """音声を ElevenLabs Scribe で文字起こしする（server_format は無視＝整形統合は Groq のみ）。"""
+    def transcribe(self, audio_data: npt.NDArray[np.float32]) -> str:
+        """音声を ElevenLabs Scribe で文字起こしする。"""
         if len(audio_data) == 0:
             return ""
 
-        # 配布版ゲート: ログイン＋アクティベーション必須（ElevenLabs はプロキシ対応）
-        self._dist_guard(server_supported=True)
-
         wav_bytes = numpy_to_wav_bytes(audio_data, self.sample_rate)
-
-        # 製品版（ログイン済み）はサーバープロキシ経由で文字起こしする。
-        # ElevenLabs バッチは短命キー非対応のためプロキシを使う（並存ガード）。
-        if backend_client.is_logged_in():
-            try:
-                # プロキシ経由でも直叩きと同じ正規化を通す（#21・CJK 隣接スペース除去）
-                return strip_cjk_spaces(
-                    backend_client.transcribe_elevenlabs(wav_bytes, self.language or "")
-                )
-            except backend_client.BackendError as e:
-                raise TranscriptionError(str(e))
-
         client = self._get_client()
 
         # model ではなく model_id。言語は language_code（空なら自動判定）
@@ -484,68 +392,9 @@ class DeepgramTranscriber(ApiTranscriber):
         "nova-2",  # 旧世代
     )
 
-    def __init__(self, *args, **kwargs) -> None:
-        """基底の初期化に加えて、短命 JWT 直叩き用クライアントの器を用意する。"""
-        super().__init__(*args, **kwargs)
-        # 固定の認証ヘッダーを持たない共有クライアント（Bearer はリクエスト毎に渡す）
-        self._jwt_client: Optional[httpx.Client] = None
-        self._jwt_client_lock = threading.Lock()
-
     def _auth_headers(self, api_key: str) -> dict:
         """Deepgram は Bearer ではなく Token スキームで認証する。"""
         return {"Authorization": f"Token {api_key}"}
-
-    def _get_jwt_client(self) -> httpx.Client:
-        """短命 JWT 直叩き用の共有 httpx クライアントを取得または生成する。
-
-        録音ごとにモジュール関数 httpx.post を使うと毎回 TCP+TLS を張り直し、確定
-        レイテンシにハンドシェイク分が乗る。API キーを持たない配布版でも使えるよう
-        認証ヘッダーは固定せず（リクエスト毎に Bearer を渡す）、接続プールと prewarm の
-        暖機だけを共有する。httpx.Client はスレッドセーフなので並列送信でも共有できる。
-        """
-        with self._jwt_client_lock:
-            if self._jwt_client is None:
-                self._jwt_client = httpx.Client(
-                    base_url=self.base_url,
-                    timeout=_TIMEOUT,
-                    # keepalive を長めに取り、録音中に prewarm した接続を再利用する
-                    limits=httpx.Limits(
-                        max_connections=5,
-                        max_keepalive_connections=2,
-                        keepalive_expiry=60.0,
-                    ),
-                    transport=httpx.HTTPTransport(retries=2),
-                )
-            return self._jwt_client
-
-    def prewarm(self) -> None:
-        """製品版（ログイン済み）は JWT 直叩き用クライアントの接続を温める。
-
-        基底の prewarm は API キー必須の共有クライアントを温めるため、キーを持たない
-        配布版では何も温まらず、_transcribe_via_jwt の毎回のハンドシェイクが残っていた。
-        """
-        if not backend_client.is_logged_in():
-            super().prewarm()
-            return
-        try:
-            client = self._get_jwt_client()
-            # 認証なしなので 401 が返るが、TCP+TLS の確立という目的は達せられる
-            client.get("/models", timeout=httpx.Timeout(5.0, connect=5.0))
-            logger.debug(f"{self.display_name} 接続をプリウォームしました")
-        except Exception as e:
-            logger.debug(f"{self.display_name} プリウォーム失敗（無視）: {e}")
-
-    def close(self) -> None:
-        """基底の共有クライアントに加えて JWT 直叩き用クライアントも閉じる。"""
-        super().close()
-        with self._jwt_client_lock:
-            client = self._jwt_client
-            self._jwt_client = None
-        if client is not None:
-            try:
-                client.close()
-            except Exception as e:
-                logger.warning(f"{self.display_name} クライアント close に失敗: {e}")
 
     @property
     def _dg_language(self) -> str:
@@ -568,70 +417,12 @@ class DeepgramTranscriber(ApiTranscriber):
         # 日本語の単語間スペースを除去（英単語間は残す）
         return strip_cjk_spaces(transcript.strip())
 
-    def _transcribe_via_jwt(self, wav_bytes: bytes) -> str:
-        """製品版（ログイン済み）: 短命 JWT を取得し Deepgram を直叩きする。
-
-        低レイテンシ核心を保つため、ElevenLabs と違いプロキシではなく直叩き。
-        キャッシュ済みクライアント（固定 Token ヘッダー）はバイパスし、認証ヘッダーを
-        持たない共有クライアント（prewarm 済み）へリクエスト毎に Bearer JWT を載せて送る。
-        """
-        try:
-            grant = backend_client.fetch_ephemeral_token()
-        except backend_client.BackendError as e:
-            raise TranscriptionError(str(e))
-
-        params = {
-            "model": self.model,
-            "language": self._dg_language,
-            "punctuate": "true",
-            "smart_format": "true",
-        }
-        resp = self._post(
-            self._get_jwt_client(),
-            "/listen",
-            params=params,
-            content=wav_bytes,
-            headers={
-                "Authorization": f"Bearer {grant['token']}",
-                "Content-Type": "audio/wav",
-            },
-        )
-
-        text = self._parse_transcript(resp)
-        logger.info(
-            f"{self.display_name} 文字起こし完了: {self.last_api_time:.0f}ms, {len(text)} 文字"
-        )
-        # 文字起こしが成立したら無料体験の消費を確定する（ベストエフォート・非ブロッキング）。
-        # ストリーミングが空文字で REST へフォールバックしたとき、その 1 録音を数えるのはこの経路。
-        # 段階1=保留 ID(jti) を確定 / 段階3=再利用トークンの回数を +1（jti なし）。
-        if text:
-            jti = grant.get("jti")
-            if jti:
-                threading.Thread(
-                    target=backend_client.confirm_usage, args=(jti,), daemon=True
-                ).start()
-            elif grant.get("meter"):
-                threading.Thread(
-                    target=backend_client.confirm_usage_count, daemon=True
-                ).start()
-        return text
-
-    def transcribe(
-        self, audio_data: npt.NDArray[np.float32], server_format: bool = False
-    ) -> str:
-        """音声を Deepgram Listen（事前録音）で文字起こしする（server_format は無視＝整形統合は Groq のみ）。"""
+    def transcribe(self, audio_data: npt.NDArray[np.float32]) -> str:
+        """音声を Deepgram Listen（事前録音）で文字起こしする。"""
         if len(audio_data) == 0:
             return ""
 
-        # 配布版ゲート: ログイン＋アクティベーション必須（Deepgram は短命JWT対応）
-        self._dist_guard(server_supported=True)
-
         wav_bytes = numpy_to_wav_bytes(audio_data, self.sample_rate)
-
-        # 製品版（ログイン済み）は短命 JWT で直叩きする（並存ガード）。
-        if backend_client.is_logged_in():
-            return self._transcribe_via_jwt(wav_bytes)
-
         client = self._get_client()
 
         params = {

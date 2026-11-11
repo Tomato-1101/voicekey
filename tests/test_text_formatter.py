@@ -93,21 +93,19 @@ class TestClientReuse(unittest.TestCase):
             mock_cls.assert_called_once()
 
     def test_prewarm_without_key_does_nothing(self):
-        """未ログインかつキー未設定なら prewarm は接続を張らない。"""
+        """キー未設定なら prewarm は接続を張らない。"""
         env = {k: v for k, v in os.environ.items() if k != "GROQ_API_KEY"}
         client = _mock_client()
-        with patch.object(text_formatter.backend_client, "is_logged_in", return_value=False), \
-                patch.object(text_formatter.secrets, "get_api_key", return_value=None), \
+        with patch.object(text_formatter.secrets, "get_api_key", return_value=None), \
                 patch.dict(text_formatter.os.environ, env, clear=True), \
                 patch.object(text_formatter, "_get_client", return_value=client) as mock_get:
             text_formatter.prewarm()
             mock_get.assert_not_called()
 
     def test_prewarm_with_key_opens_connection(self):
-        """未ログインでキーがあれば models エンドポイントへ GET して直 Groq を温める。"""
+        """キーがあれば models エンドポイントへ GET して Groq への接続を温める。"""
         client = _mock_client()
-        with patch.object(text_formatter.backend_client, "is_logged_in", return_value=False), \
-                patch.object(text_formatter.secrets, "get_api_key", return_value="K"), \
+        with patch.object(text_formatter.secrets, "get_api_key", return_value="K"), \
                 patch.object(text_formatter, "_get_client", return_value=client):
             text_formatter.prewarm()
             client.get.assert_called_once()
@@ -115,51 +113,16 @@ class TestClientReuse(unittest.TestCase):
                 client.get.call_args.kwargs["headers"]["Authorization"], "Bearer K"
             )
 
-    def test_prewarm_logged_in_warms_proxy(self):
-        """製品版（ログイン済み）は整形プロキシを温め、直 Groq は叩かない。"""
-        client = _mock_client()
-        with patch.object(text_formatter.backend_client, "is_logged_in", return_value=True), \
-                patch.object(text_formatter.backend_client, "warm_format_proxy") as warm, \
-                patch.object(text_formatter, "_get_client", return_value=client) as mock_get:
-            text_formatter.prewarm()
-            warm.assert_called_once()      # プロキシ暖機を呼ぶ
-            mock_get.assert_not_called()   # 直 Groq は温めない
-
     def test_prewarm_swallows_exceptions(self):
         """prewarm 中の通信エラーは外に出さない（整形には影響しない）。"""
         client = _mock_client()
         client.get.side_effect = httpx.ConnectError("connect")
-        with patch.object(text_formatter.backend_client, "is_logged_in", return_value=False), \
-                patch.object(text_formatter.secrets, "get_api_key", return_value="K"), \
+        with patch.object(text_formatter.secrets, "get_api_key", return_value="K"), \
                 patch.object(text_formatter, "_get_client", return_value=client):
             text_formatter.prewarm()  # 例外が出なければ OK
 
-    def test_prewarm_dist_skips_direct_groq(self):
-        """配布ビルド（未ログイン）は直 Groq を温めない（キーも見に行かない）。"""
-        client = _mock_client()
-        with patch.object(text_formatter.backend_client, "is_logged_in", return_value=False), \
-                patch.object(text_formatter.secrets, "is_dist_build", return_value=True), \
-                patch.object(text_formatter.secrets, "get_api_key") as mock_key, \
-                patch.object(text_formatter, "_get_client", return_value=client) as mock_get:
-            text_formatter.prewarm()
-            mock_get.assert_not_called()   # 直 Groq は温めない
-            mock_key.assert_not_called()   # キーも見に行かない
-
-
 class TestFormatText(unittest.TestCase):
     """format_text の API 呼び出しとフォールバック動作を検証する。"""
-
-    def setUp(self):
-        # 段階3: ここは未ログイン（従来の Groq 直叩き）経路の検証。
-        # is_logged_in を False に固定し、実 keyring の認証セッションに触れない
-        # （ログイン経路は TestServerRouting で検証）。
-        self._login_patch = patch.object(
-            text_formatter.backend_client, "is_logged_in", return_value=False
-        )
-        self._login_patch.start()
-
-    def tearDown(self):
-        self._login_patch.stop()
 
     def test_blank_text_skips_api(self):
         """空白のみの入力は API を呼ばずそのまま返る。"""
@@ -180,16 +143,6 @@ class TestFormatText(unittest.TestCase):
                 patch.object(text_formatter, "_get_client", return_value=client):
             self.assertEqual(format_text("えーと原文です", "m"), "えーと原文です")
             client.post.assert_not_called()
-
-    def test_dist_build_skips_direct_groq(self):
-        """配布ビルド（未ログイン）は整形せず原文を返し、直 Groq を一切叩かない。"""
-        client = _mock_client()
-        with patch.object(text_formatter.secrets, "is_dist_build", return_value=True), \
-                patch.object(text_formatter.secrets, "get_api_key") as mock_key, \
-                patch.object(text_formatter, "_get_client", return_value=client):
-            self.assertEqual(format_text("えーと原文です", "m"), "えーと原文です")
-            client.post.assert_not_called()  # 直 Groq を叩かない
-            mock_key.assert_not_called()     # キーも見に行かない（dist ガードで先に return）
 
     def test_env_var_fallback_is_used(self):
         """Keychain に無くても GROQ_API_KEY 環境変数があれば API を呼ぶ。"""
@@ -305,36 +258,6 @@ class TestFormatText(unittest.TestCase):
             )
             self.assertEqual(kwargs["headers"]["Authorization"], "Bearer K")
             self.assertEqual(kwargs["timeout"], 10.0)
-
-
-class TestServerRouting(unittest.TestCase):
-    """段階3: ログイン済みはサーバープロキシ経由で整形する（並存ガード）。"""
-
-    def test_logged_in_uses_backend_proxy(self):
-        """ログイン済みなら直叩きせずサーバープロキシ（format_text）を使う。"""
-        with patch.object(text_formatter.backend_client, "is_logged_in", return_value=True), \
-                patch.object(text_formatter.backend_client, "format_text",
-                             return_value="サーバー整形") as proxy, \
-                patch.object(text_formatter, "_get_client") as direct:
-            self.assertEqual(format_text("えーと原文", "m"), "サーバー整形")
-            proxy.assert_called_once_with("えーと原文")
-            direct.assert_not_called()  # 直叩きクライアントは使わない
-
-    def test_backend_error_falls_back_to_original(self):
-        """サーバー整形が失敗しても直叩きに落ちず原文を返す（発話を失わない）。"""
-        from src.core.backend_client import BackendError
-        with patch.object(text_formatter.backend_client, "is_logged_in", return_value=True), \
-                patch.object(text_formatter.backend_client, "format_text",
-                             side_effect=BackendError("失敗", status=403)), \
-                patch.object(text_formatter, "_get_client") as direct:
-            self.assertEqual(format_text("原文", "m"), "原文")
-            direct.assert_not_called()
-
-    def test_blank_text_skips_backend(self):
-        """空白のみの入力はログイン判定より先に弾く（サーバーも叩かない）。"""
-        with patch.object(text_formatter.backend_client, "is_logged_in") as li:
-            self.assertEqual(format_text("   ", "m"), "   ")
-            li.assert_not_called()
 
 
 if __name__ == "__main__":

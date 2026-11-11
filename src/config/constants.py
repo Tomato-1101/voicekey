@@ -28,32 +28,11 @@ APP_VERSION: str = "1.8.0"
 UPDATE_PUBLIC_KEY_ED25519: str = "TgVQf5ozPf1BwPfL2L7O9Dy4XU/Bowup38lgjEJPUx4="
 
 # ============================================
-# 自社バックエンド（製品版: 短命キー発行・プロキシ）
+# フィードバック送信先
 # ============================================
-# 製品版（release）は長期 API キーをアプリに同梱せず、自社サーバーがサブスク
-# 有効性を検証して Deepgram の短命トークンを発行し、ElevenLabs/Groq はサーバー
-# プロキシ経由で叩く。ここはその接続先定数（ユーザーが変える設定ではないため
-# settings.yaml ではなくコード定数として持つ）。実 URL の解決は環境（配布/開発）
-# 依存のため utils.secrets.get_server_base_url() で行う。
-PRODUCT_SERVER_URL: str = "https://voicekey.vercel.app"  # 配布ビルドの既定接続先
-LOCAL_SERVER_URL: str = "http://localhost:3000"          # 開発ビルドの既定接続先
-# 自社バックエンドの API パス（get_server_base_url() と結合して使う）
-API_EPHEMERAL_PATH: str = "/api/v1/auth/ephemeral"                # Deepgram 短命 JWT 発行
-API_ELEVENLABS_PROXY_PATH: str = "/api/v1/transcribe/elevenlabs"  # 正確性モードのプロキシ
-API_GROQ_TRANSCRIBE_PROXY_PATH: str = "/api/v1/transcribe/groq"   # 高速モード（普通入力・Groq whisper）のプロキシ
-API_FORMAT_PROXY_PATH: str = "/api/v1/format"                     # Groq テキスト整形プロキシ
-API_FEEDBACK_PATH: str = "/api/v1/feedback"                       # アプリ内フィードバック送信
-# ブラウザ経由ログイン（段階4）
-AUTH_APP_PATH: str = "/auth/app"                                  # ブラウザで開くログイン入口（state付き）
-API_AUTH_EXCHANGE_PATH: str = "/api/v1/auth/exchange"            # ワンタイムコード→トークン交換
-API_AUTH_REFRESH_PATH: str = "/api/v1/auth/refresh"             # refresh_token→トークン更新
-# アクティベーションキー（段階5）
-API_ME_PATH: str = "/api/v1/me"                                   # ログイン中アカウントの状態（email/active/active_until）
-API_USAGE_CONFIRM_PATH: str = "/api/v1/usage/confirm"             # 無料体験の消費確定（録音成功後に保留 jti を送る＝段階1）
-API_REDEEM_PATH: str = "/api/v1/activation/redeem"               # アクティベーションキー登録（アカウントに紐付け）
-# 使用実績のアカウント連携（#10）
-API_STATS_SYNC_PATH: str = "/api/v1/stats/sync"                   # この端末の日次・絶対値を upsert
-API_STATS_PATH: str = "/api/v1/stats"                            # アカウント横断の日次集計を取得
+# トレイメニュー「フィードバックを送る…」の送信先（匿名・ログイン不要）。
+# ユーザーが変える設定ではないため settings.yaml ではなくコード定数として持つ。
+FEEDBACK_URL: str = "https://voicekey.vercel.app/api/v1/feedback"
 
 # ============================================
 # 音声設定

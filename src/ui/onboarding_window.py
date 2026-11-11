@@ -2,14 +2,14 @@
 初回起動オンボーディングウィンドウ（Windows・体験型 2 ペイン再デザイン）
 
 初回起動でアプリがタスクトレイに黙って常駐すると「何これ？」となるため、
-起動時にセットアップウィンドウを自動表示し、ログイン → 動作確認 → 体験までを
+起動時にセットアップウィンドウを自動表示し、API キーの案内 → 動作確認 → 体験までを
 案内する。Windows には OS の権限ゲート（マイク/アクセシビリティ/入力監視）が無いので
 権限ステップは持たない（Mac 版は権限 3 ステップ＋動作確認を持つ）。
 
 Mac 版（macos/Sources/Voicekey/UI/OnboardingView.swift）に合わせた **左＝説明／右＝実際の画面
 イメージ** の 2 ペイン構成。上部に細いパンくず（ようこそ › 準備 › 体験）。
 - ようこそ・まとめは全画面インタースティシャル（中央 1 列）。
-- ログイン・マイクテスト・録音キーテスト・体験 3 種は 2 ペイン。
+- API キーの案内・マイクテスト・録音キーテスト・体験 3 種は 2 ペイン。
 - マイクテスト＝録音キーを押さずにレベルメーターで拾えているか確認（MicLevelMonitor・無料枠を消費しない）。
 - 録音キーテスト＝録音キーを押すと右の巨大キーが光る（app.set_hotkey_test で録音は開始しない）。
 - 体験＝右のメモ風モックウィンドウに実際に文字を入力してみる。
@@ -20,8 +20,8 @@ app 側が settings.yaml の did_complete_onboarding を True にする。
 
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QPainter
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -44,9 +44,9 @@ from ..utils.logger import get_logger
 logger = get_logger(__name__)
 
 # ステップ番号（QStackedWidget のインデックスと一致）。
-# 権限ゲートの無い Windows は 権限ステップを持たず、ログインの後ろに動作確認（マイク/録音キーのテスト）→体験を足す。
+# 権限ゲートの無い Windows は 権限ステップを持たず、API キーの案内の後ろに動作確認（マイク/録音キーのテスト）→体験を足す。
 _STEP_WELCOME = 0
-_STEP_LOGIN = 1
+_STEP_API_KEY = 1              # 準備: API キーの案内（入力は設定画面の「API キー」で行う）
 _STEP_MIC_TEST = 2             # 動作確認1: マイクテスト（録音せずレベル確認）
 _STEP_HOTKEY_TEST = 3          # 動作確認2: 録音キーテスト（押すとキーが光る）
 _STEP_PRACTICE_BASIC = 4       # 体験1: 即時入力
@@ -101,7 +101,7 @@ class OnboardingWindow(QDialog):
         self._app = app
         self._finished_emitted = False
         self._step = 0
-        # 練習ページの部品（step → {"edit", "success", "login_note"}）。成功演出・自動フォーカスに使う
+        # 練習ページの部品（step → {"edit", "success", "key_note"}）。成功演出・自動フォーカスに使う
         self._practice_pages: dict = {}
 
         # マイクテスト用（録音せずレベルだけ測る軽量モニタ＋描画ポーリング）
@@ -145,7 +145,7 @@ class OnboardingWindow(QDialog):
         # --- 本文（8 ステップをスタック） ---
         self._stack = QStackedWidget()
         self._stack.addWidget(self._build_welcome_page())               # 0
-        self._stack.addWidget(self._build_login_page())                 # 1
+        self._stack.addWidget(self._build_api_key_page())               # 1
         self._stack.addWidget(self._build_mic_test_page())              # 2
         self._stack.addWidget(self._build_hotkey_test_page())           # 3
         self._stack.addWidget(self._build_practice_basic_page())        # 4
@@ -176,12 +176,6 @@ class OnboardingWindow(QDialog):
         self._primary_btn.clicked.connect(self._on_primary)
         footer.addWidget(self._primary_btn)
         root.addLayout(footer)
-
-        # ログイン待ち/交換中はステータスをポーリングして表示を最新化する
-        # （deep link はブラウザ→OS→アプリと非同期に戻ってくるため）
-        self._login_poll = QTimer(self)
-        self._login_poll.setInterval(800)
-        self._login_poll.timeout.connect(self._refresh_login_status)
 
         self._update_nav()
 
@@ -335,30 +329,20 @@ class OnboardingWindow(QDialog):
     # ページ生成（2 ペイン）
     # ------------------------------------------------------------------
 
-    def _build_login_page(self) -> QWidget:
+    def _build_api_key_page(self) -> QWidget:
+        """API キーの案内ページ。入力欄は設定画面の「API キー」に 1 か所だけ置く（ここには置かない）。"""
         col, cl = self._left_column()
-        cl.addWidget(self._heading("ログイン"))
+        cl.addWidget(self._heading("API キーを用意する"))
         cl.addWidget(self._body(
-            "ログインすると無料体験で文字起こしが使えます。ログインはブラウザで行います。"
-            "あとで設定画面からでも可能です。"
+            "文字起こしには、ご自身の API キーが必要です。"
+            "設定画面の「API キー」で、使うサービスのキーを入力して保存してください。"
+            "このガイドを終えたあとでも入力できます。"
         ))
-
-        self._login_status = QLabel("")
-        self._login_status.setWordWrap(True)
-        cl.addWidget(self._login_status)
-
-        self._login_btn = QPushButton("ブラウザでログイン")
-        self._login_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._login_btn.clicked.connect(self._on_login_clicked)
-        row = QHBoxLayout()
-        row.addWidget(self._login_btn)
-        row.addStretch(1)
-        cl.addLayout(row)
         cl.addStretch(1)
 
         pane, pl = self._wash_pane()
         for title, body in (
-            ("無料で 200 回ぶん試せます", "ログインするだけで、すぐに文字起こしを体験できます。"),
+            ("キーはこの端末に保存", "入力したキーは Windows の資格情報マネージャーに保存されます。"),
             ("この端末だけで完結", "履歴はこの Windows の中に保存されます。"),
         ):
             pl.addWidget(self._value_card(title, body))
@@ -468,12 +452,12 @@ class OnboardingWindow(QDialog):
         cl.addWidget(self._heading(heading))
         cl.addWidget(self._body(intro))
 
-        # ログイン必須の注意（未ログイン時のみ表示。文字起こしはサーバー経由のため）
-        login_note = QLabel("体験するにはログインが必要です（前のステップでログインできます）")
-        login_note.setWordWrap(True)
-        login_note.setStyleSheet(f"color: {self._c.WARNING}; font-weight: 600; font-size: 12px;")
-        login_note.setVisible(False)
-        cl.addWidget(login_note)
+        # API キー未設定の注意（どの録音キーのキーも見つからない時だけ表示）
+        key_note = QLabel("体験するには API キーが必要です（設定画面の「API キー」で入力できます）")
+        key_note.setWordWrap(True)
+        key_note.setStyleSheet(f"color: {self._c.WARNING}; font-weight: 600; font-size: 12px;")
+        key_note.setVisible(False)
+        cl.addWidget(key_note)
 
         # 読む例文（カードに入れて「これを読む」と分かるように）
         example_card = QFrame()
@@ -515,7 +499,7 @@ class OnboardingWindow(QDialog):
             lambda e=edit, s=success_label: self._on_practice_changed(e, s)
         )
         self._practice_pages[step] = {
-            "edit": edit, "success": success_label, "login_note": login_note,
+            "edit": edit, "success": success_label, "key_note": key_note,
         }
         return self._two_pane(col, pane)
 
@@ -672,7 +656,6 @@ class OnboardingWindow(QDialog):
     def _on_back(self) -> None:
         if self._step > 0:
             self._step -= 1
-            self._skip_login_if_personal(direction=-1)
             self._go_to(self._step)
 
     def _on_primary(self) -> None:
@@ -680,15 +663,7 @@ class OnboardingWindow(QDialog):
             self._finish()
             return
         self._step += 1
-        self._skip_login_if_personal(direction=+1)
         self._go_to(self._step)
-
-    def _skip_login_if_personal(self, direction: int) -> None:
-        """personal はログインステップを飛ばす（Mac 版 OnboardingView の goNext/goBack と同じ）。"""
-        from ..utils import secrets
-
-        if self._step == _STEP_LOGIN and secrets.is_personal_build():
-            self._step += direction
 
     def _on_skip(self) -> None:
         """動作確認・体験をスキップしてまとめへ飛ぶ（強制しない）。"""
@@ -698,8 +673,6 @@ class OnboardingWindow(QDialog):
     def _go_to(self, step: int) -> None:
         self._stack.setCurrentIndex(step)
         self._update_nav()
-        if step == _STEP_LOGIN:
-            self._refresh_login_status()
 
         # マイクテスト: モニタ開始 / それ以外: 停止
         if step == _STEP_MIC_TEST:
@@ -718,10 +691,10 @@ class OnboardingWindow(QDialog):
         # 整形体験ステップの間だけ整形を強制 ON（それ以外では必ず解除）
         self._apply_format_override(step == _STEP_PRACTICE_FORMAT)
 
-        # 練習ステップに入ったら入力欄を自動フォーカスし、ログイン必須の注意を最新化する
+        # 練習ステップに入ったら入力欄を自動フォーカスし、API キー未設定の注意を最新化する
         if step in self._practice_pages:
             parts = self._practice_pages[step]
-            parts["login_note"].setVisible(not self._is_logged_in())
+            parts["key_note"].setVisible(not self._has_any_api_key())
             parts["edit"].setFocus()
 
     def _apply_format_override(self, enabled: bool) -> None:
@@ -734,7 +707,7 @@ class OnboardingWindow(QDialog):
         # パンくずの現在フェーズ（ようこそ=0 / 準備=1 / 体験=2）
         if self._step == _STEP_WELCOME:
             phase = 0
-        elif self._step == _STEP_LOGIN:
+        elif self._step == _STEP_API_KEY:
             phase = 1
         else:
             phase = 2
@@ -744,9 +717,6 @@ class OnboardingWindow(QDialog):
         self._skip_btn.setVisible(self._step in _SKIPPABLE_STEPS)
         if self._step == _STEP_WELCOME:
             self._primary_btn.setText("はじめる")
-        elif self._step == _STEP_LOGIN:
-            # ログイン済みなら「次へ」、未ログインなら「あとで」（スキップ可）
-            self._primary_btn.setText("次へ" if self._is_logged_in() else "あとで")
         elif self._step == _STEP_SUMMARY:
             self._primary_btn.setText("VoiceKey をはじめる")
         else:
@@ -754,57 +724,24 @@ class OnboardingWindow(QDialog):
             self._primary_btn.setText("次へ")
 
     # ------------------------------------------------------------------
-    # ログイン（settings_window と同じ login_coordinator を流用）
+    # API キーの有無（体験ステップの注意表示に使う）
     # ------------------------------------------------------------------
 
-    def _on_login_clicked(self) -> None:
-        """ログイン開始: state を生成し、既定ブラウザでログインページを開く。"""
-        from ..core import login_coordinator
+    def _has_any_api_key(self) -> bool:
+        """文字起こしに使える API キーが 1 つでもあるか（保存済みのキー → 環境変数の順に見る）。"""
+        import os
 
-        url = login_coordinator.shared().begin_login()
-        QDesktopServices.openUrl(QUrl(url))
-        self._refresh_login_status()
-        self._login_poll.start()
+        from ..utils import secrets
 
-    def _is_logged_in(self) -> bool:
-        from ..core import login_coordinator
-
-        return login_coordinator.shared().status == login_coordinator.LoginCoordinator.LOGGED_IN
-
-    def _refresh_login_status(self) -> None:
-        """ログイン状態を表示へ反映する（ポーリング/表示切替時に呼ぶ）。"""
-        from ..core import login_coordinator
-
-        coord = login_coordinator.shared()
-        LC = login_coordinator.LoginCoordinator
-        status = coord.status
-        if status == LC.LOGGED_IN:
-            email = coord.account_email
-            self._login_status.setText(f"ログイン済み（{email}）" if email else "ログイン済み")
-            self._login_status.setStyleSheet(f"color: {self._c.SUCCESS};")
-            self._login_btn.setVisible(False)
-            self._login_poll.stop()
-        elif status == LC.WAITING:
-            self._login_status.setText("ブラウザでログインを完了してください…")
-            self._login_status.setStyleSheet(f"color: {self._c.SECONDARY_TEXT};")
-            self._login_btn.setEnabled(True)
-        elif status == LC.EXCHANGING:
-            self._login_status.setText("ログイン処理中…")
-            self._login_status.setStyleSheet(f"color: {self._c.SECONDARY_TEXT};")
-            self._login_btn.setEnabled(False)
-        elif status == LC.FAILED:
-            self._login_status.setText(coord.error or "ログインに失敗しました。")
-            self._login_status.setStyleSheet(f"color: {self._c.WARNING};")
-            self._login_btn.setVisible(True)
-            self._login_btn.setEnabled(True)
-            self._login_poll.stop()
-        else:  # IDLE（未ログイン）
-            self._login_status.setText("")
-            self._login_btn.setVisible(True)
-            self._login_btn.setEnabled(True)
-        # ログイン済みになったら主ボタンを「次へ」に更新する
-        if self._step == _STEP_LOGIN:
-            self._primary_btn.setText("次へ" if self._is_logged_in() else "あとで")
+        for service, env_var in (
+            (secrets.SERVICE_GROQ, "GROQ_API_KEY"),
+            (secrets.SERVICE_OPENAI, "OPENAI_API_KEY"),
+            (secrets.SERVICE_ELEVENLABS, "ELEVENLABS_API_KEY"),
+            (secrets.SERVICE_DEEPGRAM, "DEEPGRAM_API_KEY"),
+        ):
+            if secrets.get_api_key(service) or os.environ.get(env_var):
+                return True
+        return False
 
     # ------------------------------------------------------------------
     # 完了/クローズ（スキップも完了扱いにして毎回は出さない）
@@ -818,7 +755,6 @@ class OnboardingWindow(QDialog):
         if self._finished_emitted:
             return
         self._finished_emitted = True
-        self._login_poll.stop()
         # テスト用モード（マイクモニタ・録音キーテスト・整形オーバーライド）を必ず解除
         self._stop_mic_test()
         self._stop_hotkey_test()

@@ -4,6 +4,7 @@
 Qt のイベントループは使わず、シグナルの直接接続（同期発火）で検証する。
 """
 
+import sys
 import base64
 import hashlib
 import io
@@ -111,9 +112,9 @@ class TestUpdaterCheck(unittest.TestCase):
         self.assertEqual(self.available, [])
 
     def test_start_noop_in_dev_build(self):
-        """開発ビルドでは start() が定期チェックを開始しない。"""
-        with mock.patch("src.utils.updater.secrets.is_dist_build", return_value=False):
-            self.updater.start()
+        """ソースから実行しているとき（sys.frozen が無い）は start() が定期チェックを開始しない。"""
+        self.assertFalse(getattr(sys, "frozen", False))
+        self.updater.start()
         self.assertFalse(self.updater._timer.isActive())
 
 

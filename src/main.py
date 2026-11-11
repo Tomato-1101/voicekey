@@ -15,13 +15,11 @@ from PySide6.QtWidgets import QApplication
 from .app import VoicekeyApp
 from .platform import get_platform_adapter
 from .utils.logger import default_log_dir, get_logger, setup_logger
+from .utils.single_instance import SingleInstance
 
-# .env ファイルから環境変数を読み込み（API キー等）。
-# 配布（DIST）ビルドでは読み込まない＝作業ディレクトリの .env で接続先や鍵を
-# 汚染されないようにする。override 判定のため secrets を先に取り込む。
-from .utils import secrets as _secrets  # noqa: E402
-
-if not _secrets.is_dist_build():
+# .env から環境変数を読む（API キー等のフォールバック）。固めた実行ファイルでは読まない
+# （起動した場所にたまたまある .env を拾って、意図しないキーで動くのを避ける）
+if not getattr(sys, "frozen", False):
     load_dotenv()
 
 # ロギング設定。行動ログの置き場所は README「ログの場所」と同じ
@@ -46,34 +44,17 @@ def main() -> int:
         app = QApplication(sys.argv)
         app.setQuitOnLastWindowClosed(False)  # システムトレイ動作のため
 
-        # ブラウザ経由ログインの deep link（voicekey://）を扱う（製品版・段階4）。
-        # OS がスキームハンドラとして起動すると argv に URL が載る。2 つ目以降の
-        # インスタンスは URL を稼働中インスタンスへ転送して即終了する（単一インスタンス化）。
-        from .core import deep_link
-
-        deep_url = deep_link.extract_url_from_argv(sys.argv)
-        single = deep_link.SingleInstance()
+        # 二重起動防止: 既に起動済みなら何もせず終了する（ホットキーの二重監視を防ぐ）
+        single = SingleInstance()
         if not single.try_become_primary():
-            # 既に起動済み: deep link があれば転送して終了（無ければ二重起動を防いで終了）
-            if deep_url:
-                single.send_to_primary(deep_url)
             return 0
 
         # macOS では Dock / Cmd+Tab から隠す（メニューバー常駐アプリとして動作）。
         # Windows / Linux ではアダプタが no-op なので副作用なし。
         get_platform_adapter().configure_app_visibility(hide_from_dock=True)
 
-        # 配布（凍結）ビルドのみ: voicekey:// を OS に登録する（他環境は no-op）
-        deep_link.register_url_scheme()
-
         # メインコントローラーを作成
         controller = VoicekeyApp()
-
-        # 稼働中インスタンスへ転送された deep link をログイン処理へ渡す
-        single.url_received.connect(controller.handle_deep_link)
-        # アプリ未起動の状態でログインから戻ってきた場合（起動引数に URL）
-        if deep_url:
-            controller.handle_deep_link(deep_url)
 
         # イベントループを実行
         return app.exec()

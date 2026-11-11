@@ -4,7 +4,7 @@
 """
 
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import httpx
 import numpy as np
@@ -17,7 +17,6 @@ from src.core.api_transcriber import (
     OpenAITranscriber,
     TranscriptionError,
 )
-from src.core.backend_client import BackendError
 
 
 class TestAuthHeaders(unittest.TestCase):
@@ -78,135 +77,15 @@ class TestAvailableModels(unittest.TestCase):
         self.assertIn("whisper-large-v3-turbo", GroqTranscriber.available_models)
 
 
-class TestServerRouting(unittest.TestCase):
-    """段階3: ログイン済みはサーバー経路で文字起こしする（並存ガード）。"""
-
-    @staticmethod
-    def _audio():
-        # 非空の音声（is_logged_in 判定まで到達させる）
-        return np.full(1600, 0.1, dtype=np.float32)
-
-    def test_elevenlabs_uses_proxy_when_logged_in(self):
-        """正確性（ElevenLabs）はログイン時サーバープロキシを使い直叩きしない。"""
-        t = ElevenLabsTranscriber("scribe_v1", "ja")
-        with patch.object(api_transcriber.backend_client, "is_logged_in", return_value=True), \
-                patch.object(api_transcriber.backend_client, "transcribe_elevenlabs",
-                             return_value="プロキシ結果") as proxy, \
-                patch.object(t, "_get_client") as direct:
-            self.assertEqual(t.transcribe(self._audio()), "プロキシ結果")
-            proxy.assert_called_once()
-            self.assertEqual(proxy.call_args.args[1], "ja")  # language を渡す
-            direct.assert_not_called()
-
-    def test_elevenlabs_backend_error_becomes_transcription_error(self):
-        """プロキシ失敗は TranscriptionError へ写す（呼び出し側の通知に乗る）。"""
-        t = ElevenLabsTranscriber("scribe_v1", "ja")
-        with patch.object(api_transcriber.backend_client, "is_logged_in", return_value=True), \
-                patch.object(api_transcriber.backend_client, "transcribe_elevenlabs",
-                             side_effect=BackendError("だめ", status=403)):
-            with self.assertRaises(TranscriptionError):
-                t.transcribe(self._audio())
-
-    def test_groq_uses_proxy_and_propagates_server_format(self):
-        """高速（Groq）はログイン時プロキシを使い、server_format をそのまま伝搬する。"""
-        t = GroqTranscriber("whisper-large-v3-turbo", "ja")
-        with patch.object(api_transcriber.backend_client, "is_logged_in", return_value=True), \
-                patch.object(api_transcriber.backend_client, "transcribe_groq",
-                             return_value="整形済み") as proxy, \
-                patch.object(t, "_get_client") as direct:
-            self.assertEqual(t.transcribe(self._audio(), server_format=True), "整形済み")
-            proxy.assert_called_once()
-            self.assertEqual(proxy.call_args.args[1], "ja")           # language を渡す
-            self.assertTrue(proxy.call_args.kwargs["server_format"])  # 統合整形フラグを伝搬
-            direct.assert_not_called()
-
-    def test_groq_default_no_server_format(self):
-        """server_format 未指定なら False を伝搬（統合整形しない）。"""
-        t = GroqTranscriber("whisper-large-v3-turbo", "ja")
-        with patch.object(api_transcriber.backend_client, "is_logged_in", return_value=True), \
-                patch.object(api_transcriber.backend_client, "transcribe_groq",
-                             return_value="生") as proxy:
-            t.transcribe(self._audio())
-            self.assertFalse(proxy.call_args.kwargs["server_format"])
-
-    def test_deepgram_uses_jwt_when_logged_in(self):
-        """高速リアルタイム（Deepgram）はログイン時 短命 JWT で直叩き（低レイテンシ維持）。"""
-        t = DeepgramTranscriber("nova-3", "ja")
-        captured = {}
-
-        def fake_post(path, **kwargs):
-            captured["url"] = path
-            captured["auth"] = kwargs["headers"]["Authorization"]
-            return httpx.Response(
-                200,
-                json={"results": {"channels": [{"alternatives": [{"transcript": "本日は晴天"}]}]}},
-            )
-
-        # JWT 経路は共有クライアント（prewarm で温める接続プール）を使う
-        jwt_client = Mock()
-        jwt_client.post.side_effect = fake_post
-
-        with patch.object(api_transcriber.backend_client, "is_logged_in", return_value=True), \
-                patch.object(api_transcriber.backend_client, "fetch_ephemeral_token",
-                             return_value={"token": "dg-jwt"}), \
-                patch.object(t, "_get_jwt_client", return_value=jwt_client), \
-                patch.object(t, "_get_client") as direct:
-            self.assertEqual(t.transcribe(self._audio()), "本日は晴天")
-            self.assertEqual(captured["auth"], "Bearer dg-jwt")  # Token ではなく Bearer
-            self.assertTrue(captured["url"].endswith("/listen"))
-            jwt_client.post.assert_called_once()  # 毎回 httpx.post ではなく共有クライアント
-            direct.assert_not_called()  # キャッシュ済み Token クライアントはバイパス
-
-    def test_deepgram_token_error_becomes_transcription_error(self):
-        """短命トークン取得失敗は TranscriptionError へ写す。"""
-        t = DeepgramTranscriber("nova-3", "ja")
-        with patch.object(api_transcriber.backend_client, "is_logged_in", return_value=True), \
-                patch.object(api_transcriber.backend_client, "fetch_ephemeral_token",
-                             side_effect=BackendError("無効", status=403)):
-            with self.assertRaises(TranscriptionError):
-                t.transcribe(self._audio())
-
-
-class TestDistGate(unittest.TestCase):
-    """配布版の無料ゲート: ログイン＋アクティベーション必須（_dist_guard）。"""
+class TestDirectRouting(unittest.TestCase):
+    """文字起こしは常に利用者のキーでプロバイダーを直接叩く。"""
 
     @staticmethod
     def _audio():
         return np.full(1600, 0.1, dtype=np.float32)
 
-    def test_dist_not_logged_in_blocks_deepgram(self):
-        """配布版で未ログインなら、直叩きせず「ログイン必須」を出す。"""
-        t = DeepgramTranscriber("nova-3", "ja")
-        with patch.object(api_transcriber.secrets, "is_dist_build", return_value=True), \
-                patch.object(api_transcriber.backend_client, "is_logged_in", return_value=False), \
-                patch.object(t, "_get_client") as direct:
-            with self.assertRaises(TranscriptionError) as cm:
-                t.transcribe(self._audio())
-            direct.assert_not_called()  # 埋め込みキー直叩きへ落ちない
-        self.assertIn("ログイン", str(cm.exception))
-
-    def test_dist_not_logged_in_blocks_elevenlabs(self):
-        t = ElevenLabsTranscriber("scribe_v1", "ja")
-        with patch.object(api_transcriber.secrets, "is_dist_build", return_value=True), \
-                patch.object(api_transcriber.backend_client, "is_logged_in", return_value=False), \
-                patch.object(t, "_get_client") as direct:
-            with self.assertRaises(TranscriptionError):
-                t.transcribe(self._audio())
-            direct.assert_not_called()
-
-    def test_dist_openai_groq_unsupported(self):
-        """配布版では OpenAI/Groq の文字起こし（サーバー非対応）は使えない。"""
-        t = OpenAITranscriber("gpt-4o-mini-transcribe", "ja")
-        with patch.object(api_transcriber.secrets, "is_dist_build", return_value=True), \
-                patch.object(api_transcriber.backend_client, "is_logged_in", return_value=True), \
-                patch.object(t, "_get_client") as direct:
-            with self.assertRaises(TranscriptionError) as cm:
-                t.transcribe(self._audio())
-            direct.assert_not_called()
-        self.assertIn("配布版", str(cm.exception))
-
-    def test_dev_build_no_gate(self):
-        """開発ビルドはゲートしない（埋め込み/設定キー直叩きの並存を維持）。"""
+    def test_deepgram_posts_to_listen(self):
+        """Deepgram は /listen へ直接 POST し、返った transcript をそのまま返す。"""
         t = DeepgramTranscriber("nova-3", "ja")
         captured = {}
 
@@ -216,9 +95,7 @@ class TestDistGate(unittest.TestCase):
                 200, json={"results": {"channels": [{"alternatives": [{"transcript": "開発"}]}]}}
             )
 
-        with patch.object(api_transcriber.secrets, "is_dist_build", return_value=False), \
-                patch.object(api_transcriber.backend_client, "is_logged_in", return_value=False), \
-                patch.object(t, "_get_client", return_value=object()), \
+        with patch.object(t, "_get_client", return_value=object()), \
                 patch.object(t, "_post", side_effect=fake_post):
             self.assertEqual(t.transcribe(self._audio()), "開発")
             self.assertEqual(captured["path"], "/listen")
@@ -232,16 +109,14 @@ class TestWhisperPrompt(unittest.TestCase):
         return np.full(1600, 0.1, dtype=np.float32)
 
     def _capture_direct_data(self, transcriber):
-        """開発直叩き（Whisper 系）の multipart data を捕捉して返す。"""
+        """Whisper 系の直叩きで送る multipart data を捕捉して返す。"""
         captured = {}
 
         def fake_post(client, path, **kwargs):
             captured["data"] = kwargs.get("data")
             return httpx.Response(200, text="結果")
 
-        with patch.object(api_transcriber.secrets, "is_dist_build", return_value=False), \
-                patch.object(api_transcriber.backend_client, "is_logged_in", return_value=False), \
-                patch.object(transcriber, "_get_client", return_value=object()), \
+        with patch.object(transcriber, "_get_client", return_value=object()), \
                 patch.object(transcriber, "_post", side_effect=fake_post):
             transcriber.transcribe(self._audio())
         return captured["data"]
@@ -259,15 +134,6 @@ class TestWhisperPrompt(unittest.TestCase):
         data = self._capture_direct_data(t)
         self.assertTrue(data["prompt"].startswith(api_transcriber._NUMERAL_STYLE_PROMPT))
         self.assertIn("固有名詞: VoiceKey", data["prompt"])
-
-    def test_groq_proxy_forwards_prompt(self):
-        """release の Groq プロキシ経路は prompt を transcribe_groq へ渡す（サーバーが Groq へ転送）。"""
-        t = GroqTranscriber("whisper-large-v3-turbo", "ja")
-        with patch.object(api_transcriber.backend_client, "is_logged_in", return_value=True), \
-                patch.object(api_transcriber.backend_client, "transcribe_groq",
-                             return_value="結果") as proxy:
-            t.transcribe(self._audio())
-            self.assertEqual(proxy.call_args.kwargs["prompt"], api_transcriber._NUMERAL_STYLE_PROMPT)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@
 - 送信中はキャンセル無効・reject 無視（ユーザーが閉じても実行中スレッドを壊さない）
 - アプリ終了など強制 close 時は closeEvent でワーカー完了を待ってから破棄する
 
-Qt はオフスクリーン、ネットワーク（backend_client.submit_feedback / is_logged_in）はモック。
+Qt はオフスクリーン、ネットワーク（feedback_client.submit_feedback）はモック。
 """
 
 import os
@@ -20,7 +20,7 @@ from unittest import mock
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QApplication
 
-from src.core import backend_client
+from src.core import feedback_client
 
 _app = QApplication.instance() or QApplication([])
 
@@ -52,8 +52,7 @@ class TestFeedbackDialogLifecycle(unittest.TestCase):
         return dlg
 
     def test_success_shows_confirmation(self):
-        with mock.patch.object(backend_client, "is_logged_in", return_value=False), \
-             mock.patch.object(backend_client, "submit_feedback", return_value=None):
+        with mock.patch.object(feedback_client, "submit_feedback", return_value=None):
             dlg = self._make_dialog()
             dlg._editor.setPlainText("テスト本文")
             dlg._on_send()
@@ -67,11 +66,10 @@ class TestFeedbackDialogLifecycle(unittest.TestCase):
         self.assertTrue(_pump_until(lambda: dlg._worker is None))
 
     def test_failure_allows_retry(self):
-        with mock.patch.object(backend_client, "is_logged_in", return_value=False), \
-             mock.patch.object(
-                 backend_client, "submit_feedback",
-                 side_effect=backend_client.BackendError("boom"),
-             ):
+        with mock.patch.object(
+            feedback_client, "submit_feedback",
+            side_effect=feedback_client.FeedbackError("boom"),
+        ):
             dlg = self._make_dialog()
             dlg._editor.setPlainText("x")
             dlg._on_send()
@@ -88,8 +86,7 @@ class TestFeedbackDialogLifecycle(unittest.TestCase):
         def blocking_submit(_message):
             gate.wait(5)
 
-        with mock.patch.object(backend_client, "is_logged_in", return_value=False), \
-             mock.patch.object(backend_client, "submit_feedback", side_effect=blocking_submit):
+        with mock.patch.object(feedback_client, "submit_feedback", side_effect=blocking_submit):
             dlg = self._make_dialog()
             rejected_fired = []
             dlg.rejected.connect(lambda: rejected_fired.append(True))
@@ -120,8 +117,7 @@ class TestFeedbackDialogLifecycle(unittest.TestCase):
         def blocking_submit(_message):
             gate.wait(5)
 
-        with mock.patch.object(backend_client, "is_logged_in", return_value=False), \
-             mock.patch.object(backend_client, "submit_feedback", side_effect=blocking_submit):
+        with mock.patch.object(feedback_client, "submit_feedback", side_effect=blocking_submit):
             dlg = self._make_dialog()
             dlg._editor.setPlainText("x")
             dlg._on_send()

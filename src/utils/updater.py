@@ -9,7 +9,7 @@ voicekey-releases リポジトリの version.json を定期チェックし、新
 秘密鍵を持たない第三者は不正な更新を実行できない（Mac 版 Sparkle EdDSA と同方針）。
 
 設計方針:
-- 配布（DIST）ビルドのみ動作する（開発環境では start() が何もしない）
+- PyInstaller で固めた実行ファイルでのみ動作する（ソースからの実行では start() が何もしない）
 - モーダルダイアログは使わない（音声入力アプリがフォーカスを奪うと入力事故になる）
 - ネットワーク処理はバックグラウンドスレッドで行い、UI へは Qt シグナルで通知する
 """
@@ -19,6 +19,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import urllib.request
@@ -27,7 +28,6 @@ from typing import Optional
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from ..config.constants import APP_VERSION, UPDATE_PUBLIC_KEY_ED25519
-from . import secrets
 from .logger import get_logger
 from .update_signing import verify_ed25519
 
@@ -85,9 +85,9 @@ class Updater(QObject):
         self._timer.timeout.connect(self.check_now)
 
     def start(self) -> None:
-        """定期チェックを開始する（DIST ビルド以外は何もしない）。"""
-        if not secrets.is_dist_build():
-            logger.info("開発ビルドのため自動アップデートは無効です")
+        """定期チェックを開始する（PyInstaller で固めた実行ファイル以外は何もしない）。"""
+        if not getattr(sys, "frozen", False):
+            logger.info("ソースからの実行のため自動アップデートは無効です")
             return
         QTimer.singleShot(FIRST_CHECK_DELAY_MS, self.check_now)
         self._timer.start(CHECK_INTERVAL_MS)

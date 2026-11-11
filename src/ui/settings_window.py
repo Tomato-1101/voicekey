@@ -7,7 +7,6 @@ Mac 版 SettingsView.swift と同じ 5 ページ構成（一般 / 録音キー 1
 ダーク/ライトテーマ切り替えに対応（Qt は OS テーマに自動追従しないため Windows 版のみ）。
 """
 
-import threading
 from datetime import datetime
 from typing import Optional
 
@@ -20,14 +19,12 @@ from PySide6.QtCore import (
     QRectF,
     QSize,
     QTimer,
-    QUrl,
     QVariantAnimation,
     Signal,
 )
 from PySide6.QtGui import (
     QBrush,
     QColor,
-    QDesktopServices,
     QFont,
     QIcon,
     QKeyEvent,
@@ -251,7 +248,6 @@ _NAV_ICON_NAME = {
     "実績": "stats",
     "履歴": "history",
     "ユーザー辞書": "dictionary",
-    "アカウント": "account",
     "バージョン情報": "version",
     "API キー": "apikey",
 }
@@ -290,7 +286,6 @@ def _nav_svg(name: str, color: str) -> str:
             '<path d="M5 4h11a2 2 0 0 1 2 2v14H7a2 2 0 0 1-2-2z"/>'
             '<line x1="5" y1="16.5" x2="18" y2="16.5"/>'
         ),
-        "account": '<circle cx="12" cy="8.5" r="3.4"/><path d="M5.5 20a6.5 6.5 0 0 1 13 0"/>',
         "version": (
             '<circle cx="12" cy="12" r="9"/><line x1="12" y1="11" x2="12" y2="16.5"/>'
             f'<circle cx="12" cy="7.7" r="0.7" fill="{color}" stroke="none"/>'
@@ -793,10 +788,6 @@ class SettingsWindow(QWidget):
     _mic_detect_done = Signal(object)
     # 設定保存の完了通知（アプリ本体が設定変更を即座に適用するために購読する）
     settings_saved = Signal()
-    # 利用権確認の完了通知（ワーカースレッド → メインスレッドへ）。表示更新のトリガ。
-    _entitlement_done = Signal()
-    # アクティベーションキー登録の完了通知（成功か, メッセージ）
-    _redeem_done = Signal(bool, str)
     # 「セットアップガイドを開く」要求（アプリ本体が受けてオンボーディングを再表示する）
     open_onboarding_requested = Signal()
 
@@ -948,15 +939,10 @@ class SettingsWindow(QWidget):
         self._history_page_index = 5
         # ユーザー辞書（確定置換）。貼り付け直前に from→to を機械置換する。常時表示。
         page_defs.append(("ユーザー辞書", self._create_dictionary_page()))
-        # アカウント（ブラウザ経由ログイン）。製品版の中核機能なので常時表示する。
-        # personal はアカウント/サーバーを一切使わないので出さない（Mac 版 SettingsView と同じ）
-        if not secrets.is_personal_build():
-            page_defs.append(("アカウント", self._create_account_page()))
         # バージョン情報（現在版表示・更新確認・更新検知時の「今すぐ更新する」）。常時表示。
         page_defs.append(("バージョン情報", self._create_version_page()))
-        # 配布ビルドは埋め込みキーで動くため、API キーページは出さない（テスターの混乱防止）
-        if not secrets.is_dist_build():
-            page_defs.append(("API キー", self._create_api_keys_page()))
+        # API キー（利用者が自分のキーを入れる唯一の入口なので常時表示）
+        page_defs.append(("API キー", self._create_api_keys_page()))
         # ナビ項目のフルタイトルを覚えておく（折りたたみ時はテキストを消してアイコンのみにする）
         self._nav_titles = [title for title, _ in page_defs]
         for title, page in page_defs:
@@ -1111,9 +1097,6 @@ class SettingsWindow(QWidget):
         device_layout.addWidget(self._mic_detect_status)
         _add_block(cl, device_block)
         self._mic_detect_done.connect(self._on_mic_detect_done)
-        # 利用権確認・キー登録の完了通知をメインスレッドで受ける
-        self._entitlement_done.connect(self._on_entitlement_done)
-        self._redeem_done.connect(self._on_redeem_done)
 
         layout.addWidget(card)
 
@@ -2435,319 +2418,6 @@ class SettingsWindow(QWidget):
             self._numeral_protect_list.item(i).text()
             for i in range(self._numeral_protect_list.count())
         ]
-
-    # ------------------------------------------------------------------
-    # アカウント（ブラウザ経由ログイン・製品版 段階4）
-    # ------------------------------------------------------------------
-
-    def _create_account_page(self) -> QWidget:
-        """アカウントページを作成する（ログイン状態の表示・ログイン／ログアウト）。"""
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setSpacing(12)
-        layout.setContentsMargins(24, 8, 24, 24)
-
-        card, cl = _make_card()
-        block = QWidget()
-        bl = QVBoxLayout(block)
-        bl.setContentsMargins(0, 0, 0, 0)
-        bl.setSpacing(8)
-
-        self._account_status = QLabel("")
-        self._account_status.setWordWrap(True)
-
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(8)
-        self._login_btn = QPushButton("ログイン")
-        self._login_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._login_btn.clicked.connect(self._on_login_clicked)
-        self._logout_btn = QPushButton("ログアウト")
-        self._logout_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._logout_btn.clicked.connect(self._on_logout_clicked)
-        btn_row.addWidget(self._login_btn)
-        btn_row.addWidget(self._logout_btn)
-        btn_row.addStretch()
-
-        bl.addWidget(self._account_status)
-        bl.addLayout(btn_row)
-        _add_block(cl, block)
-
-        layout.addWidget(card)
-
-        # ライセンス（アクティベーションキー）カード。ログイン済みのときだけ表示する。
-        lic_card, lcl = _make_card()
-        lic_block = QWidget()
-        lic_l = QVBoxLayout(lic_block)
-        lic_l.setContentsMargins(0, 0, 0, 0)
-        lic_l.setSpacing(8)
-
-        lic_title = QLabel("ライセンス（アクティベーションキー）")
-        lic_title.setStyleSheet("font-weight: 600;")
-        lic_l.addWidget(lic_title)
-
-        # 利用権の状態（有効／期限／未登録／確認中）
-        self._entitlement_status = QLabel("")
-        self._entitlement_status.setWordWrap(True)
-        lic_l.addWidget(self._entitlement_status)
-
-        # キー入力 + 登録ボタン
-        key_row = QHBoxLayout()
-        key_row.setSpacing(8)
-        self._activation_key_input = QLineEdit()
-        self._activation_key_input.setPlaceholderText("アクティベーションキーを入力")
-        self._activation_key_input.returnPressed.connect(self._on_redeem_clicked)
-        self._redeem_btn = QPushButton("登録")
-        self._redeem_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._redeem_btn.clicked.connect(self._on_redeem_clicked)
-        key_row.addWidget(self._activation_key_input, 1)
-        key_row.addWidget(self._redeem_btn)
-        lic_l.addLayout(key_row)
-
-        # 登録結果メッセージ（成功＝緑 / 失敗＝赤）
-        self._redeem_msg = QLabel("")
-        self._redeem_msg.setWordWrap(True)
-        self._redeem_msg.setVisible(False)
-        lic_l.addWidget(self._redeem_msg)
-
-        _add_block(lcl, lic_block)
-        self._license_card = lic_card
-        layout.addWidget(lic_card)
-
-        layout.addWidget(_make_caption(
-            "ログインすると無料体験でサーバー経由の文字起こし（即時入力／正確性）が"
-            "使えます。無料体験を使い切ったら、アクティベーションキーを登録すると続けて使えます。"
-            "キーはこのアカウントに紐付き、別の端末でログインしても同じライセンスで使えます。"
-            "ログインはブラウザで行います。"
-        ))
-        layout.addStretch()
-
-        # ログイン待ち/交換中はステータスをポーリングして表示を最新化する
-        # （deep link はブラウザ→OS→アプリと非同期に戻ってくるため）
-        self._account_poll = QTimer(self)
-        self._account_poll.setInterval(800)
-        self._account_poll.timeout.connect(self.refresh_account_status)
-
-        self.refresh_account_status()
-        return self._wrap_scroll(page)
-
-    def _on_login_clicked(self) -> None:
-        """ログイン開始: state を生成し、既定ブラウザでログインページを開く。"""
-        from ..core import login_coordinator
-
-        url = login_coordinator.shared().begin_login()
-        QDesktopServices.openUrl(QUrl(url))
-        self.refresh_account_status()
-        self._account_poll.start()
-
-    def _on_logout_clicked(self) -> None:
-        """ログアウト（セッション破棄）。"""
-        from ..core import login_coordinator
-
-        login_coordinator.shared().logout()
-        # 登録欄・結果表示をリセット
-        if hasattr(self, "_activation_key_input"):
-            self._activation_key_input.clear()
-        if hasattr(self, "_redeem_msg"):
-            self._redeem_msg.setVisible(False)
-        self.refresh_account_status()
-
-    # ------------------------------------------------------------------
-    # ライセンス（アクティベーションキー）
-    # ------------------------------------------------------------------
-
-    def _ensure_entitlement_refresh(self) -> None:
-        """利用権が未確認なら、バックグラウンドで /api/v1/me を叩いて取得する。
-
-        ポーリングや再描画で何度も呼ばれるため、確認中・確認済みのときは何もしない
-        （UNKNOWN/ERROR のときだけ取りに行く）。
-        """
-        from ..core import login_coordinator
-
-        coord = login_coordinator.shared()
-        LC = login_coordinator.LoginCoordinator
-        if coord.entitlement not in (LC.ENT_UNKNOWN, LC.ENT_ERROR):
-            return
-        if getattr(self, "_entitlement_refreshing", False):
-            return
-        self._entitlement_refreshing = True
-
-        def _work():
-            try:
-                coord.refresh_entitlement()
-            finally:
-                self._entitlement_done.emit()
-
-        threading.Thread(target=_work, daemon=True).start()
-
-    def _on_entitlement_done(self) -> None:
-        """利用権確認の完了（メインスレッド）。表示を更新する。"""
-        self._entitlement_refreshing = False
-        self._render_entitlement()
-        # メール表示を含むログイン行も更新したいので、ログイン中なら上段も描き直す
-        if hasattr(self, "_account_status"):
-            self.refresh_account_status()
-
-    def _render_entitlement(self) -> None:
-        """現在の利用権の状態をライセンスカードに反映する。"""
-        if not hasattr(self, "_entitlement_status"):
-            return
-        from ..core import login_coordinator
-
-        coord = login_coordinator.shared()
-        LC = login_coordinator.LoginCoordinator
-        ent = coord.entitlement
-
-        if ent == LC.ENT_ACTIVE:
-            until = coord.entitlement_active_until
-            text = "ライセンス: 有効"
-            if until:
-                text += f"（期限: {self._format_until(until)}）"
-            self._entitlement_status.setText(text)
-            self._entitlement_status.setStyleSheet(MacTheme.status_ok_style(self._is_dark_mode))
-            # 有効になったら入力欄は不要
-            self._activation_key_input.setVisible(False)
-            self._redeem_btn.setVisible(False)
-        elif ent == LC.ENT_FREE:
-            remaining = coord.entitlement_free_remaining
-            quota = coord.entitlement_free_quota
-            self._entitlement_status.setText(
-                f"無料体験中（残り {remaining} / {quota} 回）。"
-                "使い切ったらアクティベーションキーの登録が必要です。"
-            )
-            self._entitlement_status.setStyleSheet(MacTheme.status_ok_style(self._is_dark_mode))
-            # 無料体験中でも先にキーを登録できるよう入力欄は出す
-            self._activation_key_input.setVisible(True)
-            self._redeem_btn.setVisible(True)
-        elif ent == LC.ENT_CHECKING:
-            self._entitlement_status.setText("ライセンスを確認中…")
-            self._entitlement_status.setStyleSheet(MacTheme.status_muted_style())
-            self._activation_key_input.setVisible(True)
-            self._redeem_btn.setVisible(True)
-        elif ent == LC.ENT_ERROR:
-            self._entitlement_status.setText(
-                coord.entitlement_error or "ライセンスの状態を確認できませんでした"
-            )
-            self._entitlement_status.setStyleSheet(MacTheme.status_warn_style(self._is_dark_mode))
-            self._activation_key_input.setVisible(True)
-            self._redeem_btn.setVisible(True)
-        elif ent == LC.ENT_NONE:
-            self._entitlement_status.setText(
-                "無料体験を使い切りました。続けて使うにはアクティベーションキーを入力してください。"
-            )
-            self._entitlement_status.setStyleSheet(MacTheme.status_warn_style(self._is_dark_mode))
-            self._activation_key_input.setVisible(True)
-            self._redeem_btn.setVisible(True)
-        else:  # ENT_UNKNOWN
-            self._entitlement_status.setText(
-                "ログインするとライセンスの状態を確認できます。"
-            )
-            self._entitlement_status.setStyleSheet(MacTheme.status_muted_style())
-            self._activation_key_input.setVisible(True)
-            self._redeem_btn.setVisible(True)
-
-    @staticmethod
-    def _format_until(iso: str) -> str:
-        """ISO8601 の期限文字列を「YYYY-MM-DD HH:MM」に整形する（失敗時は原文）。"""
-        try:
-            s = iso.replace("Z", "+00:00")
-            return datetime.fromisoformat(s).astimezone().strftime("%Y-%m-%d %H:%M")
-        except Exception:
-            return iso
-
-    def _on_redeem_clicked(self) -> None:
-        """アクティベーションキーを登録する（ネットワーク I/O はワーカースレッド）。"""
-        from ..core import login_coordinator
-
-        code = self._activation_key_input.text().strip()
-        if not code:
-            self._show_redeem_msg(False, "キーを入力してください")
-            return
-        self._redeem_btn.setEnabled(False)
-        self._activation_key_input.setEnabled(False)
-        self._redeem_msg.setVisible(False)
-        coord = login_coordinator.shared()
-
-        def _work():
-            ok, msg = coord.redeem(code)
-            self._redeem_done.emit(ok, msg)
-
-        threading.Thread(target=_work, daemon=True).start()
-
-    def _on_redeem_done(self, ok: bool, msg: str) -> None:
-        """キー登録の完了（メインスレッド）。結果表示と状態更新を行う。"""
-        self._redeem_btn.setEnabled(True)
-        self._activation_key_input.setEnabled(True)
-        self._show_redeem_msg(ok, msg)
-        if ok:
-            self._activation_key_input.clear()
-        # 成功でも失敗でも最新の利用権状態を描き直す
-        self._render_entitlement()
-
-    def _show_redeem_msg(self, ok: bool, msg: str) -> None:
-        """キー登録の結果メッセージを色付きで表示する。"""
-        self._redeem_msg.setText(msg)
-        style = (
-            MacTheme.status_ok_style(self._is_dark_mode)
-            if ok
-            else MacTheme.status_warn_style(self._is_dark_mode)
-        )
-        self._redeem_msg.setStyleSheet(style)
-        self._redeem_msg.setVisible(True)
-
-    def refresh_account_status(self) -> None:
-        """ログイン状態に合わせてアカウントページの表示を更新する。
-
-        deep link 完了後（app.py のワーカー）や、ポーリングタイマーから呼ばれる。
-        アカウントページが未生成のうちは何もしない。
-        """
-        if not hasattr(self, "_account_status"):
-            return
-        from ..core import login_coordinator
-
-        coord = login_coordinator.shared()
-        status = coord.status
-        LC = login_coordinator.LoginCoordinator
-
-        # ライセンスカードはログイン済みのときだけ見せる
-        logged_in = (status == LC.LOGGED_IN)
-        if hasattr(self, "_license_card"):
-            self._license_card.setVisible(logged_in)
-
-        if status == LC.LOGGED_IN:
-            email = coord.account_email
-            self._account_status.setText(f"ログイン済み（{email}）" if email else "ログイン済み")
-            self._account_status.setStyleSheet(MacTheme.status_ok_style(self._is_dark_mode))
-            self._login_btn.setVisible(False)
-            self._logout_btn.setVisible(True)
-            self._account_poll.stop()
-            # 利用権をまだ確認していなければ（復元ログイン直後など）バックグラウンドで取得
-            self._ensure_entitlement_refresh()
-            self._render_entitlement()
-        elif status == LC.WAITING:
-            self._account_status.setText("ブラウザでログインを完了してください…")
-            self._account_status.setStyleSheet(MacTheme.status_muted_style())
-            self._login_btn.setVisible(True)
-            self._login_btn.setEnabled(True)
-            self._logout_btn.setVisible(False)
-        elif status == LC.EXCHANGING:
-            self._account_status.setText("ログイン処理中…")
-            self._account_status.setStyleSheet(MacTheme.status_muted_style())
-            self._login_btn.setEnabled(False)
-            self._logout_btn.setVisible(False)
-        elif status == LC.FAILED:
-            self._account_status.setText(coord.error or "ログインに失敗しました。")
-            self._account_status.setStyleSheet(MacTheme.status_warn_style(self._is_dark_mode))
-            self._login_btn.setVisible(True)
-            self._login_btn.setEnabled(True)
-            self._logout_btn.setVisible(False)
-            self._account_poll.stop()
-        else:  # IDLE（未ログイン）
-            self._account_status.setText("未ログイン")
-            self._account_status.setStyleSheet(MacTheme.status_muted_style())
-            self._login_btn.setVisible(True)
-            self._login_btn.setEnabled(True)
-            self._logout_btn.setVisible(False)
-            self._account_poll.stop()
 
     # ------------------------------------------------------------------
     # バージョン情報（自動アップデート）

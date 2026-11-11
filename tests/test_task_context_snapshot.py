@@ -30,12 +30,9 @@ class _FakeTranscriber:
         self.name = name
         self.result = result
         self.calls = 0
-        # 直近の transcribe に渡された server_format（サーバー統合整形の伝搬確認用）
-        self.last_server_format = None
 
-    def transcribe(self, audio, server_format=False):
+    def transcribe(self, audio):
         self.calls += 1
-        self.last_server_format = server_format
         return self.result
 
 
@@ -100,40 +97,19 @@ class TestSnapshotBindsAtRecordStart(unittest.TestCase):
         self.assertFalse(ctx.volume_normalize)
         self.assertEqual(ctx.format_model, "m")
         self.assertEqual(ctx.format_auto_prompt, "p")
-        # format_enabled=False なので短絡で is_logged_in を呼ばずに server_format=False
-        self.assertFalse(ctx.server_format)
-
-    def test_snapshot_server_format_eligible(self):
-        """groq × 整形 ON × ログイン済みのとき server_format=True。ログアウト/deepgram では False。"""
-        tr = _FakeTranscriber("groq", "x")
-        slot = _slot(1, "groq", "whisper-large-v3-turbo", tr, format_enabled=True)
-        s = self._fake_self({1: slot}, {})
-
-        with mock.patch("src.core.backend_client.is_logged_in", return_value=True):
-            self.assertTrue(VoicekeyApp._snapshot_context(s, slot).server_format)
-        with mock.patch("src.core.backend_client.is_logged_in", return_value=False):
-            self.assertFalse(VoicekeyApp._snapshot_context(s, slot).server_format)
-
-        # deepgram（即時入力）は整形 ON・ログイン済みでも統合整形の対象外
-        dg = _slot(1, "deepgram", "nova-3", _FakeTranscriber("dg", "x"), format_enabled=True)
-        with mock.patch("src.core.backend_client.is_logged_in", return_value=True):
-            self.assertFalse(VoicekeyApp._snapshot_context(s, dg).server_format)
 
     def test_practice_format_override_forces_formatting(self):
         """オンボーディング整形体験中は、整形 OFF のスロットでも整形を強制 ON にする。"""
         tr = _FakeTranscriber("groq", "x")
         slot = _slot(1, "groq", "whisper-large-v3-turbo", tr, format_enabled=False)
-        # 通常（オーバーライド無し）は format OFF のままなので統合整形も発動しない
+        # 通常（オーバーライド無し）は format OFF のまま
         s_off = self._fake_self({1: slot}, {}, practice_format_override=False)
         ctx_off = VoicekeyApp._snapshot_context(s_off, slot)
         self.assertFalse(ctx_off.slot.format_enabled)
-        self.assertFalse(ctx_off.server_format)
-        # オーバーライド有り＋ログイン済みなら format ON（複製）＋統合整形が発動する
+        # オーバーライド有りなら format ON（複製）になる
         s_on = self._fake_self({1: slot}, {}, practice_format_override=True)
-        with mock.patch("src.core.backend_client.is_logged_in", return_value=True):
-            ctx_on = VoicekeyApp._snapshot_context(s_on, slot)
+        ctx_on = VoicekeyApp._snapshot_context(s_on, slot)
         self.assertTrue(ctx_on.slot.format_enabled)
-        self.assertTrue(ctx_on.server_format)
         # 元のスロット（保存値）は書き換えない（複製している）
         self.assertFalse(slot.format_enabled)
 
@@ -152,7 +128,7 @@ class TestConfigChangeBetweenRecordEndAndProcessStart(unittest.TestCase):
         s._maybe_format = VoicekeyApp._maybe_format.__get__(s)
         return s
 
-    def _ctx(self, slot: HotkeySlot, server_format: bool = False) -> TaskContext:
+    def _ctx(self, slot: HotkeySlot) -> TaskContext:
         # 録音開始時の snapshot を模す（VAD/分割/正規化を切って REST 直送経路にする）
         return TaskContext(
             slot=slot,
@@ -162,7 +138,6 @@ class TestConfigChangeBetweenRecordEndAndProcessStart(unittest.TestCase):
             volume_normalize=False,
             format_model="llama-3.1-8b-instant",
             format_auto_prompt="",
-            server_format=server_format,
         )
 
     def test_audio_goes_to_start_provider_not_reloaded_one(self):
@@ -210,29 +185,11 @@ class TestConfigChangeBetweenRecordEndAndProcessStart(unittest.TestCase):
         self.assertEqual(tr_a.calls, 1)
         s._insert_and_enter.assert_called_once()
 
-    def test_server_format_skips_client_format(self):
-        """統合整形（server_format=True・単発送信）のときは transcribe に伝搬しクライアント整形はスキップする。"""
-        tr = _FakeTranscriber("groq", "整形済みテキスト")
-        slot = _slot(1, "groq", "whisper-large-v3-turbo", tr, format_enabled=True)
-        ctx = self._ctx(slot, server_format=True)
-
-        audio = np.zeros(SAMPLE_RATE, dtype=np.float32)
-        task = TranscriptionTask(audio_data=audio, slot_id=1, timestamp=0.0, context=ctx)
-
-        s = self._process_self({1: slot})
-        s._maybe_format = mock.Mock()  # 呼ばれたら統合時に再整形した＝バグ
-
-        VoicekeyApp._process_task(s, task)
-
-        self.assertTrue(tr.last_server_format)          # server_format=True が transcribe へ伝搬
-        s._maybe_format.assert_not_called()             # サーバー統合済みなので再整形しない
-        self.assertEqual(s._insert_and_enter.call_args.args[0], "整形済みテキスト")
-
-    def test_no_server_format_uses_client_format(self):
-        """統合でない（server_format=False）ときは従来どおりクライアント整形を通す。"""
+    def test_format_enabled_uses_client_format(self):
+        """整形 ON のスロットは、文字起こし結果をクライアント整形（Groq 直叩き）に通す。"""
         tr = _FakeTranscriber("groq", "生テキスト")
         slot = _slot(1, "groq", "whisper-large-v3-turbo", tr, format_enabled=True)
-        ctx = self._ctx(slot, server_format=False)
+        ctx = self._ctx(slot)
 
         audio = np.zeros(SAMPLE_RATE, dtype=np.float32)
         task = TranscriptionTask(audio_data=audio, slot_id=1, timestamp=0.0, context=ctx)
@@ -242,7 +199,6 @@ class TestConfigChangeBetweenRecordEndAndProcessStart(unittest.TestCase):
 
         VoicekeyApp._process_task(s, task)
 
-        self.assertFalse(tr.last_server_format)          # server_format は渡らない
         s._maybe_format.assert_called_once()             # クライアント整形が走る
         self.assertEqual(s._insert_and_enter.call_args.args[0], "整形済み")
 

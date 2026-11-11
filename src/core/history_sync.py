@@ -6,9 +6,8 @@ HistoryStore は「ローカルに履歴を保つこと」だけを知り、通�
 （sync_outbox.json）に積み、常駐スレッドがバックグラウンドで Worker へ
 POST /history（送信）・GET /history（取得）を行う。
 
-Windows は「personal」ビルド（backend_client / auth_client / is_logged_in() は
-一切使わない）と同じ独立性で、この機能も自社バックエンドの認証層に依存しない。
-認証は Worker 専用の共有トークン（keyring の voicekey.SyncToken）のみで行う。
+ログイン・アカウントは使わない。認証は Worker 専用の共有トークン
+（keyring の voicekey.SyncToken）のみで行う。
 
 貼り付け経路をブロックしないことが最優先のため:
 - enqueue() はファイル追記のみで通信しない（HistoryStore.add と同じスレッドから呼ばれる）

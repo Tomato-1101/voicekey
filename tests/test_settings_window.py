@@ -42,9 +42,9 @@ class _SettingsWindowTestBase(unittest.TestCase):
 
     def _make_window(self, cm, history=None, history_sync=None):
         # 重い/副作用のある依存をモックしてオフスクリーン構築する。
-        # 構築時にアカウントページが login_coordinator.shared() を生成し、その __init__ が
-        # secrets.get_auth_session()（実 keyring）を読むため、ここも必ずモックする。実機の
-        # 未署名 python で署名アプリ作成の keychain 項目を読むと ACL でブロックする（lessons 2026-06-12）。
+        # API キーページが構築時に保存状態を調べるので、keyring は「使えない」に固定して
+        # 実 keyring を読ませない。実機の未署名 python で署名アプリ作成の keychain 項目を読むと
+        # ACL でブロックする（lessons 2026-06-12）。
         with mock.patch(
             "src.ui.settings_window.secrets.is_keyring_available", return_value=False
         ), mock.patch(
@@ -53,8 +53,6 @@ class _SettingsWindowTestBase(unittest.TestCase):
             "src.ui.settings_window.autostart.is_supported", return_value=True
         ), mock.patch(
             "src.ui.settings_window.autostart.is_enabled", return_value=False
-        ), mock.patch(
-            "src.utils.secrets.get_auth_session", return_value=None
         ):
             from src.ui.settings_window import SettingsWindow
 
@@ -65,10 +63,6 @@ class _SettingsWindowTestBase(unittest.TestCase):
     def setUp(self):
         self._paths = []
         self._windows = []
-        # 共有シングルトンを毎テスト初期化し、_make_window のモック下で新規生成させる
-        # （別テストが残した状態・実 keyring 参照を持ち込まない）。
-        from src.core import login_coordinator
-        login_coordinator._shared = None
 
     def tearDown(self):
         for win in self._windows:

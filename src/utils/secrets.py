@@ -7,8 +7,6 @@ Manager）へ保存・読み出しするための薄いラッパー。`keyring` 
 （呼び出し側で環境変数フォールバックを使う想定）。
 """
 
-import json
-import os
 import threading
 import uuid
 from typing import Dict, Optional
@@ -24,12 +22,9 @@ SERVICE_OPENAI: str = "voicekey.OpenAI"
 SERVICE_ELEVENLABS: str = "voicekey.ElevenLabs"
 SERVICE_DEEPGRAM: str = "voicekey.Deepgram"
 
-# 製品版の認証基盤用エントリ。
-# DeviceId は「端末固有の識別子」（認証子ではない）。台数制限・悪用検知のために使う。
-# Auth は Supabase の認証セッション（access_token / refresh_token / expires_at）を
-# JSON 文字列で 1 エントリに保存する。
+# 端末固有の識別子（認証子ではない）。フィードバック送信で同じ端末からの送信を
+# 見分けるためだけに使う。
 SERVICE_DEVICE_ID: str = "voicekey.DeviceId"
-SERVICE_AUTH: str = "voicekey.Auth"
 
 # 履歴同期 Worker の共有トークン。Mac の Keychain と同じサービス名
 SERVICE_SYNC_TOKEN: str = "voicekey.SyncToken"
@@ -43,8 +38,7 @@ _USERNAME: str = "default"
 _cache: Dict[str, Optional[str]] = {}
 _cache_lock = threading.Lock()
 
-# device_id の初回生成を直列化する（同時呼び出しで別々の ID を生成し、サーバーの
-# 同時利用台数上限に誤って当たるのを防ぐ）。
+# device_id の初回生成を直列化する（同時呼び出しで別々の ID を生成・保存しないため）。
 _device_id_lock = threading.Lock()
 
 
@@ -60,45 +54,6 @@ except Exception as e:  # ImportError 以外（DBus 不在等）も含めて握�
         f"keyring ライブラリが利用できません ({e})。"
         "API キーは環境変数からのフォールバック読み込みのみ可能です。"
     )
-
-# ビルド種別のマーカーモジュール。scripts/build/generate_embedded_keys.py が
-# 生成する git 管理外モジュールで、開発環境には存在しない（ImportError で None になる）。
-# 配布バイナリに長期プロバイダーキーは埋め込まない（製品版は自社サーバー経由・2026-06-28）。
-# このモジュールは IS_DIST / IS_PERSONAL フラグだけを持ち、API キーの保管には一切使わない。
-_embedded = None
-try:
-    from ..config import embedded_keys as _embedded  # type: ignore
-except Exception:
-    _embedded = None
-
-
-def is_dist_build() -> bool:
-    """
-    配布（DIST）ビルドかどうかを返す。
-
-    DIST マーカーモジュールの有無で判定する。設定画面の API キータブ表示や
-    自動アップデートの有効化判定に使う。
-
-    Returns:
-        マーカーモジュールが存在し IS_DIST が True の場合 True
-    """
-    return _embedded is not None and getattr(_embedded, "IS_DIST", False)
-
-
-def is_personal_build() -> bool:
-    """
-    個人用最速版（personal）ビルドかどうかを返す（Mac の EmbeddedKeys.isPersonal と対）。
-
-    personal は Credential Manager のキーで直叩きし、自社サーバー・ログイン・課金を一切通らない。
-    判定は get_auth_session() の 1 点に集約してあり、そこが None を返すことで
-    backend_client.is_logged_in() 依存のサーバー経路（プロキシ・短命トークン・warm ループ）が
-    まとめて no-op になる。
-
-    Returns:
-        マーカーモジュールが存在し IS_PERSONAL が True の場合 True
-    """
-    return _embedded is not None and getattr(_embedded, "IS_PERSONAL", False)
-
 
 def is_keyring_available() -> bool:
     """
@@ -120,8 +75,8 @@ def get_api_key(service: str) -> Optional[str]:
     Returns:
         保存済み API キー、未保存または取得失敗時は None
     """
-    # プロバイダーキーは OS のシークレットストア（keyring）からのみ取得する。
-    # 配布ビルドにキーは埋め込まないため、未登録なら None（製品版はサーバー経由で動く）。
+    # プロバイダーキーは OS のシークレットストア（keyring）から取得する。未登録なら None
+    # （呼び出し側が環境変数へフォールバックする）。
     if _keyring_module is None:
         return None
     with _cache_lock:
@@ -188,38 +143,16 @@ def delete_api_key(service: str) -> bool:
 
 
 # ============================================
-# 製品版バックエンド接続・認証（device_id / Supabase セッション）
+# 端末識別子
 # ============================================
-
-def get_server_base_url() -> str:
-    """
-    自社バックエンド（短命キー発行・プロキシ）のベース URL を返す。
-
-    配布ビルドは本番固定（環境変数 override は無視）。開発ビルドは localhost を
-    既定とし、preview 検証などで環境変数 VOICEKEY_SERVER_URL による上書きを許可する。
-
-    Returns:
-        末尾スラッシュを除いたベース URL（例 "https://voicekey.vercel.app"）
-    """
-    # 配布ビルドでは override を一切受け付けない。作業ディレクトリや環境変数を汚染されても
-    # Bearer token・音声・フィードバックを任意サーバーへ向けられないようにするため。
-    # override は開発ビルドの preview 検証用に限定する。
-    override = os.environ.get("VOICEKEY_SERVER_URL")
-    if override and not is_dist_build():
-        return override.rstrip("/")
-    # 循環 import を避けるため遅延 import（constants は secrets に依存しない）
-    from ..config.constants import LOCAL_SERVER_URL, PRODUCT_SERVER_URL
-
-    return PRODUCT_SERVER_URL if is_dist_build() else LOCAL_SERVER_URL
-
 
 def get_device_id() -> str:
     """
     端末固有 ID を取得する（無ければ生成して保存）。
 
-    これは識別子であって認証子ではない（認証は Supabase JWT で行う）。
-    サーバー側の同時台数上限・悪用検知のために使う。keyring が使えない環境
-    （テスト/ヘッドレス）では永続化できないため、その都度ランダム値を返す。
+    これは識別子であって認証子ではない。フィードバック送信に添えて、同じ端末からの
+    送信を見分けるために使う。keyring が使えない環境（テスト/ヘッドレス）では
+    永続化できないため、その都度ランダム値を返す。
 
     Returns:
         端末固有 ID（UUID4 の 32 桁 hex）
@@ -240,83 +173,6 @@ def get_device_id() -> str:
             except Exception as e:
                 logger.warning(f"device_id 保存に失敗（今回限りの値を使用）: {e}")
             return new_id
-    # keyring 不在: 永続化できないので毎回生成（台数制限に当たり得るが致命ではない）
+    # keyring 不在: 永続化できないので毎回生成する
     return uuid.uuid4().hex
 
-
-def get_auth_session() -> Optional[dict]:
-    """
-    保存済みの認証セッションを取得する。
-
-    Returns:
-        {"access_token", "refresh_token", "expires_at"} の dict。未保存・破損時は None。
-        personal ビルドでは常に None
-    """
-    # personal はアカウント/バックエンドを一切使わない。旧 release（DIST）利用時に残った
-    # 認証トークンが Credential Manager にあってもログイン扱いにせず None を返す＝
-    # 起動時の利用権確認・warm ループ・短命トークン取得・プロキシ経路を根本から発生させない
-    # （backend_client.is_logged_in も本関数依存なので連動して False になる。Mac の
-    # Keychain.authSession() と同じ単一点）。実害: 失効済みセッションが残ったまま開発ビルドを
-    # 動かすと Groq/Deepgram が応答しないサーバー経由へ送られ、文字起こしが全滅した（2026-09-02）。
-    if is_personal_build():
-        return None
-    if _keyring_module is None:
-        return None
-    try:
-        raw = _keyring_module.get_password(SERVICE_AUTH, _USERNAME)
-    except Exception as e:
-        logger.warning(f"認証セッション読み込みに失敗: {e}")
-        return None
-    if not raw:
-        return None
-    try:
-        return json.loads(raw)
-    except Exception:
-        # 壊れた JSON は未ログイン扱い（再ログインで上書きされる）
-        return None
-
-
-def save_auth_session(access_token: str, refresh_token: str, expires_at: float) -> bool:
-    """
-    認証セッションを保存する。
-
-    Args:
-        access_token: Supabase の access_token（短命）
-        refresh_token: 失効後の再発行に使う refresh_token
-        expires_at: access_token の失効時刻（UNIX エポック秒）
-
-    Returns:
-        保存に成功した場合 True
-    """
-    if _keyring_module is None:
-        logger.warning("keyring が利用できないため認証セッションを保存できません")
-        return False
-    payload = json.dumps(
-        {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "expires_at": expires_at,
-        }
-    )
-    try:
-        _keyring_module.set_password(SERVICE_AUTH, _USERNAME, payload)
-    except Exception as e:
-        logger.warning(f"認証セッション保存に失敗: {e}")
-        return False
-    return True
-
-
-def clear_auth_session() -> bool:
-    """
-    認証セッションを削除する（ログアウト時）。device_id は識別子なので残す。
-
-    Returns:
-        削除成功または既に未保存の場合 True
-    """
-    if _keyring_module is None:
-        return False
-    try:
-        _keyring_module.delete_password(SERVICE_AUTH, _USERNAME)
-    except Exception as e:
-        logger.info(f"認証セッション削除をスキップ: {e}")
-    return True

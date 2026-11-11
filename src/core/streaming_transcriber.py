@@ -30,7 +30,6 @@ from urllib.parse import urlencode
 import numpy as np
 import numpy.typing as npt
 
-from . import backend_client
 from .text_utils import strip_cjk_spaces
 from ..utils import secrets
 from ..utils.logger import get_logger
@@ -108,14 +107,10 @@ class StreamingTranscriber:
         self._done_event = threading.Event()  # 確定完了/切断の通知
         self._thread: Optional[threading.Thread] = None
         self._sender: Optional[threading.Thread] = None  # 送信専用スレッド
-        # 録音開始遅延の計測用（生成時刻 ≒ 録音開始）。トークン取得 / WS 接続 / 最初の文字
-        # までの内訳をログし、「始まりが遅い」の主因（サーバー往復か WS ハンドシェイクか）を裏取りする
+        # 録音開始遅延の計測用（生成時刻 ≒ 録音開始）。WS 接続 / 最初の文字までの
+        # 内訳をログし、「始まりが遅い」の主因を裏取りする
         self._created_at: float = time.monotonic()
         self._first_result_logged: bool = False
-        # 無料体験の保留 ID（段階1 hold 経路のみ非null）。文字起こし成功後に消費を確定するのに使う。
-        self._ephemeral_jti: Optional[str] = None
-        # 段階3: 再利用トークン（free）＝録音成功ごとに jti なし confirm で 1 消費すべきか。
-        self._ephemeral_meter: bool = False
 
     @property
     def _stream_language(self) -> str:
@@ -141,18 +136,12 @@ class StreamingTranscriber:
         FIFO で送出するので順序は保たれる。
 
         Returns:
-            開始できれば True。キー未設定かつ未ログイン / websockets 未導入なら False
+            開始できれば True。キー未設定 / websockets 未導入なら False
             （呼び出し側は REST にフォールバックする）
         """
-        # 製品版（ログイン済み）はサーバーから短命 JWT を取得して接続する。
-        # 開発ビルドは従来どおり埋め込み/設定キーを使う（並存ガード）。
-        # 配布版は埋め込みキーへフォールバックしない（無料ゲート＝ログイン必須）。
-        # 配布版で未ログインなら key=None のまま False を返し、呼び出し側の REST
-        # フォールバックへ落とす（そこで _dist_guard がログイン必須メッセージを出す）。
-        logged_in = backend_client.is_logged_in()
-        key = None if secrets.is_dist_build() else self._resolve_api_key()
-        if not logged_in and not key:
-            logger.warning("Deepgram 未ログイン（配布版）またはキー未設定のためストリーミングを開始できません")
+        key = self._resolve_api_key()
+        if not key:
+            logger.warning("Deepgram の API キーが未設定のためストリーミングを開始できません")
             return False
 
         try:
@@ -163,7 +152,7 @@ class StreamingTranscriber:
             return False
 
         self._thread = threading.Thread(
-            target=self._run, args=(key, logged_in), daemon=True, name="DeepgramStream"
+            target=self._run, args=(key,), daemon=True, name="DeepgramStream"
         )
         self._thread.start()
         return True
@@ -242,22 +231,6 @@ class StreamingTranscriber:
             # キュー溢れ/送信失敗 → 部分結果は使わず REST フォールバックに全音声で委ねる
             return ""
         text = strip_cjk_spaces(self._current_text())
-        # 文字起こしが成立したら無料体験の消費を確定する（ベストエフォート・非ブロッキング）。
-        # 空文字（無音/接続失敗で REST フォールバック）のときは確定しない＝保留は TTL で戻る。
-        if text and self._ephemeral_jti:
-            # 段階1: 保留を確定
-            jti = self._ephemeral_jti
-            self._ephemeral_jti = None
-            self._ephemeral_meter = False
-            threading.Thread(
-                target=backend_client.confirm_usage, args=(jti,), daemon=True
-            ).start()
-        elif text and self._ephemeral_meter:
-            # 段階3: 再利用トークンの回数を +1（jti なし）
-            self._ephemeral_meter = False
-            threading.Thread(
-                target=backend_client.confirm_usage_count, daemon=True
-            ).start()
         return text
 
     def cancel(self) -> None:
@@ -301,38 +274,15 @@ class StreamingTranscriber:
     # 受信スレッド
     # ------------------------------------------------------------------
 
-    def _run(self, key: Optional[str], logged_in: bool) -> None:
+    def _run(self, key: str) -> None:
         """接続 → sender スレッド起動 → 受信ループ（専用スレッド上）。
 
         Args:
-            key: 直叩き用の Deepgram API キー（未ログイン時に使う。ログイン時は None でも可）
-            logged_in: True なら自社サーバーから短命 JWT を取得して Bearer で接続する
+            key: Deepgram の API キー（Token スキームで接続する）
         """
         from websockets.sync.client import connect
 
         t_start = time.monotonic()
-        # 製品版（ログイン済み）: サーバーから短命 JWT を取得し Bearer で接続。
-        # 未ログイン: 従来どおり埋め込み/設定キーを Token で使う（並存ガード）。
-        if logged_in:
-            try:
-                grant = backend_client.fetch_ephemeral_token()
-                # 録音成功後に消費を確定するための情報を控える。段階1=保留 ID(jti)、
-                # 段階3=再利用トークンの回数計測フラグ(meter)。どちらも録音成立時のみ送る。
-                self._ephemeral_jti = grant.get("jti")
-                self._ephemeral_meter = bool(grant.get("meter"))
-                auth_header = f"Bearer {grant['token']}"
-            except Exception as e:
-                # 短命トークン取得失敗（未ログイン扱い・サブスク無効・通信失敗など）
-                # → finish() を解決し、REST フォールバックに委ねる。
-                # BackendError 以外（応答に token キーが無い KeyError 等）で抜けると、この受信
-                # スレッドが _resolve_finish() を呼ばないまま死に、finish() が猶予 1 秒＋
-                # タイムアウト 3 秒のフル待機に陥る（毎録音 4 秒超の遅延）ため種類を問わず捕捉する。
-                logger.warning(f"Deepgram 短命トークンの取得に失敗: {e}")
-                self._resolve_finish()
-                return
-        else:
-            auth_header = f"Token {key}"
-
         params = {
             "model": self.model,
             "language": self._stream_language,
@@ -345,11 +295,10 @@ class StreamingTranscriber:
         }
         url = "wss://api.deepgram.com/v1/listen?" + urlencode(params)
 
-        t_token = time.monotonic()
         try:
             ws = connect(
                 url,
-                additional_headers={"Authorization": auth_header},
+                additional_headers={"Authorization": f"Token {key}"},
                 open_timeout=_OPEN_TIMEOUT,
             )
         except Exception as e:
@@ -359,13 +308,12 @@ class StreamingTranscriber:
             return
         t_conn = time.monotonic()
 
-        # 「始まりが遅い」の主因切り分け用ログ（トークン取得 vs WS ハンドシェイク）
+        # 「始まりが遅い」の主因切り分け用ログ（WS ハンドシェイクにかかった時間）
         logger.info(
-            "Deepgram ストリーミング開始 (model=%s, lang=%s): トークン取得 %.0fms / WS接続 %.0fms",
+            "Deepgram ストリーミング開始 (model=%s, lang=%s): WS接続 %.0fms",
             self.model,
             self._stream_language,
-            (t_token - t_start) * 1000.0,
-            (t_conn - t_token) * 1000.0,
+            (t_conn - t_start) * 1000.0,
         )
 
         # cancel/close 済みなら即閉じる。問題なければ ws を公開して sender を起動する。

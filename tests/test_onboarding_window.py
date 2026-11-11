@@ -1,14 +1,14 @@
 """初回起動オンボーディングウィンドウ（src/ui/onboarding_window.py）のスモークテスト。
 
-Qt はオフスクリーン、ログイン（login_coordinator.shared）はモックして keyring/ネットワークに
+Qt はオフスクリーン、API キーの読み出し（secrets.get_api_key）はモックして keyring/ネットワークに
 触れない。検証内容（体験型 2 ペイン再デザイン・8 ステップ）:
-- 8 ステップの遷移と主ボタン文言（はじめる → あとで/次へ → 次へ×5 → VoiceKey をはじめる）
+- 8 ステップの遷移と主ボタン文言（はじめる → 次へ×6 → VoiceKey をはじめる）
 - 体験ステップの成功判定（練習欄にテキストが入ると成功メッセージが出る）
 - 整形体験ステップに入っている間だけ整形オーバーライドが ON になる
 - 録音キーテスト／マイクテストの間だけ録音抑止モード（set_hotkey_test）が ON になる
 - まとめページが settings.yaml の既定ホットキーを新語彙で表示する
 - 完了/クローズで onboarding_finished が 1 度だけ発火する
-- ログインボタンで begin_login とブラウザ起動が呼ばれる
+- 体験ステップで、API キーが 1 つも無いときだけ注意を出す
 """
 
 import os
@@ -27,20 +27,6 @@ from PySide6.QtWidgets import QApplication
 from src.config.config_manager import ConfigManager
 
 _app = QApplication.instance() or QApplication([])
-
-
-class _FakeCoord:
-    """login_coordinator.shared() の差し替え用（keyring に触れない）。"""
-
-    def __init__(self, status="idle"):
-        self.status = status
-        self.account_email = None
-        self.error = None
-        self.begin_login_called = False
-
-    def begin_login(self):
-        self.begin_login_called = True
-        return "https://example.com/login"
 
 
 class TestOnboardingWindow(unittest.TestCase):
@@ -71,14 +57,14 @@ class TestOnboardingWindow(unittest.TestCase):
 
     def test_navigation_and_primary_labels(self):
         from src.ui.onboarding_window import (
-            _STEP_LOGIN,
+            _STEP_API_KEY,
             _STEP_MIC_TEST,
             _STEP_PRACTICE_FORMAT,
             _STEP_SUMMARY,
             _STEP_WELCOME,
         )
 
-        with mock.patch("src.core.login_coordinator.shared", return_value=_FakeCoord()):
+        with mock.patch("src.utils.secrets.get_api_key", return_value=None):
             win = self._make_window()
             win.show()  # isVisible() はトップレベルが表示されていないと常に False を返すため
             _app.processEvents()
@@ -88,11 +74,11 @@ class TestOnboardingWindow(unittest.TestCase):
             self.assertFalse(win._back_btn.isVisible())
             self.assertFalse(win._skip_btn.isVisible())
 
-            # → ステップ 1: ログイン（未ログインなので「あとで」・スキップは出ない）
+            # → ステップ 1: API キーの案内（「次へ」・スキップは出ない）
             win._primary_btn.click()
             _app.processEvents()
-            self.assertEqual(win._step, _STEP_LOGIN)
-            self.assertEqual(win._primary_btn.text(), "あとで")
+            self.assertEqual(win._step, _STEP_API_KEY)
+            self.assertEqual(win._primary_btn.text(), "次へ")
             self.assertFalse(win._skip_btn.isVisible())
 
             # → ステップ 2: マイクテスト（「次へ」・スキップ常設）
@@ -119,7 +105,7 @@ class TestOnboardingWindow(unittest.TestCase):
         # 体験ステップからスキップするとまとめへ飛ぶ（体験を強制しない）
         from src.ui.onboarding_window import _STEP_PRACTICE_BASIC, _STEP_SUMMARY
 
-        with mock.patch("src.core.login_coordinator.shared", return_value=_FakeCoord()):
+        with mock.patch("src.utils.secrets.get_api_key", return_value=None):
             win = self._make_window()
             win._step = _STEP_PRACTICE_BASIC
             win._go_to(_STEP_PRACTICE_BASIC)
@@ -133,7 +119,7 @@ class TestOnboardingWindow(unittest.TestCase):
         # 練習欄にテキストが入ると成功メッセージが表示される
         from src.ui.onboarding_window import _STEP_PRACTICE_BASIC
 
-        with mock.patch("src.core.login_coordinator.shared", return_value=_FakeCoord()):
+        with mock.patch("src.utils.secrets.get_api_key", return_value=None):
             win = self._make_window()
             win.show()  # isVisible() はトップレベルが表示されていないと常に False を返すため
             win._step = _STEP_PRACTICE_BASIC
@@ -154,7 +140,7 @@ class TestOnboardingWindow(unittest.TestCase):
         )
 
         fake_app = mock.Mock()
-        with mock.patch("src.core.login_coordinator.shared", return_value=_FakeCoord()):
+        with mock.patch("src.utils.secrets.get_api_key", return_value=None):
             from src.ui.onboarding_window import OnboardingWindow
 
             win = OnboardingWindow(self._config, app=fake_app)
@@ -178,7 +164,7 @@ class TestOnboardingWindow(unittest.TestCase):
         )
 
         fake_app = mock.Mock()
-        with mock.patch("src.core.login_coordinator.shared", return_value=_FakeCoord()):
+        with mock.patch("src.utils.secrets.get_api_key", return_value=None):
             from src.ui.onboarding_window import OnboardingWindow
 
             win = OnboardingWindow(self._config, app=fake_app)
@@ -198,23 +184,28 @@ class TestOnboardingWindow(unittest.TestCase):
             _app.processEvents()
             self.assertFalse(win._app.set_hotkey_test.call_args[0][0])
 
-    def test_logged_in_shows_next(self):
-        # ログイン済みなら主ボタンは「次へ」になる
-        with mock.patch(
-            "src.core.login_coordinator.shared",
-            return_value=_FakeCoord(status="logged_in"),
-        ):
-            win = self._make_window()
-            win._primary_btn.click()  # → ログインステップ
-            _app.processEvents()
-            self.assertEqual(win._step, 1)
-            self.assertEqual(win._primary_btn.text(), "次へ")
+    def test_key_note_shown_only_without_any_api_key(self):
+        # 体験ステップの注意は、保存済みのキーも環境変数も無いときだけ出る
+        from src.ui.onboarding_window import _STEP_PRACTICE_BASIC
+
+        env = {k: v for k, v in os.environ.items() if not k.endswith("_API_KEY")}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch("src.utils.secrets.get_api_key", return_value=None):
+                win = self._make_window()
+                win.show()
+                win._go_to(_STEP_PRACTICE_BASIC)
+                _app.processEvents()
+                self.assertTrue(win._practice_pages[_STEP_PRACTICE_BASIC]["key_note"].isVisible())
+            with mock.patch("src.utils.secrets.get_api_key", return_value="K"):
+                win._go_to(_STEP_PRACTICE_BASIC)
+                _app.processEvents()
+                self.assertFalse(win._practice_pages[_STEP_PRACTICE_BASIC]["key_note"].isVisible())
 
     def test_summary_shows_default_hotkeys(self):
         # まとめページのカードが既定ホットキー（<f2>/<f3>）と新語彙（スタンダード）を出す
         from src.ui.onboarding_window import _STEP_SUMMARY
 
-        with mock.patch("src.core.login_coordinator.shared", return_value=_FakeCoord()):
+        with mock.patch("src.utils.secrets.get_api_key", return_value=None):
             win = self._make_window()
             win._step = _STEP_SUMMARY
             win._go_to(_STEP_SUMMARY)
@@ -231,7 +222,7 @@ class TestOnboardingWindow(unittest.TestCase):
     def test_finish_emits_once(self):
         from src.ui.onboarding_window import _STEP_SUMMARY
 
-        with mock.patch("src.core.login_coordinator.shared", return_value=_FakeCoord()):
+        with mock.patch("src.utils.secrets.get_api_key", return_value=None):
             win = self._make_window()
             fired = []
             win.onboarding_finished.connect(lambda: fired.append(True))
@@ -247,27 +238,13 @@ class TestOnboardingWindow(unittest.TestCase):
 
     def test_close_marks_finished(self):
         # × で閉じてもスキップ扱いで完了フラグ（シグナル）を立てる
-        with mock.patch("src.core.login_coordinator.shared", return_value=_FakeCoord()):
+        with mock.patch("src.utils.secrets.get_api_key", return_value=None):
             win = self._make_window()
             fired = []
             win.onboarding_finished.connect(lambda: fired.append(True))
             win.closeEvent(QCloseEvent())
             _app.processEvents()
             self.assertEqual(fired, [True])
-
-    def test_login_click_opens_browser(self):
-        fake = _FakeCoord()
-        with mock.patch("src.core.login_coordinator.shared", return_value=fake), \
-             mock.patch("src.ui.onboarding_window.QDesktopServices.openUrl") as open_url:
-            win = self._make_window()
-            win._primary_btn.click()  # → ログインステップ
-            _app.processEvents()
-            win._login_btn.click()
-            _app.processEvents()
-            self.assertTrue(fake.begin_login_called)
-            open_url.assert_called_once()
-            self.assertTrue(win._login_poll.isActive())
-            win._login_poll.stop()
 
 
 class TestPracticeInputDetection(unittest.TestCase):

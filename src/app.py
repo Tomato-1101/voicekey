@@ -32,7 +32,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from typing import Callable, Dict, Optional, Set
 
-from PySide6.QtCore import QObject, QThread, QTimer, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox
 from pynput import keyboard
 
@@ -52,7 +52,6 @@ from .core import (
     TranscriptionError,
 )
 from .core import text_formatter
-from .core import backend_client
 from .core import media_ducker
 from .core import numeral_normalizer
 from .core import sound_fx
@@ -63,7 +62,6 @@ from .core.history_sync import HistorySync
 from .core.stats import StatsStore
 from .platform import get_platform_adapter
 from .ui import Hud, SettingsWindow, SideNotch, SystemTray
-from .utils import secrets
 from .utils.logger import get_logger
 from .utils.updater import Updater
 
@@ -89,9 +87,6 @@ _MIN_AUDIO_SEC: float = 0.3
 _SPLIT_MIN_SEC: float = 12.0
 # ホットリロードで退役したトランスクライバを close するまでの猶予（秒）
 _RETIRE_CLOSE_DELAY_SEC: float = 30.0
-# /ephemeral の serverless 関数を温め直す間隔（秒）。Vercel 関数が冷える前に GET で叩き、
-# 録音時の cold start（話し始めの遅延）を防ぐ。消費ゼロの GET なので無料枠は減らさない。
-_EPHEMERAL_WARM_INTERVAL_SEC: float = 240.0
 # 修飾キーの汎用名。macOS の pynput は左修飾キーを汎用名（cmd 等）で報告する
 _GENERIC_MODIFIERS = ("ctrl", "alt", "shift", "cmd")
 
@@ -140,9 +135,6 @@ class TaskContext:
         volume_normalize: 音量正規化を行うか
         format_model: テキスト整形に使うモデル名
         format_auto_prompt: テキスト整形プロンプト
-        server_format: サーバー統合整形（Groq プロキシで STT と整形を 1 リクエストに）を使えるか。
-            groq スロット × 整形 ON × ログイン済み × ハンズフリー EL 差し替えでない、が条件。
-            単発送信のときだけこれを見て server_format=True にし、後段のクライアント整形をスキップする。
     """
     slot: HotkeySlot
     language: str
@@ -151,27 +143,6 @@ class TaskContext:
     volume_normalize: bool
     format_model: str
     format_auto_prompt: str
-    server_format: bool
-
-
-class _LoginWorker(QThread):
-    """deep link のコード交換（ログイン）をバックグラウンドで実行するワーカー。
-
-    complete_login は httpx の同期 POST を伴い UI スレッドをブロックするため、
-    別スレッドで実行する。完了は finished シグナル（QThread 標準）で受ける。
-    """
-
-    def __init__(self, url: str, parent=None) -> None:
-        super().__init__(parent)
-        self._url = url
-
-    def run(self) -> None:
-        from .core import login_coordinator
-
-        try:
-            login_coordinator.shared().complete_login(self._url)
-        except Exception as e:  # 想定外も握ってアプリを落とさない
-            logger.warning(f"ログイン処理で予期しないエラー: {e}")
 
 
 class VoicekeyApp(QObject):
@@ -195,9 +166,6 @@ class VoicekeyApp(QObject):
     # 別チャネルにするのは、status_changed が tray の AppState 変換に使われており文字列集合を
     # 増やせないため（recording 文字列は変えずに色情報だけ HUD へ運ぶ）。
     hands_free_changed = Signal(bool)
-    # 録音完了後に利用権の残量を取り直したら発火（設定画面の「残り回数」を即更新するため。
-    # ワーカースレッド → メインスレッドへ Qt のキュー接続でホップする）
-    account_refreshed = Signal()
     # 履歴同期の受信キャッシュが変わった（同期スレッドから emit → UI スレッドで履歴表示を更新）
     history_sync_changed = Signal()
 
@@ -205,10 +173,6 @@ class VoicekeyApp(QObject):
         """アプリケーションを初期化する。"""
         super().__init__()
         logger.info("voicekey を初期化中...")
-        # どの種別の exe が動いているかをログだけで判別できるようにする（personal なのに
-        # サーバー経由へ行く／dev なのに古いセッションでログイン扱い、の切り分け用）
-        if secrets.is_personal_build():
-            logger.info("ビルド種別: personal（Credential Manager のキーで直叩き・サーバー/ログイン不使用）")
         self._platform = get_platform_adapter()
         self._config = ConfigManager()
 
@@ -286,13 +250,10 @@ class VoicekeyApp(QObject):
 
         # --- 使用実績（節約時間・レベル・連続日数。設定の「実績」タブで表示。貼り付け後に集計する） ---
         self._stats = StatsStore()
-        # アカウント連携（#10）を有効化：ログイン中は実績を端末横断で同期・取り込みする。
-        # 実アプリ起動時のみ呼ぶ（ユニットテストでは呼ばれず keyring に触れない）。
-        self._stats.enable_account_sync()
 
         # --- UI ---
         # 自動アップデータは設定ウィンドウ（「バージョン情報」タブ）にも渡すため先に生成する。
-        # 配布ビルドのみ定期チェックが動く（start() が is_dist_build を見る）。
+        # 固めた実行ファイル（PyInstaller）でのみ定期チェックが動く（start() が sys.frozen を見る）。
         self._updater = Updater(parent=self)
 
         # 設定ウィンドウには本体と同じ ConfigManager を渡す（二重生成を避け保存値を即共有）。
@@ -310,8 +271,6 @@ class VoicekeyApp(QObject):
         self.history_sync_changed.connect(self._settings_window.refresh_history_views)
         # 設定「一般」の「セットアップガイドを開く」からもう一度オンボーディングを表示する
         self._settings_window.open_onboarding_requested.connect(self.show_onboarding)
-        # 録音完了後の残量更新（別スレッド）→ 設定画面のアカウント表示をメインスレッドで描き直す
-        self.account_refreshed.connect(self._settings_window.refresh_account_status)
         self._tray = SystemTray(platform_adapter=self._platform)
         self._tray.open_settings.connect(self._open_settings)
         self._tray.force_reset.connect(self._force_restart)
@@ -359,18 +318,6 @@ class VoicekeyApp(QObject):
         # VAD モデルを事前ロード（初回録音時の数十 ms 遅延を回避）
         threading.Thread(target=self._vad.preload, daemon=True).start()
 
-        # 製品版（ログイン済み）なら、起動時にサーバー接続を 1 回だけ暖機して初回のサーバー
-        # 往復（serverless cold start を含む最大数秒）を前払いする。is_logged_in は keyring を
-        # 読むため最後に評価する。実際の暖機内容（/me だけか短命トークンまでか）は別スレッドで
-        # アカウント状態（有料/無料）を見て決める（無料体験ユーザーの枠を消費しないため）。
-        if backend_client.is_logged_in():
-            threading.Thread(target=self._prewarm_backend, daemon=True).start()
-            # /ephemeral の serverless 関数を定期 GET で温め続け、録音時の cold start
-            # （話し始めの遅延の主因・最大数秒）を防ぐ。消費ゼロなので無料枠は減らさない。
-            threading.Thread(
-                target=self._ephemeral_warm_loop, daemon=True, name="EphemeralWarm"
-            ).start()
-
         # macOS の権限不足は「ホットキーが無言で効かない」となるため起動時に明示
         self._check_permissions()
 
@@ -390,173 +337,6 @@ class VoicekeyApp(QObject):
 
         logger.info("アプリケーション準備完了")
         self._emit_state()
-
-    def _prewarm_backend(self) -> None:
-        """起動時にサーバー接続を 1 回暖機し、初回のサーバー往復・cold start を前払いする。
-
-        段階3: Deepgram ストリーミング設定なら、有料・無料とも再利用可トークンを先取りして
-        キャッシュへ載せる（消費ゼロ・往復ゼロで話し始められる）。トークン先取りが認証経路・
-        serverless 関数もまとめて温める。失敗は無視（録音時に通常経路で再取得される）。
-        """
-        if not backend_client.is_logged_in():
-            return
-        self._warm_backends_now()  # 有料・無料とも短命トークン先読み（消費ゼロ）
-
-    def _warm_backends_now(self) -> None:
-        """使用中プロバイダの関数を温め、短命トークンを先読みする（消費ゼロ）。
-
-        起動時・録音後・暖機ループ・スリープ復帰直後に共通で呼ぶ（Mac の warmBackendsNow と対）。
-        段階3: 有料・無料とも再利用可トークンを先読みしてキャッシュ＝アイドル中も常に手元に有効
-        トークンがあり録音開始ゼロ待ち。トークンは残 TTL が WARM_MIN_REMAINING(360s) 未満なら
-        強制再取得する＝暖機間隔 240s では満了の 120 秒以上前に必ず差し替わる。以前は「残 15 秒超なら
-        取得しない」短絡で満了直前まで更新されず、満了〜次 tick に周期コールド窓が生じていた＝それを根治した。
-        先読みは無料枠を消費しない（消費は録音成立後の非同期 confirm で数える）。
-        設定はホットリロードされるため毎回読み直す。失敗は無視。
-        """
-        if not backend_client.is_logged_in():
-            return
-        # 放置後初回の「セッション期限切れ→更新往復」を録音時に踏まないよう、暖機のたびに
-        # 先回りでセッションを有効化しておく（Groq/EL プロキシ呼び出し時の更新往復を消す）。
-        backend_client.warm_session()
-        # Deepgram「即時入力」: ストリーミング ON ＋ Deepgram スロットのとき
-        if self._config.get("streaming_enabled", True) and any(
-            s.backend == TranscriptionBackend.DEEPGRAM.value for s in self._slots.values()
-        ):
-            try:
-                # 残 360s 未満なら強制再取得＝満了 120 秒以上前に更新し周期コールド窓を消す（消費ゼロ）
-                backend_client.fetch_ephemeral_token(min_remaining=backend_client.WARM_MIN_REMAINING)
-            except Exception:
-                pass
-        # Groq「高速」（普通入力）: Groq スロットがあれば、そのプロキシ関数も消費なしで温める
-        if any(
-            s.backend == TranscriptionBackend.GROQ.value for s in self._slots.values()
-        ):
-            try:
-                backend_client.warm_groq_transcribe()
-            except Exception:
-                pass
-        # ハンズフリーで内部利用する EL を温める条件: groq スロットが toggle か、または
-        # ハンズフリー切替キーが設定されている（hold スロットも切替キー併用で toggle 実効になる）。
-        # EL は選択肢から外れたので、backend == elevenlabs では永久に温まらない（Mac と同条件）。
-        handsfree_configured = bool(self._handsfree_keys)
-        if any(
-            s.backend == TranscriptionBackend.GROQ.value
-            and (s.hotkey_mode == HotkeyMode.TOGGLE.value or handsfree_configured)
-            for s in self._slots.values()
-        ):
-            try:
-                backend_client.warm_elevenlabs()
-            except Exception:
-                pass
-
-    def _postwarm_ephemeral(self) -> None:
-        """録音終了直後に次回の短命トークンを先読みし、次録音の開始遅延を減らす。
-
-        録音終了直後に先読みしておくと、続けて録音する（連続ディクテーション）ときの
-        2 回目以降のサーバー往復がクリティカルパスから消える。段階3: 有料・無料とも
-        再利用可トークンを先取りしてキャッシュ（TTL 内の次録音は往復ゼロ）。先読みは
-        無料枠を消費しない（消費は録音成立後の非同期 confirm で数える）。
-        ストリーミング（Deepgram）を使う設定のときだけ動く。失敗は無視。
-        daemon スレッドから呼ばれる（_finish_recording 末尾で起動）。
-        """
-        if not backend_client.is_logged_in():
-            return
-        uses_deepgram_streaming = self._config.get("streaming_enabled", True) and any(
-            s.backend == TranscriptionBackend.DEEPGRAM.value for s in self._slots.values()
-        )
-        if not uses_deepgram_streaming:
-            return
-        try:
-            # warm ループと同じ 360s 閾値で「満了のはるか手前でだけ差し替える」先読み扱いにする（消費ゼロ）
-            backend_client.fetch_ephemeral_token(min_remaining=backend_client.WARM_MIN_REMAINING)
-        except Exception:
-            pass
-
-    def _ephemeral_warm_loop(self) -> None:
-        """使用中のプロキシ関数を定期的に温め、録音時の cold start を防ぐ（Task 2）。
-
-        起動直後は _prewarm_backend が暖機するので、最初の 1 回はインターバル後に行う。
-        有料はトークンを先読みしてキャッシュ（消費ゼロ）、無料は枠を守る GET 暖機（_warm_backends_now）。
-        さらにスリープ復帰を検知して即・暖機する: 短い間隔で起き、ウォールクロック（実時刻）が
-        想定より大きく飛んでいたら＝マシンがスリープしていた＝serverless 関数が冷え・短命トークンも
-        失効済み。復帰直後に話し始めても遅延が出ないよう、待たずに温め直す（Win 固有の電源イベント
-        API に依存しない移植性のある検知。Mac は NSWorkspace.didWake で同等）。
-        daemon スレッドのため、停止は _monitoring の解除＋プロセス終了に任せる。
-        """
-        check_interval = 30.0  # 復帰検知のため短い間隔で起きる（CPU 負荷は無視できる）
-        last = time.time()
-        elapsed = 0.0  # 前回の暖機からの累積経過（秒）
-        while self._monitoring:
-            time.sleep(check_interval)
-            if not self._monitoring:
-                break
-            now = time.time()
-            gap = now - last
-            last = now
-            # gap が間隔を大きく超える＝スリープからの復帰。即・暖機する。
-            resumed = gap > check_interval * 2
-            elapsed += gap
-            if not (resumed or elapsed >= _EPHEMERAL_WARM_INTERVAL_SEC):
-                continue
-            elapsed = 0.0
-            try:
-                self._warm_backends_now()
-            except Exception as e:  # 暖機の失敗で常駐ループを止めない
-                logger.debug(f"プロキシ関数の暖機に失敗（無視）: {e}")
-
-    def _refresh_entitlement_async(self) -> None:
-        """録音完了後、利用権の残量を別スレッドで静かに取り直し、設定画面の表示を更新する（Task 1）。
-
-        消費自体はサーバーが原子的に行うため、アプリは最新の残量を取り直すだけ。UI を
-        「確認中…」に落とさない静かな更新（quiet）で、設定画面が開いていれば残り回数の表示を
-        即座に減らす。有料（残量非依存）は coord 側で再取得をスキップする。失敗は黙って無視。
-        ネットワーク I/O を伴うのでワーカーを塞がないよう別スレッドで行う。
-        """
-        if not backend_client.is_logged_in():
-            return
-
-        def _work() -> None:
-            from .core import login_coordinator
-
-            if login_coordinator.shared().refresh_entitlement(quiet=True):
-                # UI 更新はメインスレッドで（Qt のキュー接続でホップ）
-                self.account_refreshed.emit()
-
-        threading.Thread(
-            target=_work, daemon=True, name="EntitlementRefresh"
-        ).start()
-
-    # ------------------------------------------------------------------
-    # ブラウザ経由ログインの deep link 処理（製品版・段階4）
-    # ------------------------------------------------------------------
-
-    def handle_deep_link(self, url: str) -> None:
-        """受信した voicekey:// URL をログイン処理へ渡す。
-
-        コード交換は通信を伴うためワーカースレッドで実行し、完了後に設定画面の
-        アカウント表示を更新する。main.py（起動引数・転送）から呼ばれる。
-
-        Args:
-            url: voicekey://auth?code=&state= 形式の URL
-        """
-        logger.info("deep link を受信しました")
-        worker = _LoginWorker(url, parent=self)
-        # 同時多重起動を避けつつ、複数回ログインしても良いよう参照を保持する
-        if not hasattr(self, "_login_workers"):
-            self._login_workers: list = []
-        self._login_workers.append(worker)
-
-        def _on_finished() -> None:
-            # 完了したら設定画面のアカウント表示を最新化（開いていれば）
-            try:
-                self._settings_window.refresh_account_status()
-            except Exception:
-                pass
-            if worker in self._login_workers:
-                self._login_workers.remove(worker)
-
-        worker.finished.connect(_on_finished)
-        worker.start()
 
     # ------------------------------------------------------------------
     # ホットキースロット構築
@@ -651,14 +431,6 @@ class VoicekeyApp(QObject):
         # slot は dataclass なので複製して format_enabled だけ差し替える（保存値は変えない）。
         if self._practice_format_override and not slot.format_enabled:
             slot = replace(slot, format_enabled=True)
-        # サーバー統合整形（Groq プロキシで STT と整形を 1 リクエストに）が使えるか。
-        # slot は _maybe_handsfree_slot 適用後なので、ハンズフリー EL 差し替え時は
-        # slot.backend が elevenlabs になり、この条件が自動的に False になる（Mac と対）。
-        server_format = (
-            slot.backend == TranscriptionBackend.GROQ.value
-            and slot.format_enabled
-            and backend_client.is_logged_in()
-        )
         return TaskContext(
             slot=slot,
             language=self._config.get("language", "ja"),
@@ -667,7 +439,6 @@ class VoicekeyApp(QObject):
             volume_normalize=bool(preprocess_cfg.get("volume_normalize", True)),
             format_model=self._config.get("format_model", "llama-3.1-8b-instant"),
             format_auto_prompt=self._config.get("format_auto_prompt", ""),
-            server_format=server_format,
         )
 
     @staticmethod
@@ -961,7 +732,7 @@ class VoicekeyApp(QObject):
             self._active_context = None
         self._recorder.set_chunk_callback(None)
         if streamer is not None:
-            streamer.cancel()  # 受信ループ停止・WebSocket close・短命トークン破棄
+            streamer.cancel()  # 受信ループ停止・WebSocket close
         self.notice.emit("録音を開始できませんでした（マイクを確認してください）")
         self._emit_state()
 
@@ -1018,10 +789,6 @@ class VoicekeyApp(QObject):
 
         self._recorder.stop_async(_on_audio)
 
-        # 次録音の開始遅延を減らすため、録音終了直後に次回トークンを先読み／暖機する
-        # （連続ディクテーション時の 2 回目以降のサーバー往復をクリティカルパスから外す）。
-        threading.Thread(target=self._postwarm_ephemeral, daemon=True).start()
-
     def _on_audio_level(self, level: float) -> None:
         """録音中の音声レベル（audio callback スレッドから約 30fps で呼ばれる）。"""
         self.audio_level.emit(level)
@@ -1050,8 +817,6 @@ class VoicekeyApp(QObject):
                     # （表示が「変換中」に張り付くのを防ぐ防御。本来は録音側で exactly once）
                     self._outstanding = max(0, self._outstanding - 1)
                 self._emit_state()
-                # 録音 1 回ごとに利用権の残量を取り直し、設定画面の「残り回数」を即減らす（Task 1）
-                self._refresh_entitlement_async()
 
     def _process_task(self, task: TranscriptionTask) -> None:
         """ストリーミング確定 →（空なら）正規化 → VAD → API → テキスト挿入を実行する。
@@ -1108,22 +873,17 @@ class VoicekeyApp(QObject):
         if vad_on and split_on and duration >= _SPLIT_MIN_SEC:
             segments = self._vad.segment(audio)
 
-        # 単発送信のときだけサーバー統合整形（STT→整形を 1 リクエスト）を使う。
-        # 分割送信は各セグメントを整形なしで送り、結合後にクライアント整形する（従来どおり）。
-        did_server_format = False
         if segments and len(segments) >= 2:
             logger.info(f"長文を {len(segments)} 分割して並列送信します")
             text = self._transcribe_parallel(slot, segments)
             if text is None:
                 # 一部セグメントの失敗（429 等）→ 全体 1 本送信にフォールバック（部分欠落を防ぐ）。
-                # 全体 1 本＝単発送信なのでサーバー統合整形を効かせる（Mac の分割失敗フォールバックと対）。
                 logger.warning("分割送信に失敗したため全体送信にフォールバックします")
                 logger.info(
                     f"文字起こし要求 経路=rest(全体) backend={slot.backend} "
                     f"model={slot.api_model} 音声={len(audio) / SAMPLE_RATE:.2f}s"
                 )
-                text = slot.transcriber.transcribe(audio, server_format=ctx.server_format)
-                did_server_format = ctx.server_format
+                text = slot.transcriber.transcribe(audio)
         else:
             # VAD: 発話がなければ API に送らない（幻覚と無駄コストの防止）。
             # 推論 1 回で発話判定と無音圧縮（前後トリミング + 発話間の長い無音の短縮）を行う
@@ -1147,23 +907,18 @@ class VoicekeyApp(QObject):
                 f"文字起こし要求 経路=rest backend={slot.backend} "
                 f"model={slot.api_model} 音声={len(audio) / SAMPLE_RATE:.2f}s"
             )
-            text = slot.transcriber.transcribe(audio, server_format=ctx.server_format)
-            did_server_format = ctx.server_format
+            text = slot.transcriber.transcribe(audio)
         if not text:
             logger.info("文字起こし結果が空でした")
             return
 
         total_ms = (time.perf_counter() - task.timestamp) * 1000
-        fmt_desc = "整形: サーバー統合" if did_server_format else "整形: クライアント/なし"
         logger.info(
-            f"文字起こし完了: 音声 {duration:.1f}s → {len(text)} 文字 ({total_ms:.0f}ms, {fmt_desc})"
+            f"文字起こし完了: 音声 {duration:.1f}s → {len(text)} 文字 ({total_ms:.0f}ms)"
         )
 
-        # 貼り付け前の LLM テキスト整形。サーバー統合済み（did_server_format）なら再整形しない。
-        # サーバーが整形失敗（formatted:false）でも text に STT 原文が入って返るため、ここで再整形
-        # すると同じ Groq 障害で二度失敗するだけ＋遅延増になる。よってクライアント側の再整形はしない。
-        if not did_server_format:
-            text = self._maybe_format(text, ctx)
+        # 貼り付け前の LLM テキスト整形（スロットで有効な場合のみ・失敗時は原文）
+        text = self._maybe_format(text, ctx)
 
         # 実績を集計（貼り付け後のローカル処理なので遅延に影響しない）
         self._record_stats(text, task.audio_data)
