@@ -78,3 +78,12 @@
 - 未確認（実機・本人のみ）: Soniox の実通話と 30 秒無音切断（課金・約 $0.02、未承認）、Meet の実会議での参加・字幕判定（captionsOn）・通知クリック、
   ボットのタップ `.mutedWhenTapped`、字幕の短い行の結合の見え方。
 - 見送った低指摘: 字幕停止に最大 1.5 秒、Soniox の文分割が「Mr.」等でずれる可能性（推測）。
+
+## Windows を Mac に追いつかせる・Meet の画面と要約・2.4.0（11-11 更新）
+
+- 目的: Windows 版（1.8.0）を Mac（2.3.0）と同じ機能・同じ見た目にし、両 OS を 2.4.0 で出す。**見た目だけ Mac と同一、中身は Windows に合う作り**。ライブ字幕は Windows に入れない。計画は `~/.claude/plans/iterative-purring-aho.md`。
+- 済み（コミット済み）: Windows のログイン層除去（d2d21ef）／HUD を Mac と同じ見た目に＋`ui/theme.py`・`ui/components.py`（05d97de）／Mac の Meet 画面表示・要約・ゲスト参加（01a5e4e。**常用アプリには未反映**＝`build_app.sh` 未実行）。
+- 未コミット（作業ツリー）: 料金・更新先・ビルド（`core/api_pricing.py`・`api_usage.py`・`utils/updater.py`・`windows-build.yml` ほか。検証済み）／エンジン追加と設定移行（`core/engines.py` ほか。作業中）／窓の骨格（`ui/shell.py`・`ui/icons.py`・`platform/windows/titlebar.py`。試し描きで確認済み）。
+- 次: エンジン分を検証 → 全テスト → コミット → 設定ページを `ui/pages/*.py` に作り直して `shell.WindowShell` に載せる（即時反映・保存バー無し）→ `app.py` の配線（料金・翻訳キー・再貼り付け・`[計測]`）→ Windows `--ui-snapshot` と CI の PNG → Meet ボットの Windows 移植 → 音声まわりのレビュー → 公開。
+- 未検証: 実会議でのゲスト参加（DOM 文言は推測）・未ログインのゲストに字幕が出るか・Groq 要約の実通信・Windows 実機の見た目（Mica は未採用で単色下地）。
+- 注意: テストは偽 keyring で回す（`PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring`。サービス名が Mac の Keychain と同じ）。`.gitignore` の `src/config/embedded_keys.py` 除外行は消さない。

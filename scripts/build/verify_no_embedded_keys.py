@@ -1,8 +1,8 @@
 """
 配布生成物に長期プロバイダーキーが混入していないか検査する（漏洩回帰チェック）。
 
-製品版（release）は文字起こし・整形をすべて自社サーバー経由で行うため、配布バイナリに
-プロバイダーキーは 1 バイトも存在してはならない（2026-06-28 セキュリティ修正の回帰防止）。
+配布するのは personal 版で、利用者が自分の API キーを設定画面で入れる。作者のキーが
+配布バイナリに 1 バイトでも混ざってはならない（Windows の exe・Mac の .app の両方で使う）。
 
 使い方:
     python scripts/build/verify_no_embedded_keys.py <path> [<path> ...]
@@ -10,10 +10,10 @@
 検査内容:
   1. 各 path（ファイル / ディレクトリ）をバイト列として走査し、既知のプロバイダーキーの
      接頭辞パターン（OpenAI sk- / Groq gsk_ / ElevenLabs sk_ / Gemini AIza）を探す。
-  2. 生成された DIST マーカーモジュール（embedded_keys.py / EmbeddedKeys.generated.swift）が
-     キーレス（payload / mask / get_key を持たない＝IS_DIST フラグのみ）であることを確認する。
-     ※ Deepgram は固定接頭辞が無く誤検出を避けるためバイト走査の対象外。この
-        「マーカーがキーレス」検査が 4 プロバイダーすべての非埋め込みを担保する。
+  2. Mac の生成マーカー（EmbeddedKeys.generated.swift。build_release.sh が渡す）が
+     キーレス（payload / mask / key(forService:) を持たない＝フラグのみ）であることを確認する。
+     ※ Deepgram は固定接頭辞が無く誤検出を避けるためバイト走査の対象外。
+     ※ Windows 版は生成マーカー（embedded_keys.py）を作らなくなったので、その検査は無い。
 
 いずれかに該当すれば非 0 で終了し、ビルドを止める。
 誤検出を避けるため、走査対象は自分のバイナリ・生成物に絞って渡すこと
@@ -72,11 +72,11 @@ def _iter_files(root: Path):
 
 
 def _marker_problems(root: Path) -> list:
-    """DIST マーカーモジュールにキー埋め込みの痕跡が無いか検査する。"""
+    """Mac の生成マーカーにキー埋め込みの痕跡が無いか検査する。"""
     if root.is_file():
-        candidates = [root] if root.name in ("embedded_keys.py", "EmbeddedKeys.generated.swift") else []
+        candidates = [root] if root.name == "EmbeddedKeys.generated.swift" else []
     else:
-        candidates = list(root.rglob("embedded_keys.py")) + list(root.rglob("EmbeddedKeys.generated.swift"))
+        candidates = list(root.rglob("EmbeddedKeys.generated.swift"))
     problems = []
     for mod in candidates:
         try:

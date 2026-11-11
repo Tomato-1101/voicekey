@@ -55,8 +55,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..config import ConfigManager, HotkeyMode, TranscriptionBackend
+from ..config import ConfigManager, HotkeyMode
 from ..config.constants import APP_VERSION, default_format_enabled
+from ..core import engines, text_formatter
 from ..core.audio_recorder import AudioRecorder
 from ..core.history import MAX_ITEMS as HISTORY_MAX_ITEMS, HistoryStore
 from ..core.mic_monitor import MicLevelMonitor
@@ -72,40 +73,16 @@ except Exception:  # pragma: no cover - 同期モジュール未配置時でも�
     parse_iso_date = None  # type: ignore
 
 
-# 設定ウィンドウ上の backend 選択値と Keychain サービス識別子のマッピング。
-# Hotkey1 / Hotkey2 で同じ backend を使う場合は同じ Keychain エントリを共有する。
-_BACKEND_TO_SERVICE = {
-    TranscriptionBackend.GROQ.value: secrets.SERVICE_GROQ,
-    TranscriptionBackend.OPENAI.value: secrets.SERVICE_OPENAI,
-    TranscriptionBackend.ELEVENLABS.value: secrets.SERVICE_ELEVENLABS,
-    TranscriptionBackend.DEEPGRAM.value: secrets.SERVICE_DEEPGRAM,
-}
-
-# 提供元名（API キー欄でどのキーかを示すためだけに使う。配布版では API キータブを
-# 隠すので開発時にしか表示されない。Mac 版 Backend.providerName と一致）
-_BACKEND_PROVIDER_NAMES = {
-    TranscriptionBackend.OPENAI.value: "OpenAI",
-    TranscriptionBackend.GROQ.value: "Groq",
-    TranscriptionBackend.ELEVENLABS.value: "ElevenLabs",
-    TranscriptionBackend.DEEPGRAM.value: "Deepgram",
-}
-
-# 製品版（release）でユーザーが文字起こしに選べる 2 択（表示順）。モデルは推奨固定で非選択:
-# 即時入力=Deepgram（nova-3・短命トークン直叩き＋ストリーミング。しゃべり終わった瞬間に全文を一括入力）/
-# スタンダード=Groq（既定・whisper-large-v3-turbo・プロキシ経由。録音後にきれいに整形）。
-# ElevenLabs（scribe_v1）は選択肢から外し、スタンダードのハンズフリー録音時に内部でのみ使う。
-# Mac 版 Backend.selectableCases / Backend.label と一致させる。
-_TRANSCRIBE_BACKEND_LABELS = [
-    (TranscriptionBackend.DEEPGRAM.value, "即時入力"),
-    (TranscriptionBackend.GROQ.value, "スタンダード"),
-]
-
-# 製品版の API キータブに出すバックエンド（開発ビルドのみ表示）。
-# 文字起こし 2 択＋裏のテキスト整形に使う Groq。OpenAI は使わない。
-_API_KEY_BACKENDS = [
-    TranscriptionBackend.DEEPGRAM.value,
-    TranscriptionBackend.ELEVENLABS.value,
-    TranscriptionBackend.GROQ.value,
+# API キーページに出す欄（表示順）: (見出し, 資格情報ストアのサービス名, 伏字にするか)。
+# OpenAI と OpenAI ライブは同じキーなので 1 欄。Microsoft MAI はキーと接続先の 2 欄
+# （接続先は秘密ではないので伏字にしない）。
+_API_KEY_FIELDS = [
+    ("Soniox", secrets.SERVICE_SONIOX, True),
+    ("ElevenLabs", secrets.SERVICE_ELEVENLABS, True),
+    ("OpenAI", secrets.SERVICE_OPENAI, True),
+    ("Microsoft MAI（キー）", secrets.SERVICE_AZURE_SPEECH, True),
+    ("Microsoft MAI（エンドポイント）", secrets.SERVICE_AZURE_SPEECH_ENDPOINT, False),
+    ("Groq", secrets.SERVICE_GROQ, True),
 ]
 
 # ホットキー動作モードの表示順と UI ラベル（Mac 版 HotkeyMode.label と完全一致させる）
@@ -130,18 +107,8 @@ def _make_caption(text: str) -> QLabel:
 
 
 def _backend_caption_text(backend: str) -> str:
-    """選択中の文字起こしモードの説明文（Mac 版 SlotSettingsTab.backendCaption と同一文言）。
-
-    スタンダード(groq)はハンズフリー録音時に内部で高精度エンジン(ElevenLabs)へ自動切替する旨も添える。
-    """
-    if backend == TranscriptionBackend.DEEPGRAM.value:
-        return "しゃべり終わった瞬間、全文がまとめて入力されます（最速・実測 0.1 秒）"
-    if backend == TranscriptionBackend.GROQ.value:
-        return (
-            "録音後にきれいな文章にして入力します（おすすめ）\n"
-            "ハンズフリー録音のときは、長い録音に強いエンジンへ自動で切り替わります。"
-        )
-    return ""
+    """選択中のエンジンの説明文（文言はエンジンカタログに持たせてある）。"""
+    return engines.engine(backend).caption
 
 
 def _format_history_date(date_str: str) -> str:
@@ -1358,28 +1325,36 @@ class SettingsWindow(QWidget):
         setattr(self, f"_mode{slot_id}_combo", mode_combo)
         _add_row(cl, "録音のしかた", mode_combo)
 
-        # バックエンド選択（製品版は 2 択: 即時入力 / スタンダード）。
-        # モデルは推奨固定で非選択（Deepgram=nova-3 / Groq=whisper-large-v3-turbo）。
+        # エンジン選択（選択肢はエンジンカタログから。Mac 版と同じ並び）
         backend_combo = QComboBox()
-        for value, label in _TRANSCRIBE_BACKEND_LABELS:
-            backend_combo.addItem(label, value)
+        for engine in engines.ENGINES:
+            backend_combo.addItem(engine.label, engine.id)
         backend_combo.setMinimumWidth(180)
         setattr(self, f"_backend{slot_id}_combo", backend_combo)
-        # 選択中モードの説明（薄字。Mac 版 SlotSettingsTab のキャプションと同一文言）。
-        # combo 変更で更新する（スタンダード時はハンズフリー自動切替の1行も出る）。
+        # モデル選択（中身は選んだエンジンに合わせて _populate_models が入れ替える）
+        model_combo = QComboBox()
+        model_combo.setMinimumWidth(180)
+        setattr(self, f"_model{slot_id}_combo", model_combo)
+        # エンジンを切り替えたらモデルはそのエンジンの既定へ戻す（Mac 版と同じ）
+        backend_combo.currentIndexChanged.connect(
+            lambda _i, sid=slot_id: self._populate_models(sid)
+        )
+        # 選択中エンジンの説明（薄字。Mac 版 SlotSettingsTab のキャプションと同一文言）。
         backend_caption = _make_caption("")
         setattr(self, f"_backend{slot_id}_caption", backend_caption)
         backend_combo.currentIndexChanged.connect(
             lambda _i, sid=slot_id: self._update_backend_caption(sid)
         )
         # モード（backend）を切り替えたら整形トグルをそのモードの既定へ追従させる
-        # （即時入力=既定 OFF・スタンダード=既定 ON）。ユーザーはこの後トグルで自由に上書き可。
+        # （録音しながら送るエンジン=既定 OFF・それ以外=既定 ON）。ユーザーはこの後トグルで自由に上書き可。
         # _load_settings では setCurrentIndex の後に明示 setChecked で保存値へ戻すため、
         # 読み込み時にこのハンドラが走っても最終的な整形トグルは保存値になる。
         backend_combo.currentIndexChanged.connect(
             lambda _i, sid=slot_id: self._apply_format_default_for_backend(sid)
         )
-        _add_row(cl, "文字起こしモード", backend_combo, caption_widget=backend_caption)
+        _add_row(cl, "エンジン", backend_combo, caption_widget=backend_caption)
+        _add_row(cl, "モデル", model_combo)
+        self._populate_models(slot_id)
 
         # 文章を自動で整える: 貼り付け前に高速 LLM で 1 回整形する
         # （整形内容は LLM が自動判断。指示は「一般」ページで編集可。Mac 版と構成を一致させる）
@@ -1390,10 +1365,43 @@ class SettingsWindow(QWidget):
             caption="「えー」「あの」などの言いよどみを除去し、句読点や改行を整えます。",
         )
 
+        # 整え方（文章を自動で整えるときのプリセット。説明は選択に合わせて差し替える）
+        preset_combo = QComboBox()
+        for preset in text_formatter.FORMAT_PRESETS:
+            preset_combo.addItem(preset.name, preset.id)
+        preset_combo.setMinimumWidth(180)
+        setattr(self, f"_format_preset{slot_id}_combo", preset_combo)
+        preset_caption = _make_caption(text_formatter.FORMAT_PRESETS[0].description)
+        preset_combo.currentIndexChanged.connect(
+            lambda i, label=preset_caption: label.setText(
+                text_formatter.FORMAT_PRESETS[i].description
+            )
+        )
+        _add_row(cl, "整え方", preset_combo, caption_widget=preset_caption)
+
         layout.addWidget(card)
         layout.addStretch()
 
         return self._wrap_scroll(page)
+
+    def _populate_models(self, slot_id: int, selected: str = "") -> None:
+        """モデルの選択肢を、選択中のエンジンのものに入れ替える。
+
+        Args:
+            slot_id: スロット ID（1 または 2）
+            selected: 選んでおくモデル名（空ならそのエンジンの既定）。一覧に無い名前
+                （設定ファイルに手で書いたモデル）も消さずに選択肢へ足す
+        """
+        engine = engines.engine(getattr(self, f"_backend{slot_id}_combo").currentData())
+        combo = getattr(self, f"_model{slot_id}_combo")
+        combo.clear()
+        for model in engine.models:
+            suffix = "（推奨）" if model == engine.default_model else ""
+            combo.addItem(model + suffix, model)
+        target = selected or engine.default_model
+        if combo.findData(target) < 0:
+            combo.addItem(target, target)
+        combo.setCurrentIndex(combo.findData(target))
 
     def _update_backend_caption(self, slot_id: int) -> None:
         """バックエンド combo の選択に合わせて、直下のモード説明キャプションを更新する。"""
@@ -1404,7 +1412,7 @@ class SettingsWindow(QWidget):
     def _apply_format_default_for_backend(self, slot_id: int) -> None:
         """バックエンド変更に合わせて整形トグルをそのモードの既定へ追従させる。
 
-        即時入力(deepgram)=既定 OFF・スタンダード(groq)=既定 ON。ユーザーはこの後トグルで
+        録音しながら送るエンジン=既定 OFF・それ以外=既定 ON。ユーザーはこの後トグルで
         自由に上書きできる（Mac 版 SlotSettingsTab の .onChange(of: slot.backend) と対）。
         """
         combo = getattr(self, f"_backend{slot_id}_combo")
@@ -2164,7 +2172,7 @@ class SettingsWindow(QWidget):
         self._refresh_stats()
 
     def _create_api_keys_page(self) -> QWidget:
-        """API キーページを作成する（製品版で使う 3 バックエンド分の保存・削除を 1 カードに収める）。"""
+        """API キーページを作成する（全エンジン分の保存・削除を 1 カードに収める）。"""
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setSpacing(12)
@@ -2176,12 +2184,7 @@ class SettingsWindow(QWidget):
 
         card, cl = _make_card()
 
-        for backend_value in _API_KEY_BACKENDS:
-            service = _BACKEND_TO_SERVICE[backend_value]
-            # API キー欄はどのキーかが分かる必要があるので提供元名で見出しを出す
-            # （このタブ自体が配布版では非表示なので提供元名が露出するのは開発時のみ）
-            provider_name = _BACKEND_PROVIDER_NAMES[backend_value]
-
+        for provider_name, service, is_secret in _API_KEY_FIELDS:
             block = QWidget()
             block_layout = QVBoxLayout(block)
             block_layout.setContentsMargins(0, 0, 0, 0)
@@ -2199,8 +2202,11 @@ class SettingsWindow(QWidget):
 
             # 入力中は伏字表示。保存時のみ keyring に書き込み、値は再表示しない
             key_input = QLineEdit()
-            key_input.setEchoMode(QLineEdit.EchoMode.Password)
-            key_input.setPlaceholderText("API キーを入力")
+            if is_secret:
+                key_input.setEchoMode(QLineEdit.EchoMode.Password)
+                key_input.setPlaceholderText("API キーを入力")
+            else:
+                key_input.setPlaceholderText("https://<リソース名>.cognitiveservices.azure.com")
 
             save_btn = QPushButton("保存")
             save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2641,9 +2647,8 @@ class SettingsWindow(QWidget):
             lang_index = self._lang_combo.count() - 1
         self._lang_combo.setCurrentIndex(lang_index)
 
-        # ホットキー 1 / 2（製品版の既定: 両スロットとも スタンダード(groq)。DEFAULT_CONFIG と揃える。
-        # ハンズフリー(toggle)録音では groq を内部で ElevenLabs(scribe_v1) へ自動切替する）
-        slot_defaults = {1: ("<f2>", "groq"), 2: ("<f3>", "groq")}
+        # ホットキー 1 / 2（既定は DEFAULT_CONFIG と揃える: 1 = Soniox / 2 = Groq）
+        slot_defaults = {1: ("<f2>", "soniox"), 2: ("<f3>", "groq")}
         for slot_id, (default_hotkey, default_backend) in slot_defaults.items():
             hotkey_config = config.get(f"hotkey{slot_id}", {}) or {}
 
@@ -2659,15 +2664,14 @@ class SettingsWindow(QWidget):
                 mode_index = mode_combo.findData(HotkeyMode.TOGGLE.value)
             mode_combo.setCurrentIndex(mode_index)
 
-            # 保存値が combo に「存在するか」で判定する（_BACKEND_TO_SERVICE 所属では判定しない）。
-            # combo は 2 択（deepgram/groq）なので、範囲外の保存値（旧 elevenlabs/openai）は
-            # findData が -1 を返す → スタンダード(groq)へフォールバックする（先頭 deepgram に化けない）。
-            backend = hotkey_config.get("backend", default_backend)
+            # 保存値はカタログの id に読み替える（知らない値は Groq。先頭の Soniox に化けない）
+            backend = engines.normalize_id(hotkey_config.get("backend", default_backend))
             backend_combo = getattr(self, f"_backend{slot_id}_combo")
-            index = backend_combo.findData(backend)
-            if index < 0:
-                index = backend_combo.findData(TranscriptionBackend.GROQ.value)
-            backend_combo.setCurrentIndex(max(0, index))
+            backend_combo.setCurrentIndex(backend_combo.findData(backend))
+            # モデルは保存値を選ぶ（setCurrentIndex で既定に戻っているので、その後に入れ直す）
+            self._populate_models(
+                slot_id, engines.normalize_model(backend, hotkey_config.get("api_model", ""))
+            )
             # 選択に合わせてキャプションを初期化（setCurrentIndex が同一 index だと
             # currentIndexChanged が発火しないため明示的に呼ぶ）
             self._update_backend_caption(slot_id)
@@ -2679,6 +2683,10 @@ class SettingsWindow(QWidget):
             getattr(self, f"_format{slot_id}_check").setChecked(
                 bool(hotkey_config.get("format_enabled", False))
             )
+            preset_combo = getattr(self, f"_format_preset{slot_id}_combo")
+            preset_combo.setCurrentIndex(preset_combo.findData(
+                text_formatter.normalize_preset(hotkey_config.get("format_preset"))
+            ))
 
         # 一般 - その他（VAD/分割/HUD/ストリーミング/音量正規化は常時ON固定のため UI 無し）
         # 自動起動はレジストリの実状態を反映（settings.yaml には持たない）
@@ -2713,10 +2721,10 @@ class SettingsWindow(QWidget):
         self._populate_input_devices()
         self._set_input_device_selection(config.get("audio_input_device", "default"))
 
-        # 製品版は文字起こしモデル・整形モデル/指示が固定（UI 非公開）のため読み込み不要。
+        # 整形モデル・整形の指示はこの画面に出していないので読み込まない。
 
         # API キー保存状況
-        for service in _BACKEND_TO_SERVICE.values():
+        for _name, service, _is_secret in _API_KEY_FIELDS:
             self._refresh_api_key_status(service)
 
         # Mac との履歴共有
@@ -2786,22 +2794,14 @@ class SettingsWindow(QWidget):
             # vad_filter / vad_min_silence_duration_ms / split_parallel_enabled /
             # streaming_enabled / hud_enabled / audio_preprocess.volume_normalize は
             # 常時 ON 固定（UI 撤去）。ここでは保存せず config_manager 側で True を強制する。
-            # format_model / format_auto_prompt も製品版は固定（UI 非公開）なので保存しない
-            # （DEFAULT_CONFIG の既定 = llama-3.1-8b-instant / 既定プロンプトが使われる）。
+            # format_model / format_auto_prompt はこの画面に出していないので保存しない
+            # （保存済みの値、無ければ DEFAULT_CONFIG の既定が使われる）。
 
             # ホットキー1 設定
             "hotkey1": self._collect_slot_config(1),
 
             # ホットキー2 設定
             "hotkey2": self._collect_slot_config(2),
-
-            # APIモデルデフォルト値（全 4 バックエンド）
-            "default_api_models": self._config_manager.get("default_api_models", {
-                "groq": "whisper-large-v3-turbo",
-                "openai": "gpt-4o-mini-transcribe",
-                "elevenlabs": "scribe_v1",
-                "deepgram": "nova-3",
-            }),
 
             # Mac との履歴共有
             "history_sync": {
@@ -2848,8 +2848,8 @@ class SettingsWindow(QWidget):
             "hotkey": getattr(self, f"_hotkey{slot_id}_input").text(),
             "hotkey_mode": getattr(self, f"_mode{slot_id}_combo").currentData(),
             "backend": getattr(self, f"_backend{slot_id}_combo").currentData(),
-            # 製品版はモデル非選択。空にして default_api_models（deepgram=nova-3 等）へフォールバック
-            "api_model": "",
+            "api_model": getattr(self, f"_model{slot_id}_combo").currentData(),
             "api_prompt": existing_slot.get("api_prompt", ""),
             "format_enabled": getattr(self, f"_format{slot_id}_check").isChecked(),
+            "format_preset": getattr(self, f"_format_preset{slot_id}_combo").currentData(),
         }

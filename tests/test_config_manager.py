@@ -1,5 +1,6 @@
 """ConfigManager のマイグレーション・バックエンド正規化・既定値テスト。"""
 
+import copy
 import os
 import tempfile
 import unittest
@@ -17,11 +18,28 @@ class TestDefaults(unittest.TestCase):
         self.assertTrue(DEFAULT_CONFIG["streaming_enabled"])
         self.assertTrue(DEFAULT_CONFIG["hud_enabled"])
 
-    def test_all_backends_have_default_model(self):
-        self.assertEqual(
-            set(DEFAULT_CONFIG["default_api_models"]),
-            {"groq", "openai", "elevenlabs", "deepgram"},
-        )
+    def test_default_slots_use_soniox_and_groq(self):
+        # 新規インストールの既定: スロット 1 = 押している間・Soniox / スロット 2 = 切り替え・Groq
+        self.assertEqual(DEFAULT_CONFIG["hotkey1"]["hotkey"], "<f2>")
+        self.assertEqual(DEFAULT_CONFIG["hotkey1"]["hotkey_mode"], "hold")
+        self.assertEqual(DEFAULT_CONFIG["hotkey1"]["backend"], "soniox")
+        self.assertEqual(DEFAULT_CONFIG["hotkey2"]["hotkey"], "<f3>")
+        self.assertEqual(DEFAULT_CONFIG["hotkey2"]["hotkey_mode"], "toggle")
+        self.assertEqual(DEFAULT_CONFIG["hotkey2"]["backend"], "groq")
+        # エンジン別の既定モデル表は廃止（既定はカタログが持つ）
+        self.assertNotIn("default_api_models", DEFAULT_CONFIG)
+        self.assertEqual(DEFAULT_CONFIG["format_model"], "qwen/qwen3.8-27b")
+
+    def test_missing_file_keeps_soniox_format_default(self):
+        # 設定ファイルが無い新規インストールでは、移行済みの印を最初から持つ
+        # （初回保存の後に「旧版からの移行」が走って既定を書き換えないため）
+        path = os.path.join(tempfile.gettempdir(), "voicekey_nonexistent_config_abc.yaml")
+        if os.path.exists(path):
+            os.unlink(path)
+        cfg = ConfigManager(config_path=path).config
+        self.assertTrue(cfg["migrated_engine_catalog"])
+        self.assertTrue(cfg["migrated_format_defaults"])
+        self.assertEqual(cfg["hotkey1"]["backend"], "soniox")
 
 
 class TestDeepMerge(unittest.TestCase):
@@ -33,12 +51,15 @@ class TestDeepMerge(unittest.TestCase):
 
 class TestBackendNormalize(unittest.TestCase):
     def test_valid_backends_kept(self):
-        for backend in ("groq", "openai", "elevenlabs", "deepgram"):
+        for backend in ("soniox", "elevenlabs", "openai", "azure_mai", "openai_live", "groq"):
             self.assertEqual(ConfigManager._normalize_backend(backend), backend)
 
-    def test_invalid_falls_back_to_openai(self):
-        self.assertEqual(ConfigManager._normalize_backend("local"), "openai")
-        self.assertEqual(ConfigManager._normalize_backend("nonsense"), "openai")
+    def test_deepgram_moves_to_soniox(self):
+        self.assertEqual(ConfigManager._normalize_backend("deepgram"), "soniox")
+
+    def test_invalid_falls_back_to_groq(self):
+        self.assertEqual(ConfigManager._normalize_backend("local"), "groq")
+        self.assertEqual(ConfigManager._normalize_backend("nonsense"), "groq")
 
 
 class TestMigration(unittest.TestCase):
@@ -60,16 +81,15 @@ class TestMigration(unittest.TestCase):
             self.assertIn("hotkey1", cfg)
             self.assertNotIn("hotkey", cfg)
             self.assertEqual(cfg["hotkey1"]["hotkey"], "<f4>")
-            # 製品版(release)の文字起こしは 2 択(deepgram/groq)。groq は有効なのでそのまま保持する
+            # groq はいまも選べるエンジンなのでそのまま保持する
             self.assertEqual(cfg["hotkey1"]["backend"], "groq")
             self.assertIn("hotkey2", cfg)
         finally:
             os.unlink(path)
 
-    def test_release_constrains_openai_to_groq_keeps_deepgram(self):
-        # 製品版は openai を文字起こしに選べないため groq(正確性=普通入力の既定)へ移行し、
-        # api_model は空にして default_api_models(whisper-large-v3-turbo) へフォールバックさせる。
-        # deepgram(高速リアルタイム)は有効な選択肢なのでそのまま保持する。
+    def test_deepgram_moves_to_soniox_and_other_engines_kept(self):
+        # Deepgram は Soniox へ（モデルは Soniox の既定）。それ以外のエンジン選択は保つ。
+        # 提供の終わったモデル名（gpt-4o-transcribe）はそのエンジンの新しい既定へ。
         mgr, path = self._manager_for({
             "hotkey1": {
                 "hotkey": "<f2>", "hotkey_mode": "hold",
@@ -81,41 +101,106 @@ class TestMigration(unittest.TestCase):
             },
         })
         try:
-            self.assertEqual(mgr.config["hotkey1"]["backend"], "groq")
-            self.assertEqual(mgr.config["hotkey1"]["api_model"], "")
-            # deepgram は選択肢に残したため維持される（api_model も保持）
-            self.assertEqual(mgr.config["hotkey2"]["backend"], "deepgram")
-            self.assertEqual(mgr.config["hotkey2"]["api_model"], "nova-3")
+            self.assertEqual(mgr.config["hotkey1"]["backend"], "openai")
+            self.assertEqual(mgr.config["hotkey1"]["api_model"], "gpt-transcribe")
+            self.assertEqual(mgr.config["hotkey2"]["backend"], "soniox")
+            self.assertEqual(mgr.config["hotkey2"]["api_model"], "stt-rt-v5")
+            # ホットキー・録音のしかたは触らない
+            self.assertEqual(mgr.config["hotkey2"]["hotkey"], "<f3>")
+            self.assertEqual(mgr.config["hotkey2"]["hotkey_mode"], "toggle")
         finally:
             os.unlink(path)
 
-    def test_release_migrates_elevenlabs_to_groq(self):
-        # 旧「高精度」= elevenlabs はユーザーが選べる 2 択（deepgram/groq）から外したため、
-        # スタンダード(groq)へ移行する。api_model は空にして default_api_models へフォールバックさせる。
-        # （EL は enum としては残り、スタンダードのハンズフリー録音時に内部でのみ使われる）
+    def test_old_default_models_move_to_new_defaults(self):
+        # 旧版の既定モデル名（空・scribe_v1）は新しい既定へ。エンジンは保つ
         mgr, path = self._manager_for({
+            "default_api_models": {"groq": "whisper-large-v3-turbo", "deepgram": "nova-3"},
+            "hotkey1": {
+                "hotkey": "<f2>", "hotkey_mode": "hold",
+                "backend": "elevenlabs", "api_model": "scribe_v1",
+            },
+            "hotkey2": {
+                "hotkey": "<f3>", "hotkey_mode": "toggle",
+                "backend": "groq", "api_model": "",
+            },
+        })
+        try:
+            self.assertEqual(mgr.config["hotkey1"]["backend"], "elevenlabs")
+            self.assertEqual(mgr.config["hotkey1"]["api_model"], "scribe_v2")
+            self.assertEqual(mgr.config["hotkey2"]["backend"], "groq")
+            self.assertEqual(mgr.config["hotkey2"]["api_model"], "whisper-large-v3-turbo")
+            self.assertEqual(mgr.config["hotkey2"]["format_preset"], "standard")
+            # 使わなくなった既定モデル表は消える
+            self.assertNotIn("default_api_models", mgr.config)
+            self.assertTrue(mgr.config["migrated_engine_catalog"])
+        finally:
+            os.unlink(path)
+
+    def test_scribe_v1_chosen_after_migration_is_kept(self):
+        # 移行の後に利用者が選び直した scribe_v1 は、次の読み込みで戻さない
+        mgr, path = self._manager_for({
+            "migrated_engine_catalog": True,
             "hotkey1": {
                 "hotkey": "<f2>", "hotkey_mode": "hold",
                 "backend": "elevenlabs", "api_model": "scribe_v1",
             },
         })
         try:
-            self.assertEqual(mgr.config["hotkey1"]["backend"], "groq")
-            self.assertEqual(mgr.config["hotkey1"]["api_model"], "")
+            self.assertEqual(mgr.config["hotkey1"]["api_model"], "scribe_v1")
         finally:
             os.unlink(path)
 
-    def test_deepgram_backend_preserved(self):
-        # deepgram(高速リアルタイム)は製品版の文字起こし選択肢に残したため維持される
+    def test_custom_model_name_is_kept(self):
+        # 一覧に無いだけのモデル名（手で書いた新しいモデル）は残す
         mgr, path = self._manager_for({
             "hotkey1": {
                 "hotkey": "<f2>", "hotkey_mode": "hold",
-                "backend": "deepgram", "api_model": "nova-3",
+                "backend": "groq", "api_model": "whisper-next-preview",
             },
         })
         try:
-            self.assertEqual(mgr.config["hotkey1"]["backend"], "deepgram")
-            self.assertEqual(mgr.config["hotkey1"]["api_model"], "nova-3")
+            self.assertEqual(mgr.config["hotkey1"]["api_model"], "whisper-next-preview")
+        finally:
+            os.unlink(path)
+
+    def test_retired_format_model_moves_to_recommended(self):
+        # 旧既定の整形モデルは新しい既定へ。利用者が選んだ現役のモデルは残す
+        mgr, path = self._manager_for({"format_model": "llama-3.1-8b-instant"})
+        try:
+            self.assertEqual(mgr.config["format_model"], "qwen/qwen3.8-27b")
+        finally:
+            os.unlink(path)
+        mgr, path = self._manager_for({"format_model": "openai/gpt-oss-120b"})
+        try:
+            self.assertEqual(mgr.config["format_model"], "openai/gpt-oss-120b")
+        finally:
+            os.unlink(path)
+
+    def test_migration_is_idempotent(self):
+        # 移行後の設定を保存して読み直しても、何度通しても結果は変わらない
+        mgr, path = self._manager_for({
+            "format_model": "llama-3.1-8b-instant",
+            "hotkey1": {
+                "hotkey": "<f2>", "hotkey_mode": "hold",
+                "backend": "deepgram", "api_model": "nova-3", "format_enabled": True,
+            },
+            "hotkey2": {
+                "hotkey": "<f3>", "hotkey_mode": "toggle",
+                "backend": "elevenlabs", "api_model": "scribe_v1", "format_enabled": True,
+            },
+        })
+        try:
+            first = copy.deepcopy(mgr.config)
+            self.assertTrue(mgr.save({}))
+            second = ConfigManager(config_path=path).config
+            self.assertEqual(second, first)
+            self.assertTrue(ConfigManager(config_path=path).save({}))
+            self.assertEqual(ConfigManager(config_path=path).config, first)
+            # 同じ辞書にもう一度かけても変わらない
+            again = copy.deepcopy(first)
+            ConfigManager._normalize_engines(again)
+            ConfigManager._migrate_format_defaults(again)
+            self.assertEqual(again, first)
         finally:
             os.unlink(path)
 
@@ -130,7 +215,7 @@ class TestMigration(unittest.TestCase):
 
     def test_migrate_format_defaults_forces_deepgram_off_once(self):
         # モード別整形既定の一回限りマイグレーション（初回）。マーカー無しの既存ユーザーは、
-        # リアルタイム(deepgram)スロットの整形を既定 OFF へ矯正する。スタンダード(groq)は既定 ON のまま。
+        # 速さ優先のエンジン（旧 deepgram → Soniox）のスロットの整形を既定 OFF へ矯正する。groq は既定 ON のまま。
         mgr, path = self._manager_for({
             "hotkey1": {
                 "hotkey": "<f2>", "hotkey_mode": "hold",
@@ -142,7 +227,8 @@ class TestMigration(unittest.TestCase):
             },
         })
         try:
-            self.assertFalse(mgr.config["hotkey1"]["format_enabled"])  # deepgram は矯正
+            self.assertEqual(mgr.config["hotkey1"]["backend"], "soniox")
+            self.assertFalse(mgr.config["hotkey1"]["format_enabled"])  # 速さ優先のエンジンは矯正
             self.assertTrue(mgr.config["hotkey2"]["format_enabled"])   # groq は据え置き
             self.assertTrue(mgr.config["migrated_format_defaults"])    # 矯正済みマーカー
         finally:

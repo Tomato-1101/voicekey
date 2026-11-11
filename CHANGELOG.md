@@ -26,6 +26,42 @@ voicekeyの変更履歴を記録するファイルです。
   自動 Enter と翻訳の印・変換中は静止）。位置はタスクバーのすぐ上の中央。ライト／ダークに追従する。
 - 設定画面を Mac のデザインに作り直すための土台（`src/ui/theme.py`・`src/ui/components.py`）を追加（配線は未了）。
 
+### Changed（Windows の文字起こし・整形）
+- **エンジンを Mac 版と同じ 6 種類にした**: Soniox `stt-rt-v5`／ElevenLabs `scribe_v2`・`scribe_v1`／OpenAI `gpt-transcribe`／
+  Microsoft MAI `MAI-Transcribe-2`／OpenAI ライブ `gpt-live-transcribe`／Groq `whisper-large-v3-turbo`。
+  「即時入力／スタンダード」の 2 択をやめ、録音キーごとに「エンジン」と「モデル」を選ぶ。
+  Deepgram は選択肢から外し、保存済みの設定は Soniox へ自動で移す（廃止モデル名は各エンジンの既定へ）。
+- 新規インストールの既定は録音キー 1 = Soniox（整形 OFF）、録音キー 2 = Groq（整形 ON）。既存の設定は変えない。
+- API キー欄は Soniox／ElevenLabs／OpenAI／Microsoft MAI（キー・エンドポイント）／Groq。環境変数でも読める。
+  Soniox はキーのリージョン（日本／米国）を自動で判定する。
+- 整形に「整え方」4 種（標準／そのまま／すっきり／箇条書き）を録音キーごとに持たせた。整形モデルの既定は
+  `qwen/qwen3.8-27b`（旧 `llama-*` は自動で移行）。
+- 録音しながら送るエンジンが途中で失敗したら録音全体を送り直す。送り直しも失敗したら、届いていた分を入力する。
+- エラー通知は短い日本語だけにした（API のエラー本文は通知に出さずログへ）。
+- 履歴の上限を 200 件にした（これまで 10 件）。
+- 更新の取得元を本リポジトリの GitHub Releases に変えた（`voicekey-<version>-windows-setup.exe` と署名 `.sig`）。
+  配布ビルドは鍵を埋め込まない（`verify_no_embedded_keys.py` で検査）。
+
+### Changed（Windows のロゴ）
+- サイドバーのアプリアイコンを Mac 版と同じ画像にした（ライト＝ボーン地、ダーク＝カーボン地）。窓のアイコンも同じ絵。
+- トレイのアイコンを、色付きの丸から Mac のメニューバーと同じキーの形に変えた（待機＝灯りの輪、録音中＝灯りの点、
+  自動 Enter＝刻印の棒も灯る、変換中＝灯り色の輪）。枠の色はタスクバーの明暗に合わせる。
+
+### Added（Windows・土台。画面への配線は未了）
+- API の利用料金の計算と記録（`src/core/api_pricing.py`・`api_usage.py`）。
+- 設定画面の骨格（`src/ui/shell.py`）、サイドバーの線描きアイコン（`icons.py`）、ダッシュボード用の部品
+  （`components.py` の `Card`・`Segmented`、`charts.py` の `MeterBar`・`BarChart`）、
+  タイトルバーの暗色化（`platform/windows/titlebar.py`）、貼り付け先アプリのアイコン取得（`foreground_app.py`）。
+
+### Technical Details（Windows）
+- 追加: `src/core/engines.py`（エンジンのカタログ。UI とコアの単一の出どころ）、`src/core/llm_catalog.py`、
+  `src/ui/brand.py`＋`src/ui/assets/AppIcon{Light,Dark}.png`（Mac の画像の写し。`tests/test_brand.py` が一致を検査）
+- `streaming_transcriber.py` を書き直し（共通基底＋`SonioxStreamer`・`OpenAILiveStreamer`・`create_streamer`）。
+  `api_transcriber.py` は Deepgram を削除し `AzureMAITranscriber`・`create_transcriber` を追加
+- 設定: スロットに `format_preset` を追加、`default_api_models` を廃止、移行の印 `migrated_engine_catalog`
+- 削除: `scripts/build/generate_embedded_keys.py`。`voicekey.spec` はロゴ画像 2 枚を同梱する
+- 実 API・実機 Windows では未確認（テストは通信を偽物に差し替え）
+
 ### Changed
 - **Windows 版から製品版のログイン・課金・サーバー経由の層を外した（Windows のみ）**。文字起こしと整形は、
   設定 › API キー に入れた自分のキー（無ければ環境変数）で各プロバイダーへ直接送る。

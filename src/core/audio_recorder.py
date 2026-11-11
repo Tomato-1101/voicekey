@@ -114,7 +114,7 @@ class AudioRecorder:
             level_callback: 録音中の音声レベル（0.0-1.0）を受け取るコールバック。
                             audio callback スレッドから throttle 付きで呼ばれる
             chunk_callback: 録音中の生 PCM チャンク（float32 モノラル）を受け取る
-                            コールバック。Deepgram ストリーミングへ逐次送るために使う。
+                            コールバック。ストリーミングのエンジンへ逐次送るために使う。
                             録音ごとにアプリ側で差し替え/解除する（録音中のみ発火）
         """
         self.sample_rate = sample_rate
@@ -628,7 +628,7 @@ class AudioRecorder:
             # データをコピーしてキューに追加（元バッファは PortAudio が再利用するため）
             self._audio_q.put(indata.copy())
 
-            # ストリーミング送出（Deepgram へ逐次送る。録音ごとに差し替わる）。
+            # ストリーミング送出（エンジンへ逐次送る。録音ごとに差し替わる）。
             # REST 経路（audio_q）とは独立。送るのはこの録音の稼働の送出先だけ
             # （次の録音が張った保留のフックには、その録音の _do_start まで送らない）
             chunk_cb = self._active_chunk_cb

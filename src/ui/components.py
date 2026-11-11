@@ -25,7 +25,6 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QColor,
     QFont,
-    QFontDatabase,
     QFontMetrics,
     QLinearGradient,
     QPainter,
@@ -45,7 +44,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import theme
+from . import icons, theme
 from .theme import BONE, CARBON, SIGNAL, Metrics, Motion, Theme, rgba
 
 
@@ -112,34 +111,6 @@ def _accent_gradient(y0: float, y1: float) -> QLinearGradient:
     return gradient
 
 
-# Windows のアイコン用フォント。11 = Segoe Fluent Icons、10 = Segoe MDL2 Assets（同じ番号の字が入っている）
-_ICON_FONT_CANDIDATES = ("Segoe Fluent Icons", "Segoe MDL2 Assets")
-_icon_family: Optional[str] = None
-_icon_family_checked = False
-
-
-def icon_font(size: int) -> Optional[QFont]:
-    """
-    アイコン用フォントを返す。
-
-    Args:
-        size: 大きさ（ピクセル）
-
-    Returns:
-        アイコン用の QFont。入っていない環境（Mac での開発時など）では None
-    """
-    global _icon_family, _icon_family_checked
-    if not _icon_family_checked:
-        installed = set(QFontDatabase.families())
-        _icon_family = next((n for n in _ICON_FONT_CANDIDATES if n in installed), None)
-        _icon_family_checked = True
-    if _icon_family is None:
-        return None
-    f = QFont(_icon_family)
-    f.setPixelSize(size)
-    return f
-
-
 # ---------------------------------------------------------------------------
 # 文字
 # ---------------------------------------------------------------------------
@@ -173,6 +144,7 @@ class Text(QLabel):
         """
         super().__init__(text, parent)
         self.role = role
+        self._size = size
         self.setFont(theme.font(size, weight))
         self.setWordWrap(wrap)
         self._refresh()
@@ -195,9 +167,10 @@ class Text(QLabel):
             "warn": p.warn,
             "ok": p.ok,
         }.get(self.role, p.text)
+        # 大きさもここで指定する。アプリ全体の QSS（QWidget の font-size）が setFont より優先されるため
         self.setStyleSheet(
             f"color: rgba({color.red()}, {color.green()}, {color.blue()}, {color.alpha()});"
-            " background: transparent;"
+            f" background: transparent; font-size: {self._size}px;"
         )
 
 
@@ -713,6 +686,153 @@ class SettingsGroup(QWidget):
             first = False
 
 
+class Card(QWidget):
+    """
+    数字や一覧を載せる面（ダッシュボードのカード）。棚より角が丸く、内側に余白を持つ。
+
+    Attributes:
+        body: 中身を足していく縦のレイアウト
+    """
+
+    RADIUS = 14
+
+    def __init__(self, parent: Optional[QWidget] = None, padding: int = 16) -> None:
+        """
+        Args:
+            parent: 親ウィジェット
+            padding: 面の縁から中身までの余白
+        """
+        super().__init__(parent)
+        self.body = QVBoxLayout(self)
+        self.body.setContentsMargins(padding, padding, padding, padding)
+        self.body.setSpacing(6)
+        Theme.instance().changed.connect(self.update)
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        """面を描く。"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(self.rect()), self.RADIUS, self.RADIUS)
+        painter.fillPath(path, theme.palette().row)
+
+
+class Segmented(QWidget):
+    """
+    横に並んだ選択肢から 1 つを選ぶ部品（Mac の segmented Picker と同じ見た目）。
+    選ばれている印（白い板）が滑って移る。
+
+    幅は「いちばん長い選択肢」で決めて固定する。選び直しても周りの部品が動かないようにするため。
+
+    Signals:
+        currentChanged(int): 選択が変わったとき（引数は選ばれた番号）
+    """
+
+    currentChanged = Signal(int)
+
+    HEIGHT = 28
+    _PADDING_H = 14   # 選択肢の文字の左右の余白
+    _INSET = 2.0      # 溝の縁から白い板までのすき間
+
+    def __init__(self, options: List[str], current: int = 0, parent: Optional[QWidget] = None) -> None:
+        """
+        Args:
+            options: 選択肢の表示名（左から）
+            current: 最初に選んでおく番号
+            parent: 親ウィジェット
+        """
+        super().__init__(parent)
+        self._options = list(options)
+        self._current = max(0, min(current, len(self._options) - 1))
+        self._x = float(self._current)   # 白い板の位置（選択肢 1 つぶんを 1.0 とする）
+        self._font = theme.font(12, QFont.Weight.Medium)
+        metrics = QFontMetrics(self._font)
+        widest = max((metrics.horizontalAdvance(option) for option in self._options), default=0)
+        self._segment_w = widest + self._PADDING_H * 2
+        self.setFixedSize(self._segment_w * max(1, len(self._options)), self.HEIGHT)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self._anim = _animation(self, Motion.TOGGLE_MS, self._set_x)
+        Theme.instance().changed.connect(self.update)
+
+    def current_index(self) -> int:
+        """選ばれている番号を返す。"""
+        return self._current
+
+    def set_current_index(self, index: int, animate: bool = True, notify: bool = True) -> None:
+        """
+        選択を変える。
+
+        Args:
+            index: 選ぶ番号（範囲外・同じ番号なら何もしない）
+            animate: 白い板を滑らせるなら True
+            notify: currentChanged を出すなら True（設定値を画面へ写すだけのときは False）
+        """
+        if not 0 <= index < len(self._options) or index == self._current:
+            return
+        self._current = index
+        if animate and self.isVisible():
+            _run(self._anim, self._x, float(index))
+        else:
+            self._anim.stop()
+            self._set_x(float(index))
+        if notify:
+            self.currentChanged.emit(index)
+
+    def _set_x(self, x: float) -> None:
+        """白い板の位置を更新して描き直す。"""
+        self._x = x
+        self.update()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        """押された場所の選択肢を選ぶ。"""
+        if event.button() == Qt.MouseButton.LeftButton and self.isEnabled():
+            self.set_current_index(int(event.position().x() // self._segment_w))
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        """左右の矢印キーで選択を動かす。"""
+        if event.key() == Qt.Key.Key_Left:
+            self.set_current_index(self._current - 1)
+        elif event.key() == Qt.Key.Key_Right:
+            self.set_current_index(self._current + 1)
+        else:
+            super().keyPressEvent(event)
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        """溝 → 白い板 → 文字、の順に描く。"""
+        p = theme.palette()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if not self.isEnabled():
+            painter.setOpacity(0.5)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        track = QPainterPath()
+        track.addRoundedRect(rect, Metrics.FIELD_RADIUS, Metrics.FIELD_RADIUS)
+        painter.fillPath(track, p.control)
+        painter.setPen(QPen(rgba(SIGNAL, 0.55), 2.0) if self.hasFocus() else QPen(p.control_border, 1.0))
+        painter.drawPath(track)
+
+        thumb = QRectF(
+            self._x * self._segment_w + self._INSET,
+            self._INSET,
+            self._segment_w - self._INSET * 2,
+            self.height() - self._INSET * 2,
+        )
+        radius = Metrics.FIELD_RADIUS - self._INSET
+        painter.setPen(Qt.PenStyle.NoPen)
+        # 板の下にごく薄い影（浮きを出す）
+        painter.setBrush(QColor(0, 0, 0, 26))
+        painter.drawRoundedRect(thumb.translated(0.0, 1.0), radius, radius)
+        painter.setBrush(rgba("#FFFFFF", 0.20) if p.dark else rgba("#FFFFFF"))
+        painter.drawRoundedRect(thumb, radius, radius)
+
+        painter.setFont(self._font)
+        painter.setPen(p.text)
+        for index, option in enumerate(self._options):
+            cell = QRectF(index * self._segment_w, 0.0, self._segment_w, float(self.height()))
+            painter.drawText(cell, Qt.AlignmentFlag.AlignCenter, option)
+
+
 # ---------------------------------------------------------------------------
 # サイドバーのナビ
 # ---------------------------------------------------------------------------
@@ -733,13 +853,14 @@ class NavList(QWidget):
     _TEXT_SIZE = 14     # 行の文字（SettingsView.swift のナビ行と同じ）
     _PAD_H = 10         # 行の左右の余白
     _ICON_W = 22        # アイコンの幅
+    _ICON_SIDE = 16     # アイコンそのものの大きさ
     _SECTION_TOP = 14   # 小見出しの上の余白
     _SECTION_H = 15     # 小見出しの文字の高さ
     _SECTION_BOTTOM = 4  # 小見出しの下の余白
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self._items: List[tuple] = []      # (見出し, アイコンの字)
+        self._items: List[tuple] = []      # (見出し, アイコンの名前)
         self._tops: List[int] = []         # 各行の上端
         self._sections: List[tuple] = []   # (小見出し, 上端)
         self._cursor = 0                   # 次に足すものの上端
@@ -765,18 +886,18 @@ class NavList(QWidget):
         self.setFixedHeight(self._cursor)
         self.update()
 
-    def add_item(self, title: str, glyph: str = "") -> int:
+    def add_item(self, title: str, icon: str = "") -> int:
         """
         行を足す。
 
         Args:
             title: 見出し
-            glyph: アイコンの字（Segoe Fluent Icons の 1 文字。空ならアイコンなし）
+            icon: アイコンの名前（icons.names() のどれか。空ならアイコンなし）
 
         Returns:
             足した行の番号
         """
-        self._items.append((title, glyph))
+        self._items.append((title, icon))
         self._tops.append(self._cursor)
         self._cursor += Metrics.NAV_ROW_H + self._GAP
         self.setFixedHeight(self._cursor - self._GAP)
@@ -880,19 +1001,22 @@ class NavList(QWidget):
             painter.setPen(_rim_pen(rgba("#FFFFFF", 0.40), rgba("#FFFFFF", 0.0), pill.top(), pill.bottom()))
             painter.drawPath(pill_path)
 
-        icons = icon_font(15)
-        for index, (title, glyph) in enumerate(self._items):
+        for index, (title, icon) in enumerate(self._items):
             top = float(self._tops[index])
             # 灯りの面が半分以上重なっている行は白い文字にする（滑っている途中でも読めるように）
             on_pill = abs(top - self._pill_y) < Metrics.NAV_ROW_H / 2.0
-            painter.setPen(p.on_accent if on_pill else p.text)
+            color = p.on_accent if on_pill else p.text
             x = float(self._PAD_H)
-            if glyph and icons is not None:
-                painter.setFont(icons)
-                painter.drawText(
-                    QRectF(x, top, self._ICON_W, Metrics.NAV_ROW_H), Qt.AlignmentFlag.AlignCenter, glyph
+            if icon:
+                side = float(self._ICON_SIDE)
+                icons.paint(
+                    painter,
+                    icon,
+                    QRectF(x + (self._ICON_W - side) / 2.0, top + (Metrics.NAV_ROW_H - side) / 2.0, side, side),
+                    color,
                 )
                 x += self._ICON_W + 8.0
+            painter.setPen(color)
             painter.setFont(theme.font(self._TEXT_SIZE))
             painter.drawText(
                 QRectF(x, top, w - x - 8.0, Metrics.NAV_ROW_H),
@@ -914,7 +1038,12 @@ class ScrollPage(QScrollArea):
         body: 中身を足していく縦のレイアウト
     """
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: Optional[QWidget] = None, max_width: Optional[int] = Metrics.CONTENT_MAX_W) -> None:
+        """
+        Args:
+            parent: 親ウィジェット
+            max_width: 中身の最大幅。None なら窓の幅いっぱいまで広げる（ダッシュボード用）
+        """
         super().__init__(parent)
         self.setWidgetResizable(True)
         self.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -929,7 +1058,8 @@ class ScrollPage(QScrollArea):
         )
         outer.setSpacing(0)
         column = QWidget()
-        column.setMaximumWidth(Metrics.CONTENT_MAX_W)
+        if max_width is not None:
+            column.setMaximumWidth(max_width)
         self.body = QVBoxLayout(column)
         self.body.setContentsMargins(0, 0, 0, 0)
         self.body.setSpacing(10)

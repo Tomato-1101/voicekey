@@ -173,6 +173,72 @@ class TestUnassignedHotkeyPersists(_SettingsWindowTestBase):
         self.assertEqual(reloaded.get("hotkey2")["hotkey"], "<f3>")
 
 
+class TestEngineAndModelSelection(_SettingsWindowTestBase):
+    """スロットごとにエンジン・モデル・整え方を選べ、保存した値がそのまま読み直せる。"""
+
+    def test_engine_choices_follow_catalog(self):
+        from src.core import engines
+
+        win = self._make_window(self._config({"language": "ja"}))
+        combo = win._backend1_combo
+        self.assertEqual(
+            [combo.itemData(i) for i in range(combo.count())], list(engines.SELECTABLE_IDS)
+        )
+
+    def test_loads_saved_engine_model_and_preset(self):
+        cm = self._config({
+            "language": "ja",
+            # 移行済みの設定（移行前のファイルだと、旧既定だった scribe_v1 は scribe_v2 へ移される）
+            "migrated_engine_catalog": True,
+            "hotkey1": {
+                "hotkey": "<f2>", "hotkey_mode": "hold", "backend": "elevenlabs",
+                "api_model": "scribe_v1", "format_preset": "bullets",
+            },
+            "hotkey2": {"hotkey": "<f3>", "hotkey_mode": "toggle", "backend": "deepgram"},
+        })
+        win = self._make_window(cm)
+        self.assertEqual(win._backend1_combo.currentData(), "elevenlabs")
+        self.assertEqual(win._model1_combo.currentData(), "scribe_v1")
+        self.assertEqual(win._format_preset1_combo.currentData(), "bullets")
+        # 外したエンジン（Deepgram）は Soniox とその既定モデルで表示する
+        self.assertEqual(win._backend2_combo.currentData(), "soniox")
+        self.assertEqual(win._model2_combo.currentData(), "stt-rt-v5")
+
+    def test_changing_engine_resets_model_to_default(self):
+        win = self._make_window(self._config({"language": "ja"}))
+        combo = win._backend1_combo
+        combo.setCurrentIndex(combo.findData("elevenlabs"))
+        models = win._model1_combo
+        self.assertEqual([models.itemData(i) for i in range(models.count())], ["scribe_v2", "scribe_v1"])
+        self.assertEqual(models.currentData(), "scribe_v2")
+
+    def test_save_persists_engine_model_and_preset(self):
+        cm = self._config({"language": "ja"})
+        win = self._make_window(cm)
+        win._backend2_combo.setCurrentIndex(win._backend2_combo.findData("elevenlabs"))
+        win._model2_combo.setCurrentIndex(win._model2_combo.findData("scribe_v1"))
+        win._format_preset2_combo.setCurrentIndex(win._format_preset2_combo.findData("clean"))
+
+        with mock.patch("src.ui.settings_window.autostart.is_supported", return_value=False), \
+             mock.patch.object(win, "close"), \
+             mock.patch("src.ui.settings_window.QMessageBox"):
+            win._save_settings()
+
+        slot = ConfigManager(config_path=cm.config_path).get("hotkey2")
+        self.assertEqual(slot["backend"], "elevenlabs")
+        self.assertEqual(slot["api_model"], "scribe_v1")
+        self.assertEqual(slot["format_preset"], "clean")
+
+    def test_api_key_fields_cover_every_engine(self):
+        from src.core import engines
+
+        win = self._make_window(self._config({"language": "ja"}))
+        services = set(win._api_key_inputs)
+        for eng in engines.ENGINES:
+            self.assertIn(eng.keyring_service, services, eng.id)
+        self.assertIn("voicekey.AzureSpeechEndpoint", services)
+
+
 class _FakeHistorySync:
     """history_sync.HistorySync の最小フェイク（Mac 側の履歴を 1 件足して返すだけ）。"""
 

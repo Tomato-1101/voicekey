@@ -36,18 +36,24 @@ class AppState(str, Enum):
 
 class TranscriptionBackend(str, Enum):
     """
-    文字起こしバックエンドタイプ。
+    文字起こしエンジンの id（Mac 版 Backend の rawValue と同じ文字列）。
+
+    表示名・モデル・鍵の置き場所などの定義は core/engines.py のカタログにある。
 
     Attributes:
-        GROQ: Groq Cloud API（OpenAI 互換 REST、Whisper）
-        OPENAI: OpenAI GPT-4o Transcribe API（OpenAI 互換 REST）
-        ELEVENLABS: ElevenLabs Scribe API（REST、短文高精度）
-        DEEPGRAM: Deepgram Listen API（REST + WebSocket ストリーミング、nova-3）
+        SONIOX: Soniox（録音しながら送る）
+        ELEVENLABS: ElevenLabs Scribe
+        OPENAI: OpenAI gpt-transcribe
+        AZURE_MAI: Microsoft MAI-Transcribe
+        OPENAI_LIVE: OpenAI ライブ（録音しながら送る）
+        GROQ: Groq Whisper
     """
-    GROQ = "groq"
-    OPENAI = "openai"
+    SONIOX = "soniox"
     ELEVENLABS = "elevenlabs"
-    DEEPGRAM = "deepgram"
+    OPENAI = "openai"
+    AZURE_MAI = "azure_mai"
+    OPENAI_LIVE = "openai_live"
+    GROQ = "groq"
 
 
 @dataclass
@@ -60,7 +66,7 @@ class TranscriptionTask:
         slot_id: 使用するホットキースロットID
         timestamp: タスク作成時刻
         auto_enter: 文字起こし後にEnterキーを自動入力するか
-        streamer: ストリーミング録音時の Deepgram セッション（非ストリーミング時は None）。
+        streamer: 録音しながら送るエンジンのセッション（録音後に送るエンジンでは None）。
                   ワーカーが finish() を呼んで確定テキストを取得する。型は循環参照を
                   避けるため Any（実体は core.streaming_transcriber.StreamingTranscriber）
         quiet_if_no_speech: 無音時の通知を抑制するか（誤タップの可能性が高い録音用）
@@ -105,17 +111,19 @@ class HotkeySlotConfig:
     Attributes:
         hotkey: ホットキー文字列（例: "<shift_r>", "<ctrl>+<space>"）
         hotkey_mode: 動作モード（hold/toggle）
-        backend: 使用するバックエンド（groq/openai）
-        api_model: APIバックエンド使用時のモデル名
-        api_prompt: APIバックエンド使用時のプロンプト
+        backend: 使用するエンジン id（core/engines.py の一覧）
+        api_model: モデル名（空ならエンジンの既定）
+        api_prompt: 文字起こしのヒントテキスト
         format_enabled: 貼り付け前に LLM テキスト整形を行うか
+        format_preset: 整え方（standard / punctuation / clean / bullets）
     """
     hotkey: str = "<f2>"
     hotkey_mode: str = HotkeyMode.TOGGLE.value
-    backend: str = TranscriptionBackend.OPENAI.value
+    backend: str = TranscriptionBackend.GROQ.value
     api_model: str = ""
     api_prompt: str = ""
     format_enabled: bool = False
+    format_preset: str = "standard"
 
 
 @dataclass

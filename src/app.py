@@ -42,16 +42,17 @@ from .config.types import TranscriptionTask
 from .core import (
     ApiTranscriber,
     AudioRecorder,
-    DeepgramTranscriber,
     ElevenLabsTranscriber,
-    GroqTranscriber,
     InputHandler,
-    OpenAITranscriber,
     SileroVad,
     StreamingTranscriber,
     TranscriptionError,
 )
+from .core import engines
+from .core import llm_catalog
 from .core import text_formatter
+from .core.api_transcriber import create_transcriber
+from .core.streaming_transcriber import create_streamer
 from .core import media_ducker
 from .core import numeral_normalizer
 from .core import sound_fx
@@ -66,14 +67,6 @@ from .utils.logger import get_logger
 from .utils.updater import Updater
 
 logger = get_logger(__name__)
-
-# バックエンド識別子 → トランスクライバクラスの対応
-_BACKEND_CLASSES = {
-    TranscriptionBackend.GROQ.value: GroqTranscriber,
-    TranscriptionBackend.OPENAI.value: OpenAITranscriber,
-    TranscriptionBackend.ELEVENLABS.value: ElevenLabsTranscriber,
-    TranscriptionBackend.DEEPGRAM.value: DeepgramTranscriber,
-}
 
 # 録音の最大継続時間（秒）。release 取りこぼし等による永久録音を防ぐ保険
 _MAX_RECORDING_SEC: float = 300.0
@@ -101,11 +94,12 @@ class HotkeySlot:
         hotkey: ホットキー文字列（例: "<cmd_r>", "<ctrl>+<space>"）
         hotkey_mode: 動作モード（hold/toggle）
         required_keys: パース済みのキートークン集合
-        backend: 使用するバックエンド（groq/openai）
+        backend: 使用するエンジンの id（engines.py のカタログにあるもの）
         api_model: API モデル名
         api_prompt: API プロンプト
         format_enabled: 貼り付け前に LLM テキスト整形を行うか
-        transcriber: このスロット用のトランスクライバ
+        format_preset: 整え方（text_formatter.FORMAT_PRESETS の id）
+        transcriber: このスロット用のトランスクライバ（録音後にまとめて送る経路・退避先）
     """
     slot_id: int
     hotkey: str
@@ -115,6 +109,7 @@ class HotkeySlot:
     api_model: str
     api_prompt: str
     format_enabled: bool
+    format_preset: str
     transcriber: ApiTranscriber
 
 
@@ -143,6 +138,32 @@ class TaskContext:
     volume_normalize: bool
     format_model: str
     format_auto_prompt: str
+
+
+def _transcribe_or_partial(slot: "HotkeySlot", audio, partial: str) -> str:
+    """録音全体を 1 本で送る。失敗・空のときは、ライブで届いていた分があればそれを返す。
+
+    ライブが途中で切れて送り直しも失敗したときに、届いていた文字まで捨てないため。
+
+    Args:
+        slot: 使用するホットキースロット
+        audio: 送る音声（16kHz・float32）
+        partial: ライブで途中まで届いていた文字（無ければ空文字）
+
+    Returns:
+        文字起こし結果（空のときは partial）
+
+    Raises:
+        TranscriptionError: 送り直しが失敗し、ライブで届いていた分も無いとき
+    """
+    try:
+        text = slot.transcriber.transcribe(audio)
+    except TranscriptionError as e:
+        if not partial:
+            raise
+        logger.warning(f"送り直しに失敗したため、ライブで届いていた分を使います: {e}")
+        return partial
+    return text or partial
 
 
 class VoicekeyApp(QObject):
@@ -195,7 +216,7 @@ class VoicekeyApp(QObject):
         self._recording_started: float = 0.0        # 録音開始時刻（monotonic）
         self._auto_enter = False                    # ダブルタップによる auto_enter 録音か
         self._outstanding = 0                       # 未完了の文字起こしタスク数
-        # ストリーミング録音中の Deepgram セッション（非ストリーミング時は None）
+        # ストリーミング録音中のセッション（Soniox / OpenAI ライブ。それ以外は None）
         self._active_streamer: Optional[StreamingTranscriber] = None
         # 録音開始時に確定する処理コンテキストのスナップショット（_finish_recording で task へ移す）
         self._active_context: Optional[TaskContext] = None
@@ -346,24 +367,21 @@ class VoicekeyApp(QObject):
         """設定からホットキースロット（トランスクライバ込み）を構築する。"""
         slots: Dict[int, HotkeySlot] = {}
         language = self._config.get("language", "ja")
-        defaults = self._config.get("default_api_models", {}) or {}
 
         for slot_id in (1, 2):
             cfg = self._config.get(f"hotkey{slot_id}", {}) or {}
             hotkey = cfg.get("hotkey", f"<f{slot_id + 1}>")
             mode = cfg.get("hotkey_mode", HotkeyMode.HOLD.value)
-            backend = cfg.get("backend", "openai")
-            if backend not in _BACKEND_CLASSES:
-                logger.warning(f"未対応バックエンド '{backend}' のため openai にフォールバックします")
-                backend = TranscriptionBackend.OPENAI.value
-            model = cfg.get("api_model", "") or defaults.get(backend, "")
+            # 設定の読み込み時にも正規化しているが、手書きの設定がホットリロードで入ることもあるので
+            # ここでもカタログに合わせる（知らないエンジンは Groq、空・廃止のモデルは既定へ）
+            backend = engines.normalize_id(cfg.get("backend", ""))
+            model = engines.normalize_model(backend, cfg.get("api_model", ""))
             prompt = cfg.get("api_prompt", "")
 
-            cls = _BACKEND_CLASSES[backend]
-            transcriber = cls(model=model, language=language, prompt=prompt)
+            transcriber = create_transcriber(backend, model, language=language, prompt=prompt)
             if not transcriber.is_available():
                 logger.warning(
-                    f"ホットキー{slot_id}: {transcriber.display_name} の API キーが未設定です"
+                    f"ホットキー{slot_id}: {engines.engine(backend).name} の API キーが未設定です"
                     "（録音しても文字起こしはエラーになります）"
                 )
 
@@ -376,6 +394,7 @@ class VoicekeyApp(QObject):
                 api_model=model,
                 api_prompt=prompt,
                 format_enabled=bool(cfg.get("format_enabled", False)),
+                format_preset=text_formatter.normalize_preset(cfg.get("format_preset")),
                 transcriber=transcriber,
             )
             logger.info(f"ホットキー{slot_id}: {hotkey} ({mode}) -> {backend}/{model}")
@@ -386,12 +405,10 @@ class VoicekeyApp(QObject):
 
         スタンダード(groq)をハンズフリーで使うと長時間録音になりやすいため、内部で
         ElevenLabs(scribe_v1)へ切り替えて精度を確保する（保存値 groq は変えない）。
-        言語・既定モデルは _build_slots と同じく設定から取る。設定再適用時に作り直す。
+        言語は _build_slots と同じく設定から取る。設定再適用時に作り直す。
         """
         language = self._config.get("language", "ja")
-        defaults = self._config.get("default_api_models", {}) or {}
-        model = defaults.get(TranscriptionBackend.ELEVENLABS.value, "scribe_v1")
-        return ElevenLabsTranscriber(model=model, language=language, prompt="")
+        return ElevenLabsTranscriber(model="scribe_v1", language=language, prompt="")
 
     def _maybe_handsfree_slot(self, slot: HotkeySlot, effective_mode: str) -> HotkeySlot:
         """ハンズフリー(toggle 実効)録音で groq スロットのとき、内部エンジンを
@@ -437,7 +454,7 @@ class VoicekeyApp(QObject):
             vad_on=bool(self._config.get("vad_filter", True)),
             split_on=bool(self._config.get("split_parallel_enabled", True)),
             volume_normalize=bool(preprocess_cfg.get("volume_normalize", True)),
-            format_model=self._config.get("format_model", "llama-3.1-8b-instant"),
+            format_model=self._config.get("format_model", llm_catalog.RECOMMENDED_MODEL),
             format_auto_prompt=self._config.get("format_auto_prompt", ""),
         )
 
@@ -693,16 +710,18 @@ class VoicekeyApp(QObject):
         if slot.format_enabled:
             threading.Thread(target=text_formatter.prewarm, daemon=True).start()
 
-        # Deepgram かつストリーミング有効ならライブ字幕用に WebSocket を開く。
+        # 録音しながら送るエンジン（Soniox / OpenAI ライブ）なら WebSocket を開く。
         # 開始できなければ（キー無し / websockets 未導入）chunk_callback を張らないため
-        # REST 経路（slot.transcriber = DeepgramTranscriber）に自動フォールバックする
+        # 録音後にまとめて送る経路（slot.transcriber）に自動フォールバックする
         if (
             self._config.get("streaming_enabled", True)
-            and slot.backend == TranscriptionBackend.DEEPGRAM.value
+            and engines.engine(slot.backend).streaming
         ):
-            stream = StreamingTranscriber(
-                model=slot.api_model,
+            stream = create_streamer(
+                slot.backend,
+                slot.api_model,
                 language=self._config.get("language", "ja"),
+                prompt=slot.api_prompt,
                 on_interim=self.interim_text.emit,  # 受信スレッド → シグナルでメインへ
             )
             if stream.start():
@@ -723,7 +742,7 @@ class VoicekeyApp(QObject):
             return
         logger.warning("録音を開始できませんでした")
         # 開始失敗時は、この録音セッションのストリーミング接続・送出フックも確実に破棄する。
-        # 残すと chunk_callback（= 古い streamer.send）が次回録音の音声を前回の Deepgram
+        # 残すと chunk_callback（= 古い streamer.send）が次回録音の音声を前回のストリーミング
         # WebSocket へ送ってしまう。ハング復帰（_monitor_loop）と同じ不変条件に揃える。
         with self._state_lock:
             self._recording_slot = None
@@ -825,8 +844,10 @@ class VoicekeyApp(QObject):
         （キュー滞留中に設定が変わっても別プロバイダーへ送らないため）。
         """
         ctx: TaskContext = task.context
-        # --- ストリーミング経路: Deepgram の確定テキストを受け取って貼り付け ---
+        # --- ストリーミング経路: 録音中に送っていたセッションの確定テキストを受け取って貼り付け ---
         streamer = task.streamer
+        # ライブが途中で失敗したときに、それまでに届いていた文字（退避も失敗したら使う）
+        partial = ""
         if streamer is not None:
             logger.info(
                 f"文字起こし要求 経路=streaming backend={ctx.slot.backend} "
@@ -846,8 +867,9 @@ class VoicekeyApp(QObject):
                 self._record_stats(streamed, task.audio_data)
                 self._insert_and_enter(streamed, task.auto_enter)
                 return
-            # 確定が空（接続失敗・無音など）→ 取得済みバッファで REST にフォールバック
-            logger.info("ストリーミング結果が空のため REST にフォールバックします")
+            # 確定が空（接続失敗・無音など）→ 取得済みバッファで録音全体を送り直す
+            partial = streamer.partial_text
+            logger.info("ストリーミング結果が空のため録音全体を送り直します")
 
         # --- REST 経路（従来の 正規化 → VAD → API → 貼り付け）---
         audio = task.audio_data
@@ -873,6 +895,10 @@ class VoicekeyApp(QObject):
         if vad_on and split_on and duration >= _SPLIT_MIN_SEC:
             segments = self._vad.segment(audio)
 
+        # 分けて並列に送れないエンジン（Soniox の送り直し）は 1 本で送る
+        if not slot.transcriber.allows_split:
+            segments = None
+
         if segments and len(segments) >= 2:
             logger.info(f"長文を {len(segments)} 分割して並列送信します")
             text = self._transcribe_parallel(slot, segments)
@@ -883,7 +909,7 @@ class VoicekeyApp(QObject):
                     f"文字起こし要求 経路=rest(全体) backend={slot.backend} "
                     f"model={slot.api_model} 音声={len(audio) / SAMPLE_RATE:.2f}s"
                 )
-                text = slot.transcriber.transcribe(audio)
+                text = _transcribe_or_partial(slot, audio, partial)
         else:
             # VAD: 発話がなければ API に送らない（幻覚と無駄コストの防止）。
             # 推論 1 回で発話判定と無音圧縮（前後トリミング + 発話間の長い無音の短縮）を行う
@@ -907,7 +933,7 @@ class VoicekeyApp(QObject):
                 f"文字起こし要求 経路=rest backend={slot.backend} "
                 f"model={slot.api_model} 音声={len(audio) / SAMPLE_RATE:.2f}s"
             )
-            text = slot.transcriber.transcribe(audio)
+            text = _transcribe_or_partial(slot, audio, partial)
         if not text:
             logger.info("文字起こし結果が空でした")
             return
@@ -978,6 +1004,7 @@ class VoicekeyApp(QObject):
             text,
             ctx.format_model,
             prompt=ctx.format_auto_prompt,
+            preset=ctx.slot.format_preset,
         )
 
     def _record_stats(self, text: str, audio) -> None:

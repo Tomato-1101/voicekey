@@ -1,7 +1,7 @@
 """
 音声入力履歴モジュール
 
-文字起こし（整形後）のテキストを新しい順に最大 10 件保持し、
+文字起こし（整形後）のテキストを新しい順に最大 200 件保持し、
 設定ウィンドウの「履歴」タブから再コピーできるようにする。
 アプリを再起動しても残るよう settings.yaml と同じディレクトリに JSON で保存する。
 各エントリには Mac と履歴を共有する history_sync 用に id（uuid4 hex）と
@@ -21,7 +21,7 @@ from ..utils.logger import get_logger
 logger = get_logger(__name__)
 
 # 保持する最大件数（超過分は古いものから捨てる）。Mac 版 HistoryStore.maxItems と同値
-MAX_ITEMS = 10
+MAX_ITEMS = 200
 HISTORY_FILE_NAME = "history.json"
 
 

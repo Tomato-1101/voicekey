@@ -8,26 +8,18 @@
 from typing import Optional, Union
 
 from PySide6.QtCore import Signal
-from PySide6.QtGui import (
-    QBrush,
-    QColor,
-    QIcon,
-    QPainter,
-    QPen,
-    QPixmap,
-    QRadialGradient,
-)
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from ..config.types import AppState
 from ..platform import PlatformAdapter, get_platform_adapter
+from . import brand
 
 
 class SystemTray(QSystemTrayIcon):
     """
     動的ステータス表示付きシステムトレイアイコン。
     
-    アプリケーション状態に応じてアイコンの色が変化し、
+    アプリケーション状態に応じてアイコンの灯りが変化し、
     設定画面や終了へのアクセスをコンテキストメニューで提供する。
     
     Signals:
@@ -42,17 +34,6 @@ class SystemTray(QSystemTrayIcon):
     force_reset = Signal()
     quit_app = Signal()
     install_update = Signal()
-    
-    # 状態別アイコンカラー（macOS システムカラー。原色は安っぽいため使わない）
-    ICON_COLORS = {
-        AppState.IDLE: QColor("#8E8E93"),                  # 待機中：グレー（Mac 版テンプレート相当）
-        AppState.RECORDING: QColor("#FF453A"),             # 録音中：systemRed
-        AppState.RECORDING_AUTO_ENTER: QColor("#BF5AF2"),  # 録音中（auto_enter）：systemPurple
-        AppState.TRANSCRIBING: QColor("#FF9F0A"),          # 文字起こし中：systemOrange
-    }
-    
-    # アイコンサイズ（ピクセル）
-    ICON_SIZE = 64
     
     def __init__(
         self,
@@ -73,7 +54,7 @@ class SystemTray(QSystemTrayIcon):
 
     def _setup_icon(self) -> None:
         """初期アイコンを設定する。"""
-        self._set_icon_color(self.ICON_COLORS[AppState.IDLE])
+        self._set_icon(AppState.IDLE)
 
     def _setup_menu(self) -> None:
         """コンテキストメニューを設定する。"""
@@ -156,10 +137,9 @@ class SystemTray(QSystemTrayIcon):
         if isinstance(status, str):
             status = AppState(status)
         
-        color = self.ICON_COLORS.get(status, self.ICON_COLORS[AppState.IDLE])
         tooltip = self._get_tooltip(status)
-        
-        self._set_icon_color(color)
+
+        self._set_icon(status)
         self.setToolTip(tooltip)
 
     def _get_tooltip(self, status: AppState) -> str:
@@ -180,34 +160,14 @@ class SystemTray(QSystemTrayIcon):
         }
         return tooltips.get(status, "voicekey")
 
-    def _set_icon_color(self, color: QColor) -> None:
+    def _set_icon(self, status: AppState) -> None:
         """
-        指定色の円形アイコンを生成・設定する。
+        状態に応じたアイコン（Mac のメニューバーと同じキーの形）を設定する。
 
-        左上ハイライトの放射グラデーション + 細い縁取りで、
-        ベタ塗りの安っぽさを解消する（Mac 版アイコンの質感に寄せる）。
+        タスクバーの明暗は毎回読み直す。使っている途中で Windows の配色を変えられても、
+        次に状態が変わったときに枠の色が合うようにするため。
 
         Args:
-            color: アイコンのベース色
+            status: アプリの状態
         """
-        size = self.ICON_SIZE
-        pixmap = QPixmap(size, size)
-        pixmap.fill(QColor(0, 0, 0, 0))  # 透明背景
-
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        # 左上に光源があるような立体感を放射グラデーションで付ける
-        gradient = QRadialGradient(size * 0.38, size * 0.32, size * 0.72)
-        gradient.setColorAt(0.0, color.lighter(140))
-        gradient.setColorAt(0.55, color)
-        gradient.setColorAt(1.0, color.darker(118))
-        painter.setBrush(QBrush(gradient))
-
-        # 細い縁取り（明るいメニューバー上でも輪郭が溶けないように）
-        painter.setPen(QPen(QColor(0, 0, 0, 70), 2))
-        painter.drawEllipse(4, 4, size - 8, size - 8)
-
-        painter.end()
-
-        self.setIcon(QIcon(pixmap))
+        self.setIcon(brand.status_icon(status, brand.taskbar_is_light()))

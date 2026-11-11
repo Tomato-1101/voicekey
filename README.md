@@ -81,16 +81,11 @@ open dist/voicekey.app
 
 ### Windows で使う
 
-Windows 版は開発を止めているため、ダウンロードできる配布物はありません（旧構成のまま）。使う場合はソースから動かしてください。
-手順は [Windows 完全セットアップ](#windows-完全セットアップpowershell) のとおりで、起動（手順 5）の前に次の 1 行を実行して、
-配布版と同じ「自分のキーで直接つなぐ」構成にします。
-
-```powershell
-python scripts\build\generate_embedded_keys.py --personal
-```
+Windows 版は開発を止めているため、ダウンロードできる配布物はありません。使う場合はソースから動かしてください。
+手順は [Windows 完全セットアップ](#windows-完全セットアップpowershell) のとおりです。
 
 起動後、タスクトレイのアイコン → 設定 › **API キー** に自分のキーを入力します（Windows の資格情報マネージャーに保存）。
-Windows で使えるのは Deepgram / Groq / ElevenLabs です。exe にまとめる手順は `docs/PERSONAL_EDITION.md` §7。
+Windows で使えるのは Soniox / ElevenLabs / OpenAI / Microsoft MAI / OpenAI ライブ / Groq です（[Windows の文字起こしエンジン](#windows-の文字起こしエンジン)）。exe にまとめる手順は `docs/PERSONAL_EDITION.md` §7。
 
 ---
 
@@ -117,15 +112,17 @@ Windows で使えるのは Deepgram / Groq / ElevenLabs です。exe にまと�
 
 **2 つのホットキーに異なるモードを割り当てて使い分けられます。**
 
-- **ホットキー 1（普通入力）**: スタンダード（Groq）で日常のメモ・チャット（押している間だけ録音）
-- **ホットキー 2（ハンズフリー）**: スタンダード（Groq）で重要な議事録（押して開始・もう一度押して停止。長い録音は内部で高精度エンジンへ自動切替）
+- **ホットキー 1（普通入力）**: Soniox で日常のメモ・チャット（押している間だけ録音・しゃべり終わった瞬間に入力）
+- **ホットキー 2（ハンズフリー）**: Groq で重要な議事録（押して開始・もう一度押して停止。長い録音は内部で高精度エンジンへ自動切替）
+
+（エンジンの組み合わせは Windows と macOS 26 より前の Mac の既定です。macOS 26 以降の Mac の既定は [Mac の文字起こしエンジン](#mac-の文字起こしエンジン) を参照）
 
 各ホットキーに以下を個別設定可能：
 
 - ショートカットキー（`<F2>`, `<shift_r>`, `<cmd_r>`, `<ctrl>+<space>` 等）。**「割り当てを外す」ボタン**またはキー捕捉中の **ESC** で「未割り当て」にでき、そのホットキーを無効化できます（片方だけ使いたいとき用。未割り当てのキーは反応しません）
 - トリガーモード（`hold`: 押している間録音 / `toggle`: 押して開始/停止）
-- 文字起こしモード（**即時入力** / **スタンダード**）
-- テキスト整形オン/オフ（既定はモード別：**即時入力=OFF**〔速度優先〕/ **スタンダード=ON**〔録音後にきれいに整形〕。トグルで変更可）と**整え方プリセット**（標準／そのまま／すっきり／箇条書きの 4 種から選択）
+- 文字起こしエンジンとモデル（Soniox / ElevenLabs / OpenAI / Microsoft MAI / OpenAI ライブ / Groq。Mac はローカル（Apple）も）
+- テキスト整形オン/オフ（既定はエンジン別：**録音しながら送るエンジン（Soniox・OpenAI ライブ）・ローカル=OFF**〔速度優先〕/ **録音後に送るエンジン=ON**〔録音後にきれいに整形〕。トグルで変更可）と**整え方プリセット**（標準／そのまま／すっきり／箇条書きの 4 種から選択）
 
 ### ⚡ その他の主要機能
 
@@ -140,7 +137,7 @@ Windows で使えるのは Deepgram / Groq / ElevenLabs です。exe にまと�
 - **🏠 ホーム画面 / ダッシュボード（両 OS）**: 統計を 3 カードで見せるダッシュボード — **累計入力**（累計文字数＋回数・録音時間＋レベル/進捗バー）、**節約できた時間**（推定節約時間＋「映画 n 本ぶん」等の身近な換算）、**この期間**（「今日⇄今週」を切り替えて期間内の文字数・録音時間・回数を表示）と、最近の履歴（クリックでコピー）。**Mac** は起動時や Dock / Finder から開き直したときに出るメインウィンドウのホーム面で、よく使うアプリの割合やマイクテスト／セットアップガイド再表示カードも置き、サイドバーから同じウィンドウのまま各設定ページへ切り替わります。**Windows** は設定ウィンドウの先頭「ホーム」ページで、サイドノッチの「ホームを開く」からも開けます（アプリ別使用状況は Windows の履歴がアプリ情報を持たないため非対応）
 - **💵 API の利用料金（Mac のみ）**: ホーム画面に、文字起こし・テキスト整形・翻訳で使った API の推定料金を常に表示します。**今日 / 今月 / 累計**の合計（ドル）、**内訳**（どの API をどのモデルで、どれだけ使っていくらか。今日・今月・累計で切替）、**直近 30 日の推移**。メニューバーのメニューにも「今日の API 代」が出ます。料金は使用量 × 各社の公開単価からの推定で、実際の請求額とは異なることがあります（単価の確認日は画面の下に記載）。公式ページで単価を確認できなかったモデルは「単価未確認」と表示し、Apple のオンデバイス認識・翻訳は無料として数えます。記録するのは数量（音声の秒数・トークン数・回数）だけで、話した内容や API キーは保存しません。右上で「定価（無料枠も含む）」と「実際に払った分」（OpenAI・Soniox・Microsoft・Google（Gemini）だけを計上し、ほかは無料枠として 0 ドル）を切り替えられ、メニューの「今日の API 代」も同じ表示に従います。計測を始める前（10/2 以前）の分は、行動ログと統計から 1 回だけ推定して取り込み、内訳に「推定」と表示します（整形・翻訳の分は記録が無いので含みません）
 - **📜 サイドノッチ（両 OS）**: 画面左端の細いスリット。クリックすると音声入力の履歴パネルが開き、上部の検索フィールドで絞り込み、各行をクリックでコピーできます。録音中はアクセント色で点灯します。設定「表示」の「サイドノッチを表示」で切替（既定オン。検索は Mac＝テキスト・アプリ名／Windows＝テキスト）
-- **🕘 入力履歴**: 音声入力をローカルに保存し、ホーム画面やサイドノッチから再コピーできます（Mac＝直近 200 件・貼り付け先アプリ／日時つき、Windows＝直近 10 件・日時つき）。上限を超えると古いものから自動で消えます（統計は履歴と独立した累計のため、履歴が消えても減りません）
+- **🕘 入力履歴**: 音声入力をローカルに保存し、ホーム画面やサイドノッチから再コピーできます（Mac＝直近 200 件・貼り付け先アプリ／日時つき、Windows＝直近 200 件・日時つき）。上限を超えると古いものから自動で消えます（統計は履歴と独立した累計のため、履歴が消えても減りません）
 - **☁️ Mac ⇄ Windows 履歴共有（任意・既定オフ）**: 両 OS の設定から有効化すると、Cloudflare Workers + D1 経由で音声入力履歴を共有します（自分専用・共有トークン 1 本・オフライン中はキューに溜めて自動再送）。他端末の行は Mac で `[Windows]`、Windows で `[Mac]` と表示します。詳細は `docs/HISTORY_SYNC.md`
 - **🔊 操作音・メディアダッキング（両 OS）**: 録音の開始／停止を短い操作音で知らせ、録音中だけ再生中メディアの音量を自動で下げます（設定「サウンド」で各オン/オフ・既定オン）
 - **📋 最後の入力を再貼り付け（Mac）**: グローバルショートカット（既定 ⌃⌘V）で、直前に入力したテキストをもう一度貼り付けられます（設定「一般」で変更・無効化可）
@@ -305,16 +302,15 @@ Copy-Item -Path settings.example.yaml -Destination settings.yaml -ErrorAction Si
 
 クラウドの文字起こしを使うモードでは API キーが必要です。**ローカル（Apple）文字起こしを選べばキーは不要**です。
 Mac の選択肢は [Mac の文字起こしエンジン](#mac-の文字起こしエンジン) を参照（Soniox / OpenAI / Microsoft MAI / ElevenLabs / Groq）。
-Windows は**開発停止中のため旧構成のまま**です（Deepgram / Groq / ElevenLabs）：
+Windows もローカル（Apple）以外は同じ選択肢です（[Windows の文字起こしエンジン](#windows-の文字起こしエンジン)）：
 
 | サービス | 用途 | 取得先 |
 |---|---|---|
-| Soniox（Mac） | 文字起こし（ライブ・録音キー 1 の既定） | https://console.soniox.com/ |
+| Soniox | 文字起こし（ライブ・録音キー 1 の既定） | https://console.soniox.com/ |
 | Groq | 文字起こし（録音キー 2 の既定・最速）＋テキスト整形 | https://console.groq.com/keys |
-| OpenAI（Mac） | 文字起こし（gpt-transcribe・OpenAI ライブ） | https://platform.openai.com/ |
-| Microsoft MAI（Mac） | 文字起こし（MAI-Transcribe-2・Azure Speech） | https://portal.azure.com/ |
+| OpenAI | 文字起こし（gpt-transcribe・OpenAI ライブ） | https://platform.openai.com/ |
+| Microsoft MAI | 文字起こし（MAI-Transcribe-2・Azure Speech） | https://portal.azure.com/ |
 | ElevenLabs | 文字起こし（scribe_v2・高精度） | https://elevenlabs.io/ |
-| Deepgram（Windows のみ・旧構成） | 文字起こし（ストリーミング・低遅延） | https://console.deepgram.com/ |
 
 **設定方法（推奨）**: トレイ/メニューバーのアイコン → 設定ウィンドウ → API キーフィールドに貼り付けて保存。
 キーは **macOS Keychain / Windows Credential Manager** に安全に保存される（`.env` や YAML に書く必要なし）。
@@ -339,7 +335,7 @@ Windows は**開発停止中のため旧構成のまま**です（Deepgram / Gro
 | **Python** | 3.10 以上 |
 | **ffmpeg** | `PATH` に通っていること（音声変換用） |
 | **GPU** | **不要**（VAD はローカル CPU 実行＝Silero ONNX を onnxruntime で。文字起こしはすべてクラウド API） |
-| **API キー** | 使うサービスのキーを設定 › API キー で入力（Mac: Soniox / OpenAI / Microsoft MAI / ElevenLabs / Groq / Gemini。Windows は旧構成の Deepgram / Groq / ElevenLabs。整形と翻訳も Groq）。**ログイン・アカウントの概念はありません**。ローカル（Apple）文字起こしと Apple 翻訳はキー不要 |
+| **API キー** | 使うサービスのキーを設定 › API キー で入力（Mac: Soniox / OpenAI / Microsoft MAI / ElevenLabs / Groq / Gemini。Windows: Soniox / OpenAI / Microsoft MAI / ElevenLabs / Groq。整形と翻訳も Groq）。**ログイン・アカウントの概念はありません**。ローカル（Apple）文字起こしと Apple 翻訳はキー不要 |
 
 > **💡 Tip**: 文字起こしはすべてクラウド API、発話区間検出（VAD）だけローカル CPU 実行なので、GPU 非搭載 PC でも動作します。
 
@@ -437,6 +433,7 @@ python run.py
 1. システムトレイ（Windows）/ メニューバー（macOS）にアイコンが表示される
    - Mac のメニューバーアイコンはキーの形で、右上の灯りが状態を示します: 待機＝輪／録音中＝橙の点／
      自動送信の録音＝左下の刻印も橙／ハンズフリー録音＝点のまわりに光輪／変換中＝橙の輪
+   - Windows のトレイアイコンも同じキーの形です: 待機＝輪／録音中＝灯りの点／自動送信の録音＝刻印の棒も灯る／変換中＝灯り色の輪
    - Mac のアプリアイコンは外観に合わせて切り替わります（ライト＝ボーン地／ダーク＝カーボン地）
 2. ホットキーを押す（既定: `<f2>` / `<f3>`）
 3. 音声入力する
@@ -465,22 +462,20 @@ python run.py
 
 voicekey は **2 つの独立したホットキー** を設定でき、各ホットキーに異なるモードを割り当てられます。
 
-> **文字起こしモードは 2 種類**: 設定画面では「**即時入力**」（最速・録音中に文字起こしが並行して進み、
-> キーを離した瞬間に全文がまとめて入力）と「**スタンダード**」（録音後にきれいな文章にして入力・おすすめ）から選びます。
-> モデルの選択は不要で、それぞれ最適なモデルを自動で使います。整形（読みやすく整える処理）は
-> 裏で自動的に行われ、ホットキーごとにオン/オフできます。**新規インストール時の既定は
-> 録音キー 1 =「即時入力」/ 録音キー 2 =「スタンダード」**。
-> **「スタンダード」をハンズフリー録音（トグル）で使うときは、長い録音に強いエンジンへ自動で切り替わります**
+> **文字起こしは録音キーごとに「エンジン」と「モデル」を選びます**（Mac・Windows とも。一覧は
+> [Mac の文字起こしエンジン](#mac-の文字起こしエンジン) / [Windows の文字起こしエンジン](#windows-の文字起こしエンジン)）。
+> 整形（読みやすく整える処理）は裏で自動的に行われ、ホットキーごとにオン/オフできます。
+> **Groq をハンズフリー録音（トグル）で使うときは、長い録音に強いエンジンへ自動で切り替わります**
 > （長時間の議事録でも精度を保つため。切替はアプリが内部で行い、設定は不要です）。
 
 ### 使用例
 
 **例 1: 速さと正確さの使い分け**
 
-| スロット | ホットキー | モード | 用途 |
+| スロット | ホットキー | エンジン | 用途 |
 |---|---|---|---|
-| ホットキー 1（普通入力） | `<f2>` (hold) | スタンダード | 日常のメモ・チャット（押している間だけ録音・録音後すぐ変換） |
-| ホットキー 2（ハンズフリー） | `<f3>` (toggle) | スタンダード | 重要な議事録・正確さ重視（押して開始/停止。長い録音は内部で高精度エンジンへ自動切替） |
+| ホットキー 1（普通入力） | `<f2>` (hold) | Soniox | 日常のメモ・チャット（押している間だけ録音・離した瞬間に入力） |
+| ホットキー 2（ハンズフリー） | `<f3>` (toggle) | Groq | 重要な議事録・正確さ重視（押して開始/停止。長い録音は内部で高精度エンジンへ自動切替） |
 
 **例 2: 言語切替**
 
@@ -512,12 +507,24 @@ Mac は録音キーごとに**プロバイダー名＋モデル名**で選びま
 > ライブ字幕で翻訳エンジンに Soniox を選ぶと、音声入力とは別に**字幕の音声そのもの**を Soniox へ送ります（他のクラウドは確定した文だけ）。接続時間で課金されるため、無音が 30 秒続くと切断し、声が戻ると再接続します。
 > 接続先（米国 / 日本）はキーから自動で決まります。日本リージョンのプロジェクトで作ったキーなら日本の窓口（`stt-rt.jp.soniox.com`）へつなぎます。判定はキーを入れて最初の録音のときに一度だけ行います。
 
-### モード比較（Windows・開発停止中のため旧構成）
+### Windows の文字起こしエンジン
 
-| モード | 速度 | 特徴 |
-|---|---|---|
-| **スタンダード** | **最速** | 既定（おすすめ）。録音後にきれいな文章にして入力（Groq whisper-large-v3-turbo）。日常のメモ・チャット向き。ハンズフリー録音（トグル）のときは長い録音に強いエンジン（ElevenLabs scribe_v1）へ内部で自動切替 |
-| **即時入力** | 最速 | 録音中に文字起こしが並行して進む（Deepgram nova-3・ストリーミング）。キーを離した瞬間に全文がまとめて入力されるので待ち時間が最小（実測 0.1 秒） |
+Windows も録音キーごとに**エンジン＋モデル**で選びます（Mac と同じ構成。ローカル（Apple）は Mac 専用なのでありません）。
+新規インストール時の既定は **録音キー 1 = F2・押している間だけ・Soniox（整形 OFF）/ 録音キー 2 = F3・押すたびに開始／停止・Groq（整形 ON）**。
+既存の設定で Deepgram を選んでいた録音キーは Soniox へ、廃止モデルを選んでいた録音キーは各エンジンの既定モデルへ自動で移行します。
+
+| エンジン | モデル | 方式 | API キー（設定 › API キー。無ければ環境変数） |
+|---|---|---|---|
+| **Soniox** | `stt-rt-v5` | ライブ（録音中に並行して認識・離した瞬間に入力。接続先の日本 / 米国はキーから自動判定） | `SONIOX_API_KEY` |
+| **ElevenLabs** | `scribe_v2`（既定）/ `scribe_v1` | 録音後に送る | `ELEVENLABS_API_KEY` |
+| **OpenAI** | `gpt-transcribe` | 録音後に送る | `OPENAI_API_KEY` |
+| **Microsoft MAI** | `MAI-Transcribe-2` | 録音後に送る（Azure Speech。japaneast リージョンは非対応） | `AZURE_SPEECH_KEY` ＋ `AZURE_SPEECH_ENDPOINT` |
+| **OpenAI ライブ** | `gpt-live-transcribe` | ライブ | `OPENAI_API_KEY` |
+| **Groq** | `whisper-large-v3-turbo` | 録音後に送る（最速） | `GROQ_API_KEY` |
+
+> Groq の録音キーをハンズフリー録音（トグル）で使うと、長い録音に強い ElevenLabs `scribe_v1` へ内部で自動切替します。
+
+> ライブのエンジンが録音中に失敗したときは、手元の録音全体を送り直して入力します。送り直しも失敗したときは、それまでに届いていた分を入力します。
 
 > 無音スキップ・整形などの処理は常に最適な設定で自動的に行われます（設定不要）。
 
@@ -535,9 +542,9 @@ Mac は録音キーごとに**プロバイダー名＋モデル名**で選びま
 
 - **Shortcut**: ホットキー文字列（例: `<f2>`, `<shift_r>`, `<cmd_r>`, `<ctrl>+<space>`）
 - **Mode**: `hold` / `toggle`
-- **文字起こしモード**: **即時入力** / **スタンダード**（モデルは自動。選択不要。スタンダードのハンズフリー録音時は内部で高精度エンジンへ自動切替）
-- **文章を自動で整える**: 結果を読みやすく自動整形するか（オン/オフ）。既定はモード別（即時入力=OFF / スタンダード=ON）で、文字起こしモードを切り替えるとそのモードの既定に追従します（その後トグルで変更可）
-- **整え方（プリセット）**: 整形オンのとき、削り方を 4 種から選べます（発言内容を要約・削除しないのは全プリセット共通）— **標準**＝「えーと」などの言いよどみだけ除去（既定）／**そのまま**＝一切削らず句読点・改行だけ整える／**すっきり**＝言い直し・どもりを整理／**箇条書き**＝列挙や手順をリストに整理。自由なプロンプト入力・モデル選択はありません（サーバー側で固定）
+- **エンジン** / **モデル**: 文字起こしエンジンとモデル（[Windows の文字起こしエンジン](#windows-の文字起こしエンジン)。エンジンを切り替えるとモデルはそのエンジンの既定に戻ります。Groq のハンズフリー録音時は内部で高精度エンジンへ自動切替）
+- **文章を自動で整える**: 結果を読みやすく自動整形するか（オン/オフ）。既定はエンジン別（録音しながら送るエンジン=OFF / 録音後に送るエンジン=ON）で、エンジンを切り替えるとそのエンジンの既定に追従します（その後トグルで変更可）
+- **整え方（プリセット）**: 整形オンのとき、削り方を 4 種から選べます（発言内容を要約・削除しないのは全プリセット共通）— **標準**＝「えーと」などの言いよどみだけ除去（既定）／**そのまま**＝一切削らず句読点・改行だけ整える／**すっきり**＝言い直し・どもりを整理／**箇条書き**＝列挙や手順をリストに整理。自由なプロンプト入力・整形モデルの選択は画面にありません（整形モデルは `qwen/qwen3.8-27b` を使い、提供の終わった旧 `llama-*` は自動でこれへ移ります）
 
 共通：
 
@@ -576,7 +583,7 @@ URL とトークンの実値はリポジトリへ記録しません。同期は�
 > **常に最適な設定で自動動作（設定不要）**: 以下は設定 UI に出さず、常に有効で動作します。
 > - **無音スキップ**: 無音部分は変換をスキップ。
 > - **長文の分割並列送信**: 長い録音を無音区間で分割し並列送信して待ち時間を短縮。
-> - **ストリーミング処理**: 「即時入力」モードでは録音中に文字起こしを並行実行し、待ち時間を最小化。
+> - **ストリーミング処理**: 録音しながら送るエンジン（Soniox・OpenAI ライブ）では録音中に文字起こしを並行実行し、待ち時間を最小化。
 > - **録音中の状態表示（HUD）**。
 > - **音量正規化**（Windows）: 録音音声の音量を正規化。
 
@@ -649,24 +656,26 @@ Mac は **設定 › API キー** で入力します（Soniox / OpenAI / Microso
 変数名は `SONIOX_API_KEY` / `OPENAI_API_KEY` / `AZURE_SPEECH_KEY` ＋ `AZURE_SPEECH_ENDPOINT`（Azure Speech リソースのエンドポイント URL。パス・クエリ付きや `https://` 無しでも可）/
 `ELEVENLABS_API_KEY` / `GROQ_API_KEY` / `GEMINI_API_KEY`（ライブ字幕の翻訳）です（[Mac の文字起こしエンジン](#mac-の文字起こしエンジン)）。
 
-Windows（開発停止中のため旧構成）は設定ウィンドウの API キーフィールドで保存するか、プロジェクトルートに `.env` を作成します：
+Windows は設定 › API キー で保存します（Windows の資格情報マネージャー）。そこに無いキーは環境変数から読みます（プロジェクトルートの `.env` も読みます）：
 
 ```env
-DEEPGRAM_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxx      # 即時入力（文字起こし・ストリーミング）
-GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxxxxxx      # 正確性（文字起こし・普通入力の既定）＋テキスト整形
-ELEVENLABS_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxx    # 高精度（文字起こし・ハンズフリーの既定）
+SONIOX_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxx        # Soniox（録音キー 1 の既定）
+GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxxxxxx      # Groq（録音キー 2 の既定）＋テキスト整形
+ELEVENLABS_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxx    # ElevenLabs（Groq のハンズフリー録音でも使う）
+OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx     # OpenAI / OpenAI ライブ
+AZURE_SPEECH_KEY=xxxxxxxxxxxxxxxxxxxxxxxx      # Microsoft MAI（AZURE_SPEECH_ENDPOINT と組で使う）
+AZURE_SPEECH_ENDPOINT=https://xxxx.cognitiveservices.azure.com/
 ```
 
 ### API キーの取得
 
 | サービス | 用途 | 取得先 |
 |---|---|---|
-| **Soniox**（Mac） | 文字起こし（ライブ・録音キー 1 の既定） | [console.soniox.com](https://console.soniox.com/) |
-| **OpenAI**（Mac） | 文字起こし（gpt-transcribe・OpenAI ライブ） | [platform.openai.com](https://platform.openai.com/) |
-| **Microsoft MAI**（Mac） | 文字起こし（MAI-Transcribe-2・Azure Speech リソースのキーとエンドポイント） | [portal.azure.com](https://portal.azure.com/) |
-| **Deepgram**（Windows のみ・旧構成） | 文字起こし（ストリーミング・低遅延） | [console.deepgram.com](https://console.deepgram.com/) |
-| **Groq**（正確性） | 文字起こし（普通入力の既定・最速）＋テキスト整形 | [console.groq.com/keys](https://console.groq.com/keys) |
-| **ElevenLabs**（高精度） | 文字起こし（ハンズフリーの既定・高精度。Mac は scribe_v2 も選択可） | [elevenlabs.io](https://elevenlabs.io/) |
+| **Soniox** | 文字起こし（ライブ・録音キー 1 の既定） | [console.soniox.com](https://console.soniox.com/) |
+| **OpenAI** | 文字起こし（gpt-transcribe・OpenAI ライブ） | [platform.openai.com](https://platform.openai.com/) |
+| **Microsoft MAI** | 文字起こし（MAI-Transcribe-2・Azure Speech リソースのキーとエンドポイント） | [portal.azure.com](https://portal.azure.com/) |
+| **Groq**（正確性） | 文字起こし（録音キー 2 の既定・最速）＋テキスト整形 | [console.groq.com/keys](https://console.groq.com/keys) |
+| **ElevenLabs**（高精度） | 文字起こし（scribe_v2・高精度。Groq のハンズフリー録音では scribe_v1） | [elevenlabs.io](https://elevenlabs.io/) |
 
 ---
 
@@ -806,9 +815,11 @@ voicekey/
 │   │   ├── audio_preprocess.py   # 音量正規化（Peak+RMS）
 │   │   ├── audio_utils.py        # WAV / MP3 変換
 │   │   ├── vad.py                # silero-vad（ONNX / CPU）ローカル VAD
-│   │   ├── api_transcriber.py    # REST 文字起こし（Deepgram / ElevenLabs / OpenAI / Groq）
-│   │   ├── streaming_transcriber.py # Deepgram ストリーミング（低遅延）
+│   │   ├── engines.py            # 文字起こしエンジン・モデル・鍵の一覧（Mac と同じ id）
+│   │   ├── api_transcriber.py    # 録音後に送る文字起こし（ElevenLabs / OpenAI / Microsoft MAI / Groq）
+│   │   ├── streaming_transcriber.py # 録音しながら送る文字起こし（Soniox / OpenAI ライブ）
 │   │   ├── text_formatter.py     # Groq LLM によるテキスト整形
+│   │   ├── llm_catalog.py        # 整形に使う LLM モデルの一覧（Mac と同じ）
 │   │   └── input_handler.py      # クリップボード経由のテキスト挿入
 │   ├── platform/                 # OS 抽象化層
 │   │   ├── base.py               # PlatformAdapter 抽象クラス
@@ -817,6 +828,7 @@ voicekey/
 │   │   ├── macos/adapter.py      # Cmd 系修飾キー、メニューバー挙動
 │   │   └── windows/adapter.py    # Ctrl 系修飾キー、トレイ挙動
 │   ├── ui/
+│   │   ├── brand.py              # アプリアイコンとトレイのアイコン（Mac と同じロゴ）
 │   │   ├── hud.py                # コンパクトな録音 HUD
 │   │   ├── settings_window.py    # 設定ウィンドウ
 │   │   ├── styles.py             # macOS 風テーマ
@@ -882,7 +894,7 @@ GNU General Public License v3.0 — 詳細は [LICENSE](LICENSE) を参照。
 - [PySide6](https://wiki.qt.io/Qt_for_Python) — GUI フレームワーク
 - [pynput](https://github.com/moses-palmer/pynput) — グローバルキーボード制御
 - [sounddevice](https://python-sounddevice.readthedocs.io/) — マイク入力
-- [OpenAI API](https://platform.openai.com/) — gpt-transcribe（Mac）/ gpt-4o-transcribe（Windows・旧構成）
+- [OpenAI API](https://platform.openai.com/) — gpt-transcribe・gpt-live-transcribe
 - [Groq API](https://console.groq.com/) — whisper-large-v3-turbo
 
 ---

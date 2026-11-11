@@ -20,7 +20,11 @@ logger = get_logger(__name__)
 SERVICE_GROQ: str = "voicekey.Groq"
 SERVICE_OPENAI: str = "voicekey.OpenAI"
 SERVICE_ELEVENLABS: str = "voicekey.ElevenLabs"
-SERVICE_DEEPGRAM: str = "voicekey.Deepgram"
+SERVICE_SONIOX: str = "voicekey.Soniox"
+# Microsoft MAI はキーに加えてリソースごとの接続先（エンドポイント）も要る。
+# 接続先は秘密ではないが、キーと対で扱う値なので Mac 版と同じく同じストアに置く
+SERVICE_AZURE_SPEECH: str = "voicekey.AzureSpeech"
+SERVICE_AZURE_SPEECH_ENDPOINT: str = "voicekey.AzureSpeechEndpoint"
 
 # 端末固有の識別子（認証子ではない）。フィードバック送信で同じ端末からの送信を
 # 見分けるためだけに使う。

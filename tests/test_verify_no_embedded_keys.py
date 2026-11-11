@@ -94,22 +94,22 @@ class TestVerifyNoEmbeddedKeys(unittest.TestCase):
             f.write_bytes(b"\x00" + symbol)
             self.assertEqual(self.verify.main([str(f)]), 0)
 
-    def test_keyless_marker_passes(self):
-        """IS_DIST だけのキーレスマーカーは合格（0）。"""
+    def test_keyless_swift_marker_passes(self):
+        """フラグだけのキーレスな Swift マーカーは合格（0）。"""
         with tempfile.TemporaryDirectory() as tmp:
-            mod = Path(tmp) / "embedded_keys.py"
-            mod.write_text("IS_DIST = True\n", encoding="utf-8")
-            self.assertEqual(self.verify.main([str(mod)]), 0)
-
-    def test_marker_with_get_key_fails(self):
-        """get_key / payload を持つ旧式マーカーは痕跡として 1。"""
-        with tempfile.TemporaryDirectory() as tmp:
-            mod = Path(tmp) / "embedded_keys.py"
+            mod = Path(tmp) / "EmbeddedKeys.generated.swift"
             mod.write_text(
-                "IS_DIST = True\n_PAYLOAD = {}\n\ndef get_key(s):\n    return None\n",
+                "enum EmbeddedKeys {\n  static let isDist = false\n  static let isPersonal = true\n}\n",
                 encoding="utf-8",
             )
-            self.assertEqual(self.verify.main([str(mod)]), 1)
+            self.assertEqual(self.verify.main([str(mod)]), 0)
+
+    def test_key_inside_windows_dist_detected(self):
+        """Windows の exe（PyInstaller の PYZ 込み）に混ざった鍵を検出して 1。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = Path(tmp) / "voicekey.exe"
+            exe.write_bytes(b"MZ\x00PYZ\x00" + b"sk-proj-abcdefghijklmnopqrstuvwxyz0123" + b"\x00")
+            self.assertEqual(self.verify.main([str(exe)]), 1)
 
     def test_swift_marker_with_key_func_fails(self):
         """Swift マーカーに key(forService:) が残っていれば 1。"""

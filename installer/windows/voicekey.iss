@@ -35,7 +35,8 @@ DefaultDirName={localappdata}\Programs\voicekey
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=..\..\dist\installer
-OutputBaseFilename=voicekey-{#AppVersion}-setup
+; 資産名の規則は src\utils\updater.py の WINDOWS_ASSET_NAME と揃える（Mac の zip と同じリリースに並ぶため windows を入れる）
+OutputBaseFilename=voicekey-{#AppVersion}-windows-setup
 Compression=lzma2
 SolidCompression=yes
 CloseApplications=yes

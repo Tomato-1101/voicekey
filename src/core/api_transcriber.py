@@ -1,31 +1,31 @@
 """
-API 文字起こし統合モジュール
+API 文字起こしモジュール（録音後にまとめて送るエンジン）
 
-OpenAI / Groq の Audio Transcriptions API（OpenAI 互換 REST）を
-httpx で直接呼び出す共通基盤と、各バックエンドのサブクラスを提供する。
+Groq / OpenAI / ElevenLabs / Microsoft MAI の文字起こし API を httpx で直接呼び出す。
+エンジンの名前・鍵の置き場所は engines.py のカタログから引く（ここには書かない）。
+録音しながら送るエンジン（Soniox・OpenAI ライブ）は streaming_transcriber.py にある。
 
-旧実装からの主な変更点:
-- openai / groq の公式 SDK を廃止し、httpx の multipart POST に統一した。
-  両 API は同一のリクエスト形式（OpenAI 互換）であり、SDK のトップレベル
-  import（数百 ms）が起動遅延の一因だったため。
-- インスタンスごとに抱えていた VAD（VadFilter）を撤去した。
-  VAD はアプリ層で共有する SileroVad（core/vad.py）が文字起こし前に行う。
-- 失敗は "Error:" 文字列ではなく TranscriptionError 例外で伝える。
-- prewarm() で TLS 接続を事前確立し、初回リクエストの往復を短縮できる。
+設計の要点:
+- 公式 SDK は使わず httpx の multipart POST に統一している（SDK の import が起動を遅くするため）。
+- 失敗は TranscriptionError 例外で伝える。メッセージは通知にそのまま出せる短い日本語にし、
+  API が返したエラー本文や例外の詳細はログにだけ残す（通知に長い英語や内部情報を出さないため）。
+- prewarm() で TLS 接続を先に張り、初回リクエストの往復を短くできる。
 """
 
+import json
 import threading
 import time
 from typing import Optional, Tuple
+from urllib.parse import urlsplit
 
 import httpx
 import numpy as np
 import numpy.typing as npt
 
+from . import engines
 from .audio_utils import numpy_to_wav_bytes
 from .text_utils import strip_cjk_spaces
 from ..config.constants import SAMPLE_RATE
-from ..utils import secrets
 from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -33,10 +33,14 @@ logger = get_logger(__name__)
 # API リクエストのタイムアウト（読み取り 20 秒 / 接続 5 秒）
 _TIMEOUT = httpx.Timeout(20.0, connect=5.0)
 
-# Whisper 系（Groq / OpenAI）へ送る数字表記の style プロンプト。Whisper は prompt の表記
+# Whisper 系（Groq）へ送る数字表記の style プロンプト。Whisper は prompt の表記
 # スタイルに追従する性質があるため、半角数字を含む短い例文を与えて漢数字化を抑制する
 # （Mac 版 Transcriber.numeralStyleHint と文言を一致させること）。
 _NUMERAL_STYLE_PROMPT = "数字は半角で表記します。例: 2026年7月15日、3人で1200円、成功率98.5%。"
+
+# Microsoft MAI の文字起こし API のパス（接続先のホストはリソースごとに違う）
+_MAI_PATH = "/speechtotext/transcriptions:transcribe"
+_MAI_API_VERSION = "2025-10-15"
 
 
 class TranscriptionError(RuntimeError):
@@ -45,14 +49,10 @@ class TranscriptionError(RuntimeError):
 
 class ApiTranscriber:
     """
-    OpenAI 互換 Audio Transcriptions API の共通クライアント。
+    文字起こし API の共通クライアント（既定の transcribe は Whisper 形式）。
 
-    サブクラスはクラス属性で接続先を定義するだけでよい:
-        display_name: ログ・エラーメッセージ用のサービス名
-        base_url: API のベース URL（例: "https://api.openai.com/v1"）
-        keychain_service: secrets モジュールのサービス識別子
-        env_var: API キーのフォールバック環境変数名
-        available_models: 既知のモデル名タプル（未知でも警告のみで続行）
+    サブクラスはクラス属性 engine_id と base_url を決めるだけでよい。表示名・鍵の置き場所・
+    既知のモデルは engines.py のカタログから引く。
 
     スレッドセーフ: クライアント生成はロックで保護し、httpx.Client 自体は
     複数スレッドからのリクエストに対応している。
@@ -63,13 +63,12 @@ class ApiTranscriber:
         prompt: 文字起こしのヒントテキスト
         temperature: サンプリング温度（0.0=決定論的）
         last_api_time: 直近の API 呼び出し時間（ms、ログ用）
+        allows_split: 長い録音を無音で分けて並列に送ってよいか
     """
 
-    display_name: str = "API"
+    engine_id: str = ""
     base_url: str = ""
-    keychain_service: str = ""
-    env_var: str = ""
-    available_models: Tuple[str, ...] = ()
+    allows_split: bool = True
 
     def __init__(
         self,
@@ -99,19 +98,46 @@ class ApiTranscriber:
         self._client: Optional[httpx.Client] = None
         self._client_lock = threading.Lock()
 
-        if self.available_models and model not in self.available_models:
-            logger.warning(
-                f"{self.display_name}: モデル '{model}' は未知です。"
-                f"既知のモデル: {', '.join(self.available_models)}"
-            )
+    @property
+    def _engine(self) -> engines.Engine:
+        """このクライアントが使うエンジンの定義。"""
+        return engines.engine(self.engine_id)
+
+    @property
+    def display_name(self) -> str:
+        """通知・ログの主語に使うエンジン名（例: "Groq"）。"""
+        return self._engine.name
+
+    @property
+    def keychain_service(self) -> str:
+        """API キーを置く資格情報ストアのサービス名。"""
+        return self._engine.keyring_service
+
+    @property
+    def env_var(self) -> str:
+        """API キーの環境変数名。"""
+        return self._engine.env_var
+
+    @property
+    def available_models(self) -> Tuple[str, ...]:
+        """このエンジンで選べるモデル。"""
+        return self._engine.models
 
     def _resolve_api_key(self) -> Optional[str]:
-        """API キーを Keychain（キャッシュ付き）→ 環境変数の優先順で解決する。"""
-        import os
-        return secrets.get_api_key(self.keychain_service) or os.environ.get(self.env_var)
+        """API キーを資格情報ストア → 環境変数の順で解決する。"""
+        return engines.api_key(self.engine_id)
+
+    def _resolve_base_url(self) -> str:
+        """
+        API のベース URL を返す（接続先が利用者ごとに違うエンジンはサブクラスで上書きする）。
+
+        Raises:
+            TranscriptionError: 接続先が決まらないとき
+        """
+        return self.base_url
 
     def _whisper_prompt(self) -> str:
-        """Whisper（Groq/OpenAI）へ送る文字起こしプロンプトを組み立てる。
+        """Whisper へ送る文字起こしプロンプトを組み立てる。
 
         数字を半角で出させる固定 style ヒントを先頭に置き、ユーザー設定のプロンプト（あれば）を
         続ける（未設定なら style ヒントのみになる）。
@@ -138,15 +164,19 @@ class ApiTranscriber:
         Raises:
             TranscriptionError: 認証失敗・レート制限・その他 4xx/5xx
         """
+        if resp.status_code < 400:
+            return
+        # エラー本文は原因調査のためログにだけ残す（通知には出さない。長い英語や内部情報が混じるため）
+        logger.warning(f"{self.display_name} API エラー (HTTP {resp.status_code}): {resp.text[:300]}")
         if resp.status_code == 401:
-            raise TranscriptionError(f"{self.display_name} の API キーが無効です（設定を確認してください）")
-        if resp.status_code == 429:
-            raise TranscriptionError(f"{self.display_name} API のレート制限に達しました（しばらく待って再試行してください）")
-        if resp.status_code >= 400:
-            # エラー詳細は JSON のことが多いが、先頭だけ載せれば原因特定には足りる
             raise TranscriptionError(
-                f"{self.display_name} API エラー (HTTP {resp.status_code}): {resp.text[:200]}"
+                f"{self.display_name} の API キーが無効です（設定 › API キー を確認してください）"
             )
+        if resp.status_code == 429:
+            raise TranscriptionError(
+                f"{self.display_name} API のレート制限に達しました（しばらく待って再試行してください）"
+            )
+        raise TranscriptionError(f"{self.display_name} API エラー (HTTP {resp.status_code})")
 
     def _post(self, client: httpx.Client, path: str, **kwargs) -> httpx.Response:
         """
@@ -166,7 +196,10 @@ class ApiTranscriber:
                 f"{self.display_name} API がタイムアウトしました（ネットワークを確認してください）"
             )
         except httpx.HTTPError as e:
-            raise TranscriptionError(f"{self.display_name} API への接続に失敗しました: {e}")
+            logger.warning(f"{self.display_name} API への接続に失敗: {type(e).__name__}: {e}")
+            raise TranscriptionError(
+                f"{self.display_name} API に接続できませんでした（ネットワークを確認してください）"
+            )
         self.last_api_time = (time.perf_counter() - api_start) * 1000
         self._raise_for_status(resp)
         return resp
@@ -183,7 +216,7 @@ class ApiTranscriber:
             初期化済みの httpx.Client
 
         Raises:
-            TranscriptionError: API キーが未設定の場合
+            TranscriptionError: API キー（や接続先）が未設定の場合
         """
         with self._client_lock:
             if self._client is None:
@@ -191,10 +224,10 @@ class ApiTranscriber:
                 if not api_key:
                     raise TranscriptionError(
                         f"{self.display_name} の API キーが未設定です"
-                        f"（設定ウィンドウまたは {self.env_var} 環境変数で指定してください）"
+                        "（設定 › API キー で入力してください）"
                     )
                 self._client = httpx.Client(
-                    base_url=self.base_url,
+                    base_url=self._resolve_base_url(),
                     headers=self._auth_headers(api_key),
                     timeout=_TIMEOUT,
                     # keepalive を長めに取り、録音中に prewarm した接続を再利用する
@@ -217,14 +250,34 @@ class ApiTranscriber:
         """
         try:
             client = self._get_client()
+            # 応答の中身は使わない（404 でも TLS 接続は張られるので目的は果たせる）
             client.get("/models", timeout=httpx.Timeout(5.0, connect=5.0))
             logger.debug(f"{self.display_name} 接続をプリウォームしました")
         except Exception as e:
-            logger.debug(f"{self.display_name} プリウォーム失敗（無視）: {e}")
+            logger.debug(f"{self.display_name} プリウォーム失敗（無視）: {type(e).__name__}")
+
+    def _log_done(self, text: str) -> None:
+        """文字起こしの所要時間と文字数をログに残す（本文は出さない）。"""
+        logger.info(
+            f"{self.display_name} 文字起こし完了: {self.last_api_time:.0f}ms, {len(text)} 文字"
+        )
+
+    def _json_text(self, resp: httpx.Response) -> str:
+        """
+        応答 JSON の text フィールドを取り出す。
+
+        Raises:
+            TranscriptionError: 応答が JSON でない・形が違うとき
+        """
+        try:
+            return (resp.json().get("text") or "").strip()
+        except Exception as e:
+            logger.warning(f"{self.display_name} 応答の解析に失敗: {type(e).__name__}")
+            raise TranscriptionError(f"{self.display_name} の応答を読み取れませんでした")
 
     def transcribe(self, audio_data: npt.NDArray[np.float32]) -> str:
         """
-        音声を文字起こしする。
+        音声を文字起こしする（Whisper 形式）。
 
         Args:
             audio_data: 音声データ（float32、モノラルの NumPy 配列）
@@ -246,12 +299,11 @@ class ApiTranscriber:
             "model": self.model,
             "response_format": "text",
             "temperature": str(self.temperature),
+            # 数字を半角で出させる style プロンプト（＋ユーザー設定プロンプト）を常に付ける
+            "prompt": self._whisper_prompt(),
         }
         if self.language:
             data["language"] = self.language
-        # 数字を半角で出させる style プロンプト（＋ユーザー設定プロンプト）を常に付与する。
-        # 基底 transcribe を通るのは Whisper 系（OpenAI/Groq 直叩き）だけなので Whisper 前提でよい。
-        data["prompt"] = self._whisper_prompt()
 
         resp = self._post(
             client,
@@ -260,12 +312,9 @@ class ApiTranscriber:
             files={"file": ("audio.wav", wav_bytes, "audio/wav")},
         )
 
-        # streaming/REST・Mac/Windows で同じ結果にするため共通正規化を通す（#21）。
-        # OpenAI/Groq も日本語に単語間スペースが入りうるため CJK 隣接スペースを除去する。
+        # 日本語に単語間スペースが入りうるため CJK 隣接スペースを除去する（Mac 版と同じ正規化）
         text = strip_cjk_spaces(resp.text.strip())
-        logger.info(
-            f"{self.display_name} 文字起こし完了: {self.last_api_time:.0f}ms, {len(text)} 文字"
-        )
+        self._log_done(text)
         return text
 
     def close(self) -> None:
@@ -285,30 +334,51 @@ class ApiTranscriber:
                 logger.warning(f"{self.display_name} クライアント close に失敗: {e}")
 
 
-class OpenAITranscriber(ApiTranscriber):
-    """OpenAI Audio Transcriptions API（gpt-4o-transcribe 系）。"""
-
-    display_name = "高精度"  # ユーザー向け表示は特徴名（提供元名は伏せる）
-    base_url = "https://api.openai.com/v1"
-    keychain_service = secrets.SERVICE_OPENAI
-    env_var = "OPENAI_API_KEY"
-    available_models = (
-        "gpt-4o-transcribe",       # 高精度
-        "gpt-4o-mini-transcribe",  # コスト効率重視
-    )
-
-
 class GroqTranscriber(ApiTranscriber):
-    """Groq Cloud の Whisper API（OpenAI 互換エンドポイント）。基底の直叩き実装をそのまま使う。"""
+    """Groq Cloud の Whisper API（OpenAI 互換エンドポイント）。基底の Whisper 形式をそのまま使う。"""
 
-    display_name = "高速"  # 製品版(release)の文字起こし 2 択名（提供元名は伏せる）
+    engine_id = "groq"
     base_url = "https://api.groq.com/openai/v1"
-    keychain_service = secrets.SERVICE_GROQ
-    env_var = "GROQ_API_KEY"
-    available_models = (
-        "whisper-large-v3-turbo",  # 最速（リアルタイムの 200 倍超）
-        "whisper-large-v3",        # 高精度
-    )
+
+
+class OpenAITranscriber(ApiTranscriber):
+    """
+    OpenAI の gpt-transcribe（REST）。
+
+    Whisper とはリクエストの形が違う:
+    - 応答形式は json だけ（text 形式は受け付けない）
+    - 言語は languages[] で渡す
+    - temperature は送らない
+    - prompt は利用者が書いたものだけ送る（Whisper 用の数字 style ヒントは効かないので付けない）
+    """
+
+    engine_id = "openai"
+    base_url = "https://api.openai.com/v1"
+
+    def transcribe(self, audio_data: npt.NDArray[np.float32]) -> str:
+        """音声を OpenAI の gpt-transcribe で文字起こしする。"""
+        if len(audio_data) == 0:
+            return ""
+
+        wav_bytes = numpy_to_wav_bytes(audio_data, self.sample_rate)
+        client = self._get_client()
+
+        data = {"model": self.model, "response_format": "json"}
+        if self.language:
+            data["languages[]"] = self.language
+        user_prompt = self.prompt.strip()
+        if user_prompt:
+            data["prompt"] = user_prompt
+
+        resp = self._post(
+            client,
+            "/audio/transcriptions",
+            data=data,
+            files={"file": ("audio.wav", wav_bytes, "audio/wav")},
+        )
+        text = strip_cjk_spaces(self._json_text(resp))
+        self._log_done(text)
+        return text
 
 
 class ElevenLabsTranscriber(ApiTranscriber):
@@ -319,20 +389,10 @@ class ElevenLabsTranscriber(ApiTranscriber):
     - 認証は xi-api-key ヘッダー
     - multipart のフィールド名は model_id（model ではない）/ language_code
     - 応答は JSON で text フィールドに本文が入る
-
-    ベンチ（2026-06-10）では短文の日本語精度が最高（scribe_v1 で CER 0.0%）。
-    ただし scribe_v2 は短文0%でも長文で精度後退するため既定は scribe_v1。
     """
 
-    display_name = "正確性"  # 製品版(release)の文字起こし 2 択名（提供元名は伏せる）
+    engine_id = "elevenlabs"
     base_url = "https://api.elevenlabs.io/v1"
-    keychain_service = secrets.SERVICE_ELEVENLABS
-    env_var = "ELEVENLABS_API_KEY"
-    available_models = (
-        "scribe_v1",               # 日本語短文・長文ともに高精度（既定）
-        "scribe_v1_experimental",  # 実験版
-        "scribe_v2",               # 最新。短文は0%だが日本語長文は後退する
-    )
 
     def _auth_headers(self, api_key: str) -> dict:
         """ElevenLabs は Bearer ではなく xi-api-key ヘッダーで認証する。"""
@@ -346,8 +406,8 @@ class ElevenLabsTranscriber(ApiTranscriber):
         wav_bytes = numpy_to_wav_bytes(audio_data, self.sample_rate)
         client = self._get_client()
 
-        # model ではなく model_id。言語は language_code（空なら自動判定）
-        data = {"model_id": self.model}
+        # 「(笑い)」のような音のタグは入力文字に要らないので切る
+        data = {"model_id": self.model, "tag_audio_events": "false"}
         if self.language:
             data["language_code"] = self.language
 
@@ -357,90 +417,154 @@ class ElevenLabsTranscriber(ApiTranscriber):
             data=data,
             files={"file": ("audio.wav", wav_bytes, "audio/wav")},
         )
-
-        try:
-            text = strip_cjk_spaces((resp.json().get("text") or "").strip())
-        except Exception as e:
-            raise TranscriptionError(f"{self.display_name} 応答の解析に失敗しました: {e}")
-
-        logger.info(
-            f"{self.display_name} 文字起こし完了: {self.last_api_time:.0f}ms, {len(text)} 文字"
-        )
+        text = strip_cjk_spaces(self._json_text(resp))
+        self._log_done(text)
         return text
 
 
-class DeepgramTranscriber(ApiTranscriber):
+def normalize_mai_endpoint(value: str) -> Optional[str]:
     """
-    Deepgram Listen の事前録音 API（REST）。
+    Microsoft の接続先（エンドポイント）を「スキーム + ホスト（+ ポート）」だけに整える。
 
-    OpenAI 互換ではないため transcribe() と認証を独自実装する:
-    - 認証は Authorization: Token <key>
-    - 音声は multipart ではなく raw バイト本文として送る（Content-Type: audio/wav）
-    - モデル・言語・整形オプションはクエリパラメータで指定
-    - 応答 JSON の results.channels[0].alternatives[0].transcript が本文
+    Azure ポータルからコピーした値には末尾のスラッシュやパスが付いていたり、https:// が
+    抜けていたりするので、ここで吸収する。
 
-    日本語出力に単語間スペースが入るため strip_cjk_spaces で除去する。
-    nova-3 はストリーミング既定でもあり、REST フォールバックにも使う。
+    Args:
+        value: 利用者が入力した接続先
+
+    Returns:
+        整えた URL。空・空白入り・ホストが読み取れない値は None
+    """
+    text = (value or "").strip()
+    if not text or any(ch.isspace() for ch in text):
+        return None
+    if "://" not in text:
+        text = "https://" + text
+    try:
+        parts = urlsplit(text)
+        host = parts.hostname
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or not host:
+        return None
+    return f"{parts.scheme}://{host}" + (f":{port}" if port else "")
+
+
+class AzureMAITranscriber(ApiTranscriber):
+    """
+    Microsoft MAI-Transcribe（Azure AI Speech の文字起こし API・REST）。
+
+    他のエンジンと違う点:
+    - 接続先のホストがリソースごとに違う（キーとは別に利用者が入力する）
+    - 認証は Ocp-Apim-Subscription-Key ヘッダー
+    - multipart は audio（音声）と definition（JSON の指定）の 2 つ
+    - 応答は combinedPhrases[0].text に全文が入る
     """
 
-    display_name = "即時入力"  # 製品版(release)の文字起こし 2 択名（提供元名は伏せる）
-    base_url = "https://api.deepgram.com/v1"
-    keychain_service = secrets.SERVICE_DEEPGRAM
-    env_var = "DEEPGRAM_API_KEY"
-    available_models = (
-        "nova-3",  # 多言語・最新（既定）
-        "nova-2",  # 旧世代
-    )
+    engine_id = "azure_mai"
+
+    def _resolve_endpoint(self) -> Optional[str]:
+        """接続先を資格情報ストア → 環境変数の順で読み、整えて返す（未設定・不正なら None）。"""
+        eng = self._engine
+        raw = engines.read_secret(eng.endpoint_service, eng.endpoint_env_var)
+        return normalize_mai_endpoint(raw or "")
+
+    def _resolve_base_url(self) -> str:
+        """接続先を返す。未設定なら通知用のメッセージ付きで失敗させる。"""
+        endpoint = self._resolve_endpoint()
+        if not endpoint:
+            raise TranscriptionError(
+                "Microsoft の接続先（エンドポイント）が未設定です（設定 › API キー で入力してください）"
+            )
+        return endpoint
 
     def _auth_headers(self, api_key: str) -> dict:
-        """Deepgram は Bearer ではなく Token スキームで認証する。"""
-        return {"Authorization": f"Token {api_key}"}
+        """Azure はサブスクリプションキーのヘッダーで認証する。"""
+        return {"Ocp-Apim-Subscription-Key": api_key}
 
-    @property
-    def _dg_language(self) -> str:
+    def is_available(self) -> bool:
+        """キーと接続先の両方がそろっているかを返す。"""
+        return bool(self._resolve_api_key()) and self._resolve_endpoint() is not None
+
+    def _parse_text(self, resp: httpx.Response) -> str:
         """
-        Deepgram の言語パラメータ。
+        応答から本文を取り出す。
 
-        nova-3 は当初 ja 単言語指定に未対応で多言語モード（multi）を使っていたが、
-        multi は日本語発話を韓国語等に誤判定することがあり、現在は ja がサポート済み
-        （2026-07 Deepgram ドキュメント確認）のため単言語をそのまま送る。
+        全文をつないだ combinedPhrases を優先し、無ければ phrases を空白でつなぐ。
+        combinedPhrases が空の配列なら「何も聞き取れなかった」なので空文字を返す。
+
+        Raises:
+            TranscriptionError: 応答の形が想定と違うとき
         """
-        return self.language or "ja"
-
-    def _parse_transcript(self, resp: httpx.Response) -> str:
-        """Deepgram の応答 JSON から本文を取り出し CJK スペースを除去する。"""
         try:
-            alternatives = resp.json()["results"]["channels"][0]["alternatives"]
-            transcript = alternatives[0]["transcript"] if alternatives else ""
+            body = resp.json()
+            combined = body.get("combinedPhrases")
+            if isinstance(combined, list):
+                return str(combined[0].get("text") or "").strip() if combined else ""
+            phrases = body["phrases"]
+            return " ".join(str(p["text"]) for p in phrases).strip()
         except Exception as e:
-            raise TranscriptionError(f"{self.display_name} 応答の解析に失敗しました: {e}")
-        # 日本語の単語間スペースを除去（英単語間は残す）
-        return strip_cjk_spaces(transcript.strip())
+            logger.warning(f"{self.display_name} 応答の解析に失敗: {type(e).__name__}")
+            raise TranscriptionError(f"{self.display_name} の応答を読み取れませんでした")
 
     def transcribe(self, audio_data: npt.NDArray[np.float32]) -> str:
-        """音声を Deepgram Listen（事前録音）で文字起こしする。"""
+        """音声を Microsoft MAI-Transcribe で文字起こしする。"""
         if len(audio_data) == 0:
             return ""
 
         wav_bytes = numpy_to_wav_bytes(audio_data, self.sample_rate)
         client = self._get_client()
 
-        params = {
-            "model": self.model,
-            "language": self._dg_language,
-            "punctuate": "true",
-            "smart_format": "true",
-        }
+        definition = {"enhancedMode": {"enabled": True, "model": self.model}}
+        if self.language:
+            definition["locales"] = [self.language]
+
         resp = self._post(
             client,
-            "/listen",
-            params=params,
-            content=wav_bytes,
-            headers={"Content-Type": "audio/wav"},
+            _MAI_PATH,
+            params={"api-version": _MAI_API_VERSION},
+            files={
+                "audio": ("audio.wav", wav_bytes, "audio/wav"),
+                # ファイル名を付けない欄として送る（JSON の指定）
+                "definition": (None, json.dumps(definition), "application/json"),
+            },
         )
-
-        text = self._parse_transcript(resp)
-        logger.info(
-            f"{self.display_name} 文字起こし完了: {self.last_api_time:.0f}ms, {len(text)} 文字"
-        )
+        text = strip_cjk_spaces(self._parse_text(resp))
+        self._log_done(text)
         return text
+
+
+# 録音後にまとめて送るエンジンの id → クラス
+_REST_CLASSES = {
+    cls.engine_id: cls
+    for cls in (GroqTranscriber, OpenAITranscriber, ElevenLabsTranscriber, AzureMAITranscriber)
+}
+
+# OpenAI ライブがつながらなかったときに録音を送り直す先のモデル
+_OPENAI_LIVE_FALLBACK_MODEL = "gpt-transcribe"
+
+
+def create_transcriber(engine_id: str, model: str, language: str = "ja", prompt: str = ""):
+    """
+    エンジン id から、録音をまとめて文字起こしするクライアントを作る。
+
+    録音しながら送るエンジンでも、ライブで文字が取れなかったときに録音を送り直す先が要る。
+    OpenAI ライブは gpt-transcribe（REST）へ、Soniox は Soniox 自身へ流し直す。
+
+    Args:
+        engine_id: エンジン id（engines.normalize_id を通した値）
+        model: モデル名
+        language: 言語コード
+        prompt: 文字起こしのヒントテキスト
+
+    Returns:
+        transcribe / prewarm / is_available / close を持つクライアント
+    """
+    if engine_id == "soniox":
+        # 循環 import を避けるためここで読む（streaming_transcriber はこのモジュールを使う）
+        from .streaming_transcriber import SonioxTranscriber
+        return SonioxTranscriber(model, language, prompt)
+    if engine_id == "openai_live":
+        return OpenAITranscriber(_OPENAI_LIVE_FALLBACK_MODEL, language, prompt)
+    return _REST_CLASSES[engine_id](model, language, prompt)

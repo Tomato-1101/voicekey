@@ -1,12 +1,16 @@
 """
 自動アップデートモジュール（Windows 配布ビルド用）
 
-voicekey-releases リポジトリの version.json を定期チェックし、新しいバージョンが
-あればトレイ通知とメニュー項目で知らせる。インストールはユーザーがメニューを
-選んだときに、インストーラをダウンロード → 固定公開鍵による Ed25519 署名検証
-＋ SHA256 検証 → サイレント実行 → アプリ終了、の順で行う（Inno Setup が旧プロセスを
-閉じて上書きし、新版を再起動する）。署名検証により、フィードが改竄・MITM されても
-秘密鍵を持たない第三者は不正な更新を実行できない（Mac 版 Sparkle EdDSA と同方針）。
+本リポジトリの GitHub Releases の Latest（releases/latest API・認証なし）を定期チェックし、
+Windows 用インストーラが付いた新しいバージョンがあればトレイ通知とメニュー項目で知らせる。
+インストールはユーザーがメニューを選んだときに、インストーラをダウンロード → サイズ照合 →
+固定公開鍵による Ed25519 署名検証 ＋ SHA256（GitHub が資産ごとに出す digest）照合 →
+サイレント実行 → アプリ終了、の順で行う（Inno Setup が旧プロセスを閉じて上書きし、
+新版を再起動する）。署名検証により、リリースが改竄・MITM されても秘密鍵を持たない第三者は
+不正な更新を実行できない（Mac 版 Sparkle EdDSA と同方針）。
+
+リリースは Mac 版が先に（appcast 付きで）作り、Windows 用の資産は後から足す運用。
+そのため Windows 用の資産が無い Latest（Mac だけのリリース）は「更新なし」として黙って終える。
 
 設計方針:
 - PyInstaller で固めた実行ファイルでのみ動作する（ソースからの実行では start() が何もしない）
@@ -33,13 +37,35 @@ from .update_signing import verify_ed25519
 
 logger = get_logger(__name__)
 
-# 更新情報の取得元（配布ページと同じ Vercel サイト。GitHub はテスターから見えない構成）
-VERSION_URL = "https://voicekey.vercel.app/windows/version.json"
+# 更新情報の取得元（本リポジトリの GitHub Releases の Latest。draft / pre-release は返らない）
+GITHUB_REPO = "Tomato-1101/voicekey"
+LATEST_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+
+# Windows 用インストーラの資産名の規則（ビルドスクリプト・CI ワークフローと必ず揃える）。
+# Mac の資産（voicekey-<版>.zip / appcast.xml）と同じリリースに並ぶので windows を名前に入れる
+WINDOWS_ASSET_NAME = "voicekey-{version}-windows-setup.exe"
+# Ed25519 署名の資産名（中身は署名の base64 文字列 1 行）。秘密鍵は CI に置かないため、
+# Mac 側で scripts/build/sign_update.py で作って後から同じリリースへ足す
+SIGNATURE_SUFFIX = ".sig"
 
 # 起動直後はアプリ初期化と被らないよう 60 秒待ってから初回チェックする
 FIRST_CHECK_DELAY_MS = 60_000
 # 以後は 24 時間ごと（Mac 版 Sparkle の SUScheduledCheckInterval と同じ周期）
 CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
+
+
+def windows_asset_name(version: str) -> str:
+    """バージョン（"1.2.3"）から Windows 用インストーラの資産名を返す。"""
+    return WINDOWS_ASSET_NAME.format(version=version)
+
+
+def _open(url: str, timeout: float):
+    """GitHub へのリクエストを開く（User-Agent が無いと GitHub API は 403 を返すため付ける）。"""
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "voicekey-updater", "Accept": "application/vnd.github+json"},
+    )
+    return urllib.request.urlopen(req, timeout=timeout)
 
 
 def parse_version(version: str) -> tuple:
@@ -119,27 +145,47 @@ class Updater(QObject):
     # ----- 内部処理（バックグラウンドスレッド） -----
 
     def _check(self, manual: bool = False) -> None:
-        """version.json を取得して現行バージョンと比較する。
+        """GitHub Releases の Latest を取得して現行バージョンと比較する。
 
         Args:
             manual: 手動チェック（設定画面）からの実行か。失敗通知の有無を分ける。
         """
         try:
-            with urllib.request.urlopen(VERSION_URL, timeout=15) as res:
-                # version.json は Windows PowerShell が BOM 付き UTF-8 で書き出すことがある。
-                # utf-8-sig で先頭 BOM を許容する（BOM が無くても安全。素朴な utf-8 だと
-                # 先頭の ﻿ で json.loads が落ち、アップデートが静かに効かなくなる）
-                info = json.loads(res.read().decode("utf-8-sig"))
-            latest = str(info.get("version", ""))
-            if parse_version(latest) > parse_version(APP_VERSION):
-                logger.info(f"新バージョン {latest} を検知しました（現行 {APP_VERSION}）")
-                self._info = info
-                self.update_available.emit(latest)
-            else:
+            with _open(LATEST_RELEASE_URL, timeout=15) as res:
+                release = json.loads(res.read().decode("utf-8-sig"))
+            tag = str(release.get("tag_name", ""))
+            latest_tuple = parse_version(tag)
+            latest = ".".join(str(p) for p in latest_tuple)
+            if latest_tuple <= parse_version(APP_VERSION):
                 logger.info(f"アップデートなし（最新 {latest} / 現行 {APP_VERSION}）")
                 self.up_to_date.emit()
+                return
+            assets = {
+                str(a.get("name", "")): a
+                for a in release.get("assets", []) or []
+                if isinstance(a, dict)
+            }
+            name = windows_asset_name(latest)
+            asset = assets.get(name)
+            sig_asset = assets.get(name + SIGNATURE_SUFFIX)
+            # Windows 用の資産が無い Latest（Mac だけのリリース）は更新扱いにしない。
+            # 署名が後から足される運用なので、署名がまだ無い間も同じく「更新なし」で待つ
+            if asset is None or (UPDATE_PUBLIC_KEY_ED25519 and sig_asset is None):
+                missing = name if asset is None else name + SIGNATURE_SUFFIX
+                logger.info(f"Latest {latest} に Windows 用の資産 {missing} が無いため更新なしとします")
+                self.up_to_date.emit()
+                return
+            logger.info(f"新バージョン {latest} を検知しました（現行 {APP_VERSION}）")
+            self._info = {
+                "version": latest,
+                "url": asset.get("browser_download_url"),
+                "size": asset.get("size"),
+                "digest": asset.get("digest"),
+                "signature_url": sig_asset.get("browser_download_url") if sig_asset else None,
+            }
+            self.update_available.emit(latest)
         except Exception as e:
-            # ネットワーク断やフィード未公開は正常系に近いので、定期チェックでは警告ログのみ。
+            # ネットワーク断やリリース未公開は正常系に近いので、定期チェックでは警告ログのみ。
             # ただし手動チェックは「押したのに無反応」を避けるため失敗を UI に通知する。
             logger.warning(f"アップデート確認に失敗: {e}")
             if manual:
@@ -151,41 +197,51 @@ class Updater(QObject):
         try:
             url = info.get("url")
             version = info.get("version", "")
-            expected = str(info.get("sha256", "")).lower()
-            signature = info.get("ed25519")
             if not url:
-                raise ValueError("version.json に url がありません")
-            # sha256 が無いと破損検証ができないので、その場合はインストールしない
-            if not expected:
-                raise ValueError("version.json に sha256 がないため検証できません")
+                raise ValueError("リリースの資産にダウンロード URL がありません")
             path = os.path.join(tempfile.gettempdir(), f"voicekey-setup-{version}.exe")
             logger.info(f"インストーラをダウンロード中: {url}")
             # urlretrieve はタイムアウトを持てず、回線が stall するとスレッドが永久ブロックし
             # 「インストール中」から戻れなくなる。timeout 付き urlopen + ストリームコピーで
             # 確実に打ち切れるようにする
-            with urllib.request.urlopen(url, timeout=30) as res, open(path, "wb") as f:
+            with _open(url, timeout=30) as res, open(path, "wb") as f:
                 shutil.copyfileobj(res, f)
 
-            # 配布物の検証はメモリに 1 回読み込んだバイト列に対して行う（SHA256・署名で共用）。
+            # 配布物の検証はメモリに 1 回読み込んだバイト列に対して行う（サイズ・SHA256・署名で共用）。
             # Ed25519 検証は全メッセージを必要とするため（標準 Ed25519 はストリーミング不可）。
             with open(path, "rb") as f:
                 data = f.read()
 
+            # 0) サイズ照合（途中で切れたダウンロードを最初に弾く）
+            size = info.get("size")
+            if isinstance(size, int) and len(data) != size:
+                raise ValueError(
+                    f"インストーラのサイズがリリースの記載と一致しません（{len(data)} / {size} バイト）"
+                )
+
             # 1) 固定公開鍵による Ed25519 署名検証 = 改竄・MITM 対策の主防御。
-            #    フィード（version.json / exe）を改竄されても、秘密鍵を持たない第三者は
-            #    正規署名を作れない。SHA256 はフィードを信頼できる場合の破損検出にすぎない。
+            #    リリース（exe と digest）を改竄されても、秘密鍵を持たない第三者は
+            #    正規署名を作れない。SHA256 は GitHub を信頼できる場合の破損検出にすぎない。
             if UPDATE_PUBLIC_KEY_ED25519:
-                if not signature:
-                    raise ValueError("version.json に署名(ed25519)がないため検証できません")
+                sig_url = info.get("signature_url")
+                if not sig_url:
+                    raise ValueError("リリースに署名ファイルがないため検証できません")
+                with _open(sig_url, timeout=30) as res:
+                    signature = res.read().decode("utf-8-sig").strip()
                 if not verify_ed25519(UPDATE_PUBLIC_KEY_ED25519, signature, data):
                     raise ValueError("インストーラの署名が検証できません（改竄の可能性）")
             else:
                 # 公開鍵が未設定のビルド（移行期の保険）。署名検証ができないため警告だけ残す。
                 logger.warning("更新の公開鍵が未設定のため署名検証をスキップします（SHA256 のみ）")
 
-            # 2) SHA256（破損検出の補助）。署名検証済みでも壊れたファイルは弾く
-            if hashlib.sha256(data).hexdigest().lower() != expected:
-                raise ValueError("インストーラの SHA256 が version.json と一致しません")
+            # 2) SHA256（破損検出の補助）。GitHub が資産ごとに出す digest（"sha256:<hex>"）と照合する。
+            #    digest が無い古いリリースでは署名検証だけに任せる（公開鍵も無いならインストールしない）
+            digest = str(info.get("digest") or "")
+            if digest.startswith("sha256:"):
+                if hashlib.sha256(data).hexdigest().lower() != digest[len("sha256:"):].lower():
+                    raise ValueError("インストーラの SHA256 がリリースの digest と一致しません")
+            elif not UPDATE_PUBLIC_KEY_ED25519:
+                raise ValueError("署名も SHA256 も無いため検証できません")
 
             # 「検証したバイト列」と「実行するファイル」の同一性を保証する（TOCTOU 対策）。
             # ダウンロード先は予測可能な名前なので、検証後・起動前に同権限のプロセスが

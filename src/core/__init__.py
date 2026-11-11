@@ -7,7 +7,7 @@
 
 from .api_transcriber import (
     ApiTranscriber,
-    DeepgramTranscriber,
+    AzureMAITranscriber,
     ElevenLabsTranscriber,
     GroqTranscriber,
     OpenAITranscriber,
@@ -24,8 +24,8 @@ __all__ = [
     "GroqTranscriber",        # Groq API 文字起こし
     "OpenAITranscriber",      # OpenAI API 文字起こし
     "ElevenLabsTranscriber",  # ElevenLabs Scribe 文字起こし
-    "DeepgramTranscriber",    # Deepgram Listen 文字起こし（REST）
-    "StreamingTranscriber",   # Deepgram WebSocket ストリーミング
+    "AzureMAITranscriber",    # Microsoft MAI 文字起こし
+    "StreamingTranscriber",   # WebSocket ストリーミング（Soniox / OpenAI ライブ）の共通部分
     "TranscriptionError",     # 文字起こし失敗例外
     "InputHandler",           # テキスト入力
     "SileroVad",              # 発話検出（ONNX 版 Silero VAD）

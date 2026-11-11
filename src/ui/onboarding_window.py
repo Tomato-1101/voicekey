@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 )
 
 from .styles import MacTheme
+from ..core import engines
 from ..core.mic_monitor import MicLevelMonitor
 from ..core.audio_recorder import AudioRecorder
 from ..utils.logger import get_logger
@@ -70,15 +71,6 @@ def _has_practice_input(text: str) -> bool:
     return bool(text.strip())
 
 
-# 文字起こしモード（バックエンド）→ 新語彙の表示名。
-# 即時入力=Deepgram / スタンダード=Groq（既定）。選択肢外（elevenlabs/openai）は
-# 内部利用のため「スタンダード」表示にフォールバックする。
-_BACKEND_LABELS = {
-    "deepgram": "即時入力",
-    "groq": "スタンダード",
-    "elevenlabs": "スタンダード",
-    "openai": "スタンダード",
-}
 # 録音のしかた（モード）→ 新語彙の表示名。
 _MODE_LABELS = {
     "hold": "押している間だけ",
@@ -297,11 +289,11 @@ class OnboardingWindow(QDialog):
         return page
 
     def _summary_key_card(self, slot_label: str, slot: dict) -> QWidget:
-        """録音キー 1 つ分のまとめカード（キー表記・文字起こしモード・録音のしかた）。"""
+        """録音キー 1 つ分のまとめカード（キー表記・エンジン名・録音のしかた）。"""
         hotkey = str(slot.get("hotkey", "") or "未設定")
-        backend = str(slot.get("backend", "") or "").lower()
         mode = str(slot.get("hotkey_mode", "") or "").lower()
-        backend_label = _BACKEND_LABELS.get(backend, "スタンダード")
+        # 表示名はカタログから（知らない値は読み替え先のエンジン名になる）
+        backend_label = engines.engine(engines.normalize_id(slot.get("backend", ""))).name
         mode_label = _MODE_LABELS.get(mode, mode)
 
         card = QFrame()
@@ -729,19 +721,7 @@ class OnboardingWindow(QDialog):
 
     def _has_any_api_key(self) -> bool:
         """文字起こしに使える API キーが 1 つでもあるか（保存済みのキー → 環境変数の順に見る）。"""
-        import os
-
-        from ..utils import secrets
-
-        for service, env_var in (
-            (secrets.SERVICE_GROQ, "GROQ_API_KEY"),
-            (secrets.SERVICE_OPENAI, "OPENAI_API_KEY"),
-            (secrets.SERVICE_ELEVENLABS, "ELEVENLABS_API_KEY"),
-            (secrets.SERVICE_DEEPGRAM, "DEEPGRAM_API_KEY"),
-        ):
-            if secrets.get_api_key(service) or os.environ.get(env_var):
-                return True
-        return False
+        return engines.has_any_api_key()
 
     # ------------------------------------------------------------------
     # 完了/クローズ（スキップも完了扱いにして毎回は出さない）

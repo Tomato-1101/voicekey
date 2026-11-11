@@ -121,6 +121,7 @@ class TestMaybeHandsfreeSlot(unittest.TestCase):
             api_model="whisper-large-v3-turbo",
             api_prompt="",
             format_enabled=True,
+            format_preset="standard",
             transcriber=object(),
         )
 
@@ -150,10 +151,10 @@ class TestMaybeHandsfreeSlot(unittest.TestCase):
         )
         self.assertIs(result, groq_slot)
 
-    def test_toggle_deepgram_stays(self):
-        # deepgram(リアルタイム)は toggle でも差し替えない（groq のときだけ）
+    def test_toggle_soniox_stays(self):
+        # Soniox（話しながら送るエンジン）は toggle でも差し替えない（groq のときだけ）
         fake = SimpleNamespace(_handsfree_transcriber=object())
-        dg_slot = self._slot(TranscriptionBackend.DEEPGRAM.value, HotkeyMode.TOGGLE.value)
+        dg_slot = self._slot(TranscriptionBackend.SONIOX.value, HotkeyMode.TOGGLE.value)
         result = VoicekeyApp._maybe_handsfree_slot(
             fake, dg_slot, HotkeyMode.TOGGLE.value
         )

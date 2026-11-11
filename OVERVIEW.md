@@ -21,8 +21,8 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | 言語/UI | Swift（AppKit メニューバー + SwiftUI 設定画面） | Python（PySide6 / Qt） |
 | 置き場所 | `macos/Sources/Voicekey/` | `src/` |
 | 設定の保存先 | `UserDefaults`（`ConfigStore`） | `settings.yaml`（`ConfigManager`）+ `QSettings`（フラグ） |
-| ビルド | `macos/scripts/build_app.sh` / 配布は `build_release.sh`（personal 版を GitHub Releases へ） | `scripts/build/generate_embedded_keys.py --personal` → `pyinstaller voicekey.spec`（配布は停止中・ソースから） |
-| エディション判定 | `EmbeddedKeys.isPersonal` / `isDist`（生成物） | `utils/secrets.py` の `is_personal_build()` / `is_dist_build()`（生成物 `config/embedded_keys.py`）。personal は認証セッションを常に無視して Credential Manager のキーで直叩き |
+| ビルド | `macos/scripts/build_app.sh` / 配布は `build_release.sh`（personal 版を GitHub Releases へ） | `pyinstaller voicekey.spec`（配布は停止中・ソースから） |
+| エディション判定 | `EmbeddedKeys.isPersonal` / `isDist`（生成物） | — （エディションの区別なし。キーは Credential Manager → 環境変数の順に読んで直叩き） |
 
 同じ機能でも別コードベース。**UI 文言・表示名・設定項目・機能挙動など両 OS に同等に存在する要素を変えるときは、両方を同じコミットで直す**（OS 固有 API でしか存在しないものだけ片方で完結）。詳細は `CLAUDE.md` / `AGENTS.md`。
 
@@ -34,9 +34,9 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 
 | 項目 | personal（唯一の版） |
 |---|---|
-| 文字起こしの選択肢 | **Mac**: Soniox（ライブ・stt-rt-v5）/ OpenAI ライブ / OpenAI（gpt-transcribe）/ Microsoft MAI（MAI-Transcribe-2）/ ElevenLabs（scribe_v2・v1）/ Groq を**実名表示**＋ **ローカル（Apple）オンデバイス**（macOS 26+・キー不要）。新規インストールの既定は macOS 26+ なら両録音キーともローカル（Apple）、それ以前は録音キー 1 = Soniox / 2 = Groq。Deepgram は選択肢から外し、保存済みの Deepgram は Soniox へ自動移行。**Windows** は開発停止中のため旧構成（OpenAI / Groq / ElevenLabs / Deepgram） |
+| 文字起こしの選択肢 | **Mac**: Soniox（ライブ・stt-rt-v5）/ OpenAI ライブ / OpenAI（gpt-transcribe）/ Microsoft MAI（MAI-Transcribe-2）/ ElevenLabs（scribe_v2・v1）/ Groq を**実名表示**＋ **ローカル（Apple）オンデバイス**（macOS 26+・キー不要）。新規インストールの既定は macOS 26+ なら両録音キーともローカル（Apple）、それ以前は録音キー 1 = Soniox / 2 = Groq。Deepgram は選択肢から外し、保存済みの Deepgram は Soniox へ自動移行。**Windows** もローカル（Apple）以外は同じ 6 種（`core/engines.py`）。既定は録音キー 1 = Soniox / 2 = Groq。保存済みの Deepgram は Soniox へ自動移行 |
 | モデル選択 | あり（フルコントロール） |
-| テキスト整形（Groq） | トグルあり・モデル/プロンプト選択可＋整え方プリセット 4 種（標準/そのまま/すっきり/箇条書き）。既定はエンジン別（スタンダード=ON / 即時入力・ローカル=OFF） |
+| テキスト整形（Groq） | トグルあり・モデル/プロンプト選択可＋整え方プリセット 4 種（標準/そのまま/すっきり/箇条書き）。既定はエンジン別（録音後に送るエンジン=ON / 録音しながら送るエンジン・ローカル=OFF）。Windows は画面でモデル/プロンプトを選ばず、整形モデルは `llm_catalog.RECOMMENDED_MODEL` |
 | API キー | 利用者が設定 › API キー で入力（アプリ専用 Keychain 項目）。読み順は **アプリ項目 → 環境変数 → 中央 Keychain（service = 変数名 / account = `shared`）**（`Keychain.resolve` の 1 か所）。**ログイン・課金・アクティベーションキーは無し**（サーバー往復ゼロ＝最速） |
 | personal 限定機能 | ライブ字幕 / ローカル（Apple）文字起こし / 翻訳して入力（いずれも Mac・macOS 26+） |
 
@@ -66,7 +66,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | 操作音 / メディアダッキング | 録音開始/停止のブリップ音（同一周波数で合成）・録音中はメディア音量を自動で下げる（既定 ON。Win ダッキングは Core Audio/pycaw・非対応時は無害スキップ） | ✅ | ✅ |
 | 最後の入力を再貼り付け | グローバルキー（既定 ⌃⌘V）で直前の入力を再貼り付け | ✅ | ❌ |
 | 使用実績（統計＋チャート＋レベル） | レベル/経験値・推定節約時間・連続利用日数に加え、今日/今週/累計の入力量と期間切替（週/月/年）の棒グラフを表示（**Mac はホーム画面**／Win は「実績」タブ・カウントアップ／棒伸びアニメ・集計は貼付後の処理＝遅延ゼロ）。Mac はアプリ別使用状況も集計。実績はこの端末のローカル集計（personal はログイン・アカウント連携なし） | ✅ | ✅ |
-| 自動更新 | Mac=Sparkle（本リポジトリの GitHub Releases の appcast。`build_release.sh` 製の配布版＝`EmbeddedKeys.isRelease` だけ。自前ビルドは更新しない）/ Win=version.json フィード（Windows は配布停止中）。**Mac は 6 時間おきに確認して裏でダウンロード → メニュー最上段・ホーム左上・バージョン情報の「vX に更新して再起動」1 回で入れ替え、押さなくても終了時に入る。録音・変換中は終わってから** | ✅ | ✅ |
+| 自動更新 | Mac=Sparkle（本リポジトリの GitHub Releases の appcast。`build_release.sh` 製の配布版＝`EmbeddedKeys.isRelease` だけ。自前ビルドは更新しない）/ Win=本リポジトリの GitHub Releases の Latest（`voicekey-{version}-windows-setup.exe`。Windows は配布停止中）。**Mac は 6 時間おきに確認して裏でダウンロード → メニュー最上段・ホーム左上・バージョン情報の「vX に更新して再起動」1 回で入れ替え、押さなくても終了時に入る。録音・変換中は終わってから** | ✅ | ✅ |
 | ログイン起動 | OS のログイン時に自動起動 | ✅ | ✅ |
 | ライブ字幕（personal のみ・macOS 26+） | 再生中のシステム音声を認識 → **翻訳（英→日）／文字起こし（日本語・英語）の 2 モード** → 録音ピルの真上に固定したガラス字幕（ピルが上へ育つ見た目・音声入力中は自動で隠れる）。最前面アプリの音だけが既定・翻訳エンジンは Apple（既定）/ Groq / Gemini / Soniox（音声ごとストリーミング・有料）から選択・速さ優先の区切り値・クリック透過・⌥⌘S で開始停止・起動時の自動開始は既定 OFF（統合元は旧 subglass。詳細は CHANGELOG） | ✅ | ❌ |
 | 議事録（文字起こしの自動保存・personal のみ・macOS 26+） | 字幕が確定した文字起こしを `~/Documents/voicekey/transcripts/*.md` へ時刻つきで追記（訳文は保存しない・5 分以上あくと別ファイル） | ✅ | ❌ |
@@ -86,9 +86,11 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | 設定モデル・既定値 | `Config/AppConfig.swift`（`ConfigStore`） | `config/config_manager.py` / `constants.py` / `types.py` |
 | ホットキー検出 | `Core/HotkeyMonitor.swift` / `KeyToken.swift` | `app.py` 内 pynput リスナ / `platform/common/keymap.py` |
 | 音声録音 | `Core/AudioRecorder.swift` / `AudioDevices.swift` | `core/audio_recorder.py` / `audio_preprocess.py` / `audio_utils.py` |
+| 文字起こしエンジン一覧（id・モデル・鍵） | `Config/AppConfig.swift`（`Backend`） | `core/engines.py` |
 | 文字起こし（REST） | `Core/Transcriber.swift`（OpenAI / Microsoft MAI / ElevenLabs / Groq） | `core/api_transcriber.py` |
 | 文字起こし（ストリーミング） | `Core/SonioxLiveTranscriber.swift`（Soniox）/ `Core/OpenAILiveTranscriber.swift`（OpenAI ライブ）/ `Core/StreamingTranscriber.swift`（Deepgram・選択肢からは外した） | `core/streaming_transcriber.py` |
 | テキスト整形（Groq）/ 後処理 | `Core/TextFormatter.swift` | `core/text_formatter.py` / `text_processor.py` / `text_utils.py` |
+| 整形モデルの一覧 | `Core/LLMModelCatalog.swift` | `core/llm_catalog.py` |
 | 文字入力（貼り付け） | `Core/Paster.swift`（復元判定は `ClipboardRestorePolicy` / `CLI/PasteRestoreTestMode.swift` が `--paste-restore-test` で実動検証） | `core/input_handler.py`（判定は `decide_restore`） |
 | VAD / マイク自動検出 / 履歴 | `Core/VoiceActivity.swift` / `MicAutoDetector.swift` / `HistoryStore.swift` | `core/vad.py` / `mic_auto_detect.py` / `history.py` |
 | 履歴同期（Mac ⇄ Windows） | `Core/HistorySync.swift` | `core/history_sync.py` |
@@ -99,7 +101,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | 操作音 / メディアダッキング / フルスクリーン判定 | `Core/SoundFX.swift` / `MediaDucker.swift` / `FrontAppTracker.swift`（Mac） | `core/sound_fx.py` / `media_ducker.py` / `fullscreen.py`、実ブラーは `platform/windows/acrylic.py` |
 | 初回セットアップ（オンボーディング） | `UI/OnboardingView.swift`（起動分岐は `VoicekeyApp.swift`） | `ui/onboarding_window.py`（表示配線は `app.py`） |
 | HUD / トレイ | `UI/Hud.swift` / `VoicekeyApp.swift`（メニューバー） | `ui/hud.py` / `system_tray.py` |
-| ブランド（配色・アプリアイコン） | `UI/Brand.swift`（パレットと外観で切り替わる `BrandIcon`。マスターは `design/brand/`） | — （`icon.ico` のみ） |
+| ブランド（配色・アプリアイコン） | `UI/Brand.swift`（パレットと外観で切り替わる `BrandIcon`。マスターは `design/brand/`） | `ui/brand.py`（Mac と同じアプリアイコン画像 `ui/assets/` ＋ メニューバーと同じ形のトレイアイコン） |
 | API キー保管 | `Core/Keychain.swift`（`ApiKeyItem`・`resolve`）/ `UI/SettingsView.swift`（API キータブ）/ `Config/EmbeddedKeys.generated.swift` | `utils/secrets.py` / `.env` |
 | 自動更新 | `Core/UpdaterController.swift`（Sparkle） | `utils/updater.py` |
 | ライブ字幕（personal のみ） | `Caption/`（`CaptionService` / `CaptionGenerationGate` 停止後の古い結果を捨てる世代ゲート / `Audio` システム音声タップ / `Speech` 認識・読み上げ / `Translation` Apple・Gemini・Groq / `Soniox` 音声ストリーミングの認識＋翻訳（`SonioxCaptionStream`・`SonioxCaptionAssembler`） / `Transcript` 議事録の保存 / `Pipeline` 録音パイプライン・`PauseFinalizeTrigger` 無音での確定前倒し / `UI` 字幕 HUD・`CaptionLiveLinePolicy` ライブ行の出し方・メニュー・設定タブ / `CLI` 検証ハーネス） | — （Mac 専用） |

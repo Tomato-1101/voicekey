@@ -26,6 +26,9 @@ from src.config.types import TranscriptionTask
 class _FakeTranscriber:
     """transcribe 呼び出しを記録するだけのモック transcriber。"""
 
+    # 長い録音を分けて並列に送ってよいクライアントとして振る舞う
+    allows_split = True
+
     def __init__(self, name: str, result: str):
         self.name = name
         self.result = result
@@ -49,6 +52,7 @@ def _slot(
         api_model=model,
         api_prompt="",
         format_enabled=format_enabled,
+        format_preset="standard",
         transcriber=transcriber,
     )
 
@@ -136,7 +140,7 @@ class TestConfigChangeBetweenRecordEndAndProcessStart(unittest.TestCase):
             vad_on=False,
             split_on=False,
             volume_normalize=False,
-            format_model="llama-3.1-8b-instant",
+            format_model="qwen/qwen3.8-27b",
             format_auto_prompt="",
         )
 
@@ -154,7 +158,7 @@ class TestConfigChangeBetweenRecordEndAndProcessStart(unittest.TestCase):
 
         # ここで hot-reload: スロット 1 が別プロバイダー（openai）に差し替わる
         tr_b = _FakeTranscriber("openai", "おーぷんあい結果")
-        slot_b = _slot(1, "openai", "gpt-4o-mini-transcribe", tr_b)
+        slot_b = _slot(1, "openai", "gpt-transcribe", tr_b)
         s = self._process_self({1: slot_b})
 
         # 処理開始

@@ -18,18 +18,10 @@ from ..utils.logger import get_logger
 from .constants import DEFAULT_CONFIG, SETTINGS_FILE_NAME, default_format_enabled
 
 logger = get_logger(__name__)
-# 対応バックエンド（REST + ストリーミング）。これ以外は openai にフォールバック
-API_BACKENDS = {"groq", "openai", "elevenlabs", "deepgram"}
-# 製品版（release ブランチ）でユーザーが文字起こしに選べるバックエンド（2 択）。
-# 即時入力 = deepgram（nova-3・短命トークン直叩き＋ストリーミング。しゃべり終わった瞬間に全文を一括入力）/
-# スタンダード = groq（既定・whisper-large-v3-turbo・プロキシ経由。録音後にきれいに整形）。
-# elevenlabs（scribe_v1）は選択肢から外し、スタンダードのハンズフリー録音時に内部でのみ使う
-# （長時間録音の精度対策・app._maybe_handsfree_slot）。openai は開発用のみ。
-# ＝範囲外（旧 elevenlabs / openai 等）の保存値だけ groq へ自動移行する（下の _constrain_release_backends）。
-# deepgram は選択肢に残るため維持。バックエンドの enum・保存値は 4 値のまま（「選べる集合」だけを絞る）。
-RELEASE_TRANSCRIBE_BACKENDS = ("deepgram", "groq")
-# 製品版で範囲外（旧 elevenlabs / openai 等）の保存値を移行する先（スタンダード＝既定）
-RELEASE_DEFAULT_BACKEND = "groq"
+
+# 旧版で既定だったモデル名。選択肢には残っているが、既定のまま使っていた人を新しい既定へ
+# 一度だけ移す（移した後に利用者が選び直した値は触らない）
+_OLD_DEFAULT_MODELS = {"elevenlabs": "scribe_v1"}
 
 
 def _deep_merge(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
@@ -117,7 +109,7 @@ class ConfigManager:
             # 旧形式を検出
             logger.info("旧設定フォーマットを検出。新形式にマイグレーション中...")
 
-            backend = self._normalize_backend(config.pop("transcription_backend", "openai"))
+            backend = self._normalize_backend(config.pop("transcription_backend", "groq"))
             model_key = "groq_model" if backend == "groq" else "openai_model"
             prompt_key = "groq_prompt" if backend == "groq" else "openai_prompt"
 
@@ -155,21 +147,6 @@ class ConfigManager:
 
             logger.info("設定マイグレーション完了")
 
-        # スロット設定が存在する場合は、API専用バックエンドに正規化
-        defaults = DEFAULT_CONFIG.get("default_api_models", {})
-        for slot_id in [1, 2]:
-            slot_key = f"hotkey{slot_id}"
-            slot = config.get(slot_key)
-            if not isinstance(slot, dict):
-                continue
-
-            backend = self._normalize_backend(slot.get("backend", "openai"))
-            slot["backend"] = backend
-
-            api_model = str(slot.get("api_model", "") or "").strip()
-            if not api_model:
-                slot["api_model"] = defaults.get(backend, "")
-
         # 廃止したローカル推論設定キーを削除
         for key in [
             "local_backend",
@@ -190,14 +167,12 @@ class ConfigManager:
     @staticmethod
     def _normalize_backend(backend: Any) -> str:
         """
-        バックエンド値をAPI専用の有効値に正規化する。
+        エンジンの値を、いま選べるエンジン id に読み替える。
 
-        `local` や不正値は `openai` にフォールバックする。
+        Deepgram は Soniox へ、それ以外の知らない値は Groq へ寄せる（core/engines.py）。
         """
-        backend_str = str(backend).lower()
-        if backend_str in API_BACKENDS:
-            return backend_str
-        return "openai"
+        from ..core import engines
+        return engines.normalize_id(backend)
 
     def _load_config(self) -> Dict[str, Any]:
         """
@@ -214,7 +189,12 @@ class ConfigManager:
         """
         if not os.path.exists(self.config_path):
             logger.warning(f"設定ファイルが見つかりません: {self.config_path}。デフォルト値を使用します。")
-            return copy.deepcopy(DEFAULT_CONFIG)
+            config = copy.deepcopy(DEFAULT_CONFIG)
+            # 新規の設定には移行するものが無い。済みの印を付けておかないと、初回保存後の
+            # 読み込みで「旧版からの移行」が走り、利用者が選んだ値（Soniox で整形 ON 等）を戻してしまう
+            config["migrated_format_defaults"] = True
+            config["migrated_engine_catalog"] = True
+            return config
 
         try:
             self.last_mtime = os.path.getmtime(self.config_path)
@@ -229,9 +209,9 @@ class ConfigManager:
             config = _deep_merge(copy.deepcopy(DEFAULT_CONFIG), loaded_config)
             # 常時 ON 固定の項目を矯正（UI から撤去したため保存済みの古い false を上書き）
             self._force_always_on(config)
-            # 製品版は文字起こしバックエンドを 3 択に制限（範囲外の openai 等は groq へ移行・deepgram は維持）
-            self._constrain_release_backends(config)
-            # モード別整形既定の一回限りマイグレーション（deepgram スロットの整形を初回だけ既定 OFF へ）
+            # エンジン・モデル・整形モデルを、いま選べる値へ読み替える（Deepgram → Soniox 等）
+            self._normalize_engines(config)
+            # エンジン別の整形既定を一度だけ適用する（読み替え後のエンジンで判定するのでこの順）
             self._migrate_format_defaults(config)
             return config
 
@@ -261,40 +241,54 @@ class ConfigManager:
         config["audio_preprocess"]["volume_normalize"] = True
 
     @staticmethod
-    def _constrain_release_backends(config: Dict[str, Any]) -> None:
+    def _normalize_engines(config: Dict[str, Any]) -> None:
         """
-        製品版（release）の文字起こしバックエンドを 2 択（deepgram/groq）に制限する。
+        エンジン・モデル・整え方・整形モデルを、いま選べる値へ読み替える（破壊的更新）。
 
-        保存済み settings.yaml に範囲外バックエンド（旧 elevenlabs / openai 等）が残っていても、
-        groq（スタンダード＝既定）へ移行する。移行時は api_model を空にして
-        default_api_models（groq→whisper-large-v3-turbo）にフォールバックさせる。
-        deepgram（即時入力）は選択肢に残したので、保存済み deepgram はそのまま維持される。
-        elevenlabs は enum としては残す（スタンダードのハンズフリー録音時に内部でのみ使う）が、
-        ユーザーが直接選ぶ保存値としては許可しない（「選べる集合」だけを絞る）。
+        毎回の読み込みで通す。読み替え後の値は読み替えの対象にならないので、何度通しても
+        結果は変わらない:
+        - 選択肢から外したエンジン（Deepgram → Soniox）・知らないエンジン（→ Groq）
+        - エンジンを読み替えたスロットのモデル、空・提供の終わったモデル名 → そのエンジンの既定
+        - 提供の終わった整形モデル → おすすめ（利用者が選んだ別のモデルは残す）
+        一度だけ行うもの（migrated_engine_catalog の印で管理）:
+        - 旧版の既定モデル名（ElevenLabs の scribe_v1）→ 新しい既定。scribe_v1 は選択肢に
+          残っているので、移した後に利用者が選び直した値まで毎回戻さないため
 
         Args:
-            config: 矯正対象の設定辞書（その場で書き換える）
+            config: 対象の設定辞書（その場で書き換える）
         """
+        from ..core import engines, llm_catalog, text_formatter
+
+        first_time = not config.get("migrated_engine_catalog")
         for slot_key in ("hotkey1", "hotkey2"):
             slot = config.get(slot_key)
             if not isinstance(slot, dict):
                 continue
-            backend = str(slot.get("backend", "")).lower()
-            if backend not in RELEASE_TRANSCRIBE_BACKENDS:
-                slot["backend"] = RELEASE_DEFAULT_BACKEND
-                # 移行先バックエンドのモデルへフォールバックさせる
-                slot["api_model"] = ""
+            saved = str(slot.get("backend", "")).lower()
+            engine_id = engines.normalize_id(saved)
+            slot["backend"] = engine_id
+            if engine_id != saved:
+                # 別のエンジンのモデル名は使えないので既定へ
+                slot["api_model"] = engines.engine(engine_id).default_model
+            else:
+                slot["api_model"] = engines.normalize_model(engine_id, slot.get("api_model"))
+            if first_time and slot["api_model"] == _OLD_DEFAULT_MODELS.get(engine_id):
+                slot["api_model"] = engines.engine(engine_id).default_model
+            slot["format_preset"] = text_formatter.normalize_preset(slot.get("format_preset"))
+
+        config["format_model"] = llm_catalog.normalize_model(config.get("format_model"))
+        # 旧版が書いていたエンジン別の既定モデル表は使わなくなった（既定はカタログが持つ）
+        config.pop("default_api_models", None)
+        config["migrated_engine_catalog"] = True
 
     @staticmethod
     def _migrate_format_defaults(config: Dict[str, Any]) -> None:
-        """モード別整形既定を既存ユーザーへ一回限りで適用する（破壊的更新・Mac 版と対）。
+        """エンジン別の整形既定を既存ユーザーへ一回限りで適用する（破壊的更新・Mac 版と対）。
 
-        既存ユーザーは format_enabled=true が明示保存されているため、即時入力(deepgram)
-        スロットの整形を初回だけ既定 OFF（速度全振り）へ矯正する。矯正済みマーカー
-        （migrated_format_defaults）を立て、以後は二度と触らない＝その後ユーザーが deepgram で
-        整形 ON にしたらそれを尊重する。マーカーは ConfigManager.save の deep merge で保持される
-        （save は self.config を土台にマージするので、_load_config で立てたマーカーが次回保存で
-        settings.yaml へ書き戻る）。deepgram 以外（スタンダード=groq 等）は既定 ON のままなので触らない。
+        既存ユーザーは format_enabled=true が明示保存されているため、速さ優先のエンジン
+        （Soniox・OpenAI ライブ）のスロットの整形を初回だけ既定 OFF へ矯正する。矯正済みの印
+        （migrated_format_defaults）を立て、以後は二度と触らない＝その後ユーザーが整形 ON に
+        したらそれを尊重する。印は ConfigManager.save の deep merge で保持される。
 
         Args:
             config: 矯正対象の設定辞書（その場で書き換える）
@@ -305,9 +299,7 @@ class ConfigManager:
             slot = config.get(slot_key)
             if not isinstance(slot, dict):
                 continue
-            backend = str(slot.get("backend", "")).lower()
-            # deepgram のみ既定 OFF へ矯正（他バックエンドの既定 ON は明示保存済みなので触らない）
-            if not default_format_enabled(backend):
+            if not default_format_enabled(slot.get("backend", "")):
                 slot["format_enabled"] = False
         config["migrated_format_defaults"] = True
 
@@ -361,7 +353,7 @@ class ConfigManager:
         try:
             with self._lock:
                 # 内部設定を更新（ネストした辞書のカスタムキーを失わないよう deep merge する。
-                # 浅い update だと default_api_models 等の手書き追加キーが丸ごと消える）
+                # 浅い update だとスロット内の手書き追加キーが丸ごと消える）
                 self.config = _deep_merge(self.config, new_config)
                 # 常時 ON 固定の項目はファイルにも True で書き戻す（UI から撤去済み）
                 self._force_always_on(self.config)

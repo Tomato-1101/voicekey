@@ -55,6 +55,18 @@ class TestHistoryStore(unittest.TestCase):
         self.assertEqual(items[0]["text"], f"エントリ {MAX_ITEMS + 4}")
         self.assertEqual(items[-1]["text"], "エントリ 5")
 
+    def test_max_items_matches_mac(self):
+        """上限は Mac 版 HistoryStore.maxItems と同じ 200 件。"""
+        self.assertEqual(MAX_ITEMS, 200)
+
+    def test_load_trims_to_max_items(self):
+        """上限を超える件数が保存されたファイルも、読み込み時に上限まで切り詰める。"""
+        data = [{"text": f"保存済み {i}", "date": ""} for i in range(MAX_ITEMS + 3)]
+        self.path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        items = HistoryStore(self.path).items()
+        self.assertEqual(len(items), MAX_ITEMS)
+        self.assertEqual(items[0]["text"], "保存済み 0")
+
     def test_persistence_across_instances(self):
         """別インスタンスで開き直しても履歴が残る（再起動相当）。"""
         store = HistoryStore(self.path)

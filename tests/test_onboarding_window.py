@@ -202,7 +202,7 @@ class TestOnboardingWindow(unittest.TestCase):
                 self.assertFalse(win._practice_pages[_STEP_PRACTICE_BASIC]["key_note"].isVisible())
 
     def test_summary_shows_default_hotkeys(self):
-        # まとめページのカードが既定ホットキー（<f2>/<f3>）と新語彙（スタンダード）を出す
+        # まとめページのカードが既定ホットキー（<f2>/<f3>）とエンジン名を出す
         from src.ui.onboarding_window import _STEP_SUMMARY
 
         with mock.patch("src.utils.secrets.get_api_key", return_value=None):
@@ -216,7 +216,8 @@ class TestOnboardingWindow(unittest.TestCase):
             joined = "\n".join(texts)
             self.assertIn("<f2>", joined)
             self.assertIn("<f3>", joined)
-            self.assertIn("スタンダード", joined)  # 既定バックエンド groq の新語彙
+            self.assertIn("Soniox", joined)  # スロット 1 の既定エンジン
+            self.assertIn("Groq", joined)    # スロット 2 の既定エンジン
             self.assertIn("録音キー 1（メイン）", joined)
 
     def test_finish_emits_once(self):

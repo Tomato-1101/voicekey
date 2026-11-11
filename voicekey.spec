@@ -4,8 +4,11 @@ import sys
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 # src/ は同梱しない（Python ソース平文同梱の防止）。コードは PYZ アーカイブに入る。
-# src/ 内に実行時読み込みのデータファイルは無いことを確認済み（.py のみ）
-datas = []
+# 実行時に読むデータファイルはロゴ画像だけ（src/ui/brand.py が自分の隣の assets/ から読む）
+datas = [
+    ('src/ui/assets/AppIconLight.png', 'src/ui/assets'),
+    ('src/ui/assets/AppIconDark.png', 'src/ui/assets'),
+]
 binaries = []
 hiddenimports = ['tzdata']
 

@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from src.utils.update_signing import sign_ed25519
-from src.utils.updater import Updater, parse_version
+from src.utils.updater import Updater, parse_version, windows_asset_name
 
 
 def _make_test_keypair():
@@ -60,18 +60,36 @@ class TestParseVersion(unittest.TestCase):
         self.assertEqual(parse_version("1.2.3+build9"), (1, 2, 3))
 
 
+class _Response(io.BytesIO):
+    """urlopen の with 文で使える偽の HTTP 応答。"""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
 def _fake_urlopen(payload: dict):
-    """version.json の HTTP 応答を偽装する urlopen のモックを返す。"""
+    """releases/latest の HTTP 応答を偽装する urlopen のモックを返す。"""
     body = json.dumps(payload).encode("utf-8")
-
-    class _Response(io.BytesIO):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            self.close()
-
     return mock.MagicMock(return_value=_Response(body))
+
+
+def _release(tag: str, asset_names=()):
+    """GitHub の releases/latest 応答（必要な項目だけ）を作る。"""
+    return {
+        "tag_name": tag,
+        "assets": [
+            {
+                "name": n,
+                "size": 123,
+                "digest": "sha256:" + "a" * 64,
+                "browser_download_url": f"https://github.com/x/y/releases/download/{tag}/{n}",
+            }
+            for n in asset_names
+        ],
+    }
 
 
 class TestUpdaterCheck(unittest.TestCase):
@@ -80,28 +98,69 @@ class TestUpdaterCheck(unittest.TestCase):
     def setUp(self):
         self.updater = Updater()
         self.available = []
+        self.up_to_date = []
         self.updater.update_available.connect(self.available.append)
+        self.updater.up_to_date.connect(lambda: self.up_to_date.append(True))
 
-    def test_newer_version_emits_signal(self):
-        """現行より新しいバージョンで update_available が発火する。"""
-        info = {"version": "99.0.0", "url": "http://example/setup.exe", "sha256": "x"}
+    def test_asset_name_rule(self):
+        """Windows 用資産名は voicekey-<版>-windows-setup.exe。"""
+        self.assertEqual(windows_asset_name("2.4.0"), "voicekey-2.4.0-windows-setup.exe")
+
+    def test_request_goes_to_github_latest(self):
+        """取得先は本リポジトリの releases/latest（User-Agent 付き）。"""
+        opener = _fake_urlopen(_release("v1.0.0"))
+        with mock.patch("src.utils.updater.APP_VERSION", "1.0.0"), \
+             mock.patch("urllib.request.urlopen", opener):
+            self.updater._check()
+        req = opener.call_args[0][0]
+        self.assertEqual(
+            req.full_url, "https://api.github.com/repos/Tomato-1101/voicekey/releases/latest"
+        )
+        self.assertTrue(req.get_header("User-agent"))
+
+    def test_newer_version_with_assets_emits_signal(self):
+        """新しい版で exe と署名の資産が揃っていれば update_available が発火する。"""
+        name = windows_asset_name("99.0.0")
+        info = _release("v99.0.0", [name, name + ".sig", "voicekey-99.0.0.zip"])
         with mock.patch("urllib.request.urlopen", _fake_urlopen(info)):
             self.updater._check()
         self.assertEqual(self.available, ["99.0.0"])
-        self.assertEqual(self.updater._info, info)
+        self.assertTrue(self.updater._info["url"].endswith(name))
+        self.assertTrue(self.updater._info["signature_url"].endswith(name + ".sig"))
+        self.assertEqual(self.updater._info["size"], 123)
+        self.assertEqual(self.updater._info["digest"], "sha256:" + "a" * 64)
+
+    def test_mac_only_release_is_no_update(self):
+        """Windows 用資産が無い Latest（Mac だけのリリース）は更新なしとして黙って終える。"""
+        info = _release("v99.0.0", ["voicekey-99.0.0.zip", "appcast.xml"])
+        with mock.patch("urllib.request.urlopen", _fake_urlopen(info)):
+            self.updater._check(manual=True)
+        self.assertEqual(self.available, [])
+        self.assertIsNone(self.updater._info)
+        self.assertEqual(self.up_to_date, [True])
+
+    def test_missing_signature_asset_is_no_update(self):
+        """exe はあっても署名がまだ足されていなければ更新扱いにしない。"""
+        info = _release("v99.0.0", [windows_asset_name("99.0.0")])
+        with mock.patch("urllib.request.urlopen", _fake_urlopen(info)):
+            self.updater._check()
+        self.assertEqual(self.available, [])
+        self.assertIsNone(self.updater._info)
 
     def test_same_version_no_signal(self):
         """現行と同じバージョンでは何も起きない。"""
+        name = windows_asset_name("1.0.0")
         with mock.patch("src.utils.updater.APP_VERSION", "1.0.0"), \
-             mock.patch("urllib.request.urlopen", _fake_urlopen({"version": "1.0.0"})):
+             mock.patch("urllib.request.urlopen", _fake_urlopen(_release("v1.0.0", [name, name + ".sig"]))):
             self.updater._check()
         self.assertEqual(self.available, [])
         self.assertIsNone(self.updater._info)
 
     def test_older_version_no_signal(self):
-        """フィードが古い（ロールバック）場合は無視する。"""
+        """Latest が古い（ロールバック）場合は無視する。"""
+        name = windows_asset_name("1.0.0")
         with mock.patch("src.utils.updater.APP_VERSION", "2.0.0"), \
-             mock.patch("urllib.request.urlopen", _fake_urlopen({"version": "1.0.0"})):
+             mock.patch("urllib.request.urlopen", _fake_urlopen(_release("v1.0.0", [name, name + ".sig"]))):
             self.updater._check()
         self.assertEqual(self.available, [])
 
@@ -110,6 +169,14 @@ class TestUpdaterCheck(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", side_effect=OSError("offline")):
             self.updater._check()  # 例外が漏れないこと
         self.assertEqual(self.available, [])
+
+    def test_network_error_manual_reports_failure(self):
+        """手動チェックの失敗は update_failed で知らせる。"""
+        failed = []
+        self.updater.update_failed.connect(failed.append)
+        with mock.patch("urllib.request.urlopen", side_effect=OSError("offline")):
+            self.updater._check(manual=True)
+        self.assertEqual(len(failed), 1)
 
     def test_start_noop_in_dev_build(self):
         """ソースから実行しているとき（sys.frozen が無い）は start() が定期チェックを開始しない。"""
@@ -121,6 +188,9 @@ class TestUpdaterCheck(unittest.TestCase):
 class TestUpdaterInstall(unittest.TestCase):
     """ダウンロード・検証・インストーラ起動（_install）のテスト。"""
 
+    EXE_URL = "https://github.com/x/y/releases/download/v9.9.9/voicekey-9.9.9-windows-setup.exe"
+    SIG_URL = EXE_URL + ".sig"
+
     def setUp(self):
         self.updater = Updater()
         self.failed = []
@@ -130,7 +200,7 @@ class TestUpdaterInstall(unittest.TestCase):
 
         # ダウンロードされるインストーラの中身を偽装
         self.installer_bytes = b"fake-installer-binary"
-        self.sha256 = hashlib.sha256(self.installer_bytes).hexdigest()
+        self.digest = "sha256:" + hashlib.sha256(self.installer_bytes).hexdigest()
         self._tmp = tempfile.TemporaryDirectory()
 
         # テスト用 Ed25519 鍵で偽インストーラを署名（本物の秘密鍵には触れない）
@@ -140,36 +210,45 @@ class TestUpdaterInstall(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def _fake_install_urlopen(self):
-        """_install のダウンロード用 urlopen を偽装する（偽インストーラのバイト列を返す）。"""
+    def _info(self, **overrides):
+        """_check が作る _info と同じ形の辞書を作る。"""
+        info = {
+            "version": "9.9.9", "url": self.EXE_URL, "size": len(self.installer_bytes),
+            "digest": self.digest, "signature_url": self.SIG_URL,
+        }
+        info.update(overrides)
+        return info
 
-        class _Response(io.BytesIO):
-            def __enter__(self):
-                return self
+    def _run_install(self, info, pubkey, signature=None):
+        """指定した _info・公開鍵・署名ファイルの中身で _install を実行する共通ヘルパ。"""
+        sig_text = self.signature if signature is None else signature
 
-            def __exit__(self, *args):
-                self.close()
+        def _urlopen(req, timeout=None):
+            # exe と署名ファイルを URL で出し分ける（実通信はしない）
+            if req.full_url == self.SIG_URL:
+                return _Response((sig_text + "\n").encode("ascii"))
+            return _Response(self.installer_bytes)
 
-        return mock.MagicMock(return_value=_Response(self.installer_bytes))
-
-    def _run_install(self, info, pubkey):
-        """指定した _info と公開鍵設定で _install を実行する共通ヘルパ。"""
         self.updater._info = info
         self.updater._installing = True
         with mock.patch("src.utils.updater.UPDATE_PUBLIC_KEY_ED25519", pubkey), \
-             mock.patch("urllib.request.urlopen", self._fake_install_urlopen()), \
+             mock.patch("urllib.request.urlopen", side_effect=_urlopen), \
              mock.patch("subprocess.Popen") as popen, \
              mock.patch("tempfile.gettempdir", return_value=self._tmp.name):
             self.updater._install()
         return popen
 
+    def _assert_failed(self, popen, word):
+        """起動せず失敗を通知し、再試行できる状態に戻っていることを確かめる。"""
+        popen.assert_not_called()
+        self.assertEqual(self.quit_requests, [])
+        self.assertEqual(len(self.failed), 1)
+        self.assertIn(word, self.failed[0])
+        self.assertFalse(self.updater._installing)
+
     def test_valid_signature_launches_installer_and_quits(self):
-        """署名と SHA256 が両方一致すればサイレントインストーラを起動してアプリ終了を要求する。"""
-        info = {
-            "version": "9.9.9", "url": "http://example/s.exe",
-            "sha256": self.sha256, "ed25519": self.signature,
-        }
-        popen = self._run_install(info, self.pub_b64)
+        """サイズ・署名・SHA256 が全て一致すればサイレントインストーラを起動してアプリ終了を要求する。"""
+        popen = self._run_install(self._info(), self.pub_b64)
 
         popen.assert_called_once()
         args = popen.call_args[0][0]
@@ -180,71 +259,56 @@ class TestUpdaterInstall(unittest.TestCase):
         self.assertEqual(self.failed, [])
 
     def test_missing_signature_fails_without_launch(self):
-        """公開鍵が設定されているのに署名が無ければ起動せず失敗にする。"""
-        info = {"version": "9.9.9", "url": "http://example/s.exe", "sha256": self.sha256}
-        popen = self._run_install(info, self.pub_b64)
-
-        popen.assert_not_called()
-        self.assertEqual(self.quit_requests, [])
-        self.assertEqual(len(self.failed), 1)
-        self.assertIn("署名", self.failed[0])
-        self.assertFalse(self.updater._installing)
+        """公開鍵が設定されているのに署名ファイルが無ければ起動せず失敗にする。"""
+        popen = self._run_install(self._info(signature_url=None), self.pub_b64)
+        self._assert_failed(popen, "署名")
 
     def test_tampered_installer_with_matching_sha256_fails(self):
-        """MITM 対策の核心: SHA256 を改竄に合わせても、正規署名が無ければ弾く。
+        """MITM 対策の核心: digest を改竄に合わせても、正規署名が無ければ弾く。
 
-        フィードを掌握した攻撃者は exe と sha256 を整合させられるが、秘密鍵を
+        リリースを掌握した攻撃者は exe と digest を整合させられるが、秘密鍵を
         持たないため署名は作れない。別バイト列に対する正規署名を載せても失敗する。
         """
         wrong_sig = sign_ed25519(self.seed_b64, b"malicious-installer")
-        info = {
-            "version": "9.9.9", "url": "http://example/s.exe",
-            "sha256": self.sha256, "ed25519": wrong_sig,
-        }
-        popen = self._run_install(info, self.pub_b64)
-
-        popen.assert_not_called()
-        self.assertEqual(self.quit_requests, [])
-        self.assertEqual(len(self.failed), 1)
-        self.assertIn("署名", self.failed[0])
-        self.assertFalse(self.updater._installing)
+        popen = self._run_install(self._info(), self.pub_b64, signature=wrong_sig)
+        self._assert_failed(popen, "署名")
 
     def test_signature_from_other_key_fails(self):
         """別の鍵で署名されていれば（公開鍵不一致）起動しない。"""
         other_seed, _ = _make_test_keypair()
-        info = {
-            "version": "9.9.9", "url": "http://example/s.exe",
-            "sha256": self.sha256, "ed25519": sign_ed25519(other_seed, self.installer_bytes),
-        }
-        popen = self._run_install(info, self.pub_b64)
-
-        popen.assert_not_called()
-        self.assertEqual(len(self.failed), 1)
-        self.assertIn("署名", self.failed[0])
+        popen = self._run_install(
+            self._info(), self.pub_b64, signature=sign_ed25519(other_seed, self.installer_bytes)
+        )
+        self._assert_failed(popen, "署名")
 
     def test_sha256_mismatch_fails_without_launch(self):
-        """署名が通っても SHA256 不一致なら起動せず失敗にする（破損検出の補助）。"""
-        info = {
-            "version": "9.9.9", "url": "http://example/s.exe",
-            "sha256": "0" * 64, "ed25519": self.signature,
-        }
-        popen = self._run_install(info, self.pub_b64)
+        """署名が通っても digest 不一致なら起動せず失敗にする（破損検出の補助）。"""
+        popen = self._run_install(self._info(digest="sha256:" + "0" * 64), self.pub_b64)
+        self._assert_failed(popen, "SHA256")
 
-        popen.assert_not_called()
-        self.assertEqual(self.quit_requests, [])
-        self.assertEqual(len(self.failed), 1)
-        self.assertIn("SHA256", self.failed[0])
-        # フラグが戻り、次回のインストール試行が可能なこと
-        self.assertFalse(self.updater._installing)
+    def test_size_mismatch_fails_without_launch(self):
+        """途中で切れたダウンロード（サイズ不一致）は起動しない。"""
+        popen = self._run_install(self._info(size=len(self.installer_bytes) + 1), self.pub_b64)
+        self._assert_failed(popen, "サイズ")
+
+    def test_no_digest_relies_on_signature(self):
+        """digest の無いリリースでも、署名が通れば起動する。"""
+        popen = self._run_install(self._info(digest=None), self.pub_b64)
+        popen.assert_called_once()
+        self.assertEqual(self.failed, [])
 
     def test_no_pubkey_falls_back_to_sha256_only(self):
         """公開鍵が未設定（移行期）なら署名検証をスキップし SHA256 のみで起動する。"""
-        info = {"version": "9.9.9", "url": "http://example/s.exe", "sha256": self.sha256}
-        popen = self._run_install(info, "")
+        popen = self._run_install(self._info(signature_url=None), "")
 
         popen.assert_called_once()
         self.assertEqual(self.quit_requests, [True])
         self.assertEqual(self.failed, [])
+
+    def test_no_pubkey_and_no_digest_fails(self):
+        """署名も SHA256 も無ければ検証できないのでインストールしない。"""
+        popen = self._run_install(self._info(signature_url=None, digest=None), "")
+        self._assert_failed(popen, "検証できません")
 
     def test_download_and_install_ignores_double_call(self):
         """インストール中の二重呼び出しは無視される。"""

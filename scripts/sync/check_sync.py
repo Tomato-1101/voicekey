@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 
 # Windows の既定 stdout は cp1252（英語ロケール）で、日本語の進捗 print が
-# UnicodeEncodeError になりスクリプトごと落ちる（scripts/build/generate_embedded_keys.py と同じ対策）。
+# UnicodeEncodeError になりスクリプトごと落ちるため、UTF-8 に切り替える。
 for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8")

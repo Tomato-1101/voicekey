@@ -58,12 +58,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 
     # ハンズフリー切替キー（この切替キー＋ホットキーで toggle 録音。空＝無効）
     "handsfree_key": "",
-    # 長文を無音区間で分割し API へ並列送信する（既定オン。Deepgram ストリーミングは対象外）
+    # 長文を無音区間で分割し API へ並列送信する（既定オン。録音しながら送るエンジンは対象外）
     "split_parallel_enabled": True,
 
-    # LLM テキスト整形に使う Groq モデル（両ホットキー共通）
-    "format_model": "llama-3.1-8b-instant",
-    # 整形プロンプト本文（空 = 既定の DEFAULT_FORMAT_PROMPT を使用）
+    # LLM テキスト整形に使う Groq モデル（両ホットキー共通。一覧は core/llm_catalog.py）
+    "format_model": "qwen/qwen3.8-27b",
+    # 整形プロンプト本文（空 = スロットごとの「整え方」の本文を使用）
     "format_auto_prompt": "",
 
     # ユーザー辞書（確定置換）。文字起こし・整形が終わった最終テキストに対し、
@@ -84,17 +84,20 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "一番", "一度",
     ],
 
-    # ホットキー1 設定＝普通入力（製品版の既定: スタンダード = Groq whisper-large-v3-turbo・押している間）
+    # ホットキー1 設定＝普通入力（既定: Soniox・押している間。しゃべりながら送り、離した瞬間に入力）。
+    # backend はエンジン id（core/engines.py の一覧・Mac 版と同じ文字列）。
+    # api_model が空ならそのエンジンの既定モデルを使う。
     "hotkey1": {
         "hotkey": "<f2>",
         "hotkey_mode": HotkeyMode.HOLD.value,
-        "backend": "groq",
+        "backend": "soniox",
         "api_model": "",
         "api_prompt": "",
-        "format_enabled": True,         # 製品版は裏でテキスト整形（既定オン）
+        "format_enabled": False,        # Soniox は速さ優先のため整形は既定オフ
+        "format_preset": "standard",    # 整え方（standard / punctuation / clean / bullets）
     },
 
-    # ホットキー2 設定＝ハンズフリー（製品版の既定: スタンダード = Groq whisper-large-v3-turbo・トグル）。
+    # ホットキー2 設定＝ハンズフリー（既定: Groq whisper-large-v3-turbo・トグル）。
     # toggle 録音では app._maybe_handsfree_slot が内部で ElevenLabs(scribe_v1) へ自動切替する
     # （長時間録音の精度対策。保存値 groq は変えない）。
     "hotkey2": {
@@ -103,20 +106,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "backend": "groq",
         "api_model": "",
         "api_prompt": "",
-        "format_enabled": True,         # 製品版は裏でテキスト整形（既定オン）
+        "format_enabled": True,
+        "format_preset": "standard",
     },
 
-    # APIモデルデフォルト値（バックエンド別、ベンチ実測 2026-06-10 に基づく既定）
-    "default_api_models": {
-        "groq": "whisper-large-v3-turbo",   # REST 最速
-        "openai": "gpt-4o-mini-transcribe",
-        "elevenlabs": "scribe_v1",          # 日本語 REST 最高精度（v2 は長文後退）
-        "deepgram": "nova-3",               # ストリーミング/REST とも最良
-    },
-
-    # ストリーミング文字起こし（Deepgram）。バックエンドが deepgram のホットキーで、
-    # 録音と並行して確定テキストを受信し、離した瞬間に全文を一括入力する（即時入力）。
-    # オフにすると従来どおり録音後に REST でまとめて変換する
+    # ストリーミング文字起こし。録音しながら送るエンジン（Soniox・OpenAI ライブ）のホットキーで、
+    # 録音と並行して確定テキストを受信し、離した瞬間に全文を一括入力する。
     "streaming_enabled": True,
 
     # 録音中の HUD（画面下部中央の小型ピル）を表示するか
@@ -171,17 +166,17 @@ SETTINGS_FILE_NAME: str = "settings.yaml"
 
 
 def default_format_enabled(backend: str) -> bool:
-    """モード別のテキスト整形の既定 ON/OFF（Mac 版 Backend.defaultFormatEnabled と一致）。
+    """エンジン別のテキスト整形の既定 ON/OFF（Mac 版 Backend.defaultFormatEnabled と一致）。
 
-    即時入力(deepgram)は速度全振りのため既定 OFF（トグルで ON は可能）、
-    スタンダード(groq)ほかは録音後にきれいに整形するため既定 ON。設定 UI でモードを
-    切り替えたとき整形トグルをこの既定へ追従させる（config_manager の一回限り
-    マイグレーションと settings_window の backend 変更ハンドラで共用する）。
+    録音しながら送るエンジン（Soniox・OpenAI ライブ）は速さ優先のため既定 OFF、
+    録音後に送るエンジンは既定 ON。正本は core/engines.py のカタログ。
 
     Args:
-        backend: バックエンド識別子（"deepgram" / "groq" 等）
+        backend: エンジン id（旧い値・知らない値は読み替えてから判定する）
 
     Returns:
-        そのモードの整形既定（deepgram のみ False、他は True）
+        そのエンジンの整形既定
     """
-    return str(backend).lower() != "deepgram"
+    # config パッケージの読み込み中に core を読むと循環するので、呼ばれたときに読む
+    from ..core import engines
+    return engines.engine(engines.normalize_id(backend)).default_format_enabled

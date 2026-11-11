@@ -46,6 +46,31 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: python -m unittest discover -s tests -v
 
+  python-tests-windows:
+    name: Python ユニットテスト（Windows）
+    # Windows 版の実際の動作環境で回す（win32 固有の分岐・パス区切り・既定エンコーディングの違いを拾う）
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 依存パッケージのインストール
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: ユニットテスト（オフスクリーン Qt・ネットワーク/キー/モデル不要）
+        env:
+          QT_QPA_PLATFORM: offscreen
+          # 実 Credential Manager に触れない（テストはすべて偽物で完結させる）
+          PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
+        run: python -m unittest discover -s tests -t .
+
   swift-tests:
     name: Swift ユニットテスト（Mac 版）
     runs-on: macos-latest
