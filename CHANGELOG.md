@@ -95,6 +95,9 @@ voicekeyの変更履歴を記録するファイルです。
 - 設定: スロットに `format_preset` を追加、`default_api_models` を廃止、移行の印 `migrated_engine_catalog`
 - 削除: `scripts/build/generate_embedded_keys.py`。`voicekey.spec` はロゴ画像 2 枚を同梱する
 - 実 API・実機 Windows では未確認（テストは通信を偽物に差し替え）
+- `scripts/dev/preview_ui.py` を新しい設定画面に合わせて作り直した（全ページ×2 サイズ・ピル 7 状態・トレイを
+  ライト／ダークで PNG に。鍵・マイク・議事録は偽物を読む）。GitHub の Windows テストで回し、PNG を artifact
+  `windows-ui-preview` に 14 日残す
 
 ### Changed
 - **Windows 版から製品版のログイン・課金・サーバー経由の層を外した（Windows のみ）**。文字起こしと整形は、

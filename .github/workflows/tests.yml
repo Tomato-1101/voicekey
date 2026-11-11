@@ -74,6 +74,20 @@ jobs:
           PYTHONUTF8: "1"
         run: python -m unittest discover -s tests -t .
 
+      - name: 画面の試し描き（設定の全ページ・ピル・トレイを PNG に）
+        # 実 Windows のフォント・描画で見た目を確かめるため。Mac では同じ字形にならない
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONUTF8: "1"
+        run: python scripts/dev/preview_ui.py ui-preview
+
+      - name: 試し描きの PNG を保存
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-ui-preview
+          path: ui-preview/
+          retention-days: 14
+
   swift-tests:
     name: Swift ユニットテスト（Mac 版）
     runs-on: macos-latest
