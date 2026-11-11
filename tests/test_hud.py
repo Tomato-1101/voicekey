@@ -118,9 +118,12 @@ class HudHandsFreeTests(unittest.TestCase):
             painter = QPainter(canvas)
             hud.render(painter, QPoint(0, 0))  # 例外が出れば失敗
             painter.end()
+            # 動きを終わらせた最終形でも描ける
+            hud.settle()
+            hud.render(painter := QPainter(canvas), QPoint(0, 0))
+            painter.end()
             hud._notice_timer.stop()
-            hud._size_anim.stop()
-            hud._blink.stop()
+            hud._timer.stop()
             hud.deleteLater()
 
 
@@ -152,20 +155,25 @@ class HudTranscribingStableTests(unittest.TestCase):
         明滅（opacity 往復）は末尾「…」が谷で先に消え、可視インクの重心が横に振れて
         「変換中の文字が横に揺れる」と知覚される（Mac 実測で確認・カプセル幅凍結でも消えない）。
         そのため Mac/Windows とも変換中は明滅を撤去し静止表示にした。ここでは Windows 側で
-        変換中に入っても _blink が起動せず _transcribe_opacity が 1.0 で固定であることを保証する。
+        変換中に入っても _transcribe_opacity が 1.0 で固定で、変形が終われば動きを進める
+        タイマーが止まる（＝何も動いていない）ことを保証する。
         """
-        from PySide6.QtCore import QAbstractAnimation
-
         hud = Hud(enabled=True)
         hud.always_visible = True
         hud.set_state("recording")
         hud.set_state("transcribing")
-
-        # 変換中は明滅を開始しない（＝アニメは走っていない）。不透明度は満点で静止。
-        self.assertNotEqual(hud._blink.state(), QAbstractAnimation.State.Running)
         self.assertAlmostEqual(hud._transcribe_opacity, 1.0)
 
-        hud._size_anim.stop()
+        # 変形（録音→変換中）が終わるまで進める。終われば止まり、その後は何も動かない
+        for _ in range(2000):
+            if not hud._timer.isActive():
+                break
+            hud._tick()
+        self.assertFalse(hud._timer.isActive())
+        self.assertAlmostEqual(hud._transcribe_opacity, 1.0)
+        self.assertAlmostEqual(hud._content_alpha, 1.0)
+        self.assertEqual(hud._content_mode, "transcribing")
+
         hud.deleteLater()
 
     def test_transcribing_target_size_stable(self):
@@ -177,7 +185,7 @@ class HudTranscribingStableTests(unittest.TestCase):
         target0 = hud._target_size()
         for _ in range(5):
             self.assertEqual(hud._target_size(), target0)  # 目標サイズ不変（幅の呼吸なし）
-        hud._size_anim.stop()
+        hud._timer.stop()
         hud.deleteLater()
 
 
