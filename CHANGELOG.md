@@ -2,6 +2,20 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
+## [Unreleased] - 2026-11-11
+
+### Changed
+- **Windows 版から製品版のログイン・課金・サーバー経由の層を外した（Windows のみ）**。文字起こしと整形は、
+  設定 › API キー に入れた自分のキー（無ければ環境変数）で各プロバイダーへ直接送る。
+  設定の「アカウント」ページを無くし、「API キー」ページを常に出す。セットアップガイドの 2 手順目は
+  「ログイン」から「API キーを用意する」になった。実績は端末内の値だけを表示する。
+  `voicekey://` の URL スキーム登録、起動時・録音後のサーバー暖機もやめた（プロバイダーへの事前接続は残る）
+
+### Technical Details
+- 削除: `src/core/auth_client.py` `backend_client.py` `login_coordinator.py` `deep_link.py` と対応テスト
+- 追加: `src/utils/single_instance.py`（二重起動防止だけを残した版）、`src/core/feedback_client.py`（匿名フィードバック送信）
+- `api_transcriber.transcribe(audio)` に統一（`server_format` を廃止）。`stats.py` のアカウント連携を削除
+
 ## [2.3.0] - 2026-10-12
 
 ### Added
