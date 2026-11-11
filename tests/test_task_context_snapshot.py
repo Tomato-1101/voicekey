@@ -127,9 +127,13 @@ class TestConfigChangeBetweenRecordEndAndProcessStart(unittest.TestCase):
             _record_stats=mock.Mock(),
             _insert_and_enter=mock.Mock(),
             notice=mock.Mock(),
+            # 料金の記録先（処理の最後に書かれる。ここでは中身を見ない）
+            _api_usage=mock.Mock(),
         )
         # 整形も snapshot を使うことを確認するため、実装をそのまま束縛して呼ばせる
         s._maybe_format = VoicekeyApp._maybe_format.__get__(s)
+        # _process_task は計測と料金の記録で包むだけで、処理の本体は _run_task にある
+        s._run_task = VoicekeyApp._run_task.__get__(s)
         return s
 
     def _ctx(self, slot: HotkeySlot) -> TaskContext:

@@ -7,7 +7,8 @@
 
 from typing import Optional, Union
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from ..config.types import AppState
@@ -37,6 +38,7 @@ class SystemTray(QSystemTrayIcon):
     # メニューアクション用シグナル
     open_home = Signal()
     open_settings = Signal()
+    open_meeting = Signal()
     force_reset = Signal()
     quit_app = Signal()
     install_update = Signal()
@@ -51,6 +53,8 @@ class SystemTray(QSystemTrayIcon):
         self._platform = platform_adapter or get_platform_adapter()
         # 今日の API 代を数える元（set_api_usage で渡されるまでは行を出さない）
         self._api_usage = None
+        # いまの料金の数え方を返す関数（無ければ定価）
+        self._cost_mode = None
 
         self._setup_icon()
         self._setup_menu()
@@ -96,6 +100,19 @@ class SystemTray(QSystemTrayIcon):
         home_action.triggered.connect(self.open_home.emit)
         settings_action = self._menu.addAction("設定…")
         settings_action.triggered.connect(self.open_settings.emit)
+        # Google Meet 議事録ボット（Mac と同じサブメニュー。ボットが渡されるまでは出さない）
+        self._meetbot = None
+        self._meet_menu = QMenu(self._MEET_TITLE)
+        self._meet_menu.aboutToShow.connect(self._rebuild_meet_menu)
+        self._meet_action = self._menu.addMenu(self._meet_menu)
+        self._meet_action.setVisible(False)
+        # 翻訳して入力（常時）。Mac のメニューと同じ位置のチェック項目（set_translate_toggle で出す）
+        self._translate_get = None
+        self._translate_set = None
+        self._translate_action = self._menu.addAction("翻訳して入力（常時）")
+        self._translate_action.setCheckable(True)
+        self._translate_action.setVisible(False)
+        self._translate_action.triggered.connect(self._on_translate_triggered)
 
         # セットアップガイドの再表示項目は置かない（Mac と同じく起動時の自動判定のみで表示する。
         # ユーザー指示: 「起動時にだけ表示するようにして」）。
@@ -114,17 +131,112 @@ class SystemTray(QSystemTrayIcon):
 
         # 料金は開くたびに数え直す（録音のたびに更新するより安く、開いた時点の値が必ず出る）
         self._menu.aboutToShow.connect(self._refresh_cost)
+        self._menu.aboutToShow.connect(self._refresh_translate)
 
         self.setContextMenu(self._menu)
 
-    def set_api_usage(self, api_usage) -> None:
+    _MEET_TITLE = "Meet 議事録ボット"
+
+    def set_translate_toggle(self, getter, setter) -> None:
+        """
+        「翻訳して入力（常時）」の読み書き先を渡す（項目が出るようになる）。
+
+        Args:
+            getter: いまの値を返す関数（メニューを開くたびに読み直す。設定画面での切り替えを拾うため）
+            setter: 新しい値を保存する関数
+        """
+        self._translate_get = getter
+        self._translate_set = setter
+        self._translate_action.setVisible(True)
+        self._refresh_translate()
+
+    def _refresh_translate(self) -> None:
+        if self._translate_get is not None:
+            self._translate_action.setChecked(bool(self._translate_get()))
+
+    def _on_translate_triggered(self, checked: bool) -> None:
+        if self._translate_set is not None:
+            self._translate_set(checked)
+
+    def set_meetbot(self, meetbot) -> None:
+        """
+        議事録ボットを渡す（サブメニューが出るようになる）。
+
+        Args:
+            meetbot: MeetBotService
+        """
+        self._meetbot = meetbot
+        self._meet_action.setVisible(True)
+        # メニューを開かなくても「いま会議に入っている」が見えるよう、見出しに状態を出す（Mac と同じ）
+        meetbot.state_changed.connect(lambda state, _text: self._update_meet_title(state))
+
+    def _update_meet_title(self, state: str) -> None:
+        from ..meetbot import rules
+
+        suffix = {
+            rules.STATE_RECORDING: "（参加中）",
+            rules.STATE_WAITING_APPROVAL: "（承認待ち）",
+            rules.STATE_LAUNCHING: "（準備中）",
+            rules.STATE_JOINING: "（準備中）",
+        }.get(state, "")
+        self._meet_menu.setTitle(self._MEET_TITLE + suffix)
+
+    def _rebuild_meet_menu(self) -> None:
+        """サブメニューを開くたびに作り直す（並び・文言は Mac と同じ。文字起こしの方法は Windows は字幕だけなので出さない）。"""
+        from ..meetbot import chrome, rules, transcript
+
+        menu = self._meet_menu
+        menu.clear()
+        bot = self._meetbot
+        if chrome.find_chrome() is None:
+            # Chrome が無くても項目自体は残し、何が足りないかを見せる（消すと機能の存在に気づけない）
+            menu.addAction("Google Chrome が必要です").setEnabled(False)
+        else:
+            active = bot.is_active()
+            menu.addAction(rules.state_text(bot.state)).setEnabled(False)
+            menu.addAction("文字起こし: Meet の字幕").setEnabled(False)
+            menu.addSeparator()
+            if active:
+                menu.addAction("会議から退出").triggered.connect(bot.stop)
+            else:
+                # Windows は URL を聞く小窓を出さず、URL 欄のある議事録・会議ページを開く
+                menu.addAction("会議に参加…").triggered.connect(self.open_meeting.emit)
+            menu.addSeparator()
+            login = menu.addAction("ボット用ブラウザで Google にログイン…")
+            login.setEnabled(not active)
+            login.triggered.connect(bot.open_login)
+
+        menu.addSeparator()
+        files = transcript.list_transcripts()
+        latest = menu.addAction("最新の議事録を開く")
+        latest.setEnabled(bool(files))
+        if files:
+            latest.triggered.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(files[0].path))))
+        menu.addAction("議事録フォルダを開く").triggered.connect(self._open_transcripts)
+        menu.addAction("議事録・会議の設定…").triggered.connect(self.open_meeting.emit)
+
+    @staticmethod
+    def _open_transcripts() -> None:
+        from ..meetbot import transcript
+
+        directory = transcript.default_directory()
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory)))
+
+    def set_api_usage(self, api_usage, mode=None) -> None:
         """
         今日の API 代を数える元を渡す（渡されるまで料金の行は出さない）。
 
         Args:
             api_usage: API の利用料金の記録（ApiUsageStore）
+            mode: いまの数え方（"list" / "paid"）を返す関数。ダッシュボードで選んだ数え方に
+                合わせるために、開くたびに呼ぶ。無ければ定価で数える
         """
         self._api_usage = api_usage
+        self._cost_mode = mode
         self._refresh_cost()
 
     def _refresh_cost(self) -> None:
@@ -132,7 +244,8 @@ class SystemTray(QSystemTrayIcon):
         if self._api_usage is None:
             self._cost_action.setVisible(False)
             return
-        summary = self._api_usage.today_summary()
+        mode = self._cost_mode() if self._cost_mode is not None else api_pricing.MODE_LIST
+        summary = self._api_usage.today_summary(mode if mode in (api_pricing.MODE_LIST, api_pricing.MODE_PAID) else api_pricing.MODE_LIST)
         title = f"今日の API 代 {api_pricing.format_usd(summary['usd'])}"
         if summary.get("has_unpriced"):
             title += "＋単価未確認分"

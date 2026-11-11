@@ -601,7 +601,7 @@ def app_qss(p: Optional[Palette] = None) -> str:
         padding: 5px 8px;
     }}
     QLabel {{ background: transparent; }}
-    QLineEdit, QPlainTextEdit, QTextEdit {{
+    QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox {{
         background: {_css(p.control)};
         border: 1px solid {_css(p.control_border)};
         border-radius: {r}px;
@@ -609,15 +609,21 @@ def app_qss(p: Optional[Palette] = None) -> str:
         selection-background-color: {_css(rgba(SIGNAL, 0.35))};
         selection-color: {_css(p.text)};
     }}
-    QLineEdit {{ min-height: 18px; }}
-    QLineEdit:hover, QPlainTextEdit:hover, QTextEdit:hover {{
+    QLineEdit, QSpinBox {{ min-height: 18px; }}
+    /* 数値欄の中の文字欄には枠と余白を重ねない（重ねると数字が切れて見えなくなる） */
+    QSpinBox QLineEdit {{ background: transparent; border: none; padding: 0; min-height: 0; }}
+    /* 上下ボタンは使わない（NoButtons）。QSS を当てると既定幅の場所が残って文字欄が潰れるので 0 にする */
+    QSpinBox::up-button, QSpinBox::down-button {{
+        subcontrol-origin: border; width: 0; height: 0; border: none; image: none;
+    }}
+    QLineEdit:hover, QPlainTextEdit:hover, QTextEdit:hover, QSpinBox:hover {{
         background: {_css(p.control_hover)};
     }}
-    QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus {{
+    QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QSpinBox:focus {{
         border: 1px solid {_css(p.accent)};
         background: {_css(p.control_hover)};
     }}
-    QLineEdit:disabled, QPlainTextEdit:disabled, QTextEdit:disabled {{
+    QLineEdit:disabled, QPlainTextEdit:disabled, QTextEdit:disabled, QSpinBox:disabled {{
         color: {_css(p.text_disabled)};
     }}
     QComboBox {{

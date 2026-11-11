@@ -57,6 +57,8 @@ class TestRecordStartFailureCleanup(unittest.TestCase):
             _state_lock=threading.Lock(),
             _recording_slot=1,
             _active_streamer=streamer,
+            # 録音開始時の処理コンテキスト（開始成功時に録り始めた時刻を書き込む先）
+            _active_context=None,
             _recorder=recorder,
             notice=mock.Mock(),
             _emit_state=mock.Mock(),

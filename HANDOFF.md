@@ -79,12 +79,13 @@
   ボットのタップ `.mutedWhenTapped`、字幕の短い行の結合の見え方。
 - 見送った低指摘: 字幕停止に最大 1.5 秒、Soniox の文分割が「Mr.」等でずれる可能性（推測）。
 
-## Windows を Mac に追いつかせる・Meet の画面と要約・2.4.0（11-11 更新）
+## Windows を Mac に追いつかせる・Meet の画面と要約・2.4.0（11-12 更新）
 
 - 目的: Windows 版（1.8.0）を Mac（2.3.0）と同じ機能・同じ見た目にし、両 OS を 2.4.0 で出す。**見た目だけ Mac と同一、中身は Windows に合う作り**。ライブ字幕は Windows に入れない。計画は `~/.claude/plans/iterative-purring-aho.md`。
 - 済み（コミット済み）: Windows のログイン層除去（d2d21ef）／HUD を Mac と同じ見た目に＋`ui/theme.py`・`ui/components.py`（05d97de）／Mac の Meet 画面表示・要約・ゲスト参加（01a5e4e。**常用アプリには未反映**＝`build_app.sh` 未実行）。
 - 済み（0c155e1・push 済み）: Windows のエンジン 6 種と設定移行（`core/engines.py`）・整え方 4 種・送り直し／ロゴを Mac と同じ画像に（`ui/brand.py`）／料金の計算と記録（`core/api_pricing.py`・`api_usage.py`。**画面・app.py への配線は未了**）／更新先＝本リポ Releases／窓の骨格（`ui/shell.py`）。全テスト 574 件 OK。
-- 作業中（未コミット）: 設定ページを `ui/pages/*.py`（1 ページ 1 ファイル）に作り直して `shell.WindowShell` に載せる。窓口は `ui/pages/context.py` の `PageContext`（即時反映・保存バー無し）。機能がまだ無いページ（翻訳して入力・議事録）は出さない。
-- 次: 設定ページのコミット → トレイを Mac と同じ並びに → `app.py` の配線（料金・翻訳キー・再貼り付け・`[計測]`・アプリ別の使用状況）→ Windows `--ui-snapshot` と CI の PNG → Meet ボットの Windows 移植 → 音声まわりのレビュー → 版を 2.4.0 に（README 冒頭の配布ステータス表も）→ 公開。
+- 済み（063a61b）: トレイを Mac と同じ並び・文言に。GitHub のテストは Windows ランナーも通過（996cde9 時点）。
+- 済み（11-12 コミット）: 設定ページを `ui/pages/*.py`（1 ページ 1 ファイル・`PageContext` で即時反映）に作り直し、全ページ・ダッシュボード（アプリ別使用状況まで）を Mac の実画面と突き合わせ済み。`app.py` の配線（料金・翻訳キー・再貼り付け・`[計測]`・アプリ別）、Meet ボット Windows 版（`src/meetbot/`）と議事録・会議ページ、トレイの Meet／翻訳の項目。全テスト 797 件 OK。
+- 次: Windows 録音経路のレビュー（読み取り専用）と修正 → Windows `--ui-snapshot` と CI の PNG → 版を 2.4.0 に（README 冒頭の配布ステータス表・「Windows で使う」・OVERVIEW の「開発停止中」・CLAUDE.md の停止記述も）→ Mac をビルド・再起動 → 公開。
 - 未検証: 実会議でのゲスト参加（DOM 文言は推測）・未ログインのゲストに字幕が出るか・Groq 要約の実通信・Windows 実機の見た目（Mica は未採用で単色下地）。
 - 注意: テストは偽 keyring で回す（`PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring`。サービス名が Mac の Keychain と同じ）。`.gitignore` の `src/config/embedded_keys.py` 除外行は消さない。

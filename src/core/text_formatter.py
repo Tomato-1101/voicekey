@@ -16,7 +16,7 @@ Mac 版 TextFormatter と同じ中身にしてある（モデルの一覧は llm
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import httpx
 
@@ -230,7 +230,11 @@ def build_request_body(
 
 
 def format_text(
-    text: str, model: str, prompt: str = "", preset: str = DEFAULT_PRESET_ID
+    text: str,
+    model: str,
+    prompt: str = "",
+    preset: str = DEFAULT_PRESET_ID,
+    on_usage: Optional[Callable[[dict], None]] = None,
 ) -> str:
     """
     テキストを Groq の LLM で整形する。失敗時は必ず原文をそのまま返す。
@@ -240,6 +244,8 @@ def format_text(
         model: 整形に使う Groq モデル名
         prompt: 利用者が書き換えた整形プロンプト本文（空なら整え方の本文）
         preset: 整え方の id
+        on_usage: 課金された応答（HTTP 200）の JSON を受け取るコールバック。料金の記録に使う
+            （途中で切れて捨てる回もトークン代はかかるので、切れたかの判定より前に呼ぶ）
 
     Returns:
         整形後テキスト（前後空白除去済み）。空入力・キー未設定・API 失敗時は原文
@@ -271,7 +277,10 @@ def format_text(
             )
             return text
         # 応答構造の不正（choices 欠落等）は下の except でまとめて原文に倒す
-        choice = resp.json()["choices"][0]
+        data = resp.json()
+        if on_usage is not None:
+            on_usage(data)
+        choice = data["choices"][0]
         if choice.get("finish_reason") == "length":
             # 出力の上限で途中まで。後ろが欠けた文を貼るより原文の方がよい
             logger.warning("テキスト整形の応答が途中で切れたため原文を使用します")

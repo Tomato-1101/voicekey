@@ -71,8 +71,23 @@ class StatsStore:
         self._lock = threading.Lock()
         self._data = self._load()
 
-    def record_session(self, characters: int, recording_seconds: float) -> None:
-        """音声入力 1 回分を記録して保存する（貼り付け確定後に呼ぶ）。空入力は無視。"""
+    def record_session(
+        self,
+        characters: int,
+        recording_seconds: float,
+        app_id: str = "",
+        app_name: str = "",
+        app_path: str = "",
+    ) -> None:
+        """音声入力 1 回分を記録して保存する（貼り付け確定後に呼ぶ）。空入力は無視。
+
+        Args:
+            characters: 貼り付けた文字数
+            recording_seconds: 録音の長さ（秒）
+            app_id: 貼り付け先アプリの識別子（実行ファイル名の小文字。空ならアプリ別には積まない）
+            app_name: 貼り付け先アプリの表示名
+            app_path: 貼り付け先アプリの実行ファイルのパス（アイコンの取得に使う）
+        """
         if characters <= 0:
             return
         now = datetime.now().astimezone()
@@ -88,7 +103,38 @@ class StatsStore:
             self._data["saved_seconds"] += max(0.0, typing_seconds - rec_sec)
             self._update_streak(now)
             self._record_daily(now, characters, rec_sec)
+            if app_id:
+                self._record_app(app_id, app_name, app_path, characters)
             self._save()
+
+    def top_apps(self, n: int = 5) -> list:
+        """アプリ別の使用状況を、文字数の多い順に上位 n 件返す（Mac 版 topApps と同じ並び）。
+
+        Args:
+            n: 返す件数
+
+        Returns:
+            {"id", "name", "path", "characters", "sessions"} の辞書のリスト
+        """
+        with self._lock:
+            apps = [dict(v, id=k) for k, v in (self._data.get("apps") or {}).items()]
+        # 文字数が同じときに並びが毎回変わらないよう、識別子を第 2 キーにする
+        apps.sort(key=lambda a: (-a["characters"], a["id"]))
+        return apps[: max(0, n)]
+
+    def _record_app(self, app_id: str, app_name: str, app_path: str, characters: int) -> None:
+        """貼り付け先アプリごとの文字数・回数を積み増す（_lock 保持中に呼ぶ）。"""
+        apps = self._data.setdefault("apps", {})
+        entry = apps.setdefault(
+            app_id, {"name": "", "path": "", "characters": 0, "sessions": 0}
+        )
+        # 名前とパスは最新のものへ更新する（アプリの更新でフォルダが変わることがあるため）
+        if app_name:
+            entry["name"] = app_name
+        if app_path:
+            entry["path"] = app_path
+        entry["characters"] += characters
+        entry["sessions"] += 1
 
     def reset(self) -> None:
         """実績をすべてリセットして保存する（テスト用・ユーザーが消したいとき用）。"""
@@ -224,6 +270,20 @@ class StatsStore:
         return clean
 
     @staticmethod
+    def _clean_apps(raw_apps: dict) -> dict:
+        """保存済みのアプリ別辞書を読めるものだけに整形する（壊れた要素は捨てる）。"""
+        clean = {}
+        for key, value in raw_apps.items():
+            if isinstance(value, dict):
+                clean[str(key)] = {
+                    "name": str(value.get("name", "") or ""),
+                    "path": str(value.get("path", "") or ""),
+                    "characters": int(value.get("characters", 0)),
+                    "sessions": int(value.get("sessions", 0)),
+                }
+        return clean
+
+    @staticmethod
     def _empty() -> dict:
         return {
             "total_sessions": 0,
@@ -236,6 +296,8 @@ class StatsStore:
             "longest_streak": 0,
             # 日付ごとの入力量（チャート用）。{"yyyy-MM-dd": {characters, recording_seconds, sessions}}
             "daily": {},
+            # 貼り付け先アプリごとの入力量。{"chrome.exe": {name, path, characters, sessions}}
+            "apps": {},
         }
 
     def _load(self) -> dict:
@@ -257,6 +319,9 @@ class StatsStore:
                     raw_daily = raw.get("daily", {})
                     if isinstance(raw_daily, dict):
                         data["daily"] = self._clean_daily(raw_daily)
+                    raw_apps = raw.get("apps", {})
+                    if isinstance(raw_apps, dict):
+                        data["apps"] = self._clean_apps(raw_apps)
         except Exception as e:
             logger.warning(f"実績の読み込みに失敗（0 から開始します）: {e}")
         return data

@@ -131,6 +131,136 @@ def _info(painter: QPainter, color: QColor) -> None:
     painter.restore()
 
 
+def _mic(painter: QPainter, color: QColor) -> None:
+    """マイク（塗りの胴・受け皿・脚）。"""
+    painter.save()
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(color)
+    painter.drawRoundedRect(QRectF(5.6, 1.4, 4.8, 8.2), 2.4, 2.4)
+    painter.restore()
+    cradle = QPainterPath()
+    cradle.moveTo(3.4, 7.4)
+    cradle.cubicTo(3.4, 13.0, 12.6, 13.0, 12.6, 7.4)
+    painter.drawPath(cradle)
+    painter.drawLine(QPointF(8.0, 11.6), QPointF(8.0, 14.2))
+    painter.drawLine(QPointF(5.6, 14.2), QPointF(10.4, 14.2))
+
+
+def _waveform(painter: QPainter, _color: QColor) -> None:
+    """波形（長さの違う縦線）。"""
+    for x, half in ((2.0, 1.4), (4.4, 3.6), (6.8, 5.8), (9.2, 2.6), (11.6, 4.6), (14.0, 1.8)):
+        painter.drawLine(QPointF(x, 8.0 - half), QPointF(x, 8.0 + half))
+
+
+def _copy(painter: QPainter, _color: QColor) -> None:
+    """コピー（手前の紙と、後ろにずれた紙の見えている 2 辺）。"""
+    painter.drawRoundedRect(QRectF(5.4, 5.0, 8.4, 9.4), 1.8, 1.8)
+    back = QPainterPath()
+    back.moveTo(2.6, 10.6)
+    back.lineTo(2.6, 3.4)
+    back.cubicTo(2.6, 2.2, 3.2, 1.6, 4.4, 1.6)
+    back.lineTo(10.2, 1.6)
+    painter.drawPath(back)
+
+
+def _refresh(painter: QPainter, _color: QColor) -> None:
+    """読み込み直し（右回りの矢印。右上が切れた円と、円の終わりに付く矢じり）。"""
+    arc = QPainterPath()
+    # 3 時の少し上から時計回りに回し、1 時の手前で止める（切れ目は右上）
+    arc.arcMoveTo(QRectF(2.8, 2.8, 10.4, 10.4), 5.0)
+    arc.arcTo(QRectF(2.8, 2.8, 10.4, 10.4), 5.0, -310.0)
+    painter.drawPath(arc)
+    head = QPainterPath()
+    head.moveTo(11.4, 1.0)
+    head.lineTo(11.4, 4.3)
+    head.lineTo(8.1, 4.3)
+    painter.drawPath(head)
+
+
+def _sun(painter: QPainter, _color: QColor) -> None:
+    """太陽（丸と 8 本の光）。"""
+    painter.drawEllipse(QPointF(8.0, 8.0), 2.9, 2.9)
+    for step in range(8):
+        angle = math.pi / 4 * step
+        dx, dy = math.cos(angle), math.sin(angle)
+        painter.drawLine(QPointF(8.0 + dx * 5.0, 8.0 + dy * 5.0), QPointF(8.0 + dx * 6.6, 8.0 + dy * 6.6))
+
+
+def _bed(painter: QPainter, _color: QColor) -> None:
+    """ベッド（頭の板・枕・寝台・脚）。"""
+    painter.drawLine(QPointF(1.8, 3.6), QPointF(1.8, 13.0))
+    painter.drawLine(QPointF(14.2, 8.4), QPointF(14.2, 13.0))
+    painter.drawLine(QPointF(1.8, 11.0), QPointF(14.2, 11.0))
+    painter.drawRoundedRect(QRectF(6.8, 6.6, 7.4, 4.4), 1.6, 1.6)
+    painter.drawEllipse(QPointF(4.3, 8.6), 1.5, 1.5)
+
+
+def _film(painter: QPainter, _color: QColor) -> None:
+    """フィルム（枠と左右の送り穴）。"""
+    painter.drawRoundedRect(QRectF(1.8, 3.0, 12.4, 10.0), 1.6, 1.6)
+    painter.drawLine(QPointF(4.8, 3.0), QPointF(4.8, 13.0))
+    painter.drawLine(QPointF(11.2, 3.0), QPointF(11.2, 13.0))
+    for y in (6.3, 9.7):
+        painter.drawLine(QPointF(1.8, y), QPointF(4.8, y))
+        painter.drawLine(QPointF(11.2, y), QPointF(14.2, y))
+
+
+def _tram(painter: QPainter, _color: QColor) -> None:
+    """電車（車体・窓の線・足回り）。"""
+    painter.drawRoundedRect(QRectF(3.2, 2.2, 9.6, 9.6), 2.2, 2.2)
+    painter.drawLine(QPointF(3.2, 7.4), QPointF(12.8, 7.4))
+    painter.drawLine(QPointF(5.6, 9.6), QPointF(5.7, 9.6))
+    painter.drawLine(QPointF(10.3, 9.6), QPointF(10.4, 9.6))
+    painter.drawLine(QPointF(5.4, 11.8), QPointF(3.8, 14.2))
+    painter.drawLine(QPointF(10.6, 11.8), QPointF(12.2, 14.2))
+
+
+def _cup(painter: QPainter, _color: QColor) -> None:
+    """カップと受け皿。"""
+    body = QPainterPath()
+    body.moveTo(3.0, 4.2)
+    body.lineTo(10.6, 4.2)
+    body.lineTo(10.6, 7.6)
+    body.cubicTo(10.6, 12.2, 3.0, 12.2, 3.0, 7.6)
+    body.closeSubpath()
+    painter.drawPath(body)
+    handle = QPainterPath()
+    handle.moveTo(10.6, 5.4)
+    handle.cubicTo(14.4, 5.0, 14.4, 9.4, 10.2, 9.0)
+    painter.drawPath(handle)
+    painter.drawLine(QPointF(2.2, 13.6), QPointF(11.4, 13.6))
+
+
+def _hourglass(painter: QPainter, _color: QColor) -> None:
+    """砂時計。"""
+    painter.drawLine(QPointF(4.0, 2.2), QPointF(12.0, 2.2))
+    painter.drawLine(QPointF(4.0, 13.8), QPointF(12.0, 13.8))
+    glass = QPainterPath()
+    glass.moveTo(5.0, 2.2)
+    glass.cubicTo(5.0, 6.0, 7.4, 6.6, 8.0, 8.0)
+    glass.cubicTo(8.6, 6.6, 11.0, 6.0, 11.0, 2.2)
+    glass.moveTo(5.0, 13.8)
+    glass.cubicTo(5.0, 10.0, 7.4, 9.4, 8.0, 8.0)
+    glass.cubicTo(8.6, 9.4, 11.0, 10.0, 11.0, 13.8)
+    painter.drawPath(glass)
+
+
+def _sparkles(painter: QPainter, color: QColor) -> None:
+    """きらめき（大小の 4 つ角の星）。"""
+    painter.save()
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(color)
+    for cx, cy, r in ((6.4, 9.2, 5.4), (12.2, 4.0, 2.8)):
+        star = QPainterPath()
+        star.moveTo(cx, cy - r)
+        star.quadTo(cx, cy, cx + r, cy)
+        star.quadTo(cx, cy, cx, cy + r)
+        star.quadTo(cx, cy, cx - r, cy)
+        star.quadTo(cx, cy, cx, cy - r)
+        painter.drawPath(star)
+    painter.restore()
+
+
 _ICONS: Dict[str, Callable[[QPainter, QColor], None]] = {
     "grid": _grid,
     "key": _key,
@@ -141,6 +271,17 @@ _ICONS: Dict[str, Callable[[QPainter, QColor], None]] = {
     "people": _people,
     "gear": _gear,
     "info": _info,
+    "mic": _mic,
+    "waveform": _waveform,
+    "sparkles": _sparkles,
+    "sun": _sun,
+    "bed": _bed,
+    "film": _film,
+    "tram": _tram,
+    "cup": _cup,
+    "hourglass": _hourglass,
+    "copy": _copy,
+    "refresh": _refresh,
 }
 
 

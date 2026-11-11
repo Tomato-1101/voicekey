@@ -18,6 +18,13 @@ import tempfile
 import unittest
 from unittest import mock
 
+# ホームは src/ui/pages/home.py（HomePage）へ移り、SettingsWindow の _saved_comparison・_grouped・
+# _refresh_home は無くなった。主な性質（節約時間の文言・数値の表示・期間の切り替え）は tests/test_home_page.py が HomePage に対して確かめる。
+# モジュール名を指定して読み込む実行でも「エラー」でなく「スキップ」に数えられるよう、setUpModule で止める
+def setUpModule():
+    raise unittest.SkipTest("ホームは pages/home.py へ移設。tests/test_home_page.py で検証する")
+
+
 import yaml
 from PySide6.QtWidgets import QApplication
 

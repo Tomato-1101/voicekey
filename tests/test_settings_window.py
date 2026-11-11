@@ -1,13 +1,16 @@
-"""設定ウィンドウ（src/ui/settings_window.py）のライフサイクルテスト（#15）。
+"""設定ウィンドウ（src/ui/settings_window.py と src/ui/pages/）のテスト。
 
-検証する性質:
-1. ウィンドウは使い回されるため、開くたび（showEvent）に永続 config から再ロードし、
-   前回の未保存編集・テーマプレビューを破棄する（= キャンセルが本当に破棄になる）。
-2. 自動起動（レジストリ）は設定保存が成功したときだけ反映する。保存失敗時に
-   「自動起動だけ変わって設定は元のまま」という不整合を起こさない。
+保存ボタンを無くし、変えた項目をその場で保存する作りにしたので、旧テストの意味を次の形で引き継ぐ:
+1. 開き直すと永続 config から読み直す（窓は使い回すため。閉じている間の外からの変更を拾う）。
+2. 自動起動（レジストリ）は切り替えが成功したときだけ反映し、失敗したらスイッチを元に戻す。
+3. 録音キーを「未割り当て」にすると空のまま保存され、既定へ戻らない。もう片方は保たれる。
+4. スロットごとのエンジン・モデル・整え方の選択と保存。
+5. API キーページが全エンジンの鍵を持つ。
+6. 「Mac と履歴を共有」の読み込みと、URL 末尾の「/」を外した保存。
+加えて、新しい作りの性質（すぐ保存・入力は手が止まってから保存・ページは開くまで作らない・最後のページを覚える）。
 
-Qt はオフスクリーンで動かし、keyring / 音声デバイス / レジストリ（autostart）は
-実体に触れないようモックする（lessons 2026-06-12: テストで実 keyring を読まない）。
+Qt はオフスクリーンで動かし、keyring / 音声デバイス / レジストリ（autostart）は実体に触れないようモックする
+（lessons 2026-06-12: テストで実 keyring を読まない。Windows 版のサービス名は Mac の実 Keychain と同じ）。
 """
 
 import os
@@ -20,7 +23,7 @@ import unittest
 from unittest import mock
 
 import yaml
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent
 from PySide6.QtGui import QShowEvent
 from PySide6.QtWidgets import QApplication
 
@@ -30,124 +33,153 @@ from src.config.config_manager import ConfigManager
 _app = QApplication.instance() or QApplication([])
 
 
+class _FakeSecrets:
+    """資格情報ストアの偽物（メモリ上の辞書だけ。実 keyring には一切触れない）。"""
+
+    def __init__(self, available=True):
+        self.available = available
+        self.store = {}
+
+    def patches(self):
+        return [
+            mock.patch("src.utils.secrets.is_keyring_available", side_effect=lambda: self.available),
+            mock.patch("src.utils.secrets.get_api_key", side_effect=lambda s: self.store.get(s)),
+            mock.patch("src.utils.secrets.set_api_key", side_effect=self._set),
+            mock.patch("src.utils.secrets.delete_api_key", side_effect=self._delete),
+        ]
+
+    def _set(self, service, key):
+        self.store[service] = key
+        return True
+
+    def _delete(self, service):
+        self.store.pop(service, None)
+        return True
+
+
 class _SettingsWindowTestBase(unittest.TestCase):
+    def setUp(self):
+        self._paths = []
+        self._windows = []
+        self.secrets = _FakeSecrets(available=False)
+        patches = self.secrets.patches() + [
+            mock.patch("src.core.audio_recorder.AudioRecorder.list_input_devices", return_value=[]),
+            mock.patch("src.utils.autostart.is_supported", return_value=True),
+            mock.patch("src.utils.autostart.is_enabled", return_value=False),
+            mock.patch("src.utils.autostart.set_enabled", return_value=True),
+        ]
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def tearDown(self):
+        for win in self._windows:
+            win.close()
+            win.deleteLater()
+        # イベントループを回さないテストなので、ここで実際に捨てる（残すと外観の切り替えが
+        # 生きている窓すべてを塗り直し、テストを重ねるほど遅くなる）
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        for path in self._paths:
+            if os.path.exists(path):
+                os.unlink(path)
+
     def _config(self, data):
-        handle = tempfile.NamedTemporaryFile(
-            "w", suffix=".yaml", delete=False, encoding="utf-8"
-        )
+        handle = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False, encoding="utf-8")
         yaml.dump(data, handle, allow_unicode=True)
         handle.close()
         self._paths.append(handle.name)
         return ConfigManager(config_path=handle.name)
 
-    def _make_window(self, cm, history=None, history_sync=None):
-        # 重い/副作用のある依存をモックしてオフスクリーン構築する。
-        # API キーページが構築時に保存状態を調べるので、keyring は「使えない」に固定して
-        # 実 keyring を読ませない。実機の未署名 python で署名アプリ作成の keychain 項目を読むと
-        # ACL でブロックする（lessons 2026-06-12）。
-        with mock.patch(
-            "src.ui.settings_window.secrets.is_keyring_available", return_value=False
-        ), mock.patch(
-            "src.ui.settings_window.AudioRecorder.list_input_devices", return_value=[]
-        ), mock.patch(
-            "src.ui.settings_window.autostart.is_supported", return_value=True
-        ), mock.patch(
-            "src.ui.settings_window.autostart.is_enabled", return_value=False
-        ):
-            from src.ui.settings_window import SettingsWindow
+    def _make_window(self, cm, history_sync=None, updater=None):
+        from src.ui.settings_window import SettingsWindow
 
-            win = SettingsWindow(config_manager=cm, history=history, history_sync=history_sync)
+        win = SettingsWindow(config_manager=cm, history_sync=history_sync, updater=updater)
         self._windows.append(win)
         return win
 
-    def setUp(self):
-        self._paths = []
-        self._windows = []
-
-    def tearDown(self):
-        for win in self._windows:
-            win.deleteLater()
-        for path in self._paths:
-            if os.path.exists(path):
-                os.unlink(path)
+    @staticmethod
+    def _reloaded(cm):
+        """保存ファイルを新しいマネージャで読み直す（メモリ上の値でなく書き込まれた中身を見る）。"""
+        return ConfigManager(config_path=cm.config_path)
 
 
-class TestReopenRevertsUnsavedChanges(_SettingsWindowTestBase):
-    """#15: 開き直すと未保存の編集・テーマプレビューが破棄される。"""
+class TestReopenReloadsPersistedConfig(_SettingsWindowTestBase):
+    """窓は使い回すので、開き直すと永続 config から読み直す。"""
 
-    def test_showevent_reverts_value_and_theme(self):
-        cm = self._config({"language": "ja", "dark_mode": False, "handsfree_key": "<f9>"})
+    def test_showevent_reloads_value_changed_elsewhere(self):
+        cm = self._config({"language": "ja", "handsfree_key": "<f9>"})
         win = self._make_window(cm)
+        win.select("general", animate=False)
+        page = win.page("general")
+        self.assertEqual(page.handsfree_input.value(), "<f9>")
 
-        # ユーザーが未保存で値とテーマを変更
-        win._handsfree_input.setText("ZZZ")
-        win._is_dark_mode = True
-        win._apply_theme(True)
-        win._theme_toggle.set_dark(True)
+        # 窓を閉じている間にトレイや設定ファイルで変わった
+        cm.save({"handsfree_key": ""})
+        win.showEvent(QShowEvent())
 
-        # 開き直す（showEvent）。履歴/実績の更新は本テストの対象外なので無効化
-        with mock.patch.object(win, "_refresh_history"), \
-             mock.patch.object(win, "_refresh_stats"), \
-             mock.patch("src.ui.settings_window.secrets.is_keyring_available", return_value=False), \
-             mock.patch("src.ui.settings_window.AudioRecorder.list_input_devices", return_value=[]), \
-             mock.patch("src.ui.settings_window.autostart.is_enabled", return_value=False):
-            win.showEvent(QShowEvent())
+        self.assertEqual(page.handsfree_input.value(), "")
 
-        # 永続 config の値・テーマに戻っている
-        self.assertEqual(win._handsfree_input.text(), "<f9>")
-        self.assertFalse(win._is_dark_mode)
+    def test_reopen_applies_saved_appearance(self):
+        from src.ui import theme
+        from src.ui.theme import Theme
 
-    def test_showevent_reloads_from_persisted_config(self):
-        cm = self._config({"language": "ja", "dark_mode": False, "handsfree_key": ""})
+        cm = self._config({"language": "ja", "appearance": "dark"})
+        self._make_window(cm)
+        self.assertEqual(Theme.instance().mode, theme.APPEARANCE_DARK)
+        Theme.instance().set_mode(theme.APPEARANCE_SYSTEM)
+
+    def test_appearance_migrates_from_dark_mode_without_writing_it(self):
+        from src.ui import theme
+        from src.ui.pages.general import appearance_from
+
+        cm = self._config({"language": "ja", "dark_mode": True})
+        self.assertEqual(appearance_from(cm.get), theme.APPEARANCE_DARK)
+        self.assertEqual(appearance_from(self._config({"dark_mode": False}).get), theme.APPEARANCE_SYSTEM)
+
         win = self._make_window(cm)
-        win._handsfree_input.setText("未保存編集")
+        win.select("general", animate=False)
+        picker = win.page("general").appearance_picker
+        picker.setCurrentIndex(picker.findData(theme.APPEARANCE_LIGHT))
+        saved = self._reloaded(cm)
+        self.assertEqual(saved.get("appearance"), theme.APPEARANCE_LIGHT)
+        self.assertTrue(saved.get("dark_mode"))  # 旧キーは書き換えない
+        from src.ui.theme import Theme
 
-        with mock.patch.object(win, "_refresh_history"), \
-             mock.patch.object(win, "_refresh_stats"), \
-             mock.patch("src.ui.settings_window.secrets.is_keyring_available", return_value=False), \
-             mock.patch("src.ui.settings_window.AudioRecorder.list_input_devices", return_value=[]), \
-             mock.patch("src.ui.settings_window.autostart.is_enabled", return_value=False):
-            win.showEvent(QShowEvent())
-
-        self.assertEqual(win._handsfree_input.text(), "")
+        Theme.instance().set_mode(theme.APPEARANCE_SYSTEM)
 
 
-class TestAutostartTransaction(_SettingsWindowTestBase):
-    """#15: 自動起動の反映は設定保存の成否と同じ境界で行う。"""
+class TestAutostart(_SettingsWindowTestBase):
+    """自動起動は切り替えが成功したときだけ反映し、失敗ならスイッチを戻す。"""
 
-    def test_save_failure_does_not_touch_autostart(self):
-        cm = self._config({"language": "ja"})
-        win = self._make_window(cm)
-        win._autostart_check.setChecked(True)
+    def _general(self):
+        win = self._make_window(self._config({"language": "ja"}))
+        win.select("general", animate=False)
+        return win.page("general")
 
-        with mock.patch.object(cm, "save", return_value=False), \
-             mock.patch("src.ui.settings_window.autostart.is_supported", return_value=True), \
-             mock.patch("src.ui.settings_window.autostart.set_enabled") as set_enabled, \
-             mock.patch("src.ui.settings_window.QMessageBox"):
-            win._save_settings()
+    def test_failure_reverts_switch(self):
+        page = self._general()
+        with mock.patch("src.utils.autostart.set_enabled", return_value=False) as set_enabled:
+            page.autostart_switch.setChecked(True)
+        set_enabled.assert_called_once_with(True)
+        self.assertFalse(page.autostart_switch.isChecked())
 
-        set_enabled.assert_not_called()  # 保存失敗時は自動起動に触れない
+    def test_success_applies(self):
+        page = self._general()
+        with mock.patch("src.utils.autostart.set_enabled", return_value=True) as set_enabled:
+            page.autostart_switch.setChecked(True)
+        set_enabled.assert_called_once_with(True)
+        self.assertTrue(page.autostart_switch.isChecked())
 
-    def test_save_success_applies_autostart(self):
-        cm = self._config({"language": "ja"})
-        win = self._make_window(cm)
-        win._autostart_check.setChecked(True)
-
-        with mock.patch.object(cm, "save", return_value=True), \
-             mock.patch("src.ui.settings_window.autostart.is_supported", return_value=True), \
-             mock.patch("src.ui.settings_window.autostart.set_enabled", return_value=True) as set_enabled, \
-             mock.patch.object(win, "close"), \
-             mock.patch("src.ui.settings_window.QMessageBox"):
-            win._save_settings()
-
-        set_enabled.assert_called_once_with(True)  # 保存成功時のみ反映
+    def test_opening_page_does_not_touch_autostart(self):
+        with mock.patch("src.utils.autostart.set_enabled") as set_enabled:
+            self._general()
+        set_enabled.assert_not_called()
 
 
 class TestUnassignedHotkeyPersists(_SettingsWindowTestBase):
-    """ホットキーを「未割り当て」（空）にして保存すると空のまま永続し、既定へ戻らない。
+    """録音キーを「未割り当て」（空）にすると空のまま永続し、既定へ戻らない。
 
     Mac 版 SlotConfigTests.testUnassignedSlotPersistsAndDoesNotRevertToDefault と対応。
-    片方を未割り当てにしても、もう片方の割り当ては保持される。
     """
 
     def test_clearing_slot_hotkey_persists_as_empty(self):
@@ -157,20 +189,16 @@ class TestUnassignedHotkeyPersists(_SettingsWindowTestBase):
             "hotkey2": {"hotkey": "<f3>", "hotkey_mode": "toggle", "backend": "groq"},
         })
         win = self._make_window(cm)
+        win.select("slot1", animate=False)
+        win.page("slot1").unassign_button.click()
 
-        # スロット 1 を未割り当てにする（「割り当てを外す」ボタン＝input.clear と同じ）
-        win._hotkey1_input.clear()
-
-        with mock.patch("src.ui.settings_window.autostart.is_supported", return_value=False), \
-             mock.patch.object(win, "close"), \
-             mock.patch("src.ui.settings_window.QMessageBox"):
-            win._save_settings()
-
-        # 保存ファイルを新しいマネージャで読み直しても、スロット 1 は空のまま（既定 <f2> に戻らない）
-        reloaded = ConfigManager(config_path=cm.config_path)
+        reloaded = self._reloaded(cm)
         self.assertEqual(reloaded.get("hotkey1")["hotkey"], "")
-        # もう片方（スロット 2）の割り当ては保持される
         self.assertEqual(reloaded.get("hotkey2")["hotkey"], "<f3>")
+
+        # 開き直しても空のまま（既定の F2 に戻らない）
+        win.showEvent(QShowEvent())
+        self.assertEqual(win.page("slot1").hotkey_input.value(), "")
 
 
 class TestEngineAndModelSelection(_SettingsWindowTestBase):
@@ -180,10 +208,8 @@ class TestEngineAndModelSelection(_SettingsWindowTestBase):
         from src.core import engines
 
         win = self._make_window(self._config({"language": "ja"}))
-        combo = win._backend1_combo
-        self.assertEqual(
-            [combo.itemData(i) for i in range(combo.count())], list(engines.SELECTABLE_IDS)
-        )
+        picker = win.page("slot1").engine_picker
+        self.assertEqual([picker.itemData(i) for i in range(picker.count())], list(engines.SELECTABLE_IDS))
 
     def test_loads_saved_engine_model_and_preset(self):
         cm = self._config({
@@ -197,34 +223,31 @@ class TestEngineAndModelSelection(_SettingsWindowTestBase):
             "hotkey2": {"hotkey": "<f3>", "hotkey_mode": "toggle", "backend": "deepgram"},
         })
         win = self._make_window(cm)
-        self.assertEqual(win._backend1_combo.currentData(), "elevenlabs")
-        self.assertEqual(win._model1_combo.currentData(), "scribe_v1")
-        self.assertEqual(win._format_preset1_combo.currentData(), "bullets")
+        slot1, slot2 = win.page("slot1"), win.page("slot2")
+        self.assertEqual(slot1.engine_picker.currentData(), "elevenlabs")
+        self.assertEqual(slot1.model_picker.currentData(), "scribe_v1")
+        self.assertEqual(slot1.preset_picker.currentData(), "bullets")
         # 外したエンジン（Deepgram）は Soniox とその既定モデルで表示する
-        self.assertEqual(win._backend2_combo.currentData(), "soniox")
-        self.assertEqual(win._model2_combo.currentData(), "stt-rt-v5")
+        self.assertEqual(slot2.engine_picker.currentData(), "soniox")
+        self.assertEqual(slot2.model_picker.currentData(), "stt-rt-v5")
 
     def test_changing_engine_resets_model_to_default(self):
         win = self._make_window(self._config({"language": "ja"}))
-        combo = win._backend1_combo
-        combo.setCurrentIndex(combo.findData("elevenlabs"))
-        models = win._model1_combo
+        page = win.page("slot1")
+        page.engine_picker.setCurrentIndex(page.engine_picker.findData("elevenlabs"))
+        models = page.model_picker
         self.assertEqual([models.itemData(i) for i in range(models.count())], ["scribe_v2", "scribe_v1"])
         self.assertEqual(models.currentData(), "scribe_v2")
 
-    def test_save_persists_engine_model_and_preset(self):
+    def test_changes_persist_immediately(self):
         cm = self._config({"language": "ja"})
         win = self._make_window(cm)
-        win._backend2_combo.setCurrentIndex(win._backend2_combo.findData("elevenlabs"))
-        win._model2_combo.setCurrentIndex(win._model2_combo.findData("scribe_v1"))
-        win._format_preset2_combo.setCurrentIndex(win._format_preset2_combo.findData("clean"))
+        page = win.page("slot2")
+        page.engine_picker.setCurrentIndex(page.engine_picker.findData("elevenlabs"))
+        page.model_picker.setCurrentIndex(page.model_picker.findData("scribe_v1"))
+        page.preset_picker.setCurrentIndex(page.preset_picker.findData("clean"))
 
-        with mock.patch("src.ui.settings_window.autostart.is_supported", return_value=False), \
-             mock.patch.object(win, "close"), \
-             mock.patch("src.ui.settings_window.QMessageBox"):
-            win._save_settings()
-
-        slot = ConfigManager(config_path=cm.config_path).get("hotkey2")
+        slot = self._reloaded(cm).get("hotkey2")
         self.assertEqual(slot["backend"], "elevenlabs")
         self.assertEqual(slot["api_model"], "scribe_v1")
         self.assertEqual(slot["format_preset"], "clean")
@@ -233,105 +256,204 @@ class TestEngineAndModelSelection(_SettingsWindowTestBase):
         from src.core import engines
 
         win = self._make_window(self._config({"language": "ja"}))
-        services = set(win._api_key_inputs)
+        services = set(win.page("api_keys").inputs)
         for eng in engines.ENGINES:
             self.assertIn(eng.keyring_service, services, eng.id)
         self.assertIn("voicekey.AzureSpeechEndpoint", services)
 
 
 class _FakeHistorySync:
-    """history_sync.HistorySync の最小フェイク（Mac 側の履歴を 1 件足して返すだけ）。"""
+    """history_sync.HistorySync の最小フェイク（状態を返すだけ。通信しない）。"""
 
-    def __init__(self, extra_items):
-        self._extra_items = extra_items
+    def __init__(self, status=None):
+        self._status = status or {
+            "enabled": True, "configured": True, "pending": 0,
+            "last_sync": None, "token_invalid": False, "last_error": None,
+        }
+        self.applied = 0
         self.enabled = True
 
-    def merged_items(self, local_items):
-        return list(local_items) + self._extra_items
-
     def status(self):
-        return {
-            "enabled": True,
-            "configured": True,
-            "pending": 0,
-            "last_sync": None,
-            "token_invalid": False,
-            "last_error": None,
-        }
+        return dict(self._status)
+
+    def merged_items(self, local_items):
+        return list(local_items)
 
     def request_fetch(self):
         pass
 
     def apply_config(self):
-        pass
+        self.applied += 1
 
 
 class TestHistorySyncSettingsUI(_SettingsWindowTestBase):
-    """履歴タブの「Mac と履歴を共有」UI（history_sync 連携）。"""
+    """一般 › 履歴 の「Mac と履歴を共有」。"""
+
+    def _general(self, cm, history_sync=None):
+        win = self._make_window(cm, history_sync=history_sync)
+        win.select("general", animate=False)
+        return win, win.page("general")
 
     def test_builds_with_history_sync_none(self):
-        cm = self._config({"language": "ja"})
-        win = self._make_window(cm)
-
-        # history_sync 未配置でもウィジェット自体は存在し、既定値で開ける
-        self.assertFalse(win._history_sync_enabled_toggle.isChecked())
-        self.assertEqual(win._history_sync_url_input.text(), "")
-        self.assertEqual(win._history_sync_status_label.text(), "")
+        _win, page = self._general(self._config({"language": "ja"}))
+        self.assertFalse(page.sync_switch.isChecked())
+        self.assertEqual(page.sync_url_input.text(), "")
+        self.assertEqual(page.sync_status.text(), "")
 
     def test_loads_existing_history_sync_config(self):
-        cm = self._config({
-            "language": "ja",
-            "history_sync": {"enabled": True, "url": "https://example.workers.dev/"},
-        })
-        win = self._make_window(cm)
+        cm = self._config({"language": "ja", "history_sync": {"enabled": True, "url": "https://example.workers.dev"}})
+        _win, page = self._general(cm, _FakeHistorySync())
+        self.assertTrue(page.sync_switch.isChecked())
+        self.assertEqual(page.sync_url_input.text(), "https://example.workers.dev")
+        self.assertEqual(page.sync_status.text(), "まだ同期していません")
 
-        self.assertTrue(win._history_sync_enabled_toggle.isChecked())
-        self.assertEqual(win._history_sync_url_input.text(), "https://example.workers.dev/")
+    def test_url_saved_without_trailing_slash(self):
+        cm = self._config({"language": "ja"})
+        _win, page = self._general(cm)
+        page.sync_switch.setChecked(True)
+        page.sync_url_input.setText("https://example.workers.dev/")
+        page.ctx.flush()
 
-    def test_save_writes_history_sync_config_without_trailing_slash(self):
+        saved = self._reloaded(cm).get("history_sync")
+        self.assertTrue(saved["enabled"])
+        self.assertEqual(saved["url"], "https://example.workers.dev")
+
+    def test_token_save_and_delete_use_fake_store(self):
+        from src.utils import secrets
+
+        self.secrets.available = True
+        sync = _FakeHistorySync()
+        _win, page = self._general(self._config({"language": "ja"}), sync)
+        self.assertEqual(page.sync_token_status.text(), "未登録")
+        self.assertFalse(page.sync_token_save.isEnabled())
+        self.assertFalse(page.sync_token_delete.isEnabled())
+
+        page.sync_token_input.setText("dummy-token")
+        self.assertTrue(page.sync_token_save.isEnabled())
+        page.sync_token_save.click()
+        self.assertEqual(self.secrets.store[secrets.SERVICE_SYNC_TOKEN], "dummy-token")
+        self.assertEqual(page.sync_token_input.text(), "")  # 値は画面に残さない
+        self.assertEqual(page.sync_token_status.text(), "共有トークンを保存しました")
+        self.assertTrue(page.sync_token_delete.isEnabled())
+        self.assertEqual(sync.applied, 1)
+
+        page.sync_token_delete.click()
+        self.assertNotIn(secrets.SERVICE_SYNC_TOKEN, self.secrets.store)
+        self.assertEqual(page.sync_token_status.text(), "共有トークンを削除しました")
+        self.assertFalse(page.sync_token_delete.isEnabled())
+
+    def test_refresh_history_views_updates_created_general_page(self):
+        cm = self._config({"language": "ja", "history_sync": {"enabled": True, "url": "https://x"}})
+        sync = _FakeHistorySync()
+        win, page = self._general(cm, sync)
+        sync._status["token_invalid"] = True
+        win.refresh_history_views()
+        self.assertEqual(page.sync_status.text(), "トークンが無効です（保存し直してください）")
+
+
+class TestImmediateSave(_SettingsWindowTestBase):
+    """保存ボタンは無く、変えた項目はその場で保存する。"""
+
+    def test_commit_saves_immediately_and_emits(self):
         cm = self._config({"language": "ja"})
         win = self._make_window(cm)
+        received = []
+        win.settings_saved.connect(lambda: received.append(True))
+        win.select("general", animate=False)
+        page = win.page("general")
+        page.sound_switch.setChecked(not page.sound_switch.isChecked())
 
-        win._history_sync_enabled_toggle.setChecked(True)
-        win._history_sync_url_input.setText("https://example.workers.dev/")
+        self.assertEqual(self._reloaded(cm).get("sound_effects_enabled"), page.sound_switch.isChecked())
+        self.assertEqual(len(received), 1)
 
-        with mock.patch("src.ui.settings_window.autostart.is_supported", return_value=False), \
-             mock.patch.object(win, "close"), \
-             mock.patch("src.ui.settings_window.QMessageBox"):
-            win._save_settings()
+    def test_commit_later_saves_on_flush(self):
+        cm = self._config({"language": "ja", "auto_enter_delay_ms": 50})
+        win = self._make_window(cm)
+        win.select("general", animate=False)
+        page = win.page("general")
+        page.delay_input.setValue(120)
 
-        self.assertTrue(cm.config["history_sync"]["enabled"])
-        self.assertEqual(cm.config["history_sync"]["url"], "https://example.workers.dev")
+        # 手が止まるまでは書かない
+        self.assertEqual(self._reloaded(cm).get("auto_enter_delay_ms"), 50)
+        # ページを移る・閉じるときに書く
+        win.select("about", animate=False)
+        self.assertEqual(self._reloaded(cm).get("auto_enter_delay_ms"), 120)
 
-    def test_refresh_history_shows_mac_entries_from_sync(self):
-        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
-        handle.close()
-        self._paths.append(handle.name)
+    def test_hide_flushes_pending_input(self):
+        cm = self._config({"language": "ja", "auto_enter_delay_ms": 50})
+        win = self._make_window(cm)
+        win.select("general", animate=False)
+        win.page("general").delay_input.setValue(300)
+        win.show()
+        win.hide()
+        self.assertEqual(self._reloaded(cm).get("auto_enter_delay_ms"), 300)
 
-        from src.core.history import HistoryStore
-
-        history = HistoryStore(file_path=handle.name)
-        history.add("Windows の文")
-
-        fake_sync = _FakeHistorySync([
-            {"id": "m1", "text": "Mac の文", "date": "2026-09-02T10:00:00Z", "device": "mac"},
-        ])
-
+    def test_loading_page_does_not_write(self):
         cm = self._config({"language": "ja"})
-        win = self._make_window(cm, history=history, history_sync=fake_sync)
+        win = self._make_window(cm)
+        with mock.patch.object(cm, "save", wraps=cm.save) as save:
+            for key in ("api_keys", "slot1", "slot2", "dictionary", "general", "about"):
+                page = win.page(key)  # 作る（初めて開く）ときも書き込まない
+                if hasattr(page, "refresh"):
+                    page.refresh()
+        save.assert_not_called()
 
-        texts = [
-            win._history_list.item(i).data(Qt.ItemDataRole.UserRole)
-            for i in range(win._history_list.count())
-        ]
-        previews = [win._history_list.item(i).text() for i in range(win._history_list.count())]
+    def test_dictionary_rule_saved(self):
+        cm = self._config({"language": "ja"})
+        win = self._make_window(cm)
+        page = win.page("dictionary")
+        self.assertEqual(page.stack.currentIndex(), 0)
+        page.add_button.click()
+        self.assertEqual(page.stack.currentIndex(), 1)
+        row = page.rows[0]
+        row.from_input.setText("ぼいすきー")
+        row.to_input.setText("voicekey")
+        page.ctx.flush()
+        self.assertEqual(
+            self._reloaded(cm).get("replacements"),
+            [{"from": "ぼいすきー", "to": "voicekey", "enabled": True}],
+        )
 
-        # Mac 由来のエントリはプレビューが "[Mac] " から始まるが、コピーされる全文（UserRole）には
-        # ラベルが付かない
-        mac_previews = [p for p in previews if p.startswith("[Mac] ")]
-        self.assertEqual(len(mac_previews), 1)
-        self.assertIn("Mac の文", mac_previews[0])
-        self.assertIn("Mac の文", texts)
+
+class TestPagesAndNavigation(_SettingsWindowTestBase):
+    """ページの並び・遅延生成・最後に開いたページの復元。"""
+
+    def test_sidebar_order(self):
+        win = self._make_window(self._config({"language": "ja"}))
+        self.assertEqual(
+            win.keys(), ["home", "api_keys", "slot1", "slot2", "dictionary", "translate", "meeting", "general", "about"]
+        )
+
+    def test_pages_are_created_lazily(self):
+        win = self._make_window(self._config({"language": "ja", "last_settings_page": "about"}))
+        self.assertIsNotNone(win.created_page("about"))
+        for key in ("home", "api_keys", "slot1", "slot2", "dictionary", "general"):
+            self.assertIsNone(win.created_page(key), key)
+        win.select("general", animate=False)
+        self.assertIsNotNone(win.created_page("general"))
+
+    def test_last_page_is_restored(self):
+        cm = self._config({"language": "ja", "last_settings_page": "about"})
+        win = self._make_window(cm)
+        win.select("dictionary", animate=False)
+        self.assertEqual(self._reloaded(cm).get("last_settings_page"), "dictionary")
+
+        again = self._make_window(self._reloaded(cm))
+        self.assertEqual(again.current_key(), "dictionary")
+
+    def test_unknown_last_page_falls_back_to_home_and_select_home(self):
+        win = self._make_window(self._config({"language": "ja", "last_settings_page": "stats"}))
+        self.assertEqual(win.current_key(), "home")
+        win.select("about", animate=False)
+        win.select_home()
+        self.assertEqual(win.current_key(), "home")
+
+    def test_about_without_updater(self):
+        win = self._make_window(self._config({"language": "ja"}))
+        page = win.page("about")
+        self.assertFalse(page.check_button.isEnabled())
+        self.assertFalse(page.update_button.isEnabled())
+        self.assertEqual(page.status.text(), "このビルドでは自動アップデートは利用できません")
 
 
 if __name__ == "__main__":

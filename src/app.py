@@ -29,8 +29,8 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, replace
-from typing import Callable, Dict, Optional, Set
+from dataclasses import dataclass, field, replace
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -48,6 +48,8 @@ from .core import (
     StreamingTranscriber,
     TranscriptionError,
 )
+from .core import dictation_timeline
+from .core import dictation_translator
 from .core import engines
 from .core import llm_catalog
 from .core import text_formatter
@@ -60,7 +62,10 @@ from .core.audio_preprocess import preprocess as preprocess_audio
 from .core.text_utils import join_segments
 from .core.history import HistoryStore
 from .core.history_sync import HistorySync
+from .core.api_usage import ApiUsageStore
+from .core.dictation_timeline import DictationTimeline
 from .core.stats import StatsStore
+from .meetbot.service import MeetBotService
 from .platform import get_platform_adapter
 from .ui import Hud, SettingsWindow, SideNotch, SystemTray
 from .utils.logger import get_logger
@@ -82,6 +87,10 @@ _SPLIT_MIN_SEC: float = 12.0
 _RETIRE_CLOSE_DELAY_SEC: float = 30.0
 # 修飾キーの汎用名。macOS の pynput は左修飾キーを汎用名（cmd 等）で報告する
 _GENERIC_MODIFIERS = ("ctrl", "alt", "shift", "cmd")
+# 貼り付けのキー操作が届かなかったときの通知（結果はクリップボードに残してある）
+PASTE_FAILED_NOTICE: str = "貼り付けできませんでした。Ctrl+V で貼り付けてください"
+# 貼り付け後の Enter が届かなかったときの通知
+ENTER_FAILED_NOTICE: str = "送信できませんでした。Enter を押してください"
 
 
 @dataclass
@@ -130,6 +139,15 @@ class TaskContext:
         volume_normalize: 音量正規化を行うか
         format_model: テキスト整形に使うモデル名
         format_auto_prompt: テキスト整形プロンプト
+        gen: 録音の通し番号（ログの突き合わせ用。0 は不明）
+        pressed_at: 録音キーを押した時刻（perf_counter 秒）
+        record_started_at: マイクが実際に録り始めた時刻（perf_counter 秒）
+        released_at: 録音の停止を頼んだ時刻（perf_counter 秒）
+        target_app: 録音開始時の前面アプリ（表示名, 実行ファイルパス）。取れなければ None
+        translate: この回を翻訳するか。録音開始時は「常に翻訳して入力」の値で、
+            録音終了時に 1 回翻訳キーの状態を合わせて確定する
+        translate_target: 翻訳先の言語コード
+        translate_model: 翻訳に使う Groq モデル名
     """
     slot: HotkeySlot
     language: str
@@ -138,9 +156,78 @@ class TaskContext:
     volume_normalize: bool
     format_model: str
     format_auto_prompt: str
+    gen: int = 0
+    pressed_at: Optional[float] = None
+    record_started_at: Optional[float] = None
+    released_at: Optional[float] = None
+    target_app: Optional[Tuple[str, str]] = None
+    translate: bool = False
+    translate_target: str = dictation_translator.DEFAULT_TARGET
+    translate_model: str = llm_catalog.RECOMMENDED_MODEL
 
 
-def _transcribe_or_partial(slot: "HotkeySlot", audio, partial: str) -> str:
+@dataclass
+class _TaskRun:
+    """
+    文字起こしタスク 1 件の処理中に集める記録。
+
+    料金の記録はファイル保存を伴うので、処理の途中では積むだけにして、
+    貼り付けが終わってからまとめて書く（録音〜貼り付けの経路を遅らせないため）。
+
+    Attributes:
+        timeline: この回の計測値（処理の最後に `[計測]` の 1 行として出す）
+        usage: 課金された呼び出しの記録。("stt", エンジン id, モデル, 音声秒) か
+            ("llm", 応答 JSON, モデル, 用途)
+    """
+    timeline: DictationTimeline
+    usage: List[tuple] = field(default_factory=list)
+
+
+def _flush_usage(store, usage: List[tuple]) -> None:
+    """
+    処理中に積んだ課金の記録を料金ストアへ書く。
+
+    Args:
+        store: ApiUsageStore
+        usage: _TaskRun.usage
+    """
+    for entry in usage:
+        try:
+            if entry[0] == "stt":
+                store.record_stt(entry[1], entry[2], entry[3])
+            else:
+                store.record_chat_usage(entry[1], "groq", entry[2], entry[3])
+        except Exception as e:
+            # 料金の記録に失敗しても、残りの記録と音声入力本体は止めない（付随機能）
+            logger.warning(f"API 料金の記録に失敗: {e}")
+
+
+def _note_stt(usage: Optional[List[tuple]], slot: "HotkeySlot", audio) -> None:
+    """
+    録音後にまとめて送った文字起こし 1 回分を、課金の記録に積む。
+
+    退避用のクライアントはスロットと違うエンジン・モデルで送ることがある
+    （OpenAI ライブの退避など）ので、実際に送ったクライアントの値を優先する。
+
+    Args:
+        usage: _TaskRun.usage（None なら何もしない）
+        slot: 送信に使ったスロット
+        audio: 送った音声（16kHz）
+    """
+    if usage is None:
+        return
+    transcriber = slot.transcriber
+    usage.append((
+        "stt",
+        getattr(transcriber, "engine_id", "") or slot.backend,
+        getattr(transcriber, "model", "") or slot.api_model,
+        len(audio) / SAMPLE_RATE,
+    ))
+
+
+def _transcribe_or_partial(
+    slot: "HotkeySlot", audio, partial: str, usage: Optional[List[tuple]] = None
+) -> str:
     """録音全体を 1 本で送る。失敗・空のときは、ライブで届いていた分があればそれを返す。
 
     ライブが途中で切れて送り直しも失敗したときに、届いていた文字まで捨てないため。
@@ -149,6 +236,7 @@ def _transcribe_or_partial(slot: "HotkeySlot", audio, partial: str) -> str:
         slot: 使用するホットキースロット
         audio: 送る音声（16kHz・float32）
         partial: ライブで途中まで届いていた文字（無ければ空文字）
+        usage: 課金の記録を積むリスト（成功した送信だけ積む）
 
     Returns:
         文字起こし結果（空のときは partial）
@@ -163,6 +251,7 @@ def _transcribe_or_partial(slot: "HotkeySlot", audio, partial: str) -> str:
             raise
         logger.warning(f"送り直しに失敗したため、ライブで届いていた分を使います: {e}")
         return partial
+    _note_stt(usage, slot, audio)
     return text or partial
 
 
@@ -176,6 +265,8 @@ class VoicekeyApp(QObject):
         notice: ユーザーに見せるべき一時メッセージ（エラー、無音検出など）
         interim_text: ストリーミング中のライブ字幕（受信スレッド → メインへホップ）
         hands_free_changed: 現在の録音がハンズフリー（toggle 実効）か。HUD のドット/波形の着色用
+        translate_badge_changed: 録音中の HUD に出す翻訳の印（空文字で消す）
+        target_app_changed: 貼り付け先アプリの実行ファイルパス（空文字で消す）
     """
 
     status_changed = Signal(str)
@@ -189,6 +280,10 @@ class VoicekeyApp(QObject):
     hands_free_changed = Signal(bool)
     # 履歴同期の受信キャッシュが変わった（同期スレッドから emit → UI スレッドで履歴表示を更新）
     history_sync_changed = Signal()
+    # 録音中の HUD に出す翻訳の印（"→EN" 等。空文字で消す）
+    translate_badge_changed = Signal(str)
+    # 貼り付け先アプリの実行ファイルパス（空文字で消す）。アイコンの取り出しは UI スレッドで行う
+    target_app_changed = Signal(str)
 
     def __init__(self) -> None:
         """アプリケーションを初期化する。"""
@@ -242,6 +337,13 @@ class VoicekeyApp(QObject):
         # 現在押されているキー（listener スレッドからのみ更新）
         self._pressed_keys: Set[str] = set()
 
+        # 録音の通し番号（ログの gen=。_state_lock で保護）
+        self._generation = 0
+        # この録音中に 1 回翻訳キーで翻訳を ON にしたか（_state_lock で保護。録音開始で False に戻す）
+        self._translate_once = False
+        # 再貼り付けキーが押された（全部のキーが離れたら貼り付ける。listener スレッドからのみ更新）
+        self._repaste_armed = False
+
         # --- ホットキースロット ---
         self._slots: Dict[int, HotkeySlot] = self._build_slots()
         # ハンズフリー(toggle 実効)録音で groq スロットの代わりに使う EL(scribe_v1) を常設する
@@ -250,6 +352,13 @@ class VoicekeyApp(QObject):
         # ハンズフリー切替キー（この切替キー＋スロットキーで toggle 録音。空＝無効）
         self._handsfree_keys: Set[str] = self._parse_hotkey(
             self._config.get("handsfree_key", "")
+        )
+        # 再貼り付けキー・1 回翻訳キー（空＝無効）
+        self._repaste_keys: Set[str] = self._parse_hotkey(
+            self._config.get("repaste_key", "") or ""
+        )
+        self._translate_once_keys: Set[str] = self._parse_hotkey(
+            self._config.get("translate_once_key", "") or ""
         )
 
         # --- 文字起こしワーカー（常駐 1 本、None センチネルで終了） ---
@@ -272,6 +381,12 @@ class VoicekeyApp(QObject):
         # --- 使用実績（節約時間・レベル・連続日数。設定の「実績」タブで表示。貼り付け後に集計する） ---
         self._stats = StatsStore()
 
+        # --- API の利用料金の記録（ダッシュボードとトレイの「今日の API 代」が同じものを読む） ---
+        self._api_usage = ApiUsageStore()
+
+        # --- Google Meet 議事録ボット（参加するまで Chrome は起動しない。要約の料金も同じ記録へ） ---
+        self._meetbot = MeetBotService(config=self._config, usage_store=self._api_usage)
+
         # --- UI ---
         # 自動アップデータは設定ウィンドウ（「バージョン情報」タブ）にも渡すため先に生成する。
         # 固めた実行ファイル（PyInstaller）でのみ定期チェックが動く（start() が sys.frozen を見る）。
@@ -286,6 +401,8 @@ class VoicekeyApp(QObject):
             stats=self._stats,
             config_manager=self._config,
             updater=self._updater,
+            api_usage=self._api_usage,
+            meetbot=self._meetbot,
         )
         self._settings_window.settings_saved.connect(self._apply_config_changes)
         # Mac 側の履歴が届いたら開いている履歴表示を作り直す（キュー接続で UI スレッド上で実行される）
@@ -293,8 +410,17 @@ class VoicekeyApp(QObject):
         # 設定「一般」の「セットアップガイドを開く」からもう一度オンボーディングを表示する
         self._settings_window.open_onboarding_requested.connect(self.show_onboarding)
         self._tray = SystemTray(platform_adapter=self._platform)
+        self._tray.set_api_usage(
+            self._api_usage, mode=lambda: self._config.get("api_cost_mode", "list")
+        )
         self._tray.open_home.connect(self._open_home)
         self._tray.open_settings.connect(self._open_settings)
+        self._tray.open_meeting.connect(self._open_meeting)
+        self._tray.set_meetbot(self._meetbot)
+        self._tray.set_translate_toggle(
+            lambda: bool(self._config.get("translate_input_enabled", False)),
+            self._set_translate_always,
+        )
         self._tray.force_reset.connect(self._force_restart)
         self._tray.quit_app.connect(self._quit_app)
         self.status_changed.connect(self._tray.set_status)
@@ -314,9 +440,14 @@ class VoicekeyApp(QObject):
         self.status_changed.connect(self._hud.set_state)
         self.audio_level.connect(self._hud.push_level)
         self.notice.connect(self._hud.show_notice)
+        # ボットの知らせ（参加できなかった・会議が終わった等）も同じ通知で出す
+        self._meetbot.notice.connect(self._hud.show_notice)
         self.interim_text.connect(self._hud.set_caption)
         # ハンズフリー着色は status より先に届くよう、_emit_state で status_changed の前に emit する
         self.hands_free_changed.connect(self._hud.set_hands_free)
+        # 翻訳の印と貼り付け先アイコン（リスナー/ワーカースレッドから emit → UI スレッドで反映）
+        self.translate_badge_changed.connect(self._hud.set_translate_badge)
+        self.target_app_changed.connect(self._on_target_app_changed)
 
         # サイドノッチ（画面左端の履歴スリット）。Mac 版 SideNotch と対。録音状態で点灯し、
         # クリックで履歴パネルを開く。「ホームを開く」は設定ウィンドウのホームページを開く。
@@ -457,6 +588,13 @@ class VoicekeyApp(QObject):
             volume_normalize=bool(preprocess_cfg.get("volume_normalize", True)),
             format_model=self._config.get("format_model", llm_catalog.RECOMMENDED_MODEL),
             format_auto_prompt=self._config.get("format_auto_prompt", ""),
+            translate=bool(self._config.get("translate_input_enabled", False)),
+            translate_target=dictation_translator.normalize_target(
+                self._config.get("translate_input_target", dictation_translator.DEFAULT_TARGET)
+            ),
+            translate_model=llm_catalog.normalize_model(
+                self._config.get("translate_input_model", llm_catalog.RECOMMENDED_MODEL)
+            ),
         )
 
     @staticmethod
@@ -540,11 +678,88 @@ class VoicekeyApp(QObject):
                 logger.error(f"キーボードリスナーが停止しました（{e!r}）。再起動します")
             finally:
                 self._listener = None
-                # 取りこぼした on_release によるキー状態の持ち越しを防ぐ
-                self._pressed_keys.clear()
+                self._on_listener_stopped()
             if not self._monitoring:
                 break
             time.sleep(0.5)  # busy-loop 防止
+
+    def _on_listener_stopped(self) -> None:
+        """リスナーが止まったときに、押されていたキーを全部「離された」として扱う。
+
+        止まっている間の離鍵は届かない。キー状態を消すだけだと、押している間だけ録る録音が
+        離鍵を受け取れないまま上限（_MAX_RECORDING_SEC）まで続いてしまうので、ここで止める。
+        再押下で止める録音（toggle 実効）は離鍵を待っていないので続ける。
+        """
+        # 取りこぼした on_release によるキー状態の持ち越しを防ぐ
+        self._pressed_keys.clear()
+        self._repaste_armed = False
+        if (
+            self._recording_slot is not None
+            and self._recording_effective_mode == HotkeyMode.HOLD.value
+        ):
+            logger.warning("キーボードリスナーが止まったため、録音中のキーを離鍵として扱います")
+            self._finish_recording()
+
+    def _translate_once_pressed(self, key_str: str, slot: Optional[HotkeySlot]) -> bool:
+        """
+        録音中に押されたキーが 1 回翻訳キーなら、この回の翻訳を切り替える。
+
+        録音キー・ハンズフリー切替キーに含まれるキーは、そちらの操作として扱う
+        （dictation_translator.translate_once_key_warnings が設定画面で知らせる重なり）。
+
+        Args:
+            key_str: いま押されたキー名
+            slot: 録音中のスロット（設定の再読み込みで消えていれば None）
+
+        Returns:
+            1 回翻訳キーとして処理したら True
+        """
+        keys = self._translate_once_keys
+        if not keys or not any(key_str in self._acceptable_names(t) for t in keys):
+            return False
+        if not all(self._acceptable_names(t) & self._pressed_keys for t in keys):
+            return False
+        if slot is not None and self._key_in_slot(key_str, slot):
+            return False
+        if any(key_str in self._acceptable_names(t) for t in self._handsfree_keys):
+            return False
+        with self._state_lock:
+            ctx = self._active_context
+            if ctx is None:
+                return False
+            # 「常に翻訳して入力」が ON の回は、このキーで外さない（別のスイッチ）
+            new_value = dictation_translator.toggled_translate(ctx.translate, self._translate_once)
+            changed = new_value != self._translate_once
+            self._translate_once = new_value
+        if changed:
+            if new_value:
+                logger.info(f"[翻訳] gen={ctx.gen} 1回翻訳キー(録音中)")
+            else:
+                logger.info(f"[翻訳] gen={ctx.gen} 1回翻訳キーで取り消し(録音中)")
+            self.translate_badge_changed.emit(
+                dictation_translator.badge(ctx.translate_target) if new_value else ""
+            )
+        return True
+
+    def _repaste_pressed(self, key_str: str) -> bool:
+        """再貼り付けキーが、いま押されたキーで揃ったか判定する（空＝無効で常に False）。"""
+        keys = self._repaste_keys
+        if not keys or not any(key_str in self._acceptable_names(t) for t in keys):
+            return False
+        return all(self._acceptable_names(t) & self._pressed_keys for t in keys)
+
+    def _repaste_last(self) -> None:
+        """最後の文字起こし結果をもう一度貼り付ける（専用スレッド上。履歴が空なら何もしない）。"""
+        items = self._history.items()
+        if not items:
+            return
+        text = items[0]["text"]
+        # 本文は残さない（文字数だけ）
+        logger.info(f"再貼り付け実行 ({len(text)} 文字)")
+        pasted = self._input_handler.insert_text(text)
+        logger.info(f"再貼り付け完了 (成功={pasted})")
+        if not pasted:
+            self.notice.emit(PASTE_FAILED_NOTICE)
 
     def _on_press(self, key) -> None:
         """キー押下イベント（CGEventTap コールバックスレッド上、ブロック厳禁）。"""
@@ -584,10 +799,18 @@ class VoicekeyApp(QObject):
                             f"ホットキー押下 slot={slot_id} mode={effective_mode} "
                             f"auto_enter={auto_enter}"
                         )
+                        self._repaste_armed = False
                         self._begin_recording(slot_id, auto_enter, effective_mode)
                         break
+                else:
+                    # 録音キーではない。再貼り付けキーが揃ったら、全部のキーが離れた時に貼り付ける
+                    # （キーを押したまま Ctrl+V を送ると、押している Alt 等が混ざって貼り付かない）
+                    if self._repaste_pressed(key_str):
+                        self._repaste_armed = True
             else:
                 slot = self._slots.get(recording_slot)
+                if self._translate_once_pressed(key_str, slot):
+                    return
                 if slot is None or not self._slot_matches(slot):
                     return
                 # toggle 実効モード: 録音中の再押下で停止（ハンズフリー切替キー併用での起動も含む）
@@ -626,6 +849,12 @@ class VoicekeyApp(QObject):
 
             recording_slot = self._recording_slot
             if recording_slot is None:
+                if self._repaste_armed and not self._pressed_keys:
+                    self._repaste_armed = False
+                    # 貼り付けはクリップボード待ちを含むので、リスナーを塞がないよう別スレッドで行う
+                    threading.Thread(
+                        target=self._repaste_last, daemon=True, name="Repaste"
+                    ).start()
                 return
             slot = self._slots.get(recording_slot)
             # toggle 実効モード（ハンズフリー起動含む）は離鍵で止めない（再押下で停止）
@@ -680,6 +909,7 @@ class VoicekeyApp(QObject):
         effective_mode: str = HotkeyMode.HOLD.value,
     ) -> None:
         """録音を開始する（listener スレッドから呼ばれる。即座に返る）。"""
+        pressed_at = time.perf_counter()
         with self._state_lock:
             if self._recording_slot is not None:
                 return
@@ -693,12 +923,25 @@ class VoicekeyApp(QObject):
             self._auto_enter = auto_enter
             # 録音開始時点の slot/provider/model/language/処理フラグを不変スナップショット化する。
             # 設定 hot-reload やスロット変更が録音中〜処理開始に挟まっても開始時の設定で完遂する
-            self._active_context = self._snapshot_context(slot)
+            ctx = self._snapshot_context(slot)
+            self._generation += 1
+            ctx.gen = self._generation
+            ctx.pressed_at = pressed_at
+            self._active_context = ctx
+            self._translate_once = False
 
         logger.info(
             f"録音開始要求 (スロット{slot_id}, backend={slot.backend}"
             + (", auto_enter" if auto_enter else "") + ")"
         )
+        # 「常に翻訳して入力」が ON の回は、録音中の HUD に翻訳先の印を出す
+        self.translate_badge_changed.emit(
+            dictation_translator.badge(ctx.translate_target) if ctx.translate else ""
+        )
+        # 貼り付け先（いま前面のアプリ）を控える。OS への問い合わせでリスナーを塞がないよう別スレッド
+        threading.Thread(
+            target=self._capture_target_app, args=(ctx,), daemon=True, name="TargetApp"
+        ).start()
         # 操作音（開始）・メディアダッキングを撃ちっぱなしで開始（音声パイプラインは待たせない）
         if self._config.get("sound_effects_enabled", True):
             sound_fx.play("start")
@@ -708,7 +951,8 @@ class VoicekeyApp(QObject):
         # 録音中に API への TLS 接続を事前確立し、停止後の初回往復を短縮する
         threading.Thread(target=slot.transcriber.prewarm, daemon=True).start()
         # 整形が有効なら整形 LLM への接続も録音中に温めておく
-        if slot.format_enabled:
+        # 翻訳も整形と同じ接続を使うので、翻訳しうる回（常に ON / 1 回翻訳キーあり）も温める
+        if slot.format_enabled or ctx.translate or self._translate_once_keys:
             threading.Thread(target=text_formatter.prewarm, daemon=True).start()
 
         # 録音しながら送るエンジン（Soniox / OpenAI ライブ）なら WebSocket を開く。
@@ -740,6 +984,10 @@ class VoicekeyApp(QObject):
             # 「開始要求は出したが完了しなかった」を後からログだけで見分けられるよう、
             # 要求（_begin_recording）と対で完了も残す
             logger.info("録音開始完了")
+            with self._state_lock:
+                ctx = self._active_context
+                if ctx is not None:
+                    ctx.record_started_at = time.perf_counter()
             return
         logger.warning("録音を開始できませんでした")
         # 開始失敗時は、この録音セッションのストリーミング接続・送出フックも確実に破棄する。
@@ -763,6 +1011,7 @@ class VoicekeyApp(QObject):
             quiet_if_no_speech: 無音時の「音声が検出されませんでした」通知を抑制する
                 （ダブルタップ待ち期限切れ＝誤タップの可能性が高い経路で使う）
         """
+        released_at = time.perf_counter()
         with self._state_lock:
             slot_id = self._recording_slot
             if slot_id is None:
@@ -770,6 +1019,13 @@ class VoicekeyApp(QObject):
             auto_enter = self._auto_enter
             streamer = self._active_streamer  # ストリーミング録音なら確定待ちをワーカーへ託す
             context = self._active_context  # 録音開始時に確定した処理コンテキスト
+            if context is not None:
+                context.released_at = released_at
+                # 翻訳するかはここで確定する（常に ON、または録音中に 1 回翻訳キーを押した回）
+                context.translate = dictation_translator.should_translate(
+                    context.translate, self._translate_once
+                )
+            self._translate_once = False
             self._recording_slot = None
             self._auto_enter = False
             self._active_streamer = None
@@ -791,6 +1047,8 @@ class VoicekeyApp(QObject):
         media_ducker.restore()
 
         logger.info(f"録音停止要求 (スロット{slot_id})")
+        # 翻訳の印は録音中だけ出す
+        self.translate_badge_changed.emit("")
         self._emit_state()
 
         def _on_audio(audio) -> None:
@@ -839,12 +1097,53 @@ class VoicekeyApp(QObject):
                 self._emit_state()
 
     def _process_task(self, task: TranscriptionTask) -> None:
+        """文字起こしタスク 1 件を処理し、最後に `[計測]` の 1 行と API 料金の記録を残す。
+
+        計測と料金の記録は、貼り付けまで終わってから（失敗・スキップで抜けた回も）行う。
+        料金の記録はファイル保存を伴うので、貼り付けの前には置かない。
+
+        Args:
+            task: 録音 1 回分のタスク
+        """
+        ctx: TaskContext = task.context
+        target_app = ctx.target_app
+        run = _TaskRun(
+            timeline=DictationTimeline(
+                generation=ctx.gen,
+                slot=ctx.slot.slot_id,
+                backend=ctx.slot.backend,
+                model=ctx.slot.api_model,
+                pressed_at=ctx.pressed_at,
+                record_started_at=ctx.record_started_at,
+                recording_sec=len(task.audio_data) / SAMPLE_RATE,
+                released_at=ctx.released_at,
+                stopped_at=task.timestamp,
+                # 本文やウィンドウ名は入れない（実行ファイル名だけ）
+                target=os.path.basename(target_app[1]) if target_app else None,
+                auto_enter=task.auto_enter,
+            )
+        )
+        try:
+            self._run_task(task, run)
+        except TranscriptionError:
+            run.timeline.outcome = dictation_timeline.OUTCOME_TRANSCRIBE_FAILED
+            raise
+        finally:
+            logger.info(run.timeline.summary_line())
+            _flush_usage(self._api_usage, run.usage)
+
+    def _run_task(self, task: TranscriptionTask, run: _TaskRun) -> None:
         """ストリーミング確定 →（空なら）正規化 → VAD → API → テキスト挿入を実行する。
 
         設定のライブ値は読まず、録音開始時に確定した task.context のみを使う
         （キュー滞留中に設定が変わっても別プロバイダーへ送らないため）。
+
+        Args:
+            task: 録音 1 回分のタスク
+            run: この回の計測値と課金の記録の入れ物
         """
         ctx: TaskContext = task.context
+        timeline = run.timeline
         # --- ストリーミング経路: 録音中に送っていたセッションの確定テキストを受け取って貼り付け ---
         streamer = task.streamer
         # ライブが途中で失敗したときに、それまでに届いていた文字（退避も失敗したら使う）
@@ -854,29 +1153,45 @@ class VoicekeyApp(QObject):
                 f"文字起こし要求 経路=streaming backend={ctx.slot.backend} "
                 f"model={ctx.slot.api_model} 音声={len(task.audio_data) / SAMPLE_RATE:.2f}s"
             )
+            stt_start = time.perf_counter()
             try:
                 streamed = streamer.finish()
             except Exception as e:
                 logger.warning(f"ストリーミング確定でエラー、REST にフォールバック: {e}")
                 streamed = ""
+            timeline.ending = "failed" if getattr(streamer, "failed", False) else "completed"
+            # ライブ接続は送った音声の長さで課金される（確定が空でも送った分はかかる）
+            sent_seconds = getattr(streamer, "sent_seconds", 0.0)
+            if sent_seconds > 0:
+                run.usage.append((
+                    "stt",
+                    getattr(streamer, "engine_id", "") or ctx.slot.backend,
+                    getattr(streamer, "model", "") or ctx.slot.api_model,
+                    sent_seconds,
+                ))
             if streamed:
+                timeline.route = dictation_timeline.route(ctx.slot.backend, True, True)
+                timeline.finalized_at = time.perf_counter()
+                timeline.stt_ms = (timeline.finalized_at - stt_start) * 1000
                 total_ms = (time.perf_counter() - task.timestamp) * 1000
                 logger.info(f"ストリーミング確定: {len(streamed)} 文字 ({total_ms:.0f}ms)")
                 # 貼り付け前の LLM テキスト整形（失敗時は原文のまま）
-                streamed = self._maybe_format(streamed, ctx)
-                # 実績を集計（貼り付け後のローカル処理なので遅延に影響しない）
-                self._record_stats(streamed, task.audio_data)
-                self._insert_and_enter(streamed, task.auto_enter)
+                streamed = self._maybe_format(streamed, ctx, run)
+                self._insert_and_enter(streamed, task.auto_enter, ctx, run)
+                # 実績を集計（貼り付けの後に行うので遅延に影響しない）
+                self._record_stats(streamed, task.audio_data, ctx.target_app)
                 return
             # 確定が空（接続失敗・無音など）→ 取得済みバッファで録音全体を送り直す
             partial = streamer.partial_text
             logger.info("ストリーミング結果が空のため録音全体を送り直します")
 
         # --- REST 経路（従来の 正規化 → VAD → API → 貼り付け）---
+        timeline.route = dictation_timeline.route(ctx.slot.backend, streamer is not None, False)
         audio = task.audio_data
         duration = len(audio) / SAMPLE_RATE
         if duration < _MIN_AUDIO_SEC:
             logger.info(f"録音が短すぎるためスキップ ({duration:.2f}s)")
+            timeline.outcome = dictation_timeline.OUTCOME_TOO_SHORT
             return
 
         slot = ctx.slot
@@ -900,9 +1215,10 @@ class VoicekeyApp(QObject):
         if not slot.transcriber.allows_split:
             segments = None
 
+        stt_start = time.perf_counter()
         if segments and len(segments) >= 2:
             logger.info(f"長文を {len(segments)} 分割して並列送信します")
-            text = self._transcribe_parallel(slot, segments)
+            text = self._transcribe_parallel(slot, segments, run.usage)
             if text is None:
                 # 一部セグメントの失敗（429 等）→ 全体 1 本送信にフォールバック（部分欠落を防ぐ）。
                 logger.warning("分割送信に失敗したため全体送信にフォールバックします")
@@ -910,7 +1226,7 @@ class VoicekeyApp(QObject):
                     f"文字起こし要求 経路=rest(全体) backend={slot.backend} "
                     f"model={slot.api_model} 音声={len(audio) / SAMPLE_RATE:.2f}s"
                 )
-                text = _transcribe_or_partial(slot, audio, partial)
+                text = _transcribe_or_partial(slot, audio, partial, run.usage)
         else:
             # VAD: 発話がなければ API に送らない（幻覚と無駄コストの防止）。
             # 推論 1 回で発話判定と無音圧縮（前後トリミング + 発話間の長い無音の短縮）を行う
@@ -922,21 +1238,27 @@ class VoicekeyApp(QObject):
                     # 誤タップ由来（ダブルタップ待ちの期限切れ）の無音は通知しない
                     if not task.quiet_if_no_speech:
                         self.notice.emit("音声が検出されませんでした")
+                    timeline.outcome = dictation_timeline.OUTCOME_NO_SPEECH
                     return
                 if condensed is not None:
                     cut_sec = (len(audio) - len(condensed)) / SAMPLE_RATE
                     if cut_sec > 0.1:
                         logger.info(f"無音圧縮: {cut_sec:.1f}s 削減")
                     audio = condensed
-                logger.info(f"VAD 処理: {(time.perf_counter() - vad_start) * 1000:.0f}ms")
+                timeline.vad_ms = (time.perf_counter() - vad_start) * 1000
+                logger.info(f"VAD 処理: {timeline.vad_ms:.0f}ms")
+                stt_start = time.perf_counter()
 
             logger.info(
                 f"文字起こし要求 経路=rest backend={slot.backend} "
                 f"model={slot.api_model} 音声={len(audio) / SAMPLE_RATE:.2f}s"
             )
-            text = _transcribe_or_partial(slot, audio, partial)
+            text = _transcribe_or_partial(slot, audio, partial, run.usage)
+        timeline.finalized_at = time.perf_counter()
+        timeline.stt_ms = (timeline.finalized_at - stt_start) * 1000
         if not text:
             logger.info("文字起こし結果が空でした")
+            timeline.outcome = dictation_timeline.OUTCOME_EMPTY_RESULT
             return
 
         total_ms = (time.perf_counter() - task.timestamp) * 1000
@@ -945,15 +1267,17 @@ class VoicekeyApp(QObject):
         )
 
         # 貼り付け前の LLM テキスト整形（スロットで有効な場合のみ・失敗時は原文）
-        text = self._maybe_format(text, ctx)
-
-        # 実績を集計（貼り付け後のローカル処理なので遅延に影響しない）
-        self._record_stats(text, task.audio_data)
+        text = self._maybe_format(text, ctx, run)
 
         # テキスト挿入（ワーカースレッド上で実行し UI スレッドを塞がない）
-        self._insert_and_enter(text, task.auto_enter)
+        self._insert_and_enter(text, task.auto_enter, ctx, run)
 
-    def _transcribe_parallel(self, slot: HotkeySlot, segments: list) -> Optional[str]:
+        # 実績を集計（貼り付けの後に行うので遅延に影響しない）
+        self._record_stats(text, task.audio_data, ctx.target_app)
+
+    def _transcribe_parallel(
+        self, slot: HotkeySlot, segments: list, usage: Optional[List[tuple]] = None
+    ) -> Optional[str]:
         """各セグメントを並列に文字起こしし、index 昇順に結合して返す。
 
         1 つでも失敗したら None を返す（呼び出し側が全体 1 本送信にフォールバックする）。
@@ -962,6 +1286,8 @@ class VoicekeyApp(QObject):
         Args:
             slot: 使用するホットキースロット（transcriber を共有）
             segments: 分割済みセグメント（index 昇順）
+            usage: 課金の記録を積むリスト（成功したセグメントだけ積む。全体送信へ
+                フォールバックした回も、成功したセグメントの分は課金されている）
 
         Returns:
             結合済みテキスト。1 つでも失敗したら None
@@ -972,6 +1298,7 @@ class VoicekeyApp(QObject):
         def _do(index: int, seg) -> None:
             try:
                 results[index] = slot.transcriber.transcribe(seg)
+                _note_stt(usage, slot, seg)  # list.append はスレッド間で安全
             except Exception as e:  # フォールバック判断のため全例外を集約する
                 errors.append(e)
 
@@ -985,7 +1312,7 @@ class VoicekeyApp(QObject):
             return None
         return join_segments([r for r in results if r])
 
-    def _maybe_format(self, text: str, ctx: TaskContext) -> str:
+    def _maybe_format(self, text: str, ctx: TaskContext, run: Optional[_TaskRun] = None) -> str:
         """
         録音開始時のコンテキストで整形が有効なら LLM テキスト整形を適用する（ワーカースレッド上）。
 
@@ -995,25 +1322,118 @@ class VoicekeyApp(QObject):
         Args:
             text: 文字起こし確定テキスト
             ctx: 録音開始時に確定した処理コンテキスト
+            run: この回の計測値と課金の記録の入れ物（無ければ記録しない）
 
         Returns:
             整形後テキスト。整形が無効・失敗時は原文そのまま
         """
         if not ctx.slot.format_enabled:
             return text
-        return text_formatter.format_text(
+        on_usage = None
+        if run is not None:
+            def on_usage(data: dict) -> None:
+                run.usage.append(("llm", data, ctx.format_model, "formatting"))
+        start = time.perf_counter()
+        formatted = text_formatter.format_text(
             text,
             ctx.format_model,
             prompt=ctx.format_auto_prompt,
             preset=ctx.slot.format_preset,
+            on_usage=on_usage,
         )
+        if run is not None:
+            run.timeline.format_ms = (time.perf_counter() - start) * 1000
+        return formatted
 
-    def _record_stats(self, text: str, audio) -> None:
-        """音声入力 1 回分を実績に記録する（録音長は生の録音バッファ長から算出）。"""
+    def _maybe_translate(self, text: str, ctx: TaskContext, run: Optional[_TaskRun] = None) -> str:
+        """
+        この回が翻訳する回なら、貼り付ける直前のテキストを翻訳する（ワーカースレッド上）。
+
+        失敗したら原文を返し、翻訳できなかったことを通知する（黙って原文にすると、
+        訳されたと思い込んだまま送信してしまうため）。
+
+        Args:
+            text: 整形・数字の正規化・置換まで終わったテキスト
+            ctx: 録音開始時に確定した処理コンテキスト
+            run: この回の計測値と課金の記録の入れ物（無ければ記録しない）
+
+        Returns:
+            訳文。翻訳しない回・失敗時は原文そのまま
+        """
+        if not ctx.translate or not text.strip():
+            return text
+        on_usage = None
+        if run is not None:
+            def on_usage(data: dict) -> None:
+                run.usage.append(("llm", data, ctx.translate_model, "translation"))
+        start = time.perf_counter()
+        try:
+            result = dictation_translator.translate(
+                text, ctx.translate_target, ctx.translate_model, on_usage=on_usage
+            )
+            outcome = "ok"
+        except dictation_translator.TranslationError as e:
+            result = text
+            outcome = f"失敗({e.reason})"
+            self.notice.emit(dictation_translator.FAILED_NOTICE)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        if run is not None:
+            run.timeline.translate_ms = elapsed_ms
+        logger.info(
+            f"[翻訳] gen={ctx.gen} engine=groq target={ctx.translate_target} "
+            f"{elapsed_ms:.0f}ms 結果={outcome}"
+        )
+        return result
+
+    def _capture_target_app(self, ctx: TaskContext) -> None:
+        """録音開始時の前面アプリ（＝貼り付け先）を控え、HUD へアイコンの元を渡す（専用スレッド上）。
+
+        Args:
+            ctx: この録音の処理コンテキスト（target_app を書き込む）
+        """
+        try:
+            app = self._platform.foreground_app()
+        except Exception as e:
+            logger.warning(f"前面アプリの取得に失敗: {e}")
+            return
+        ctx.target_app = app
+        # 取得が録音より遅れたときに、次の録音や待機中の HUD へ古いアイコンを出さない
+        if app and self._active_context is ctx:
+            self.target_app_changed.emit(app[1])
+
+    def _on_target_app_changed(self, path: str) -> None:
+        """貼り付け先アプリのアイコンを HUD へ渡す（UI スレッド上。空文字で消す）。
+
+        Args:
+            path: 実行ファイルのパス（空文字で消す）
+        """
+        self._hud.set_app_icon(self._platform.app_icon(path) if path else None)
+
+    def _record_stats(
+        self, text: str, audio, target_app: Optional[Tuple[str, str]] = None
+    ) -> None:
+        """音声入力 1 回分を実績に記録する（録音長は生の録音バッファ長から算出）。
+
+        Args:
+            text: 入力したテキスト
+            audio: 生の録音バッファ
+            target_app: 貼り付け先アプリ（表示名, 実行ファイルパス）。取れていなければ None
+        """
         if not text:
             return
         try:
             recording_seconds = len(audio) / SAMPLE_RATE
+            if target_app:
+                name, path = target_app
+                self._stats.record_session(
+                    len(text),
+                    recording_seconds,
+                    # 同じアプリを 1 件にまとめる鍵は実行ファイル名（置き場所が変わっても同じ扱い）
+                    app_id=os.path.basename(path).lower(),
+                    app_name=name,
+                    app_path=path,
+                )
+                return
             self._stats.record_session(len(text), recording_seconds)
         except Exception as e:
             # 実績集計の失敗で音声入力本体を止めない（あくまで付随機能）
@@ -1042,8 +1462,21 @@ class VoicekeyApp(QObject):
                 result = result.replace(src, rule.get("to", ""))
         return result
 
-    def _insert_and_enter(self, text: str, auto_enter: bool) -> None:
-        """テキストを貼り付け、ダブルタップ時は遅延後に Enter を送る（ワーカースレッド上）。"""
+    def _insert_and_enter(
+        self,
+        text: str,
+        auto_enter: bool,
+        ctx: Optional[TaskContext] = None,
+        run: Optional[_TaskRun] = None,
+    ) -> None:
+        """テキストを貼り付け、ダブルタップ時は遅延後に Enter を送る（ワーカースレッド上）。
+
+        Args:
+            text: 整形まで終わった確定テキスト
+            auto_enter: 貼り付け後に Enter を送るか
+            ctx: 録音開始時に確定した処理コンテキスト（翻訳するかを含む。無ければ翻訳しない）
+            run: この回の計測値と課金の記録の入れ物（無ければ記録しない）
+        """
         # 数字表記を半角アラビア数字へ正規化（全角→半角・漢数字→算用数字・助数詞つき単独漢数字）。
         # ストリーミング/REST 両経路の確定テキストが必ずここを通る単一の適用点。
         # ユーザー辞書置換より前に行い、置換ルールは正規化後のテキストに対して効かせる。
@@ -1055,17 +1488,37 @@ class VoicekeyApp(QObject):
         )
         # ユーザー辞書の確定置換を貼り付け直前に適用（履歴にも置換後を残す）
         text = self._apply_replacements(text)
+        # 翻訳は整形・数字の正規化・置換の後（貼り付ける直前の文をそのまま訳す）
+        if ctx is not None:
+            text = self._maybe_translate(text, ctx, run)
         # 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する
         self._history.add(text)
         # 本文は残さない（文字数だけ）。「貼り付けたのに入らない」を切り分けるため対で記録する
         logger.info(f"貼り付け実行 ({len(text)} 文字)")
+        paste_start = time.perf_counter()
         pasted = self._input_handler.insert_text(text)
         logger.info(f"貼り付け完了 (成功={pasted})")
+        if run is not None:
+            timeline = run.timeline
+            timeline.pasted_at = time.perf_counter()
+            timeline.paste_ms = (timeline.pasted_at - paste_start) * 1000
+            timeline.characters = len(text)
+            timeline.outcome = (
+                dictation_timeline.OUTCOME_PASTED if pasted
+                else dictation_timeline.OUTCOME_PASTE_FAILED
+            )
+        if not pasted:
+            # 結果はクリップボードに残してある（InputHandler が復元を見送る）。入っていないのに
+            # Enter だけ送ると、書きかけの別の文を送信してしまうので Enter は送らない
+            self.notice.emit(PASTE_FAILED_NOTICE)
+            return
         if auto_enter:
             delay_ms = self._config.get("auto_enter_delay_ms", 50)
             time.sleep(max(0, delay_ms) / 1000.0)
-            self._input_handler.press_enter()
-            logger.info("auto_enter: Enter を送信しました")
+            if self._input_handler.press_enter():
+                logger.info("auto_enter: Enter を送信しました")
+            else:
+                self.notice.emit(ENTER_FAILED_NOTICE)
 
     # ------------------------------------------------------------------
     # 状態通知（唯一の発信点）
@@ -1087,6 +1540,9 @@ class VoicekeyApp(QObject):
         # HUD・トレイへ流す状態をそのまま残す（画面が固まったときに
         # 「どの状態で止まったか」をログだけで追えるようにする）
         logger.info(f"UI 状態: {state} (hands_free={hands_free})")
+        if state == "idle":
+            # 貼り付け先アイコンは録音中〜変換中だけ出す
+            self.target_app_changed.emit("")
         # 着色情報を先に届けてから状態を切り替える（set_state の再描画時に色が確定しているように）
         self.hands_free_changed.emit(hands_free)
         self.status_changed.emit(state)
@@ -1124,6 +1580,11 @@ class VoicekeyApp(QObject):
         self._handsfree_transcriber = self._build_handsfree_transcriber()
         # ハンズフリー切替キーもホットリロードで更新する
         self._handsfree_keys = self._parse_hotkey(self._config.get("handsfree_key", ""))
+        # 再貼り付けキー・1 回翻訳キーも同じく更新する
+        self._repaste_keys = self._parse_hotkey(self._config.get("repaste_key", "") or "")
+        self._translate_once_keys = self._parse_hotkey(
+            self._config.get("translate_once_key", "") or ""
+        )
 
         # 旧トランスクライバは処理中タスクが使っている可能性があるため遅延 close
         for old in old_slots.values():
@@ -1310,6 +1771,19 @@ class VoicekeyApp(QObject):
             select_home()
         self._open_settings()
 
+    def _set_translate_always(self, enabled: bool) -> None:
+        """トレイの「翻訳して入力（常時）」。録音のたびに設定を読むので保存するだけで効く。"""
+        self._config.save({"translate_input_enabled": bool(enabled)})
+        # 開いている翻訳ページがあれば表示も合わせる
+        page = self._settings_window.created_page("translate")
+        if page is not None:
+            page.load()
+
+    def _open_meeting(self) -> None:
+        """トレイの「Meet 議事録ボット…」から、議事録・会議ページを開く。"""
+        self._settings_window.select("meeting", animate=False)
+        self._open_settings()
+
     def _force_restart(self) -> None:
         """強制リセット: 新プロセスを起動して自分は即終了する（トレイメニュー用）。
 
@@ -1359,6 +1833,8 @@ class VoicekeyApp(QObject):
 
         self._task_q.put(None)  # ワーカー停止
         self._history_sync.stop()
+        # 会議中ならボットを退出させ、議事録を書き終えてから Chrome を閉じる
+        self._meetbot.shutdown()
         # ストリームを閉じてマイクを OS に返す（ハング時も 1 秒で諦める。
         # プロセス終了時に OS がハンドルを回収するため実害はない）
         self._recorder.shutdown(timeout=1.0)

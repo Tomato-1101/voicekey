@@ -21,8 +21,11 @@ class _FakeUsage:
 
     def __init__(self, usd: float, has_unpriced: bool = False) -> None:
         self._summary = {"usd": usd, "has_unpriced": has_unpriced, "requests": 1}
+        # 呼ばれたときの数え方の記録
+        self.modes = []
 
-    def today_summary(self, *_args, **_kwargs) -> dict:
+    def today_summary(self, *args, **_kwargs) -> dict:
+        self.modes.append(args[0] if args else None)
         return self._summary
 
 
@@ -49,6 +52,51 @@ class TestSystemTrayMenu(unittest.TestCase):
              "強制リセット（フリーズ復帰）", "voicekey を終了"],
         )
 
+    def test_meet_submenu(self) -> None:
+        """議事録ボットを渡すと「設定…」の次にサブメニューが出て、中身は開くたびに Mac と同じ並びで作る。"""
+        from unittest import mock
+        from PySide6.QtCore import QObject, Signal
+
+        class _Bot(QObject):
+            state_changed = Signal(str, str)
+            state = "idle"
+
+            def is_active(self):
+                return False
+
+            def stop(self):
+                pass
+
+            def open_login(self):
+                return None
+
+        bot = _Bot()
+        self.tray.set_meetbot(bot)
+        titles = self._visible_titles()
+        self.assertEqual(titles[titles.index("設定…") + 1], "Meet 議事録ボット")
+        with mock.patch("src.meetbot.chrome.find_chrome", return_value="/fake/chrome"), \
+                mock.patch("src.meetbot.transcript.list_transcripts", return_value=[]):
+            self.tray._rebuild_meet_menu()
+        sub = ["-" if a.isSeparator() else a.text() for a in self.tray._meet_menu.actions()]
+        self.assertEqual(sub, [
+            "参加していません", "文字起こし: Meet の字幕", "-", "会議に参加…", "-",
+            "ボット用ブラウザで Google にログイン…", "-",
+            "最新の議事録を開く", "議事録フォルダを開く", "議事録・会議の設定…",
+        ])
+        bot.state_changed.emit("recording", "")
+        self.assertEqual(self.tray._meet_menu.title(), "Meet 議事録ボット（参加中）")
+
+    def test_translate_toggle(self) -> None:
+        """読み書き先を渡すと「翻訳して入力（常時）」が出て、開くたびに値を読み直し、押すと保存する。"""
+        store = {"on": False}
+        self.tray.set_translate_toggle(lambda: store["on"], lambda v: store.update(on=v))
+        self.assertIn("翻訳して入力（常時）", self._visible_titles())
+        store["on"] = True
+        self.tray._menu.aboutToShow.emit()
+        self.assertTrue(self.tray._translate_action.isChecked())
+        self.tray._translate_action.trigger()
+        self.assertFalse(store["on"])
+
     def test_state_row_follows_status_and_is_disabled(self) -> None:
         """状態行は状態に追従し、押せない。"""
         self.tray.set_status(AppState.RECORDING_AUTO_ENTER)
@@ -65,6 +113,17 @@ class TestSystemTrayMenu(unittest.TestCase):
         self.tray._menu.aboutToShow.emit()
         self.assertEqual(self.tray._cost_action.text(), "今日の API 代 $0.0040＋単価未確認分")
         self.assertFalse(self.tray._cost_action.isEnabled())
+
+    def test_cost_row_follows_selected_mode(self) -> None:
+        """料金の行は、ダッシュボードで選んだ数え方で数える（開くたびに読み直す）。"""
+        usage = _FakeUsage(0.5)
+        mode = {"value": "list"}
+        self.tray.set_api_usage(usage, mode=lambda: mode["value"])
+        mode["value"] = "paid"
+        self.tray._menu.aboutToShow.emit()
+        mode["value"] = "壊れた値"
+        self.tray._menu.aboutToShow.emit()
+        self.assertEqual(usage.modes, ["list", "paid", "list"])
 
     def test_update_row_appears_on_top(self) -> None:
         """更新があるときだけ、いちばん上に更新の行と区切り線が出る。"""

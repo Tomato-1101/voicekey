@@ -92,6 +92,10 @@ class InputHandler:
         self._paste_gen = 0
         self._injected_text: Optional[str] = None
         self._saved_original: Optional[str] = None
+        # 貼り付け 1 回分（クリップボードへ入れる → 待つ → キーを送る）を直列にする。
+        # 文字起こしの貼り付けと再貼り付けは別スレッドから来るので、待っている 50ms の間に
+        # もう一方が割り込むと、クリップボードの中身とキーの順番が入れ違って別の文が貼られる
+        self._paste_lock = threading.Lock()
 
     def insert_text(self, text: str) -> bool:
         """
@@ -110,7 +114,13 @@ class InputHandler:
         """
         if not text:
             return False
+        with self._paste_lock:
+            return self._insert_text_locked(text)
 
+    def _insert_text_locked(self, text: str) -> bool:
+        """insert_text の本体（_paste_lock 保持中に呼ぶ）。"""
+        # キーの合成まで終わったか（終わらなかった回はクリップボードを元へ戻さない）
+        pasted = False
         try:
             # ユーザーのクリップボード内容を退避
             try:
@@ -135,9 +145,9 @@ class InputHandler:
             # クリップボードにコピー
             pyperclip.copy(text)
 
-            # ここから先は何が起きても復元タイマーを必ず登録する（try/finally）。
-            # キー合成の失敗等で復元が一度も予約されないと、ユーザーの元のクリップボード
-            # 内容が挿入テキストで上書きされたまま失われる
+            # キーの合成まで終わったときだけ、元の内容へ戻すタイマーを登録する。
+            # 合成に失敗した回まで戻すと、1 秒後に文字起こし結果がクリップボードからも消え、
+            # 手で Ctrl+V して救うことができなくなる（Mac 版 Paster と同じ扱い）
             try:
                 # クリップボードの準備が整うまで少し待機
                 time.sleep(PASTE_DELAY)
@@ -155,16 +165,26 @@ class InputHandler:
                     except Exception as e:
                         # release 失敗は致命ではないが、修飾キーが残ると操作不能になるため警告
                         logger.warning(f"貼り付け修飾キーの解放に失敗: {e}")
+                pasted = True
             finally:
-                # 貼り付け先がクリップボードを読み終えてから元の内容を復元する。
-                # 復元待ち（RESTORE_DELAY）でこのスレッドを塞ぐと、呼び出し元の Enter 自動送信や
-                # 録音中 UI の非表示がその分（実測 0.3 秒）遅れる。待機と復元はバックグラウンド
-                # スレッドに逃がし、insert_text は貼り付け直後に返す
-                threading.Timer(
-                    RESTORE_DELAY, self._restore_clipboard, args=(gen,)
-                ).start()
+                if pasted:
+                    # 貼り付け先がクリップボードを読み終えてから元の内容を復元する。
+                    # 復元待ち（RESTORE_DELAY）でこのスレッドを塞ぐと、呼び出し元の Enter 自動送信や
+                    # 録音中 UI の非表示がその分（実測 0.3 秒）遅れる。待機と復元はバックグラウンド
+                    # スレッドに逃がし、insert_text は貼り付け直後に返す
+                    threading.Timer(
+                        RESTORE_DELAY, self._restore_clipboard, args=(gen,)
+                    ).start()
+                else:
+                    # 結果をクリップボードに残す。次の貼り付けがこれを「利用者の原本」と
+                    # 取り違えないよう、退避の記録は捨てる
+                    with self._clip_lock:
+                        if self._paste_gen == gen:
+                            self._injected_text = None
+                            self._saved_original = None
 
-            logger.debug(f"テキスト挿入: {text[:50]}...")
+            # 本文はログに残さない（文字数だけ）
+            logger.debug(f"テキスト挿入: {len(text)} 文字")
             return True
 
         except Exception as e:

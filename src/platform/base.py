@@ -6,7 +6,7 @@ OS差分（入力挿入・キー正規化・トレイ挙動・フォント）を
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 from pynput.keyboard import Key
 
@@ -52,6 +52,32 @@ class PlatformAdapter(ABC):
     def qt_key_to_hotkey_token(self, key: int, scan_code: int = 0) -> str:
         """Qtキーコードをpynput形式トークンに変換する。"""
         raise NotImplementedError
+
+    # --- 前面アプリ（貼り付け先）。Windows でのみ実体を持つ。既定は「分からない」 ---
+
+    def foreground_app(self) -> Optional[Tuple[str, str]]:
+        """
+        いま前面にあるアプリ（＝文字を貼り付ける先）の名前と実行ファイルのパスを返す。
+
+        アプリ別の使用状況と、録音中の HUD に出す貼り付け先アイコンに使う。
+        リスナースレッドを止めないよう、呼び出し側は別スレッドから呼ぶこと。
+
+        Returns:
+            (表示名, 実行ファイルのフルパス)。調べられない OS・取れなかったときは None
+        """
+        return None
+
+    def app_icon(self, path: str) -> Any:
+        """
+        実行ファイルのアイコンを返す（UI スレッドから呼ぶこと）。
+
+        Args:
+            path: 実行ファイルのフルパス
+
+        Returns:
+            アイコン（QPixmap）。取れない OS・取れなかったときは None
+        """
+        return None
 
     # --- ウィンドウ可視性制御（macOS でのみ実体を持つ。既定は no-op） ---
 

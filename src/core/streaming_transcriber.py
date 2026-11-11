@@ -216,6 +216,7 @@ class StreamingTranscriber:
         self._failed = False                  # 途中で失敗した（録音全体の送り直しへ）
         self._completed = False               # サーバーが最後まで確定した
         self._end_sent = False                # 終わりの合図を送った
+        self._sent_samples = 0                # サーバーへ送り終えた音声のサンプル数（料金の記録用）
         self._done_event = threading.Event()  # 確定・切断・失敗の通知
         self._thread: Optional[threading.Thread] = None
         self._sender: Optional[threading.Thread] = None
@@ -252,6 +253,11 @@ class StreamingTranscriber:
     def _name(self) -> str:
         """ログ・通知の主語に使うエンジン名。"""
         return engines.engine(self.engine_id).name
+
+    @property
+    def sent_seconds(self) -> float:
+        """サーバーへ送り終えた音声の長さ（秒）。料金の記録に使う（接続できなかった回は 0）。"""
+        return self._sent_samples / SAMPLE_RATE
 
     @property
     def failed(self) -> bool:
@@ -487,6 +493,8 @@ class StreamingTranscriber:
                     return  # この後は送るものが無い（受信ループが確定を待つ）
                 for frame in self._encode(item):
                     ws.send(frame)
+                # 送信スレッドだけが書き、読むのは finish() の後なのでロックは要らない
+                self._sent_samples += len(item)
             except Exception as e:
                 logger.debug(f"{self._name}: 送信エラー: {type(e).__name__}")
                 self._mark_failed()

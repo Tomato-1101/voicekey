@@ -56,8 +56,24 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "vad_min_silence_duration_ms": 500,
     "audio_input_device": "default",
 
+    # ダッシュボードの切替（次に開いたときも同じ表示にする。Mac の home.periodDays ほかと同じ既定）
+    "home_period_days": 1,
+    "home_api_cost_period": "month",
+    # API 料金の数え方（"list"=定価 / "paid"=実際に払った分）。トレイの「今日の API 代」も同じ値に従う
+    "api_cost_mode": "list",
+
     # ハンズフリー切替キー（この切替キー＋ホットキーで toggle 録音。空＝無効）
     "handsfree_key": "",
+    # 最後の文字起こしをもう一度貼り付けるキー（録音していないときだけ動く。空＝無効）
+    "repaste_key": "<ctrl>+<alt>+<v>",
+    # 翻訳して入力: 常に翻訳するか（全体のスイッチ。1 回翻訳キーとは別）
+    "translate_input_enabled": False,
+    # 翻訳先の言語（core/dictation_translator.TARGET_LANGUAGES のコード）
+    "translate_input_target": "en",
+    # 翻訳に使う Groq モデル（一覧は core/llm_catalog.py）
+    "translate_input_model": "qwen/qwen3.8-27b",
+    # 1 回だけ翻訳するキー（録音中に押すとその回だけ翻訳、もう一度押すと取り消し。空＝無効）
+    "translate_once_key": "<shift_r>",
     # 長文を無音区間で分割し API へ並列送信する（既定オン。録音しながら送るエンジンは対象外）
     "split_parallel_enabled": True,
 
@@ -157,6 +173,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "enabled": False,
         "url": "",
     },
+
+    # Google Meet 議事録ボット（src/meetbot/）
+    # meetbot_caption_language: Meet の字幕の言語（"ja" / "en"）。議事録はこの言語で残る
+    # meetbot_summary_model: 議事録の要約に使う Groq のモデル（空 = llm_catalog.RECOMMENDED_MODEL）
+    "meetbot_caption_language": "ja",
+    "meetbot_summary_model": "",
 }
 
 # ============================================

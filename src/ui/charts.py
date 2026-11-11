@@ -60,6 +60,56 @@ class MeterBar(QWidget):
             painter.drawRoundedRect(QRectF(0.0, 0.0, max(h, w * self._fraction), h), h / 2, h / 2)
 
 
+class LevelMeter(QWidget):
+    """
+    マイクの音量を、横に並んだ縦長のカプセルで見せる（Mac 版のマイクテストと同じ形）。
+
+    音量が上がるほど左から順に灯る。止まっているときは全部が溝の色。
+    """
+
+    HEIGHT = 14
+    _BARS = 20
+    _GAP = 3.0
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        """
+        Args:
+            parent: 親ウィジェット
+        """
+        super().__init__(parent)
+        self._fraction = 0.0
+        self.setFixedHeight(self.HEIGHT)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        Theme.instance().changed.connect(self.update)
+
+    def set_fraction(self, fraction: float) -> None:
+        """
+        音量を変える。
+
+        Args:
+            fraction: 0.0〜1.0（範囲の外は端に丸める）
+        """
+        self._fraction = max(0.0, min(1.0, float(fraction)))
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        """カプセルを並べ、音量に届いた分だけ灯す。"""
+        p = theme.palette()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        h = float(self.height())
+        bar_w = (self.width() - self._GAP * (self._BARS - 1)) / self._BARS
+        if bar_w <= 0.0:
+            return
+        radius = min(bar_w, h) / 2
+        for i in range(self._BARS):
+            # 無音のゆらぎで 1 本目が点かないよう、しきい値に少し足す（Mac と同じ 0.02）
+            on = self._fraction >= i / self._BARS + 0.02
+            painter.setBrush(p.accent if on else p.track_off)
+            painter.drawRoundedRect(QRectF(i * (bar_w + self._GAP), 0.0, bar_w, h), radius, radius)
+
+
 class BarChart(QWidget):
     """
     日ごとの値を縦棒で並べる（左が古く、右が新しい）。

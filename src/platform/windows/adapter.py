@@ -2,7 +2,7 @@
 Windows向けプラットフォーム実装。
 """
 
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Tuple
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QSystemTrayIcon
@@ -75,6 +75,16 @@ class WindowsPlatformAdapter(PlatformAdapter):
         )
 
     def normalize_listener_key(self, key) -> Optional[str]:
+        # Ctrl や Alt を押しながらの英数字は、pynput が文字ではなく制御文字で報告する
+        # （Ctrl+V は "\x16"）。そのままだと "<ctrl>+<alt>+<v>" のような組み合わせが
+        # 一度も一致しないので、名前を持たない英数字キーは vk から文字を決める
+        vk = getattr(key, "vk", None)
+        if (
+            getattr(key, "name", None) is None
+            and isinstance(vk, int)
+            and (0x30 <= vk <= 0x39 or 0x41 <= vk <= 0x5A)
+        ):
+            return chr(vk).lower()
         token = normalize_listener_key(key)
         if token is not None:
             return token
@@ -83,6 +93,24 @@ class WindowsPlatformAdapter(PlatformAdapter):
         if vk is not None and vk in self._JIS_VK_MAP:
             return self._JIS_VK_MAP[vk]
         return None
+
+    def foreground_app(self) -> Optional[Tuple[str, str]]:
+        # PySide6 の読み込みを伴うので、使うときにだけ読み込む
+        from .foreground_app import foreground_exe_path
+
+        path = foreground_exe_path()
+        if not path:
+            return None
+        # 表示名は実行ファイル名から作る（"C:\\...\\chrome.exe" → "chrome"）
+        name = path.replace("/", "\\").rsplit("\\", 1)[-1]
+        if name.lower().endswith(".exe"):
+            name = name[:-4]
+        return (name, path)
+
+    def app_icon(self, path: str):
+        from .foreground_app import icon_for_exe
+
+        return icon_for_exe(path)
 
     def modifier_hotkey_from_native(
         self,

@@ -402,6 +402,7 @@ class CapsuleButton(QAbstractButton):
         "primary": 灯りの面に白い文字（その画面でいちばん大事な操作に 1 つだけ）
         "secondary": 薄いガラスの面（既定）
         "destructive": 薄いガラスの面に赤い文字（消す・やめる）
+        "link": 面を持たない灯りの色の文字（カードの中の軽い操作。Mac の borderless ボタン）
     size:
         "small" / "regular" / "large"
     """
@@ -419,18 +420,25 @@ class CapsuleButton(QAbstractButton):
         kind: str = "secondary",
         size: str = "regular",
         parent: Optional[QWidget] = None,
+        icon: str = "",
     ) -> None:
         """
         Args:
             text: ボタンの文字
-            kind: 種類（"primary" / "secondary" / "destructive"）
+            kind: 種類（"primary" / "secondary" / "destructive" / "link"）
             size: 大きさ（"small" / "regular" / "large"）
             parent: 親ウィジェット
+            icon: アイコンの名前（icons.names() のどれか）。入れると文字の代わりにアイコンだけの丸いボタンになる
         """
         super().__init__(parent)
         self._kind = kind
+        self._icon = icon
         font_size, self._pad_h, self._pad_v = self._SIZES.get(size, self._SIZES["regular"])
-        weight = QFont.Weight.DemiBold if kind == "primary" else QFont.Weight.Normal
+        weight = QFont.Weight.DemiBold if kind in ("primary", "link") else QFont.Weight.Normal
+        if kind == "link":
+            # Mac の該当ボタンは 12pt・semibold で固定。面が無いので、文字の端を周りの端に揃える
+            font_size = 12
+            self._pad_h = 0
         self.setFont(theme.font(font_size, weight))
         self.setText(text)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -467,10 +475,11 @@ class CapsuleButton(QAbstractButton):
 
     def sizeHint(self) -> QSize:  # noqa: N802
         metrics = QFontMetrics(self.font())
-        return QSize(
-            metrics.horizontalAdvance(self.text()) + self._pad_h * 2 + 2,
-            metrics.height() + self._pad_v * 2,
-        )
+        height = metrics.height() + self._pad_v * 2
+        if self._icon:
+            # アイコンだけのときは、文字のボタンと同じ高さの正円にする
+            return QSize(height, height)
+        return QSize(metrics.horizontalAdvance(self.text()) + self._pad_h * 2 + 2, height)
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802
         return self.sizeHint()
@@ -503,6 +512,9 @@ class CapsuleButton(QAbstractButton):
             painter.setPen(_rim_pen(rgba("#FFFFFF", 0.55), rgba("#FFFFFF", 0.0), rect.top(), rect.bottom()))
             painter.drawPath(path)
             text_color = p.on_accent
+        elif self._kind == "link":
+            # 面も縁も描かない（押している間の沈みと薄さだけで手応えを返す）
+            text_color = p.accent
         else:
             painter.fillPath(path, _mix(p.control, p.control_hover, self._hover))
             if not p.dark:
@@ -517,6 +529,15 @@ class CapsuleButton(QAbstractButton):
             painter.setPen(QPen(rgba(SIGNAL, 0.55), 2.0))
             painter.drawPath(path)
 
+        if self._icon:
+            side = 13.0
+            icons.paint(
+                painter,
+                self._icon,
+                QRectF((self.width() - side) / 2.0, (self.height() - side) / 2.0, side, side),
+                text_color,
+            )
+            return
         painter.setPen(text_color)
         painter.setFont(self.font())
         painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text())
@@ -533,17 +554,26 @@ class CapsuleButton(QAbstractButton):
 
 class Picker(QComboBox):
     """
-    選択肢から 1 つ選ぶ部品。面と文字は theme.app_qss、右端の山形はここで描く。
+    選択肢から 1 つ選ぶ部品（Mac のメニュー型ピッカーと同じ見た目）。
+
+    枠を持たず、選んでいる文字を右寄せで出し、右端に上下の山形の小さな札を置く。
+    部品の幅は「いちばん長い選択肢」のままなので、選び直しても右端も周りも動かない。
+    開いたときの一覧の見た目は theme.app_qss が決める。
 
     ページをスクロールしている途中でホイールが乗っても値が変わらないようにしてある
     （フォーカスが無いときのホイールは親へ流す）。
     """
+
+    _CHIP_W = 16.0
+    _CHIP_H = 20.0
+    _CHIP_GAP = 6.0
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setMinimumHeight(Metrics.FIELD_H)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         Theme.instance().changed.connect(self.update)
 
     def wheelEvent(self, event) -> None:  # noqa: N802
@@ -553,24 +583,50 @@ class Picker(QComboBox):
         else:
             event.ignore()
 
-    def paintEvent(self, event) -> None:  # noqa: N802
-        """標準の描画の上に、上下の山形（選べる印）を描く。"""
-        super().paintEvent(event)
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        """選んでいる文字（右寄せ）と、上下の山形の札を描く。枠は描かない。"""
         p = theme.palette()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        color = p.text_secondary if self.isEnabled() else p.text_disabled
-        painter.setPen(QPen(color, 1.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-        cx = self.width() - 14.0
-        cy = self.height() / 2.0
+        enabled = self.isEnabled()
+
+        chip = QRectF(
+            self.width() - self._CHIP_W - 0.5,
+            (self.height() - self._CHIP_H) / 2.0,
+            self._CHIP_W,
+            self._CHIP_H,
+        )
+        face = QColor(p.text)
+        face.setAlphaF(0.14 if (enabled and self.underMouse()) else 0.09)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(face)
+        painter.drawRoundedRect(chip, 5.0, 5.0)
+        if self.hasFocus() and enabled:
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(rgba(SIGNAL, 0.55), 1.5))
+            painter.drawRoundedRect(chip, 5.0, 5.0)
+
+        mark = p.text if enabled else p.text_disabled
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(mark, 1.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        cx = chip.center().x()
+        cy = chip.center().y()
         for direction in (-1.0, 1.0):
-            tip = cy + direction * 5.0
-            base = cy + direction * 2.0
+            tip = cy + direction * 5.2
+            base = cy + direction * 2.2
             path = QPainterPath()
-            path.moveTo(cx - 3.2, base)
+            path.moveTo(cx - 3.0, base)
             path.lineTo(cx, tip)
-            path.lineTo(cx + 3.2, base)
+            path.lineTo(cx + 3.0, base)
             painter.drawPath(path)
+
+        painter.setPen(p.text if enabled else p.text_disabled)
+        painter.setFont(self.font())
+        text_rect = QRectF(0.0, 0.0, chip.left() - self._CHIP_GAP, float(self.height()))
+        text = QFontMetrics(self.font()).elidedText(
+            self.currentText(), Qt.TextElideMode.ElideRight, int(text_rect.width())
+        )
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, text)
 
 
 # ---------------------------------------------------------------------------
