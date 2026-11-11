@@ -90,6 +90,11 @@ def _marker_problems(root: Path) -> list:
 
 
 def main(argv) -> int:
+    # 日本語を表示できないコンソール（英語版 Windows の cp1252 など）でも、結果の表示で落ちないようにする。
+    # 表示で例外になると、検査は通っているのにビルドが失敗扱いになるため
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     if not argv:
         print("使い方: verify_no_embedded_keys.py <path> [<path> ...]", file=sys.stderr)
         return 2

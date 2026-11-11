@@ -69,6 +69,9 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           # 実 Credential Manager に触れない（テストはすべて偽物で完結させる）
           PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
+          # 配布ビルド（windows-build.yml）と同じく UTF-8 で動かす。ランナーの既定は cp1252 で、
+          # 日本語のログ・表示が文字化けの例外になる
+          PYTHONUTF8: "1"
         run: python -m unittest discover -s tests -t .
 
   swift-tests:

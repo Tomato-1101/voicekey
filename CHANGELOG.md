@@ -53,6 +53,11 @@ voicekeyの変更履歴を記録するファイルです。
   （`components.py` の `Card`・`Segmented`、`charts.py` の `MeterBar`・`BarChart`）、
   タイトルバーの暗色化（`platform/windows/titlebar.py`）、貼り付け先アプリのアイコン取得（`foreground_app.py`）。
 
+### Fixed（Windows のビルド・テスト）
+- 配布物の鍵混入チェック（`scripts/build/verify_no_embedded_keys.py`）が、日本語を表示できないコンソール
+  （英語版 Windows の cp1252）で結果の表示時に落ちていたのを修正。GitHub の Windows テストも配布ビルドと同じ UTF-8 で回す
+- README: ハンズフリー録音中の HUD の色の説明を現状（両 OS とも灯りの橙）に合わせた
+
 ### Technical Details（Windows）
 - 追加: `src/core/engines.py`（エンジンのカタログ。UI とコアの単一の出どころ）、`src/core/llm_catalog.py`、
   `src/ui/brand.py`＋`src/ui/assets/AppIcon{Light,Dark}.png`（Mac の画像の写し。`tests/test_brand.py` が一致を検査）
