@@ -74,6 +74,13 @@ final class MeetBotMenuController: NSObject, NSMenuDelegate {
         let state = NSMenuItem(title: bot.statusLine, action: nil, keyEquivalent: "")
         state.isEnabled = false
         menu.addItem(state)
+        // ゲストで入れなかったときは、ログインすれば入れる見込みがあることを添える（項目は下にある）
+        if !bot.state.isActive, bot.lastFailure?.suggestsLogin == true {
+            let hint = NSMenuItem(title: "下の「ボット用ブラウザで Google にログイン…」で入れることがあります",
+                                  action: nil, keyEquivalent: "")
+            hint.isEnabled = false
+            menu.addItem(hint)
+        }
         let source = NSMenuItem(
             title: "文字起こし: \(CaptionSettings.meetTranscriptSource.summary)", action: nil, keyEquivalent: ""
         )
@@ -139,11 +146,7 @@ final class MeetBotMenuController: NSObject, NSMenuDelegate {
     /// URL を尋ねて会議に参加させる
     @objc private func joinMeeting() {
         guard let bot = controller?.meetBot else { return }
-        // 未ログインのまま参加させると 90 秒待った末に必ず失敗するので、先にログインへ案内する
-        if bot.loginStatus.needsLogin {
-            if Self.askToLogIn() { bot.showLoginWindow() }
-            return
-        }
+        // ログインは必須ではない（未ログインならゲストとして参加をリクエストする）
         guard let url = Self.askMeetingURL() else { return }
         bot.join(urlString: url)
     }
@@ -180,20 +183,6 @@ final class MeetBotMenuController: NSObject, NSMenuDelegate {
 
     // MARK: - 入力ダイアログ
 
-    /// 参加の前にログインが要ることを伝える
-    ///
-    /// - Returns: 「ログイン画面を開く」が押されたか
-    private static func askToLogIn() -> Bool {
-        let alert = NSAlert()
-        alert.messageText = "まず Google にログインしてください"
-        alert.informativeText = "ボットは普段の Chrome とは別のブラウザで会議に入ります。"
-            + "そのブラウザで Google に 1 回ログインすると、会議に参加できるようになります。"
-            + "ログインが済んだらウィンドウを閉じて、もう一度「会議に参加…」を選んでください。"
-        alert.addButton(withTitle: "ログイン画面を開く")
-        alert.addButton(withTitle: "キャンセル")
-        return alert.runModal() == .alertFirstButtonReturn
-    }
-
     /// 会議 URL を尋ねる
     ///
     /// クリップボードに Meet の URL が入っていれば初期値に入れる（会議 URL は直前にコピーして
@@ -205,6 +194,8 @@ final class MeetBotMenuController: NSObject, NSMenuDelegate {
         alert.messageText = "会議に参加"
         alert.informativeText = "Google Meet の URL を入れてください。ボットが裏で会議に入り、"
             + "発言を議事録として保存します。ボットはマイクとカメラをオフにして入ります。"
+            + "ボット用ブラウザが Google にログインしていなければ、ゲスト「\(MeetBotService.botDisplayName)」として"
+            + "参加をリクエストします（主催者の承認が要ります）。"
         alert.addButton(withTitle: "参加")
         alert.addButton(withTitle: "キャンセル")
 

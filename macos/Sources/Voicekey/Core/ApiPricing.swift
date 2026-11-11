@@ -54,6 +54,7 @@ enum ApiUsagePurpose: String, Codable, CaseIterable {
     case formatting
     case translation
     case captionTranslation
+    case meetingSummary
 
     var label: String {
         switch self {
@@ -61,6 +62,7 @@ enum ApiUsagePurpose: String, Codable, CaseIterable {
         case .formatting: return "テキスト整形"
         case .translation: return "翻訳して入力"
         case .captionTranslation: return "字幕の翻訳"
+        case .meetingSummary: return "議事録の要約"
         }
     }
 }

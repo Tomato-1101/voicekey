@@ -10,6 +10,8 @@
 //    dist/voicekey.app/Contents/MacOS/voicekey --ui-snapshot <出力ディレクトリ> [--appearance light|dark] [--log-file <path>]
 //  出力: <home|タブ名>-<幅>x<高さ>-<light|dark>.png（760x600 と 1100x760 の 2 通り）
 //  --api-usage-sample を付けると API 料金の欄を見本データで撮り、縦長の 760x1500 も足す。
+//  --meeting-sample を付けると「議事録・会議」だけを、見本の状態（空・記録中・要約あり・エラー）ごとに撮る
+//  （meeting-<状態>-<幅>x<高さ>-<light|dark>.png。ページ全体が入る縦長の 760x1900 も足す）。macOS 26 以降。
 //  最終行の [VERDICT] status=ok files=<数> を判定に使う。
 //
 //  AppController を作らない＝ホットキー監視・録音・マイク・文字起こし・履歴同期の通信を一切起動しない。
@@ -101,6 +103,18 @@ enum UISnapshotTestMode {
         for id in MainWindowView.settingsTabIDs {
             screens.append((tabSlugs[id] ?? "tab\(id)", true, id))
         }
+        // --meeting-sample: 議事録・会議のページだけを、見本の状態ごとに撮る（本人の議事録フォルダは読まない）
+        var meetingScenarios: [String] = []
+        if arguments.contains("--meeting-sample") {
+            guard #available(macOS 26.0, *) else {
+                emit("[ERROR] --meeting-sample は macOS 26 以降で使えます")
+                finish(written: 0, failed: 1)
+            }
+            meetingScenarios = MeetingSnapshotScenario.allCases.map(\.rawValue)
+            screens = meetingScenarios.map { ("meeting-\($0)", true, 11) }
+            // 最小・広げたとき・ページ全体（欄ごとの高さを状態どうしで見比べる）
+            sizes = [NSSize(width: 760, height: 600), NSSize(width: 1100, height: 760), NSSize(width: 760, height: 1900)]
+        }
         emit("[INFO] ui-snapshot 開始 appearance=\(appearanceName) screens=\(screens.map(\.name).joined(separator: ",")) personal=\(EmbeddedKeys.isPersonal)")
 
         // 「実際に払った分」モードの見た目は、料金欄のある縦長のホームだけを追加で 1 枚撮る
@@ -118,6 +132,10 @@ enum UISnapshotTestMode {
             let screen = job.screen
             let size = job.size
             if job.paidMode { setApiCostMode("paid") }
+            if #available(macOS 26.0, *), screen.name.hasPrefix("meeting-"),
+               let scenario = MeetingSnapshotScenario(rawValue: String(screen.name.dropFirst("meeting-".count))) {
+                MeetBotSettingsTab.prepareSnapshot(scenario)
+            }
             // 保存先なしのモデル＝タブを切り替えてもユーザーの「前回の画面」を書き換えない
             let model = MainWindowModel(showingSettings: screen.showingSettings, settingsTab: screen.tab)
             let view = MainWindowView(

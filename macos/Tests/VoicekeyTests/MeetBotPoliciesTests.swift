@@ -279,13 +279,13 @@ final class MeetBotPoliciesTests: XCTestCase {
         XCTAssertEqual(MeetBotLoginStatus.whileWatching(loggedIn: nil), .waitingForLogin)
     }
 
-    /// ログイン済みと分かっていない間は、参加より先にログインへ案内する
-    func testNeedsLoginBeforeJoin() {
-        XCTAssertTrue(MeetBotLoginStatus.unknown.needsLogin)
-        XCTAssertTrue(MeetBotLoginStatus.loggedOut.needsLogin)
-        XCTAssertTrue(MeetBotLoginStatus.waitingForLogin.needsLogin)
-        XCTAssertFalse(MeetBotLoginStatus.loggedIn.needsLogin)
-        XCTAssertFalse(MeetBotLoginStatus.checking.needsLogin)
+    /// ログイン済みと分かっていない間は、ゲストとして参加をリクエストする（ログインは必須ではない）
+    func testJoinsAsGuestUnlessLoggedIn() {
+        XCTAssertTrue(MeetBotLoginStatus.unknown.joinsAsGuest)
+        XCTAssertTrue(MeetBotLoginStatus.loggedOut.joinsAsGuest)
+        XCTAssertTrue(MeetBotLoginStatus.waitingForLogin.joinsAsGuest)
+        XCTAssertFalse(MeetBotLoginStatus.loggedIn.joinsAsGuest)
+        XCTAssertFalse(MeetBotLoginStatus.checking.joinsAsGuest)
     }
 
     // MARK: - 通知を押したときに開く先

@@ -4,6 +4,23 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased] - 2026-11-11
 
+### Added（Meet 議事録ボット・Mac）
+- **設定の「議事録・会議」ページで文字起こしを読めるようにした**。会議中は発言が「記録中の発言」にそのまま流れ、
+  終わったあとは「過去の議事録」の一覧から本文を開ける（Finder で表示・コピー）。
+- **「要約」ボタンを追加**。Groq の無料モデルで要点・決まったこと・次にやることをまとめ、議事録の隣に
+  `<元の名前>.summary.md` で保存する（次からは保存した要約を開く。作り直しもできる）。長い会議は分けて要約してからまとめ直す。
+  混み合い（429）のときは待って再試行する。API 使用量に「議事録の要約」の区分が増えた。
+
+### Changed（Meet 議事録ボット・Mac）
+- **Google にログインしていなくても、ゲスト「voicekey 議事録ボット」として参加をリクエストする**（これまではログインを求めて止まった）。
+  主催者の承認待ちは 5 分まで。入れなかったときは「主催者に承認されませんでした」と「この会議はゲストが入れません」を分けて出し、
+  どちらもログインへの導線を示す。ログインは「弾かれる会議用」の任意の手順になった。
+- 「最新の議事録を開く」は要約ファイルを選ばない。
+
+### Technical Details（Meet 議事録ボット・Mac）
+- 追加: `MeetingNotesModel.swift` `TranscriptLibrary.swift` `TranscriptSummarizer.swift` と `MeetingNotesTests`（33 件）
+- `MeetBotPolicies.swift` に `MeetJoinMode` / `MeetJoinFlow`、`TextFormatter.chat(...)`、`--ui-snapshot --meeting-sample`
+
 ### Changed（Windows の見た目）
 - 録音中のピル（HUD）を Mac 版と同じ寸法・色・動きに作り直した（アプリアイコン・灯りの点・波形 24 本・
   自動 Enter と翻訳の印・変換中は静止）。位置はタスクバーのすぐ上の中央。ライト／ダークに追従する。

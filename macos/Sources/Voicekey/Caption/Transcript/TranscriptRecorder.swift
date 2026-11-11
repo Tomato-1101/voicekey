@@ -56,6 +56,12 @@ final class TranscriptRecorder {
     /// 再参加したとき、前の会議の書き込み結果を新しい会議の行数・ファイル名と取り違えないために使う。
     var onWrite: ((WriteOutcome, Int) -> Void)?
 
+    /// 行をファイルへ書けたときに、その行を渡す（**記録用の直列キューの上で**呼ぶ）
+    ///
+    /// 画面のリアルタイム表示用。書けた行だけを渡すので、画面に出ている行は必ず議事録にもある。
+    /// 2 つ目の値は `onWrite` と同じ会議の番号。
+    var onLine: ((TranscriptLine, Int) -> Void)?
+
     /// 現在書き込み中のファイル（nil なら次の追記で新規作成）
     private var currentURL: URL?
     /// 最後に追記した時刻（セッション区切りの判定に使う）
@@ -145,14 +151,18 @@ final class TranscriptRecorder {
             }
             do {
                 let url = try self.fileURL(at: now, context: context, language: language)
-                let line = Self.formatLine(text: trimmed, speaker: speaker, at: now)
-                try self.append(line, to: url)
+                let time = Self.timeFormatter.string(from: now)
+                try self.append(Self.formatLine(text: trimmed, speaker: speaker, time: time), to: url)
                 self.lastWriteAt = now
                 self.lastText = trimmed
                 self.lastSpeaker = speaker
                 self.linesInFile += 1
                 self.lastError = nil
                 self.onWrite?(.written(url, lines: self.linesInFile), self.meeting?.tag ?? 0)
+                self.onLine?(
+                    TranscriptLine(id: self.linesInFile, time: time, speaker: speaker, text: trimmed),
+                    self.meeting?.tag ?? 0
+                )
             } catch {
                 self.reportFailure(error)
             }
@@ -191,7 +201,8 @@ final class TranscriptRecorder {
         let modified = { (url: URL) -> Date in
             (try? url.resourceValues(forKeys: keys).contentModificationDate) ?? .distantPast
         }
-        return files.filter { $0.pathExtension == "md" }.max { modified($0) < modified($1) }
+        // 要約（`.summary.md`）は議事録ではないので除く
+        return files.filter { TranscriptLibrary.isTranscript($0) }.max { modified($0) < modified($1) }
     }
 
     /// ファイル名の本体（`2026-10-11_140512` / 会議なら `2026-10-11_140512-abc-defg-hij`）
@@ -279,8 +290,7 @@ final class TranscriptRecorder {
     }
 
     /// 1 行分の Markdown を作る
-    private static func formatLine(text: String, speaker: String?, at date: Date) -> String {
-        let time = timeFormatter.string(from: date)
+    private static func formatLine(text: String, speaker: String?, time: String) -> String {
         if let speaker, !speaker.isEmpty {
             return "- `\(time)` **\(speaker)**: \(text)\n"
         }

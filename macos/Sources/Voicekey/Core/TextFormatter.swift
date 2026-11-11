@@ -13,6 +13,27 @@ import os.log
 
 private let log = Logger(subsystem: "com.voicekey.app", category: "formatter")
 
+/// Groq への 1 回の問い合わせが失敗した理由（`TextFormatter.chat` が投げる）
+///
+/// 整形（`format`）は失敗しても原文を返せば済むが、要約のように「失敗したら失敗と伝える」用途では
+/// 理由が要る。API のエラー本文は持たない（画面にそのまま出さないため）。
+enum LLMChatError: Error, Equatable {
+    /// この版では直接呼べない（配布ビルド）
+    case unavailable
+    /// API キーが無い
+    case missingKey
+    /// 利用上限（429）。`retryAfter` は応答の `retry-after`（秒。無ければ nil）
+    case rateLimited(retryAfter: TimeInterval?)
+    /// それ以外の HTTP エラー
+    case http(Int)
+    /// 出力が上限で途中で切れた
+    case truncated
+    /// 応答を読めなかった・空だった
+    case badResponse
+    /// 通信できなかった（タイムアウトを含む）
+    case network
+}
+
 /// Groq Chat Completions でテキストを整形するクライアント
 final class TextFormatter {
 
@@ -115,6 +136,79 @@ final class TextFormatter {
             let message: Message
         }
         let choices: [Choice]
+    }
+
+    /// `retry-after` ヘッダを秒に直す（Groq は秒数で返す。読めなければ nil）
+    static func retryAfterSeconds(_ value: String?) -> TimeInterval? {
+        guard let value, let seconds = TimeInterval(value.trimmingCharacters(in: .whitespaces)),
+              seconds >= 0 else { return nil }
+        return seconds
+    }
+
+    /// システム文とユーザー文を 1 回だけ Groq に投げて、返ってきた文をそのまま返す（失敗は投げる）
+    ///
+    /// 議事録の要約用。整形（`format`）と同じ接続・エンドポイント・キーの読み方・モデル別パラメータを使う。
+    /// 再試行はしない（429 の待ち方は呼び出し側が `retry-after` を見て決める）。
+    ///
+    /// - Parameters:
+    ///   - system: システム文
+    ///   - user: ユーザー文
+    ///   - model: Groq のモデル名
+    ///   - purpose: 使用量の記録に付ける用途
+    ///   - maxCompletionTokens: 出力トークンの上限
+    func chat(
+        system: String, user: String, model: String, purpose: ApiUsagePurpose, maxCompletionTokens: Int
+    ) async throws -> String {
+        // 配布ビルドは直プロバイダー呼び出しをしない（キーも持たない）
+        if EmbeddedKeys.isDist { throw LLMChatError.unavailable }
+        guard let apiKey = Keychain.apiKey(for: .groq) else { throw LLMChatError.missingKey }
+
+        var body: [String: Any] = [
+            "model": model,
+            "messages": [
+                ["role": "system", "content": system],
+                ["role": "user", "content": user],
+            ],
+            "temperature": 0.2,
+            "max_completion_tokens": maxCompletionTokens,
+        ]
+        body.merge(LLMModelCatalog.extraParameters(model: model)) { _, new in new }
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // 要約は貼り付けを待たせないので、整形（10 秒）より長く待ってよい（接続全体の上限 30 秒に合わせる）
+        request.timeoutInterval = 30
+        guard let encoded = try? JSONSerialization.data(withJSONObject: body) else {
+            throw LLMChatError.badResponse
+        }
+        request.httpBody = encoded
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            log.warning("chat 失敗: \(error.localizedDescription, privacy: .public)")
+            throw LLMChatError.network
+        }
+        guard let http = response as? HTTPURLResponse else { throw LLMChatError.badResponse }
+        if http.statusCode == 429 {
+            throw LLMChatError.rateLimited(
+                retryAfter: Self.retryAfterSeconds(http.value(forHTTPHeaderField: "retry-after")))
+        }
+        guard http.statusCode == 200 else {
+            log.warning("chat 失敗: HTTP \(http.statusCode)")
+            throw LLMChatError.http(http.statusCode)
+        }
+        // 200 が返った＝数えられた時点でトークン数を記録する（数量だけ・本文は渡さない）
+        ApiUsageStore.shared.recordChatUsage(fromJSON: data, provider: .groq, model: model, purpose: purpose)
+        if LLMModelCatalog.isTruncated(responseJSON: data) { throw LLMChatError.truncated }
+        guard let parsed = try? JSONDecoder().decode(ChatResponse.self, from: data),
+              let content = parsed.choices.first?.message.content?
+                  .trimmingCharacters(in: .whitespacesAndNewlines),
+              !content.isEmpty else { throw LLMChatError.badResponse }
+        return content
     }
 
     /// テキストを LLM で整形する。

@@ -61,13 +61,16 @@ extension MeetBotService {
     /// 1. 「マイクとカメラを使わずに続行」のダイアログが出ていれば押す（Chrome 側で
     ///    カメラ・マイクを拒否しているので、Meet がこれを尋ねてくる）
     /// 2. マイクとカメラを切る（`data-is-muted="false"` は Meet が入れている状態属性）
-    /// 3. ゲストのときだけ出る名前欄を埋める
+    /// 3. ゲスト（Google に未ログイン）のときだけ出る名前欄を埋める
     /// 4. 「今すぐ参加」か「参加をリクエスト」を押す
     ///
+    /// ゲストのときは名前を入れた直後だとボタンがまだ押せないことがあるが、呼び出し側が
+    /// 数秒おきに押し直す（`JoinRetry`）ので、ここでは待たない。
+    ///
     /// - Parameter displayName: 会議に出すボットの名前
+    /// - Returns: `{ clicked: 押したボタンの表示名か null, nameFilled: 名前欄を埋めたか }`
     static func joinScript(displayName: String) -> String {
-        let escaped = displayName.replacingOccurrences(of: "'", with: "\\'")
-        return """
+        """
             (() => {
                 \(helpers)
                 clickByPattern([
@@ -77,13 +80,18 @@ extension MeetBotService {
                 // マイク・カメラを確実に切る（ボットは聞くだけ）
                 document.querySelectorAll('[data-is-muted="false"]').forEach((b) => { try { b.click(); } catch (e) {} });
 
-                // ゲスト参加のときだけ名前欄が出る
-                const input = [...document.querySelectorAll('input[type="text"]')].find(vis);
+                // ゲスト参加のときだけ名前欄が出る。まず欄の説明（名前 / Your name）で探し、
+                // 無ければ見えている 1 行の入力欄を使う
+                const inputs = [...document.querySelectorAll('input[type="text"],input:not([type])')].filter(vis);
+                const hint = (el) => ((el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('placeholder') || ''));
+                const input = inputs.find((el) => /名前|your name|name/i.test(hint(el))) || inputs[0];
+                let nameFilled = false;
                 if (input && !input.value) {
                     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-                    setter.call(input, '\(escaped)');
+                    setter.call(input, \(jsLiteral(displayName)));
                     input.dispatchEvent(new Event('input', { bubbles: true }));
                     input.dispatchEvent(new Event('change', { bubbles: true }));
+                    nameFilled = true;
                 }
 
                 const clicked = clickByPattern([
@@ -91,7 +99,7 @@ extension MeetBotService {
                     '参加をリクエスト', 'Ask to join',
                     '参加$', '^Join$'
                 ]);
-                return { clicked };
+                return { clicked, nameFilled };
             })()
             """
     }
@@ -111,12 +119,20 @@ extension MeetBotService {
     ///
     /// 文言の判定は Swift 側（`MeetBotRules.pageStatus`）で行う。ここは材料を集めるだけ。
     /// 会議中は字幕の本文が画面の文字に混ざるので、**会議中は文字を持ち帰らない**。
+    ///
+    /// ゲスト参加の判定用に 2 つ足してある:
+    /// - `signInPage`: Google のログイン画面へ飛ばされたか（ゲストが入れない会議）
+    /// - `joinControls`: 参加ボタンか名前欄が見えているか（見えている間は「ゲストは入れない」と決めつけない）
     static let pageStatusScript = """
         (() => {
             \(helpers)
             const inMeeting = !!buttons().find((b) => /通話から退出|Leave call|退出/i.test(label(b)));
             const text = inMeeting ? '' : (document.body ? document.body.innerText : '').slice(0, 3000);
-            return { inMeeting, text };
+            const signInPage = location.host === 'accounts.google.com';
+            const joinButton = !!buttons().find((b) =>
+                /今すぐ参加|Join now|参加をリクエスト|Ask to join/i.test(label(b)));
+            const nameField = [...document.querySelectorAll('input[type="text"],input:not([type])')].some(vis);
+            return { inMeeting, text, signInPage, joinControls: joinButton || nameField };
         })()
         """
 
@@ -351,8 +367,12 @@ enum MeetPageStatus: Equatable {
     case inMeeting
     /// ホストの承認を待っている
     case waitingApproval
-    /// 参加を断られた・入れない会議だった
+    /// 参加を断られた（ホストが拒否した）
     case denied
+    /// この会議には入れないと表示された（外部の参加を受け付けない会議など）
+    case cannotJoin
+    /// ゲスト（Google に未ログイン）では入れない会議だった（ログインを求められた・リクエストできない）
+    case guestBlocked
     /// 会議から外された
     case removed
     /// 会議が終わった・退出した画面になった
@@ -395,13 +415,30 @@ enum MeetBotRules {
     /// - Parameters:
     ///   - inMeeting: 「通話から退出」ボタンが見えているか
     ///   - text: 会議外のときの画面の文字
-    static func pageStatus(inMeeting: Bool, text: String) -> MeetPageStatus {
+    ///   - signInPage: Google のログイン画面へ飛ばされているか
+    ///   - joinControls: 参加ボタンか名前欄が見えているか
+    static func pageStatus(
+        inMeeting: Bool, text: String, signInPage: Bool = false, joinControls: Bool = false
+    ) -> MeetPageStatus {
         if inMeeting { return .inMeeting }
+        if signInPage { return .guestBlocked }
         if matches(text, [
-            "参加リクエストが拒否", "リクエストが拒否されました", "参加を拒否", "この通話に参加できません",
-            "denied your request", "You can't join this call", "can't join this video call",
+            "参加リクエストが拒否", "リクエストが拒否されました", "参加を拒否", "denied your request",
         ]) {
             return .denied
+        }
+        // ゲストが入れない会議の文言（**実会議では未確認**。推測で置いた語なので、壊れたらここを直す）。
+        // 参加ボタンや名前欄が見えている間は当てない（ロビーの案内文に同じ語が出ても誤判定しないため）。
+        if !joinControls, matches(text, [
+            "参加するにはログイン", "ログインして参加", "ログインが必要です", "参加をリクエストできません",
+            "Sign in to join", "You must be signed in", "You can't ask to join", "can't request to join",
+        ]) {
+            return .guestBlocked
+        }
+        if matches(text, [
+            "この通話に参加できません", "You can't join this call", "can't join this video call",
+        ]) {
+            return .cannotJoin
         }
         // 「削除されました」だけだと、チャットのメッセージ削除など会議と関係ない表示でも当たる。
         // 会議・通話から外されたことを言う文言だけに絞る（確定は呼び出し側で 2 回連続を見る）。

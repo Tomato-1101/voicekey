@@ -98,11 +98,11 @@ enum MeetBotLoginStatus: Equatable {
         loggedIn == true ? .loggedIn : .waitingForLogin
     }
 
-    /// 参加の前にログインへ案内すべきか
+    /// 参加するとゲスト扱いになりそうか（画面の案内文の出し分けに使う）
     ///
-    /// 初めての人は「未確認」のまま参加を押し、90 秒近く待ってから「ログインしていません」で必ず 1 回失敗していた。
-    /// ログイン済みと分かっていない間は、参加より先にログインへ案内する（確認中だけは結果を待つ）。
-    var needsLogin: Bool {
+    /// ログインは必須ではない（2026-11-11）。ログイン済みと分かっていなければ、ゲストとして
+    /// 参加をリクエストする。確認中だけは結果が出るまでどちらとも言わない。
+    var joinsAsGuest: Bool {
         switch self {
         case .loggedIn, .checking: return false
         case .unknown, .loggedOut, .waitingForLogin: return true
@@ -149,6 +149,10 @@ enum MeetBotError: Error, CustomStringConvertible, Equatable {
     case callEnded
     /// 承認を待ちきれなかった
     case approvalTimeout
+    /// ゲストとして参加をリクエストしたが、主催者に承認されなかった（断られた・5 分待っても承認されない）
+    case guestNotApproved
+    /// ゲスト（Google に未ログイン）では入れない会議だった
+    case guestNotAllowed
     /// 会議画面にたどり着けなかった（参加ボタンは押せた）
     case couldNotEnter
     /// 参加ボタンが一度も見つからなかった
@@ -159,6 +163,14 @@ enum MeetBotError: Error, CustomStringConvertible, Equatable {
     case chromeNotResponding
     /// DevTools のポートを別のアプリが使っている
     case portBusy(Int)
+
+    /// ボット用ブラウザで Google にログインすれば入れる見込みがあるか（画面とメニューでログインへ案内する）
+    var suggestsLogin: Bool {
+        switch self {
+        case .guestNotApproved, .guestNotAllowed, .notLoggedIn: return true
+        default: return false
+        }
+    }
 
     var description: String {
         switch self {
@@ -171,6 +183,8 @@ enum MeetBotError: Error, CustomStringConvertible, Equatable {
         case .removed: return "会議から外されました"
         case .callEnded: return "会議はすでに終わっています"
         case .approvalTimeout: return "10 分待っても参加を承認されませんでした"
+        case .guestNotApproved: return "主催者に承認されませんでした"
+        case .guestNotAllowed: return "この会議はゲストが入れません。ボットに Google ログインをさせると入れます"
         case .couldNotEnter: return "参加ボタンは押せましたが、90 秒たっても会議に入れませんでした"
         case .joinButtonNotFound: return "参加ボタンが見つかりませんでした（Meet の画面が変わった可能性があります）"
         case .meetingNotFound: return "この会議は見つかりませんでした。URL（会議コード）を確かめてください"
@@ -194,7 +208,10 @@ final class MeetBotService: ObservableObject {
     static let stateDidChangeNotification = Notification.Name("MeetBotService.stateDidChange")
 
     /// 会議で表示されるボットの名前（ゲスト参加のときに入力される）
-    private static let botDisplayName = "voicekey 議事録ボット"
+    static let botDisplayName = "voicekey 議事録ボット"
+
+    /// 画面に流す「記録中の発言」を持つ上限（古い行から捨てる。全文は議事録ファイルにある）
+    static let liveLineLimit = 500
 
     /// 「いま誰が話しているか」を見にいく間隔
     ///
@@ -242,6 +259,9 @@ final class MeetBotService: ObservableObject {
 
     /// 参加の試行の世代
     private var generation = JoinGeneration()
+
+    /// この参加でどの立場で入るか（ログイン済みならアカウント、そうでなければゲスト）
+    private var joinMode: MeetJoinMode = .guest
 
     /// ログイン用ウィンドウの見張り（閉じられたらログイン状態を確かめて Chrome を畳む）
     private var loginWatcher: Task<Void, Never>?
@@ -328,6 +348,10 @@ final class MeetBotService: ObservableObject {
     @Published private(set) var currentTranscript: URL?
     /// 字幕が取れていない警告（取れていれば nil）
     @Published private(set) var captionWarning: String?
+    /// 記録中の確定行（議事録に書けた行と同じもの。画面のリアルタイム表示用）
+    @Published private(set) var liveLines: [TranscriptLine] = []
+    /// 直近の参加が失敗した理由（ログインへ案内するかの出し分けに使う。次に参加したら消える）
+    @Published private(set) var lastFailure: MeetBotError?
     /// ボット用ブラウザのログイン状態
     @Published private(set) var loginStatus: MeetBotLoginStatus = .unknown
     /// ログイン状態を最後に確かめた時刻
@@ -351,14 +375,53 @@ final class MeetBotService: ObservableObject {
         recorder.onWrite = { [weak self] outcome, tag in
             Task { @MainActor [weak self] in self?.handleWrite(outcome, tag: tag) }
         }
+        recorder.onLine = { [weak self] line, tag in
+            Task { @MainActor [weak self] in self?.handleLine(line, tag: tag) }
+        }
     }
 
     /// 状態を 1 行で（保存失敗・記録行数も含めて出す）
     var statusLine: String {
+        if state == .waitingForApproval {
+            // 待つ上限を一緒に出す（いつまで待つのか分からないと、止まっているように見える）
+            return "主催者の承認待ち（\(Int(joinMode.approvalWaitLimit / 60)) 分まで待ちます）"
+        }
         guard case let .recording(name) = state else { return state.menuTitle }
         if let saveError { return "議事録を保存できません — \(saveError)" }
         if let captionWarning { return "\(captionWarning) — \(name)" }
         return "記録中 \(recordedLines) 行 — \(name)"
+    }
+
+    // MARK: - 撮影用の見本
+
+    /// 見た目の確認（`--ui-snapshot --meeting-sample`）用に、状態を見本で埋める
+    ///
+    /// どこにも結線されていない表示専用のボットにだけ使う（Chrome も議事録も動かさない）。
+    func applySnapshotSample(_ scenario: MeetingSnapshotScenario) {
+        saveError = nil
+        captionWarning = nil
+        lastFailure = nil
+        liveLines = []
+        recordedLines = 0
+        currentTranscript = nil
+        loginStatus = .loggedOut
+        loginCheckedAt = nil
+        switch scenario {
+        case .empty:
+            state = .idle
+        case .recording:
+            joinMode = .guest
+            liveLines = MeetingNotesModel.sampleLines
+            recordedLines = liveLines.count
+            currentTranscript = URL(fileURLWithPath: "/sample/2026-11-11_140212-abc-defg-hij.md")
+            state = .recording("週次の定例")
+        case .summary:
+            recordedLines = MeetingNotesModel.sampleLines.count
+            state = .ended("会議が終了しました")
+        case .error:
+            lastFailure = .guestNotAllowed
+            state = .failed(MeetBotError.guestNotAllowed.description)
+        }
     }
 
     // MARK: - 公開操作
@@ -391,6 +454,8 @@ final class MeetBotService: ObservableObject {
         currentTranscript = nil
         meetingFileStarted = false
         captionWarning = nil
+        liveLines = []
+        lastFailure = nil
         let current = generation.begin()
         meetingTag = current
         loginWatcher?.cancel()
@@ -413,13 +478,11 @@ final class MeetBotService: ObservableObject {
                 let message = String(describing: error)
                 self.logger.error("会議への参加に失敗: \(message, privacy: .public)")
                 ActionLog.shared.write("caption.MeetBot", "Meet ボット参加失敗: \(message)")
-                if error as? MeetBotError == .notLoggedIn { self.setLoginStatus(false) }
+                let failure = error as? MeetBotError
+                if failure == .notLoggedIn { self.setLoginStatus(false) }
+                self.lastFailure = failure
                 self.finish(.failed(message))
-                if error as? MeetBotError == .denied {
-                    self.notifier.post("参加を断られました。ホストに承認してもらうか、会議の URL を確かめてください。")
-                } else {
-                    self.notifier.post("会議に参加できませんでした: \(message)")
-                }
+                self.notifier.post(MeetBotText.joinFailureNotice(failure, message: message))
             }
         }
     }
@@ -547,12 +610,13 @@ final class MeetBotService: ObservableObject {
         try await ChromeDevTools.waitForDevTools(port: Self.devToolsPort)
         try ensureCurrent(current)
 
-        // 未ログインのまま会議ページへ行くと紹介サイトへ飛ばされるだけなので、先に確かめる
+        // ログインしていればそのアカウントで、していなければゲストとして参加をリクエストする
+        // （確かめられなかったときもゲストとして試す。入れない会議なら理由を出して止まる）
         state = .joining("ログインを確認しています")
-        if let loggedIn = await checkLogin() {
-            try ensureCurrent(current)
-            guard loggedIn else { throw MeetBotError.notLoggedIn }
-        }
+        let mode = MeetJoinMode(loggedIn: await checkLogin())
+        try ensureCurrent(current)
+        joinMode = mode
+        logger.notice("参加の立場: \(mode == .guest ? "ゲスト" : "アカウント", privacy: .public)")
         await denyMediaPermissions()
         try ensureCurrent(current)
 
@@ -578,15 +642,16 @@ final class MeetBotService: ObservableObject {
         }
         try ensureCurrent(current)
 
-        // 未ログインだと Meet は会議コードのページから紹介サイトへ飛ばす（実測: /about → apps.google.com/meet）。
+        // 会議コードのページから紹介サイトへ飛ばされることがある（実測: /about → apps.google.com/meet）。
+        // ゲストなら「ゲストは入れない会議」、ログイン済みのはずなら「ログインが切れている」として止める。
         if let left = try? await tools.evaluate(Self.leftMeetingPageScript) as? Bool, left {
-            throw MeetBotError.notLoggedIn
+            throw MeetJoinFlow.leftMeetingPage(mode: mode)
         }
         try ensureCurrent(current)
 
         // 参加ボタンは入室待ちの中で押す（ロビーの組み上がりが遅いときは数秒おきに押し直す）
         state = .joining("参加ボタンを押しています")
-        try await waitUntilInMeeting(tools: tools, generation: current)
+        try await waitUntilInMeeting(tools: tools, generation: current, mode: mode)
 
         if let title = try? await tools.evaluate("document.title") as? String, !title.isEmpty {
             meetingName = title.replacingOccurrences(of: " - Google Meet", with: "")
@@ -636,9 +701,12 @@ final class MeetBotService: ObservableObject {
     /// 会議に入れるまで待つ（承認待ち・拒否・終了を見分ける）
     ///
     /// ロビー（「その他」の画面）にいる間は、参加ボタンを数秒おきに上限回数まで押し直す。
-    /// 承認待ちに入ったら待ち時間を 10 分に延ばし、通知で知らせる。
+    /// 承認待ちに入ったら待ち時間を延ばし（ゲストは 5 分・ログイン済みは 10 分）、通知で知らせる。
     /// Chrome の時間切れが続いたら「Chrome が応答しません」で諦める（固まった Chrome を 90 秒待たない）。
-    private func waitUntilInMeeting(tools: ChromeDevTools, generation current: Int) async throws {
+    /// 画面の状態から次に何をするかは `MeetJoinFlow` が決める（純粋なロジック・回帰テスト済み）。
+    private func waitUntilInMeeting(
+        tools: ChromeDevTools, generation current: Int, mode: MeetJoinMode
+    ) async throws {
         let start = Date()
         var deadline = start.addingTimeInterval(90)
         var waitingNotified = false
@@ -649,9 +717,7 @@ final class MeetBotService: ObservableObject {
             var status: MeetPageStatus?
             do {
                 if let raw = try await tools.evaluate(Self.pageStatusScript) as? [String: Any] {
-                    status = MeetBotRules.pageStatus(
-                        inMeeting: (raw["inMeeting"] as? Bool) ?? false, text: (raw["text"] as? String) ?? ""
-                    )
+                    status = Self.pageStatus(from: raw)
                 }
                 _ = timeouts.record(timedOut: false)
             } catch ChromeDevToolsError.timedOut {
@@ -661,22 +727,20 @@ final class MeetBotService: ObservableObject {
                 _ = timeouts.record(timedOut: false)
             }
             try ensureCurrent(current)
-            switch status {
-            case .inMeeting?:
+            switch MeetJoinFlow.step(status: status, mode: mode) {
+            case .entered:
                 return
-            case .waitingApproval?:
+            case .waitForApproval:
                 if !waitingNotified {
                     waitingNotified = true
-                    deadline = start.addingTimeInterval(600)
+                    deadline = start.addingTimeInterval(mode.approvalWaitLimit)
                     state = .waitingForApproval
                     ActionLog.shared.write("caption.MeetBot", "Meet ボット承認待ち")
-                    notifier.post("ホストの承認を待っています。会議の画面でボットの参加を承認してください。")
+                    notifier.post(MeetBotText.waitingNotice(mode: mode, displayName: Self.botDisplayName))
                 }
-            case .denied?: throw MeetBotError.denied
-            case .removed?: throw MeetBotError.removed
-            case .ended?: throw MeetBotError.callEnded
-            case .notFound?: throw MeetBotError.meetingNotFound
-            case .other?:
+            case let .fail(error):
+                throw error
+            case .pressJoin:
                 if !waitingNotified, retry.shouldPress(status: .other, now: Date()) {
                     if retry.attempts > 0 { state = .joining("参加ボタンを押し直しています（\(retry.attempts + 1) 回目）") }
                     var clicked: String?
@@ -694,14 +758,25 @@ final class MeetBotService: ObservableObject {
                     logger.notice("参加操作（\(retry.attempts) 回目）: \(clicked ?? "ボタンが見つからない", privacy: .public)")
                     state = .joining("会議への入室を待っています")
                 }
-            case nil:
+            case .wait:
                 break
             }
             guard Date() < deadline else {
-                throw MeetBotError.joinTimeout(waitingSeen: waitingNotified, joinButtonFound: retry.buttonFound)
+                throw MeetJoinFlow.timeout(
+                    mode: mode, waitingSeen: waitingNotified, joinButtonFound: retry.buttonFound
+                )
             }
             try? await Task.sleep(for: .seconds(2))
         }
+    }
+
+    /// `pageStatusScript` の戻り値を状態に直す
+    private static func pageStatus(from raw: [String: Any]) -> MeetPageStatus {
+        MeetBotRules.pageStatus(
+            inMeeting: (raw["inMeeting"] as? Bool) ?? false, text: (raw["text"] as? String) ?? "",
+            signInPage: (raw["signInPage"] as? Bool) ?? false,
+            joinControls: (raw["joinControls"] as? Bool) ?? false
+        )
     }
 
     /// Meet の字幕をオンにする（既にオンなら触らない）
@@ -888,9 +963,7 @@ final class MeetBotService: ObservableObject {
             return
         }
         guard let raw else { return }
-        let status = MeetBotRules.pageStatus(
-            inMeeting: (raw["inMeeting"] as? Bool) ?? false, text: (raw["text"] as? String) ?? ""
-        )
+        let status = Self.pageStatus(from: raw)
         switch presenceWatch.observe(status) {
         case .removed?: endMeeting(reason: "会議から外されました")
         case .ended?: endMeeting(reason: "会議が終了しました")
@@ -1058,6 +1131,17 @@ final class MeetBotService: ObservableObject {
                 notifier.post("議事録を保存できません: \(message)")
             }
             saveError = message
+        }
+    }
+
+    /// 議事録に書けた 1 行を受けて、画面のリアルタイム表示へ流す
+    ///
+    /// - Parameter tag: その行が属する会議の番号（前の会議の行を新しい会議の欄に混ぜない）
+    private func handleLine(_ line: TranscriptLine, tag: Int) {
+        guard tag == meetingTag else { return }
+        liveLines.append(line)
+        if liveLines.count > Self.liveLineLimit {
+            liveLines.removeFirst(liveLines.count - Self.liveLineLimit)
         }
     }
 

@@ -64,7 +64,7 @@ struct MeetingPresenceWatch {
             removedCount += 1
             notInMeetingCount += 1
             return removedCount >= Self.removedLimit ? .removed : nil
-        case .denied, .ended, .waitingApproval, .notFound, .other:
+        case .denied, .cannotJoin, .guestBlocked, .ended, .waitingApproval, .notFound, .other:
             removedCount = 0
             notInMeetingCount += 1
             return notInMeetingCount >= Self.notInMeetingLimit ? .ended : nil
@@ -181,6 +181,88 @@ extension MeetBotError {
     }
 }
 
+/// どの立場で会議に入るか
+///
+/// ボット用ブラウザが Google にログインしていればそのアカウントで、していなければ**ゲストとして**
+/// 名前を入れて参加をリクエストする（2026-11-11。以前は未ログインだと参加を止めていた）。
+enum MeetJoinMode: Equatable {
+    /// ログイン済みの Google アカウントで入る
+    case account
+    /// ゲストとして参加をリクエストする
+    case guest
+
+    /// - Parameter loggedIn: ログイン確認の結果（確かめられなかったら nil＝ゲスト扱いで試す）
+    init(loggedIn: Bool?) {
+        self = loggedIn == true ? .account : .guest
+    }
+
+    /// 主催者の承認を待つ上限（秒）
+    ///
+    /// ゲストは 5 分。知らない名前のリクエストは見落とされやすく、長く待っても承認されないことが多いので、
+    /// 早めに「承認されませんでした」と知らせる。ログイン済みは従来どおり 10 分。
+    var approvalWaitLimit: TimeInterval {
+        self == .guest ? 5 * 60 : 10 * 60
+    }
+}
+
+/// 入室待ちの 1 回分の判断
+enum MeetJoinStep: Equatable {
+    /// 会議に入れた
+    case entered
+    /// 主催者の承認を待つ
+    case waitForApproval
+    /// 参加ボタンを押す（ロビーにいる）
+    case pressJoin
+    /// 何もせず次の読み取りを待つ（画面の状態が読めなかった）
+    case wait
+    /// 諦める（理由つき）
+    case fail(MeetBotError)
+}
+
+/// 入室までの判断（画面の状態 → 次にすること）。純粋なロジックなのでブラウザ無しでテストできる
+enum MeetJoinFlow {
+
+    /// 画面の状態から、次にすることを決める
+    ///
+    /// ゲストのときは「断られた」「入れない」を**理由で分ける**（主催者が承認しなかったのか、
+    /// そもそもゲストが入れない会議なのかで、本人が次にやることが違うため）。
+    ///
+    /// - Parameters:
+    ///   - status: `MeetBotRules.pageStatus` の結果（読めなかったら nil）
+    ///   - mode: どの立場で入ろうとしているか
+    static func step(status: MeetPageStatus?, mode: MeetJoinMode) -> MeetJoinStep {
+        switch status {
+        case .inMeeting?: return .entered
+        case .waitingApproval?: return .waitForApproval
+        case .denied?: return .fail(mode == .guest ? .guestNotApproved : .denied)
+        case .cannotJoin?, .guestBlocked?: return .fail(mode == .guest ? .guestNotAllowed : .denied)
+        case .removed?: return .fail(.removed)
+        case .ended?: return .fail(.callEnded)
+        case .notFound?: return .fail(.meetingNotFound)
+        case .other?: return .pressJoin
+        case nil: return .wait
+        }
+    }
+
+    /// 入室を待ちきれなかったときの失敗
+    ///
+    /// - Parameters:
+    ///   - mode: どの立場で入ろうとしていたか
+    ///   - waitingSeen: 承認待ちの画面を見たか
+    ///   - joinButtonFound: 参加ボタンを一度でも押せたか
+    static func timeout(mode: MeetJoinMode, waitingSeen: Bool, joinButtonFound: Bool) -> MeetBotError {
+        if mode == .guest, waitingSeen { return .guestNotApproved }
+        return MeetBotError.joinTimeout(waitingSeen: waitingSeen, joinButtonFound: joinButtonFound)
+    }
+
+    /// 会議コードのページから紹介サイトやログイン画面へ飛ばされたときの失敗
+    ///
+    /// ゲストなら「ゲストは入れない会議」。ログイン済みのはずなのに飛ばされたなら、ログインが切れている。
+    static func leftMeetingPage(mode: MeetJoinMode) -> MeetBotError {
+        mode == .guest ? .guestNotAllowed : .notLoggedIn
+    }
+}
+
 /// Meet ボットの通知・状態行の文言
 enum MeetBotText {
 
@@ -202,6 +284,41 @@ enum MeetBotText {
         if let saveError { return "\(reason)。議事録を保存できませんでした: \(saveError)" }
         if lines == 0 { return "\(reason)。議事録の記録は 0 行でした（Meet の字幕が出ていたか確かめてください）。" }
         return "\(reason)。議事録を保存しました（\(lines) 行）。"
+    }
+
+    /// 承認待ちに入ったときの通知
+    ///
+    /// ゲストのときは、主催者の画面に出る名前と待つ上限を添える（誰のリクエストか分からないと承認されない）。
+    static func waitingNotice(mode: MeetJoinMode, displayName: String) -> String {
+        switch mode {
+        case .account:
+            return "ホストの承認を待っています。会議の画面でボットの参加を承認してください。"
+        case .guest:
+            return "ゲストとして参加をリクエストしました。会議の画面で「\(displayName)」を承認してください"
+                + "（\(Int(mode.approvalWaitLimit / 60)) 分まで待ちます）。"
+        }
+    }
+
+    /// ボット用ブラウザでのログインへの案内（通知でも設定画面でも出すので、今いる場所を指す言い方はしない）
+    static let loginHint =
+        "メニューバーの「Meet 議事録ボット」→「ボット用ブラウザで Google にログイン…」でログインすると入れることがあります。"
+
+    /// 参加できなかったときの通知の文言（理由ごとに、本人が次にやることを添える）
+    ///
+    /// - Parameters:
+    ///   - failure: ボット固有の失敗（それ以外の失敗なら nil）
+    ///   - message: 失敗の説明（`failure` が nil のときに使う）
+    static func joinFailureNotice(_ failure: MeetBotError?, message: String) -> String {
+        switch failure {
+        case .denied?:
+            return "参加を断られました。ホストに承認してもらうか、会議の URL を確かめてください。"
+        case .guestNotApproved?:
+            return "主催者に承認されませんでした。もう一度参加して承認してもらってください。" + loginHint
+        case .guestNotAllowed?:
+            return "この会議はゲストが入れません。ボットに Google ログインをさせると入れます。" + loginHint
+        default:
+            return "会議に参加できませんでした: \(message)"
+        }
     }
 
     /// 字幕が取れていないときの状態行・通知
