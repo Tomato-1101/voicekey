@@ -24,6 +24,7 @@ import numpy as np
 from src import app as app_mod
 from src.app import (
     ENTER_FAILED_NOTICE,
+    PARTIAL_INPUT_NOTICE,
     PASTE_FAILED_NOTICE,
     HotkeySlot,
     TaskContext,
@@ -35,6 +36,7 @@ from src.config.constants import DEFAULT_CONFIG, SAMPLE_RATE
 from src.config.types import TranscriptionTask
 from src.core import TranscriptionError
 from src.core import dictation_translator
+from src.core.streaming_transcriber import SonioxTranscriber, resolve_replay
 
 
 class _FakeTranscriber:
@@ -303,6 +305,84 @@ class TestPasteFailure(unittest.TestCase):
         VoicekeyApp._process_task(s, _task(ctx, auto_enter=True))
         s._input_handler.press_enter.assert_called_once()
         s.notice.emit.assert_not_called()
+
+
+class _FakeSonioxReplay(SonioxTranscriber):
+    """Soniox の送り直しの偽物（通信しない）。送り直しの文と、最後まで確定したかを返す。"""
+
+    def __init__(self, text, completed):
+        super().__init__("stt-rt-v5")
+        self._result = (text, completed)
+
+    def transcribe_replay(self, audio_data):
+        return self._result
+
+
+def _live(ending, partial):
+    """確定が空で終わったライブ接続の偽物（終わり方と、届いていた分を持つ）。"""
+    streamer = _FakeStreamer("", failed=(ending == "failed"))
+    streamer.ending = ending
+    streamer.partial_text = partial
+    return streamer
+
+
+class TestLiveEndingAndReplay(unittest.TestCase):
+    """ライブが最後まで確定しなかったときの送り直しと「途中までの入力」の通知。"""
+
+    def _run(self, streamer, transcriber):
+        s = _worker_self()
+        ctx = _ctx(_slot(transcriber, backend="soniox"))
+        with self.assertLogs("src.app", level="INFO") as logs:
+            VoicekeyApp._process_task(s, _task(ctx, streamer=streamer))
+        return s, logs
+
+    def test_incomplete_replay_keeps_longer_live_text_and_notifies(self):
+        """切断後の送り直しも途中で終わったら、短い送り直しで置き換えず、途中までと知らせる。"""
+        s, _ = self._run(_live("failed", "ライブで取れた長い前半"), _FakeSonioxReplay("短い", False))
+        s._input_handler.insert_text.assert_called_once_with("ライブで取れた長い前半")
+        s.notice.emit.assert_called_once_with(PARTIAL_INPUT_NOTICE)
+
+    def test_incomplete_but_longer_replay_is_used(self):
+        s, _ = self._run(_live("failed", "前半"), _FakeSonioxReplay("前半と後半の途中", False))
+        s._input_handler.insert_text.assert_called_once_with("前半と後半の途中")
+        s.notice.emit.assert_called_once_with(PARTIAL_INPUT_NOTICE)
+
+    def test_completed_replay_replaces_live_without_notice(self):
+        s, _ = self._run(_live("failed", "前半だけ長い長い長い"), _FakeSonioxReplay("全文", True))
+        s._input_handler.insert_text.assert_called_once_with("全文")
+        s.notice.emit.assert_not_called()
+
+    def test_timeout_uses_arrived_text_without_resend(self):
+        """待ち時間切れは送り直さず届いた分を貼る（Mac と同じ）。切断ではないので知らせない。"""
+        transcriber = _FakeTranscriber("全文がそろった")
+        s, _ = self._run(_live("timeout", "届いた分"), transcriber)
+        self.assertEqual(transcriber.calls, 0)
+        s._input_handler.insert_text.assert_called_once_with("届いた分")
+        s.notice.emit.assert_not_called()
+
+    def test_timeout_with_nothing_arrived_resends(self):
+        transcriber = _FakeTranscriber("全文がそろった")
+        s, _ = self._run(_live("timeout", ""), transcriber)
+        self.assertEqual(transcriber.calls, 1)
+        s._input_handler.insert_text.assert_called_once_with("全文がそろった")
+        s.notice.emit.assert_not_called()
+
+    def test_failed_replay_falls_back_to_live_text_and_notifies(self):
+        transcriber = _FakeTranscriber(error=TranscriptionError("送り直しも失敗"))
+        s, _ = self._run(_live("failed", "ライブの分"), transcriber)
+        s._input_handler.insert_text.assert_called_once_with("ライブの分")
+        s.notice.emit.assert_called_once_with(PARTIAL_INPUT_NOTICE)
+
+
+class TestResolveReplay(unittest.TestCase):
+    """送り直し後にどちらを貼るか（Mac の Transcriber.resolveReplay と同じ判定）。"""
+
+    def test_cases(self):
+        self.assertEqual(resolve_replay("ライブ", "", True), ("ライブ", False))
+        self.assertEqual(resolve_replay("ライブ", "全文です", True), ("全文です", True))
+        self.assertEqual(resolve_replay("ライブ", "全", True), ("全", True))
+        self.assertEqual(resolve_replay("長いライブ分", "短い", False), ("長いライブ分", False))
+        self.assertEqual(resolve_replay("短", "長い送り直し", False), ("長い送り直し", False))
 
 
 class TestTranslateOnPaste(unittest.TestCase):

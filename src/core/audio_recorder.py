@@ -279,6 +279,15 @@ class AudioRecorder:
             # 新世代には別バッファを割り当て、旧世代のドレインと干渉させない
             # （古い停止スレッドが復帰しても新世代の音声を奪えない）
             self._audio_q = queue.Queue()
+            # ハング中に積まれて実行されなかったコマンドを抜き出す。キューごと捨てると、
+            # その stop / start を待っている呼び出し元（app の変換タスク・開始結果）へ
+            # 返事が永久に届かず、「変換中」のまま固まる
+            orphaned = []
+            while True:
+                try:
+                    orphaned.append(self._commands.get_nowait())
+                except queue.Empty:
+                    break
             # コマンドキューを作り直す（旧スレッドが復帰しても新コマンドを食わせない）
             self._commands = queue.Queue()
             self._start_control_thread()
@@ -290,6 +299,15 @@ class AudioRecorder:
                 pending.fire()
             except Exception as e:
                 logger.error(f"recover 時の stop コールバックでエラー: {e}")
+        # 実行されなかった停止には空の音声を、開始には失敗を返す（どちらも録音は取れていない）
+        for cmd, arg in orphaned:
+            try:
+                if cmd == "stop" and arg is not None:
+                    arg(np.array([], dtype=np.float32))
+                elif cmd == "start" and arg[0] is not None:
+                    arg[0](False)
+            except Exception as e:
+                logger.error(f"recover 時の未実行コマンド '{cmd}' の完了でエラー: {e}")
 
     # ------------------------------------------------------------------
     # デバイス一覧（設定 UI 用。PortAudio のデバイス列挙はスナップショット読みで安全）
@@ -450,20 +468,33 @@ class AudioRecorder:
             self._callback_logged = False
             self._drain_audio()
 
-            self._stream.start()
+            # recover() は self._stream を None にするので、開始したストリームは手元に控える
+            stream = self._stream
+            stream.start()
             with self._state_lock:
                 # start() のハング中に recover() が世代を進めていたら撤退する。ここで書き込むと、
                 # 復旧後に始まった新しい録音の送出先を消し、_recording も上書きしてしまう
                 if my_generation is not None and self._generation != my_generation:
                     stale = True
-                    logger.warning("ハング復旧後に旧世代の録音開始が戻ったため破棄します")
-                    return
-                # この録音の送出先を稼働にする（_recording=True より前。callback は _recording を
-                # 見てから送るので、ここで入れれば最初のチャンクから届く）。引き取った後に解除
-                # （None 登録）されていたら入れない。前の録音の稼働は、その _do_stop が既に外している
-                chunk_cb, cancel_count = chunk_claim if chunk_claim is not None else (None, None)
-                self._active_chunk_cb = chunk_cb if cancel_count == self._chunk_cancel_count else None
-                self._recording = True
+                else:
+                    # この録音の送出先を稼働にする（_recording=True より前。callback は _recording を
+                    # 見てから送るので、ここで入れれば最初のチャンクから届く）。引き取った後に解除
+                    # （None 登録）されていたら入れない。前の録音の稼働は、その _do_stop が既に外している
+                    chunk_cb, cancel_count = chunk_claim if chunk_claim is not None else (None, None)
+                    self._active_chunk_cb = chunk_cb if cancel_count == self._chunk_cancel_count else None
+                    self._recording = True
+            if stale:
+                logger.warning("ハング復旧後に旧世代の録音開始が戻ったため破棄します")
+                # 遅れて動き出した旧ストリームを止めて閉じる。放っておくとマイクを
+                # 掴んだまま（OS のマイク使用中表示も消えない）になる。新世代の
+                # self._stream には触れない（ロック外で閉じるのは、ここで固まっても
+                # 新世代の操作を止めないため）
+                try:
+                    stream.stop()
+                    stream.close()
+                except Exception as e:
+                    logger.warning(f"旧世代ストリームの解放に失敗: {e}")
+                return
             ok = True
             logger.info(
                 f"録音開始 (device={self._stream_device or 'default'}, "

@@ -71,7 +71,7 @@ class DictationTimeline:
         model: モデル名
         pressed_at: 録音キーを押した時刻
         route: 文字起こしの経路（route() の戻り値）
-        ending: ライブ接続の終わり方（"completed" / "failed"。ライブでなければ None）
+        ending: ライブ接続の終わり方（"completed" / "failed" / "timeout"。ライブでなければ None）
         outcome: 結果（OUTCOME_* のどれか）
         record_started_at: マイクが実際に録り始めた時刻
         recording_sec: 録音の長さ（秒）

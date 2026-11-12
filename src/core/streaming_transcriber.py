@@ -23,7 +23,7 @@ import json
 import queue
 import threading
 import time
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 import httpx
 import numpy as np
@@ -216,7 +216,10 @@ class StreamingTranscriber:
         self._failed = False                  # 途中で失敗した（録音全体の送り直しへ）
         self._completed = False               # サーバーが最後まで確定した
         self._end_sent = False                # 終わりの合図を送った
-        self._sent_samples = 0                # サーバーへ送り終えた音声のサンプル数（料金の記録用）
+        # finish() 後の終わり方（"completed" / "failed" / "timeout"）。確定を待ちきれずに
+        # 打ち切った回を「最後まで確定した」と区別し、呼び出し側が送り直しを判断できるようにする
+        self._ending = ""
+        self._sent_samples = 0               # サーバーへ送り終えた音声のサンプル数（料金の記録用）
         self._done_event = threading.Event()  # 確定・切断・失敗の通知
         self._thread: Optional[threading.Thread] = None
         self._sender: Optional[threading.Thread] = None
@@ -263,6 +266,12 @@ class StreamingTranscriber:
     def failed(self) -> bool:
         """途中で失敗したか（True なら finish() は空文字を返している）。"""
         return self._failed
+
+    @property
+    def ending(self) -> str:
+        """finish() 後の終わり方。"completed"（最後まで確定）/ "failed"（途中で切れた）/
+        "timeout"（確定を待ちきれなかった）。finish() 前は空文字。"""
+        return self._ending
 
     @property
     def partial_text(self) -> str:
@@ -325,8 +334,8 @@ class StreamingTranscriber:
             connect_grace: まだ接続できていないときに接続を待つ上限（秒）
 
         Returns:
-            確定テキスト。途中で失敗した・接続できなかったときは空文字
-            （待ち時間切れは失敗ではないので、届いているぶんを返す）
+            確定テキスト。最後まで確定しなかったとき（途中で失敗した・接続できなかった・
+            待ち時間切れ）は空文字。届いていたぶんは partial_text で読め、終わり方は ending で分かる
         """
         with self._lock:
             ws = self._ws
@@ -357,7 +366,17 @@ class StreamingTranscriber:
 
         self._done_event.wait(timeout)
         self._shutdown_socket()
-        if self._failed:
+        with self._lock:
+            if self._failed:
+                self._ending = "failed"
+            elif self._completed:
+                self._ending = "completed"
+            else:
+                self._ending = "timeout"
+        # 待ち時間切れで届いたぶんだけを成功として返すと、後半が欠けた文がそのまま貼られる。
+        # 最後まで確定した回だけ返し、それ以外は呼び出し側に録音全体を送り直させる
+        # （届いていたぶんは partial_text に残り、送り直しが失敗したときの退避に使える）
+        if self._ending != "completed":
             return ""
         return self.partial_text
 
@@ -751,6 +770,29 @@ def create_streamer(
     return _STREAMER_CLASSES[engine_id](model, language, prompt, on_interim)
 
 
+def resolve_replay(live: str, replayed: str, replay_completed: bool) -> Tuple[str, bool]:
+    """
+    ライブが最後まで確定せず録音全体を送り直したあと、ライブ分と送り直し分のどちらを貼るか。
+
+    Mac の Transcriber.resolveReplay と同じ判定。送り直しが最後まで確定していれば全文なので
+    送り直し分を使う。送り直しも途中で終わったときはどちらも途中までなので長い方を残す
+    （送り直しの途中文で、ライブで取れていた分を短くしない）。
+
+    Args:
+        live: ライブで届いていた文（無ければ空文字）
+        replayed: 送り直しで取れた文
+        replay_completed: 送り直しがサーバー側で最後まで確定したか
+
+    Returns:
+        (貼る文, それが全文か)。False なら「途中までの入力」と知らせる対象
+    """
+    if not replayed:
+        return live, False
+    if replay_completed:
+        return replayed, True
+    return (replayed if len(replayed) > len(live) else live), False
+
+
 class SonioxTranscriber:
     """
     録音全体を Soniox へ流し直して文字起こしする（ライブで文字が取れなかったときの退避）。
@@ -802,8 +844,23 @@ class SonioxTranscriber:
         Raises:
             TranscriptionError: キー未設定、または 1 文字も取れずに失敗したとき
         """
+        return self.transcribe_replay(audio_data)[0]
+
+    def transcribe_replay(self, audio_data: npt.NDArray[np.float32]) -> Tuple[str, bool]:
+        """
+        transcribe() と同じく流し直し、送り直しが最後まで確定したかも返す。
+
+        途中で切れた・待ちきれなかった送り直しの文は前半だけのことがある。呼び出し側が
+        ライブで取れていた文と比べて、短い方へ置き換えないようにするため。
+
+        Returns:
+            (文字起こし結果, サーバーが最後まで確定したか)
+
+        Raises:
+            TranscriptionError: キー未設定、または 1 文字も取れずに失敗したとき
+        """
         if len(audio_data) == 0:
-            return ""
+            return "", True
         if not self.is_available():
             raise TranscriptionError(
                 "Soniox の API キーが未設定です（設定 › API キー で入力してください）"
@@ -823,6 +880,7 @@ class SonioxTranscriber:
             timeout=min(15.0, 3.0 + seconds * 0.5),
             connect_grace=_SONIOX_RESEND_CONNECT_GRACE,
         ) or session.partial_text
+        completed = session.ending == "completed"
         self.last_api_time = (time.perf_counter() - started) * 1000
 
         if not text and session.failed:
@@ -830,8 +888,11 @@ class SonioxTranscriber:
                 session.failure_reason
                 or "Soniox に接続できませんでした（ネットワークを確認してください）"
             )
-        logger.info(f"Soniox 送り直し完了: {self.last_api_time:.0f}ms, {len(text)} 文字")
-        return text
+        logger.info(
+            f"Soniox 送り直し完了: {self.last_api_time:.0f}ms, {len(text)} 文字 "
+            f"終わり方={session.ending}"
+        )
+        return text, completed
 
     def close(self) -> None:
         """保持している接続は無いので何もしない（他のクライアントと呼び方をそろえるため）。"""

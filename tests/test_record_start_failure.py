@@ -9,6 +9,7 @@ VoicekeyApp は QObject 派生で素の生成ができないため、_on_record_
 """
 
 import threading
+import time
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -62,7 +63,14 @@ class TestRecordStartFailureCleanup(unittest.TestCase):
             _recorder=recorder,
             notice=mock.Mock(),
             _emit_state=mock.Mock(),
+            translate_badge_changed=mock.Mock(),
         )
+
+    def setUp(self):
+        # 実機のメディア音量に触れないよう、ダッキング解除は偽物にする
+        patcher = mock.patch("src.app.media_ducker")
+        self.ducker = patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_start_failure_discards_streamer_and_callback(self):
         """開始失敗で streamer.cancel・chunk_callback 解除・状態クリアが行われる。"""
@@ -94,6 +102,46 @@ class TestRecordStartFailureCleanup(unittest.TestCase):
             cb(b"frame-of-next-recording")
         self.assertEqual(old.sent, [], "次回録音の音声が古い接続へ送られた")
 
+    def test_failure_restores_media_and_badge(self):
+        """開始失敗でも、下げたメディア音量と翻訳の印を戻す（録音が終わる経路と揃える）。"""
+        streamer = _FakeStreamer()
+        recorder = _FakeRecorder()
+        s = self._fake_self(streamer, recorder)
+        s._active_context = SimpleNamespace(gen=3)
+
+        VoicekeyApp._on_record_started(s, False, 3)
+
+        self.ducker.restore.assert_called_once()
+        s.translate_badge_changed.emit.assert_called_once_with("")
+        self.assertIsNone(s._recording_slot)
+
+    def test_late_failure_of_old_recording_keeps_current_one(self):
+        """終わった録音の開始失敗が遅れて届いても、いまの録音を消さない・通知しない。"""
+        streamer = _FakeStreamer()
+        recorder = _FakeRecorder()
+        recorder.set_chunk_callback(streamer.send)
+        s = self._fake_self(streamer, recorder)
+        s._active_context = SimpleNamespace(gen=5)  # いまの録音は世代 5
+
+        VoicekeyApp._on_record_started(s, False, 4)  # 世代 4 の失敗が遅れて届いた
+
+        self.assertEqual(s._recording_slot, 1, "別の録音のスロットが消された")
+        self.assertIs(s._active_streamer, streamer)
+        self.assertFalse(streamer.cancelled, "別の録音の接続が切られた")
+        self.assertIsNotNone(recorder.chunk_cb, "別の録音の送出フックが外された")
+        s.notice.emit.assert_not_called()
+        self.ducker.restore.assert_not_called()
+
+    def test_late_success_of_old_recording_does_not_stamp_current_one(self):
+        """終わった録音の開始成功が、いまの録音の開始時刻を書き換えない。"""
+        s = self._fake_self(_FakeStreamer(), _FakeRecorder())
+        ctx = SimpleNamespace(gen=5, record_started_at=None)
+        s._active_context = ctx
+
+        VoicekeyApp._on_record_started(s, True, 4)
+
+        self.assertIsNone(ctx.record_started_at)
+
     def test_success_is_noop(self):
         """開始成功時は何も破棄しない（ストリーミングを継続する）。"""
         streamer = _FakeStreamer()
@@ -106,6 +154,38 @@ class TestRecordStartFailureCleanup(unittest.TestCase):
         self.assertIs(s._active_streamer, streamer)
         self.assertIsNotNone(recorder.chunk_cb)
         self.assertFalse(streamer.cancelled)
+
+
+
+class TestWatchdogHangRecoveryCleanup(unittest.TestCase):
+    """音声処理のハング自動復旧（_watchdog_check）でも録音の後片付けが揃うこと。"""
+
+    def test_hang_recovery_restores_media_and_badge(self):
+        recorder = mock.Mock()
+        recorder.health.return_value = {"busy_op": "start", "busy_sec": 10.0, "alive": True}
+        streamer = _FakeStreamer()
+        s = SimpleNamespace(
+            _state_lock=threading.Lock(),
+            _recording_slot=1,
+            _recording_started=time.monotonic(),
+            _active_streamer=streamer,
+            _active_context=SimpleNamespace(gen=1),
+            _recorder=recorder,
+            notice=mock.Mock(),
+            _emit_state=mock.Mock(),
+            _finish_recording=mock.Mock(),
+            translate_badge_changed=mock.Mock(),
+            _listener_thread=SimpleNamespace(is_alive=lambda: True),
+            _monitoring=True,
+        )
+        with mock.patch("src.app.media_ducker") as ducker:
+            VoicekeyApp._watchdog_check(s)
+
+        ducker.restore.assert_called_once()
+        s.translate_badge_changed.emit.assert_called_once_with("")
+        self.assertTrue(streamer.cancelled)
+        recorder.recover.assert_called_once()
+        self.assertIsNone(s._recording_slot)
 
 
 if __name__ == "__main__":

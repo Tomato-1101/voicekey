@@ -200,6 +200,14 @@ class InputHandler:
         Args:
             gen: この復元に対応する貼り付け世代。現在の世代と一致しなければ無効
         """
+        # 貼り付け 1 回分と直列にする。世代の確認だけでは、確認を通った直後に次の貼り付けが
+        # 文をクリップボードへ入れて Ctrl+V を送るまでの間に、ここで古い原本を書き戻して
+        # しまい、次の貼り付けで利用者の古いクリップボードが貼られる
+        with self._paste_lock:
+            self._restore_clipboard_locked(gen)
+
+    def _restore_clipboard_locked(self, gen: int) -> None:
+        """_restore_clipboard の本体（_paste_lock 保持中に呼ぶ）。"""
         try:
             with self._clip_lock:
                 if gen != self._paste_gen:

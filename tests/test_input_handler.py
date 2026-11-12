@@ -9,6 +9,7 @@
    - 連続貼り付けでも、自分の挿入テキストではなくユーザーの真のオリジナルを復元する。
 """
 
+import threading
 import unittest
 from unittest import mock
 
@@ -156,6 +157,57 @@ class TestClipboardRestoreGuard(_ClipboardTestBase):
 
         self._fire(_FakeTimer.created[0], clip)
         self.assertEqual(clip.value, "")  # 自分のテキストは消す
+
+
+class TestRestoreDoesNotInterleaveWithNextPaste(_ClipboardTestBase):
+    """前回の復元が、次の貼り付けの「クリップボードへ入れる → Ctrl+V」の間に割り込まない。"""
+
+    def test_next_paste_pastes_its_own_text(self):
+        ih = InputHandler()
+        clip = _FakeClipboard("元の内容")
+        self._insert(ih, clip, "一回目")
+        restore_timer = _FakeTimer.created[0]
+
+        restore_reached_copy = threading.Event()   # 復元が書き戻しの直前まで来た
+        restore_go = threading.Event()             # 復元の書き戻しを進めてよい
+        paste_in_wait = threading.Event()          # 次の貼り付けが Ctrl+V 前の待ちに入った
+        paste_go = threading.Event()               # 次の貼り付けの待ちを解く
+        clipboard_at_ctrl_v = []
+
+        def copy(text):
+            if threading.current_thread().name == "restore":
+                restore_reached_copy.set()
+                restore_go.wait(2.0)
+            clip.copy(text)
+
+        def wait_before_keys(_sec):
+            paste_in_wait.set()
+            paste_go.wait(2.0)
+
+        keyboard = mock.Mock()
+        keyboard.press.side_effect = (
+            lambda key: clipboard_at_ctrl_v.append(clip.value) if key == "v" else None
+        )
+        with mock.patch("src.core.input_handler.pyperclip") as pc, \
+             mock.patch("src.core.input_handler.time.sleep", side_effect=wait_before_keys), \
+             mock.patch("src.core.input_handler.threading.Timer", _FakeTimer), \
+             mock.patch.object(ih, "_keyboard", keyboard):
+            pc.paste.side_effect = clip.paste
+            pc.copy.side_effect = copy
+            restorer = threading.Thread(target=restore_timer.fire, name="restore")
+            restorer.start()
+            self.assertTrue(restore_reached_copy.wait(2.0))
+            paster = threading.Thread(target=ih.insert_text, args=("二回目",), name="paste")
+            paster.start()
+            # 修正前は次の貼り付けがここで待ちに入れる（復元と並んで走る）。修正後は復元が
+            # 終わるまで貼り付けを始められないので、待ちに入らないまま時間切れになる
+            paste_in_wait.wait(0.5)
+            restore_go.set()
+            restorer.join(2.0)
+            paste_go.set()
+            paster.join(2.0)
+
+        self.assertEqual(clipboard_at_ctrl_v, ["二回目"])
 
 
 class TestDecideRestore(unittest.TestCase):

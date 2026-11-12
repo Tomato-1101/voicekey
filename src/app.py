@@ -54,7 +54,7 @@ from .core import engines
 from .core import llm_catalog
 from .core import text_formatter
 from .core.api_transcriber import create_transcriber
-from .core.streaming_transcriber import create_streamer
+from .core.streaming_transcriber import SonioxTranscriber, create_streamer, resolve_replay
 from .core import media_ducker
 from .core import numeral_normalizer
 from .core import sound_fx
@@ -91,6 +91,56 @@ _GENERIC_MODIFIERS = ("ctrl", "alt", "shift", "cmd")
 PASTE_FAILED_NOTICE: str = "貼り付けできませんでした。Ctrl+V で貼り付けてください"
 # 貼り付け後の Enter が届かなかったときの通知
 ENTER_FAILED_NOTICE: str = "送信できませんでした。Enter を押してください"
+# ライブ接続が途中で切れ、送り直しでも全文を取り戻せずに途中までを貼ったときの通知（Mac と同じ文言）
+PARTIAL_INPUT_NOTICE: str = "接続が途中で切れたため、途中までの入力です"
+# Windows の低レベルキーボードフックが「プログラムが合成したキー」に立てる印（KBDLLHOOKSTRUCT.flags）
+_LLKHF_INJECTED: int = 0x10
+# 押している間だけ録音する回の、離鍵の取りこぼしを拾う見回り（Windows のみ）。
+# フックは離鍵を落とすことがあり、落とすと上限（_MAX_RECORDING_SEC）まで録音が続く。
+# 見回りの間隔（秒）と、「離れている」が何回続いたら離鍵とみなすか（1 回だけの読み違いで止めない）
+_HOLD_POLL_SEC: float = 0.4
+_HOLD_POLL_MISSES: int = 2
+# 録音キーの設定名 → Windows の仮想キーコード（GetAsyncKeyState で押下状態を読む）。
+# どれか 1 つでも押されていれば押下とみなす。IME 系（変換・無変換・かな・半角/全角・英数）は
+# 読める値が IME の状態に左右されて当てにならないので載せない（そのキーは見回らない）
+_WIN_VK_BY_TOKEN: Dict[str, Tuple[int, ...]] = {
+    "ctrl": (0x11,), "ctrl_l": (0xA2,), "ctrl_r": (0xA3,),
+    "shift": (0x10,), "shift_l": (0xA0,), "shift_r": (0xA1,),
+    "alt": (0x12,), "alt_l": (0xA4,), "alt_r": (0xA5,), "alt_gr": (0xA5,),
+    "cmd": (0x5B, 0x5C), "cmd_l": (0x5B,), "cmd_r": (0x5C,),
+    "space": (0x20,),
+}
+_WIN_VK_BY_TOKEN.update({f"f{i}": (0x6F + i,) for i in range(1, 25)})
+_WIN_VK_BY_TOKEN.update({c: (ord(c.upper()),) for c in "abcdefghijklmnopqrstuvwxyz0123456789"})
+
+
+def _win_key_down(vk: int) -> bool:
+    """仮想キー vk が今押されているか（Windows のみ）。
+
+    ロック画面・UAC の画面など別のデスクトップにいる間は 0 が返り、離れている扱いになる。
+    そこへ切り替わった時点でアプリはキーを受け取れないので、録音を止めてよい。
+    """
+    import ctypes
+
+    return bool(ctypes.windll.user32.GetAsyncKeyState(vk) & 0x8000)
+
+
+def _ignore_injected_keys(msg, data) -> bool:
+    """キー監視に、プログラムが合成したキー（貼り付けの Ctrl+V 等）を渡さない（Windows のみ）。
+
+    録音キーが Ctrl だけのとき、自分で送った Ctrl+V の Ctrl を録音キーの押下と取り違えて
+    録音が始まってしまうため。貼り付け中だけ無視する方式は採らない: フックの通知はキー監視の
+    スレッドへ非同期に届くので、貼り付けが終わった後に遅れて届く合成キーを取りこぼす。
+    False を返した入力はキー監視の処理に渡らないだけで、OS や前面アプリにはそのまま届く。
+
+    Args:
+        msg: ウィンドウメッセージ（未使用）
+        data: KBDLLHOOKSTRUCT
+
+    Returns:
+        キー監視に渡すなら True、合成キーなら False
+    """
+    return not (data.flags & _LLKHF_INJECTED)
 
 
 @dataclass
@@ -227,10 +277,12 @@ def _note_stt(usage: Optional[List[tuple]], slot: "HotkeySlot", audio) -> None:
 
 def _transcribe_or_partial(
     slot: "HotkeySlot", audio, partial: str, usage: Optional[List[tuple]] = None
-) -> str:
+) -> Tuple[str, bool]:
     """録音全体を 1 本で送る。失敗・空のときは、ライブで届いていた分があればそれを返す。
 
     ライブが途中で切れて送り直しも失敗したときに、届いていた文字まで捨てないため。
+    Soniox の送り直しは最後まで確定しないことがあるので、そのときはライブ分と長い方を残す
+    （途中で終わった送り直しの文で、ライブで取れていた分を短くしない）。
 
     Args:
         slot: 使用するホットキースロット
@@ -239,20 +291,24 @@ def _transcribe_or_partial(
         usage: 課金の記録を積むリスト（成功した送信だけ積む）
 
     Returns:
-        文字起こし結果（空のときは partial）
+        (文字起こし結果, それが全文か)。全文でなければ途中までの文
 
     Raises:
         TranscriptionError: 送り直しが失敗し、ライブで届いていた分も無いとき
     """
     try:
-        text = slot.transcriber.transcribe(audio)
+        if isinstance(slot.transcriber, SonioxTranscriber):
+            text, completed = slot.transcriber.transcribe_replay(audio)
+        else:
+            # REST は応答が返った時点で全文
+            text, completed = slot.transcriber.transcribe(audio), True
     except TranscriptionError as e:
         if not partial:
             raise
         logger.warning(f"送り直しに失敗したため、ライブで届いていた分を使います: {e}")
-        return partial
+        return partial, False
     _note_stt(usage, slot, audio)
-    return text or partial
+    return resolve_replay(partial, text, completed)
 
 
 class VoicekeyApp(QObject):
@@ -284,6 +340,9 @@ class VoicekeyApp(QObject):
     translate_badge_changed = Signal(str)
     # 貼り付け先アプリの実行ファイルパス（空文字で消す）。アイコンの取り出しは UI スレッドで行う
     target_app_changed = Signal(str)
+    # 設定のホットリロード（監視スレッド）で HUD・サイドノッチの表示設定が変わった。
+    # Qt のウィジェットは UI スレッド以外から触れないので、反映は UI スレッドへ渡す
+    ui_config_changed = Signal()
 
     def __init__(self) -> None:
         """アプリケーションを初期化する。"""
@@ -458,6 +517,8 @@ class VoicekeyApp(QObject):
         )
         self.status_changed.connect(self._side_notch.set_status)
         self._side_notch.open_home_requested.connect(self._open_home)
+        # 監視スレッドを起動する前に繋ぐ（起動直後のホットリロードも取りこぼさない）
+        self.ui_config_changed.connect(self._apply_ui_config)
 
         # --- 背景スレッド ---
         self._monitoring = True
@@ -668,8 +729,10 @@ class VoicekeyApp(QObject):
         """
         while self._monitoring:
             try:
+                # win32_event_filter は Windows でだけ効く（他の OS の pynput は無視する）
                 listener = keyboard.Listener(
-                    on_press=self._on_press, on_release=self._on_release
+                    on_press=self._on_press, on_release=self._on_release,
+                    win32_event_filter=_ignore_injected_keys,
                 )
                 self._listener = listener
                 with listener:
@@ -976,45 +1039,126 @@ class VoicekeyApp(QObject):
                 # 録音部が末尾まで送ってから外す（旧録音の音声は新 streamer へ混入しない）
                 self._recorder.set_chunk_callback(stream.send)
 
-        self._recorder.start_async(self._on_record_started)
+        # 開始結果にこの録音の世代を結び付ける。開始の返事が遅れて届いたとき、
+        # その間に始まった別の録音を消さないため
+        self._recorder.start_async(
+            lambda ok, gen=ctx.gen: self._on_record_started(ok, gen)
+        )
+        if sys.platform == "win32" and effective_mode == HotkeyMode.HOLD.value:
+            self._start_hold_release_watch(ctx.gen, self._slots[slot_id].required_keys)
 
-    def _on_record_started(self, ok: bool) -> None:
-        """録音開始の結果（AudioControl スレッド上で呼ばれる）。"""
+    def _start_hold_release_watch(self, gen: int, tokens: Set[str]) -> None:
+        """押している間だけ録音する回に、録音キーの離鍵を見回るスレッドを起動する（Windows のみ）。
+
+        Args:
+            gen: 見回る録音の世代
+            tokens: 録音キーの設定トークン
+        """
+        watched = {t: _WIN_VK_BY_TOKEN[t] for t in tokens if t in _WIN_VK_BY_TOKEN}
+        if not watched:
+            return  # 押下状態を読めるキーが無い（IME 系だけ等）。従来どおりフックの離鍵だけに頼る
+        threading.Thread(
+            target=self._watch_hold_release, args=(gen, watched),
+            daemon=True, name="HoldReleaseWatch",
+        ).start()
+
+    def _watch_hold_release(self, gen: int, watched: Dict[str, Tuple[int, ...]]) -> None:
+        """録音キーが離れているのが続いたら、フックが離鍵を落としたとみなして録音を止める。
+
+        Args:
+            gen: 見回る録音の世代。録音が終わった・別の録音に替わったら抜ける
+            watched: 見回るトークン → 仮想キーコード
+        """
+        misses = 0
+        while True:
+            time.sleep(_HOLD_POLL_SEC)
+            with self._state_lock:
+                ctx = self._active_context
+                if ctx is None or ctx.gen != gen or self._recording_slot is None:
+                    return
+                # ダブルタップの 2 打目を待っている間は、キーが離れているのが正しい状態
+                waiting_second_tap = self._pending_tap_timer is not None
+            if waiting_second_tap:
+                misses = 0
+                continue
+            released = [t for t, vks in watched.items() if not any(_win_key_down(vk) for vk in vks)]
+            if not released:
+                misses = 0
+                continue
+            misses += 1
+            if misses < _HOLD_POLL_MISSES:
+                continue
+            logger.warning(f"録音キーの離鍵を取りこぼしたため録音を停止します ({', '.join(released)})")
+            # 押したままの記録が残ると、次に押したときキーリピート扱いで無視される
+            for t in released:
+                for name in self._acceptable_names(t):
+                    self._pressed_keys.discard(name)
+            self._finish_recording(expected_gen=gen)
+            return
+
+    def _on_record_started(self, ok: bool, gen: Optional[int] = None) -> None:
+        """録音開始の結果（AudioControl スレッド上で呼ばれる）。
+
+        Args:
+            ok: 開始できたら True
+            gen: 開始を要求した録音の世代。None なら照合しない
+        """
         if ok:
             # 「開始要求は出したが完了しなかった」を後からログだけで見分けられるよう、
             # 要求（_begin_recording）と対で完了も残す
             logger.info("録音開始完了")
             with self._state_lock:
                 ctx = self._active_context
-                if ctx is not None:
+                if ctx is not None and (gen is None or ctx.gen == gen):
                     ctx.record_started_at = time.perf_counter()
             return
-        logger.warning("録音を開始できませんでした")
         # 開始失敗時は、この録音セッションのストリーミング接続・送出フックも確実に破棄する。
         # 残すと chunk_callback（= 古い streamer.send）が次回録音の音声を前回のストリーミング
         # WebSocket へ送ってしまう。ハング復帰（_monitor_loop）と同じ不変条件に揃える。
         with self._state_lock:
-            self._recording_slot = None
-            streamer = self._active_streamer
-            self._active_streamer = None
-            self._active_context = None
+            ctx = self._active_context
+            if gen is not None and (ctx is None or ctx.gen != gen):
+                # 既に終わった録音の失敗（ハング復旧後に届いた返事など）。いま進んでいる
+                # 別の録音の状態・接続を消さず、通知も出さない
+                stale = True
+            else:
+                stale = False
+                self._recording_slot = None
+                streamer = self._active_streamer
+                self._active_streamer = None
+                self._active_context = None
+        if stale:
+            logger.info(f"録音開始の失敗は終わった録音 (gen={gen}) の分なので無視します")
+            return
+        logger.warning("録音を開始できませんでした")
         self._recorder.set_chunk_callback(None)
         if streamer is not None:
             streamer.cancel()  # 受信ループ停止・WebSocket close
+        # 録音を止めた経路と同じく、下げたメディア音量と翻訳の印を元に戻す
+        media_ducker.restore()
+        self.translate_badge_changed.emit("")
         self.notice.emit("録音を開始できませんでした（マイクを確認してください）")
         self._emit_state()
 
-    def _finish_recording(self, quiet_if_no_speech: bool = False) -> None:
+    def _finish_recording(
+        self, quiet_if_no_speech: bool = False, expected_gen: Optional[int] = None
+    ) -> None:
         """録音を停止し文字起こしタスクを積む（即座に返る）。
 
         Args:
             quiet_if_no_speech: 無音時の「音声が検出されませんでした」通知を抑制する
                 （ダブルタップ待ち期限切れ＝誤タップの可能性が高い経路で使う）
+            expected_gen: 止めたい録音の世代。いまの録音が別の世代なら止めない
+                （離鍵の見回りが判定した直後に、別の録音が始まっていた場合）
         """
         released_at = time.perf_counter()
         with self._state_lock:
             slot_id = self._recording_slot
             if slot_id is None:
+                return
+            if expected_gen is not None and (
+                self._active_context is None or self._active_context.gen != expected_gen
+            ):
                 return
             auto_enter = self._auto_enter
             streamer = self._active_streamer  # ストリーミング録音なら確定待ちをワーカーへ託す
@@ -1148,6 +1292,8 @@ class VoicekeyApp(QObject):
         streamer = task.streamer
         # ライブが途中で失敗したときに、それまでに届いていた文字（退避も失敗したら使う）
         partial = ""
+        # ライブ接続の終わり方（"completed" / "failed" / "timeout"。ライブでなければ空）
+        live_ending = ""
         if streamer is not None:
             logger.info(
                 f"文字起こし要求 経路=streaming backend={ctx.slot.backend} "
@@ -1159,7 +1305,16 @@ class VoicekeyApp(QObject):
             except Exception as e:
                 logger.warning(f"ストリーミング確定でエラー、REST にフォールバック: {e}")
                 streamed = ""
-            timeline.ending = "failed" if getattr(streamer, "failed", False) else "completed"
+            # 待ち時間切れを「completed」と記録しないよう、接続自身の終わり方を使う
+            live_ending = getattr(streamer, "ending", "") or (
+                "failed" if getattr(streamer, "failed", False) else "completed"
+            )
+            timeline.ending = live_ending
+            # 時間切れは確定待ちが長引いただけで後半も届いている見込みが高いので、送り直しの
+            # 待ちを足さず届いた分を使う（Mac の shouldReplayAfterLiveFailure と同じ判断）。
+            # 何も届いていなければ従来どおり全体を送り直す
+            if not streamed and live_ending == "timeout":
+                streamed = getattr(streamer, "partial_text", "") or ""
             # ライブ接続は送った音声の長さで課金される（確定が空でも送った分はかかる）
             sent_seconds = getattr(streamer, "sent_seconds", 0.0)
             if sent_seconds > 0:
@@ -1181,7 +1336,7 @@ class VoicekeyApp(QObject):
                 # 実績を集計（貼り付けの後に行うので遅延に影響しない）
                 self._record_stats(streamed, task.audio_data, ctx.target_app)
                 return
-            # 確定が空（接続失敗・無音など）→ 取得済みバッファで録音全体を送り直す
+            # 確定が空（接続失敗・待ち時間切れ・無音など）→ 取得済みバッファで録音全体を送り直す
             partial = streamer.partial_text
             logger.info("ストリーミング結果が空のため録音全体を送り直します")
 
@@ -1216,6 +1371,8 @@ class VoicekeyApp(QObject):
             segments = None
 
         stt_start = time.perf_counter()
+        # 貼る文が全文か（送り直しでも全文を取り戻せなかったら False）
+        complete = True
         if segments and len(segments) >= 2:
             logger.info(f"長文を {len(segments)} 分割して並列送信します")
             text = self._transcribe_parallel(slot, segments, run.usage)
@@ -1226,7 +1383,7 @@ class VoicekeyApp(QObject):
                     f"文字起こし要求 経路=rest(全体) backend={slot.backend} "
                     f"model={slot.api_model} 音声={len(audio) / SAMPLE_RATE:.2f}s"
                 )
-                text = _transcribe_or_partial(slot, audio, partial, run.usage)
+                text, complete = _transcribe_or_partial(slot, audio, partial, run.usage)
         else:
             # VAD: 発話がなければ API に送らない（幻覚と無駄コストの防止）。
             # 推論 1 回で発話判定と無音圧縮（前後トリミング + 発話間の長い無音の短縮）を行う
@@ -1253,7 +1410,7 @@ class VoicekeyApp(QObject):
                 f"文字起こし要求 経路=rest backend={slot.backend} "
                 f"model={slot.api_model} 音声={len(audio) / SAMPLE_RATE:.2f}s"
             )
-            text = _transcribe_or_partial(slot, audio, partial, run.usage)
+            text, complete = _transcribe_or_partial(slot, audio, partial, run.usage)
         timeline.finalized_at = time.perf_counter()
         timeline.stt_ms = (timeline.finalized_at - stt_start) * 1000
         if not text:
@@ -1271,6 +1428,15 @@ class VoicekeyApp(QObject):
 
         # テキスト挿入（ワーカースレッド上で実行し UI スレッドを塞がない）
         self._insert_and_enter(text, task.auto_enter, ctx, run)
+        # ライブ接続がエラー・切断で壊れ、送り直しでも全文を取り戻せなかったときは、入ったのが
+        # 途中までだと知らせる（Mac と同じ）。待ち時間切れは確定待ちが長引いただけなので知らせない。
+        # 貼り付け自体が失敗した回は、その通知を優先する
+        if (
+            not complete
+            and live_ending == "failed"
+            and timeline.outcome == dictation_timeline.OUTCOME_PASTED
+        ):
+            self.notice.emit(PARTIAL_INPUT_NOTICE)
 
         # 実績を集計（貼り付けの後に行うので遅延に影響しない）
         self._record_stats(text, task.audio_data, ctx.target_app)
@@ -1596,11 +1762,9 @@ class VoicekeyApp(QObject):
         handsfree_timer.daemon = True
         handsfree_timer.start()
 
-        # HUD 表示の有効/無効・待機ピル常時表示を反映
-        self._hud.enabled = bool(self._config.get("hud_enabled", True))
-        self._hud.always_visible = bool(self._config.get("hud_always_visible", False))
-        # サイドノッチ表示トグルを反映
-        self._side_notch.set_enabled(bool(self._config.get("side_notch_enabled", True)))
+        # HUD・サイドノッチの表示設定は UI スレッドで反映する（ここは監視スレッドからも呼ばれる）。
+        # _emit_state より先に emit するので、待機ピルの表示はこの反映の後に届く
+        self.ui_config_changed.emit()
         # 待機ピルのオン/オフを即座に画面へ反映する（次の状態変化を待たない）
         self._emit_state()
 
@@ -1608,6 +1772,12 @@ class VoicekeyApp(QObject):
         self._history_sync.apply_config()
 
         logger.info("設定を再読み込みして適用しました")
+
+    def _apply_ui_config(self) -> None:
+        """HUD 表示の有効/無効・待機ピル常時表示・サイドノッチ表示を反映する（UI スレッドで実行）。"""
+        self._hud.enabled = bool(self._config.get("hud_enabled", True))
+        self._hud.always_visible = bool(self._config.get("hud_always_visible", False))
+        self._side_notch.set_enabled(bool(self._config.get("side_notch_enabled", True)))
 
     def _watchdog_check(self) -> None:
         """録音時間上限・PortAudio ハング・リスナー死活を確認する。"""
@@ -1634,6 +1804,10 @@ class VoicekeyApp(QObject):
             self._recorder.set_chunk_callback(None)
             if streamer is not None:
                 streamer.cancel()
+            # 録音中の復旧なら録音はここで終わるので、下げたメディア音量と翻訳の印を戻す
+            # （restore は下げていなければ何もしない）
+            media_ducker.restore()
+            self.translate_badge_changed.emit("")
             self._recorder.recover()
             self._emit_state()
 
@@ -1823,6 +1997,8 @@ class VoicekeyApp(QObject):
         self._recorder.set_chunk_callback(None)
         if streamer is not None:
             streamer.cancel()
+        # 録音中に終了したときも下げたメディア音量を戻す（下げていなければ何もしない）
+        media_ducker.restore()
 
         listener = self._listener
         if listener is not None:

@@ -394,14 +394,29 @@ class TestSonioxSession(_StreamTestCase):
         self.assertTrue(s.failed)
         self.assertEqual(s.partial_text, "途中")
 
-    def test_timeout_returns_what_arrived(self):
-        # 待ち時間切れは失敗ではないので、届いているぶんを返す
+    def test_timeout_is_not_success_but_keeps_partial(self):
+        # 待ち時間切れは最後まで確定していないので成功として返さない（後半が欠けた文を貼らない）。
+        # 届いていたぶんは partial_text に残り、終わり方は timeout として区別できる
         self.ws = FakeWS(first=[{"tokens": [{"text": "届いた分", "is_final": True}]}])
         s = SonioxStreamer("stt-rt-v5")
         s.start()
         self.assertTrue(_wait_until(lambda: s.partial_text == "届いた分"))
-        self.assertEqual(s.finish(timeout=0.1), "届いた分")
+        self.assertEqual(s.finish(timeout=0.1), "")
         self.assertFalse(s.failed)
+        self.assertEqual(s.ending, "timeout")
+        self.assertEqual(s.partial_text, "届いた分")
+
+    def test_ending_completed_and_failed(self):
+        self.ws = self._session_ws([{"tokens": [{"text": "<fin>", "is_final": True}]}])
+        s = SonioxStreamer("stt-rt-v5")
+        s.start()
+        s.finish(timeout=2.0)
+        self.assertEqual(s.ending, "completed")
+        self.ws = FakeWS(first=[_DROP])
+        s = SonioxStreamer("stt-rt-v5")
+        s.start()
+        s.finish(timeout=2.0)
+        self.assertEqual(s.ending, "failed")
 
     def test_connect_failure_sets_reason(self):
         def refuse(url, headers=None):
@@ -461,6 +476,20 @@ class TestSonioxResend(_StreamTestCase):
         )
         text = SonioxTranscriber("stt-rt-v5").transcribe(np.zeros(1600, dtype=np.float32))
         self.assertEqual(text, "取れた分")
+
+    def test_replay_reports_completion(self):
+        """送り直しが最後まで確定したかを呼び出し側へ返す（途中で切れた回は False）。"""
+        self.ws = FakeWS(
+            after_end=[{"tokens": [{"text": "全文", "is_final": True}], "finished": True}],
+            is_end=lambda f: _is_text(f, "finalize"),
+        )
+        audio = np.zeros(1600, dtype=np.float32)
+        self.assertEqual(SonioxTranscriber("stt-rt-v5").transcribe_replay(audio), ("全文", True))
+        self.ws = FakeWS(
+            after_end=[{"tokens": [{"text": "取れた分", "is_final": True}]}, _DROP],
+            is_end=lambda f: _is_text(f, "finalize"),
+        )
+        self.assertEqual(SonioxTranscriber("stt-rt-v5").transcribe_replay(audio), ("取れた分", False))
 
     def test_prewarm_resolves_region_once(self):
         calls = []

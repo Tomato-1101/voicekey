@@ -238,6 +238,25 @@ class TestRecoverDoubleCompletion(unittest.TestCase):
         remaining = rec._drain_queue(new_q)
         self.assertEqual(len(remaining), 320, "古い世代が新世代の音声を奪った")
 
+    def test_recover_answers_commands_left_in_old_queue(self):
+        """ハング中に積まれた stop / start にも返事を返す（キューごと捨てない）。
+
+        バグ: recover() がコマンドキューを作り直すだけで、積まれていた stop の
+        on_audio・start の on_started が永久に呼ばれず、app が「変換中」のまま固まった。
+        """
+        rec = self._bare_recorder()
+        stopped, started = [], []
+        rec._commands.put(("stop", lambda audio: stopped.append(audio)))
+        rec._commands.put(("start", (lambda ok: started.append(ok), None)))
+        rec._commands.put(("reopen_if_idle", None))
+
+        rec.recover()
+
+        self.assertEqual(len(stopped), 1, "積まれていた stop に音声が返らなかった")
+        self.assertEqual(len(stopped[0]), 0, "取れていない録音に音声が入っている")
+        self.assertEqual(started, [False], "積まれていた start に失敗が返らなかった")
+        self.assertTrue(rec._commands.empty(), "新世代のキューへ旧コマンドが持ち越された")
+
 
 class TestCrossRecordingChunkBinding(unittest.TestCase):
     """ストリーミング送出フックの録音への結び付け（保留／稼働の 2 段）を検証する。
@@ -390,8 +409,13 @@ class TestCrossRecordingChunkBinding(unittest.TestCase):
                 if a_start_outcome is not None:
                     raise a_start_outcome
 
+            def close(self_inner):
+                self_inner.closed = True
+
         # A のストリームは開いた状態から始める（デバイス一致なので作り直されない）
         rec._stream = _HangStartStream()
+        rec._stream.closed = False
+        self._a_stream = rec._stream
         a_started, b_started, b_chunks = [], [], []
 
         rec.set_chunk_callback(lambda s: None)
@@ -425,6 +449,16 @@ class TestCrossRecordingChunkBinding(unittest.TestCase):
         self.assertTrue(rec._recording)
         rec._stream.feed(np.ones((160, 1), dtype=np.float32))
         self.assertEqual(len(b_chunks), 1, "旧世代の開始が B の送出先を消した")
+
+    def test_stale_start_returning_after_recover_closes_old_stream(self):
+        # ハングから戻った旧世代のストリームは止めて閉じる（マイクを掴んだまま残さない）。
+        # B のストリームには触れない
+        rec, _, b_started, b_chunks = self._hang_start_then_recover(None)
+        self.assertTrue(self._a_stream.closed, "旧世代のストリームが閉じられていない")
+        self.assertIsNot(rec._stream, self._a_stream)
+        self.assertTrue(rec._stream.started, "旧世代の後始末が B のストリームを止めた")
+        rec._stream.feed(np.ones((160, 1), dtype=np.float32))
+        self.assertEqual(len(b_chunks), 1)
 
     def test_stale_start_failing_after_recover_keeps_new_stream(self):
         # ハングから戻った旧世代の開始が失敗しても、B のストリームを閉じず失敗通知も出さない
