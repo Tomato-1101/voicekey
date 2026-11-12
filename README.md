@@ -31,8 +31,8 @@
 
 | プラットフォーム | バージョン | 状態 | 入手方法 |
 |---|---|---|---|
-| 🍎 macOS | **v2.3.0** | ✅ 配布中（Swift ネイティブ） | [brew / curl で 1 行インストール](#-ダウンロードとインストールmacos)、または [ソースからビルド](#ソースからビルドする) |
-| 🪟 Windows | **v1.8.0** | ⏸ 開発停止中（配布バイナリなし） | [ソースから動かす](#windows-で使う)（Python / PySide6） |
+| 🍎 macOS | **v2.4.0** | ✅ 配布中（Swift ネイティブ） | [brew / curl で 1 行インストール](#-ダウンロードとインストールmacos)、または [ソースからビルド](#ソースからビルドする) |
+| 🪟 Windows | **v2.4.0** | ✅ 配布中（Python / PySide6） | [インストーラをダウンロード](#windows-で使う)、または [ソースから動かす](#windows-完全セットアップpowershell) |
 
 > macOS の版は `macos/Resources/Info.plist`、Windows の版は `src/config/constants.py` の `APP_VERSION` が正本（この表とのズレはテストが検出します）。
 
@@ -81,8 +81,9 @@ open dist/voicekey.app
 
 ### Windows で使う
 
-Windows 版は開発を止めているため、ダウンロードできる配布物はありません。使う場合はソースから動かしてください。
-手順は [Windows 完全セットアップ](#windows-完全セットアップpowershell) のとおりです。
+[最新の Release](https://github.com/Tomato-1101/voicekey/releases/latest) から `voicekey-<版>-windows-setup.exe` をダウンロードして実行します。
+コード署名をしていないため、SmartScreen の警告が出たら「詳細情報」→「実行」を押してください。新しい版が出るとアプリが知らせます。
+ソースから動かす手順は [Windows 完全セットアップ](#windows-完全セットアップpowershell) のとおりです。
 
 起動後、タスクトレイのアイコン → 設定 › **API キー** に自分のキーを入力します（Windows の資格情報マネージャーに保存）。
 Windows で使えるのは Soniox / ElevenLabs / OpenAI / Microsoft MAI / OpenAI ライブ / Groq です（[Windows の文字起こしエンジン](#windows-の文字起こしエンジン)）。exe にまとめる手順は `docs/PERSONAL_EDITION.md` §7。

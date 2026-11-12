@@ -13,7 +13,7 @@ voicekey は **`personal` ブランチ 1 本だけ**で運用する。旧 `main`
 
 - **`personal` = 開発者本人が毎日使う唯一の版**。全プロバイダーを**実プロバイダー名で表示**
   （Mac: Soniox / Apple ローカル / OpenAI ライブ / OpenAI / Microsoft MAI / ElevenLabs / Groq。
-  Deepgram は 2026-10-01 に選択肢から外した・Windows は停止中のため旧構成）＋**モデル名も表示・選択可**。テキスト整形（Groq）は
+  Deepgram は 2026-10-01 に選択肢から外した。Windows は Apple ローカル以外の同じ顔ぶれ）＋**モデル名も表示・選択可**。テキスト整形（Groq）は
   モデル・プロンプトともフル設定可。API キーは設定 › API キー で入れた値 → 環境変数 → 中央 Keychain の順に読む
   （作者は中央 Keychain のまま使える。サーバー往復ゼロ＝最速）。
   ライブ字幕・ローカル（Apple）文字起こし・翻訳して入力も personal 限定機能としてここにある。
@@ -23,7 +23,7 @@ voicekey は **`personal` ブランチ 1 本だけ**で運用する。旧 `main`
   利用者は設定 › API キー で自分のキーを入れる。**作者のキーを配布物に絶対に入れない**（`build_release.sh` の漏洩チェックを外さない）。
   リリースは `macos/scripts/build_release.sh --version X.Y.Z` → 表示される `gh release create`（draft / pre-release にしない）→
   表示される version / sha256 で `~/Project/homebrew-tap` の cask を更新。入口は brew と `install.sh` だけ（DMG は 2026-10-02 に廃止）。
-  Windows は配布しない（ソースから）。サイト（`voicekey-site`）は GitHub への導線とインストールの 1 行だけ・旧配布リポ `voicekey-releases` は廃止。
+  Windows は 2026-11-12 から同じ Release に exe を置く（Mac の Release を先に作る → `windows-build.yml` → Mac で `.sig` を作って添付。手順はワークフローの先頭）。サイト（`voicekey-site`）は GitHub への導線とインストールの 1 行だけ・旧配布リポ `voicekey-releases` は廃止。
 - 本リポジトリは **PUBLIC**（2026-10-01 ユーザー確認「公開していい」）。鍵・個人データ・第三者の実データはコミットしない。
   GitHub の About 欄（Website）と README 冒頭からサイト（https://voicekey.vercel.app）へ辿れるようにしてある。
   **voicekey.app は他社（Android の AI キーボード「VoiceKey AI」）のドメイン**。自分のサイトとしてリンクしない。
@@ -54,8 +54,8 @@ voicekey は **`personal` ブランチ 1 本だけ**で運用する。旧 `main`
 
 ## 最重要: 両OSに存在する変更は Mac・Windows 同時に実装する（2026-06-16 ユーザー指示）
 
-> **2026-10-01 ユーザー指示で Windows の開発は一旦停止**。再開の指示があるまで新しい変更は Mac（`macos/`）だけに実装し、
-> Windows（`src/`）は触らない（下記ルールは再開時に復活する）。停止中に Mac だけで入れた変更は CHANGELOG に「Mac のみ」と書いておく。
+> 2026-10-01〜11-11 は Windows の開発を止めていたが、**2026-11-11 のユーザー指示で再開**（本人が Windows でも毎日使う）。以下のルールは有効。
+> 見た目（設定画面・ピル／HUD・色・寸法・動き）は Mac と同じにし、中身の作りは Windows に合うものでよい。ライブ字幕・Apple のローカル認識／翻訳は Windows に無い。
 
 UI の文言・表示名・設定項目・機能挙動など、**ユーザーから見て両 OS に同等に存在する要素を変えるときは、
 Mac（`macos/` Swift）と Windows（`src/` Python）の両方を同じ作業で反映し、1 コミットにまとめる**。片方だけ変えない。
