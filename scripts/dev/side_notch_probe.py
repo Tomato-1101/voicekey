@@ -42,9 +42,11 @@ def main() -> int:
     app = QApplication(sys.argv)
 
     from src.ui.side_notch import SideNotch
+    from src.ui.theme import Theme
 
     for dark in (False, True):
-        notch = SideNotch(history=_FakeHistory(), is_dark=dark, enabled=True)
+        Theme.instance().set_mode("dark" if dark else "light")
+        notch = SideNotch(history=_FakeHistory(), enabled=True)
         notch.open_panel()
         _pump(app, 1.5)
         panel = notch._panel
@@ -57,6 +59,18 @@ def main() -> int:
         print(f"[PROBE] {name} visible={panel.isVisible()} geo={geo.getRect()}")
         notch.set_enabled(False)
         _pump(app, 0.3)
+
+    # 比べるための 1 枚: 2.4.0 と同じく背景のぼかし（アクリル）を重ねたときの見え方
+    from src.platform.windows import acrylic
+
+    notch = SideNotch(history=_FakeHistory(), enabled=True)
+    notch.open_panel()
+    applied = acrylic.apply_blur(notch._panel, dark=True)
+    _pump(app, 1.5)
+    geo = notch._panel.frameGeometry()
+    shot = app.primaryScreen().grabWindow(0, geo.x(), geo.y(), geo.width(), geo.height())
+    shot.save(str(out / "sidenotch-real-with-acrylic.png"))
+    print(f"[PROBE] sidenotch-real-with-acrylic.png applied={applied}")
     return 0
 
 

@@ -120,3 +120,25 @@ class MediaDuckerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EndpointVolumeShapeTests(unittest.TestCase):
+    """pycaw の版による GetSpeakers() の戻り値の違いを両方扱えるか。"""
+
+    def test_new_pycaw_audio_device_uses_endpoint_volume(self):
+        """新しい pycaw（AudioDevice・.Activate 無し）→ .EndpointVolume をそのまま使う。"""
+        endpoint = object()
+
+        class _AudioDevice:
+            EndpointVolume = endpoint
+
+        def activate(_device):
+            raise AssertionError("新しい pycaw では Activate を呼ばない")
+
+        self.assertIs(media_ducker._endpoint_volume(_AudioDevice(), activate), endpoint)
+
+    def test_old_pycaw_immdevice_is_activated(self):
+        """古い pycaw（IMMDevice）→ Activate して取り出す。"""
+        device = object()
+        endpoint = object()
+        self.assertIs(media_ducker._endpoint_volume(device, lambda d: endpoint if d is device else None), endpoint)

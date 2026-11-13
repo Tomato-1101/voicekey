@@ -2,6 +2,23 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
+## [Unreleased] - 2026-11-13
+
+### Fixed（Windows）
+- **録音中にメディアの音量が下がらないのを修正**。新しい pycaw（2024 年以降）では既定出力の取り方が変わっていて、
+  音量の操作に入る前に例外になり、記録にも残らず黙って止まっていた。新旧どちらの形でも音量を取れるようにし、
+  作業スレッドで COM を初期化するようにした。取れなかったときは理由を警告としてログに残す。
+- **画面左端の履歴パネルを開いても中身が表示されないのを修正**。半透明の窓に背景のぼかし（アクリル）を重ねると
+  中身が描かれなかった。ぼかしをやめ、設定画面と同じ島を自前で描くようにした。
+  あわせて見た目を Mac と同じにした（時計のアイコン付きの見出し・虫眼鏡付きの検索欄・行ごとのコピーの印と
+  「コピーしました」・区切り線・ホームを開く・灯りの色のスリット）。外観（ライト／ダーク）の切り替えにも追従する。
+- GitHub の Windows テストで、録音の押しっぱなし監視を呼ぶ 5 件が失敗していたのを修正（テストの偽物に監視を足した）。
+
+### Technical Details（Windows）
+- `media_ducker._endpoint_volume`（`AudioDevice.EndpointVolume` と旧 `IMMDevice.Activate` の両対応）と `_ensure_com`
+- `side_notch.py` を作り直し（`SideNotch` / `SideNotchSlit` / `SideNotchHistoryPanel` は `is_dark` を取らず theme に追従）。`icons.py` に history / close / search / house / check
+- `scripts/dev/side_notch_probe.py`: CI の Windows で履歴パネルを本物の画面に出して撮る（ぼかしを重ねた比較用の 1 枚も撮る）
+
 ## [2.4.0] - 2026-11-12
 
 ### Fixed（音声入力・Mac）

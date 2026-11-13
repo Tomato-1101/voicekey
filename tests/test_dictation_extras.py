@@ -723,6 +723,8 @@ class TestRecordingLifecycle(unittest.TestCase):
             _task_q=mock.Mock(),
             _emit_state=mock.Mock(),
             _capture_target_app=mock.Mock(),
+            # Windows では hold の録音で離鍵の見回りが始まる（ここで見るのは開始処理だけ）
+            _start_hold_release_watch=mock.Mock(),
             translate_badge_changed=mock.Mock(),
         )
         s._maybe_handsfree_slot = VoicekeyApp._maybe_handsfree_slot.__get__(s)

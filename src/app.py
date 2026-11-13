@@ -512,7 +512,6 @@ class VoicekeyApp(QObject):
         # クリックで履歴パネルを開く。「ホームを開く」は設定ウィンドウのホームページを開く。
         self._side_notch = SideNotch(
             history=self._history,
-            is_dark=bool(self._config.get("dark_mode", False)),
             enabled=bool(self._config.get("side_notch_enabled", True)),
         )
         self.status_changed.connect(self._side_notch.set_status)

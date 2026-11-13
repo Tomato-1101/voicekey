@@ -177,6 +177,59 @@ def _refresh(painter: QPainter, _color: QColor) -> None:
     painter.drawPath(head)
 
 
+def _history(painter: QPainter, _color: QColor) -> None:
+    """履歴（左回りの矢印が付いた時計。SF Symbols の clock.arrow.circlepath に寄せた形）。"""
+    arc = QPainterPath()
+    # 9 時の少し下から時計回りに一周近く回し、8 時あたりで止める（切れ目は左下）
+    arc.arcMoveTo(QRectF(2.2, 2.2, 11.6, 11.6), 200.0)
+    arc.arcTo(QRectF(2.2, 2.2, 11.6, 11.6), 200.0, -320.0)
+    painter.drawPath(arc)
+    head = QPainterPath()
+    head.moveTo(0.9, 7.0)
+    head.lineTo(2.6, 9.2)
+    head.lineTo(4.6, 7.4)
+    painter.drawPath(head)
+    hands = QPainterPath()
+    hands.moveTo(8.0, 4.8)
+    hands.lineTo(8.0, 8.2)
+    hands.lineTo(10.4, 9.6)
+    painter.drawPath(hands)
+
+
+def _close(painter: QPainter, _color: QColor) -> None:
+    """閉じる（×）。"""
+    painter.drawLine(QPointF(4.0, 4.0), QPointF(12.0, 12.0))
+    painter.drawLine(QPointF(12.0, 4.0), QPointF(4.0, 12.0))
+
+
+def _check(painter: QPainter, _color: QColor) -> None:
+    """済み（✓）。コピーした直後の印。"""
+    painter.drawLine(QPointF(3.5, 8.5), QPointF(6.8, 11.6))
+    painter.drawLine(QPointF(6.8, 11.6), QPointF(12.8, 4.6))
+
+
+def _search(painter: QPainter, _color: QColor) -> None:
+    """検索（虫めがね）。"""
+    painter.drawEllipse(QPointF(6.8, 6.8), 4.4, 4.4)
+    painter.drawLine(QPointF(10.0, 10.0), QPointF(14.0, 14.0))
+
+
+def _house(painter: QPainter, _color: QColor) -> None:
+    """ホーム（家）。"""
+    roof = QPainterPath()
+    roof.moveTo(1.8, 8.0)
+    roof.lineTo(8.0, 2.2)
+    roof.lineTo(14.2, 8.0)
+    painter.drawPath(roof)
+    body = QPainterPath()
+    body.moveTo(3.6, 6.6)
+    body.lineTo(3.6, 13.8)
+    body.lineTo(12.4, 13.8)
+    body.lineTo(12.4, 6.6)
+    painter.drawPath(body)
+    painter.drawRect(QRectF(6.6, 9.6, 2.8, 4.2))
+
+
 def _sun(painter: QPainter, _color: QColor) -> None:
     """太陽（丸と 8 本の光）。"""
     painter.drawEllipse(QPointF(8.0, 8.0), 2.9, 2.9)
@@ -282,6 +335,11 @@ _ICONS: Dict[str, Callable[[QPainter, QColor], None]] = {
     "hourglass": _hourglass,
     "copy": _copy,
     "refresh": _refresh,
+    "history": _history,
+    "close": _close,
+    "check": _check,
+    "search": _search,
+    "house": _house,
 }
 
 

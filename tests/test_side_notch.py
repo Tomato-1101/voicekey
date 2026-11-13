@@ -93,7 +93,7 @@ class FilterItemsTests(unittest.TestCase):
 
 class SlitTests(unittest.TestCase):
     def test_recording_state_changes(self):
-        slit = SideNotchSlit(is_dark=True)
+        slit = SideNotchSlit()
         self.assertFalse(slit._recording)
         slit.set_recording(True)
         self.assertTrue(slit._recording)
@@ -110,7 +110,7 @@ class HistoryPanelTests(unittest.TestCase):
             {"text": "ひとつめ", "date": ""},
             {"text": "ふたつめ", "date": ""},
         ])
-        panel = SideNotchHistoryPanel(history, is_dark=False)
+        panel = SideNotchHistoryPanel(history)
         panel.refresh()
         # 行数 = 一覧レイアウトの (widget 数 - 末尾 stretch)
         rows = panel._list_layout.count() - 1
@@ -122,14 +122,14 @@ class HistoryPanelTests(unittest.TestCase):
             {"text": "会議メモ", "date": ""},
             {"text": "買い物リスト", "date": ""},
         ])
-        panel = SideNotchHistoryPanel(history, is_dark=False)
+        panel = SideNotchHistoryPanel(history)
         panel._on_query_changed("会議")
         rows = panel._list_layout.count() - 1
         self.assertEqual(rows, 1)
         panel.deleteLater()
 
     def test_empty_state_when_no_history(self):
-        panel = SideNotchHistoryPanel(_FakeHistory([]), is_dark=False)
+        panel = SideNotchHistoryPanel(_FakeHistory([]))
         panel.refresh()
         # 空状態ラベルが 1 つ入る（stretch を含めて 2 要素）
         self.assertEqual(panel._list_layout.count(), 2)
@@ -139,7 +139,7 @@ class HistoryPanelTests(unittest.TestCase):
 class ControllerTests(unittest.TestCase):
     def _make(self, items=None, enabled=True):
         history = _FakeHistory(items or [{"text": "テスト", "date": ""}])
-        return SideNotch(history=history, is_dark=False, enabled=enabled)
+        return SideNotch(history=history, enabled=enabled)
 
     def test_enabled_shows_slit(self):
         ctrl = self._make(enabled=True)

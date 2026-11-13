@@ -88,6 +88,37 @@ class _PycawController:
             return False
 
 
+def _endpoint_volume(speakers, activate_endpoint: Callable[[object], object]):
+    """GetSpeakers() の戻り値から IAudioEndpointVolume を取り出す。
+
+    pycaw は版によって GetSpeakers() の戻り値が違う。新しい版（2024 年以降）は
+    AudioDevice（`.EndpointVolume` を持ち `.Activate` は無い）、古い版は IMMDevice（`.Activate` を持つ）。
+    以前は `.Activate` だけを呼んでいたため、新しい pycaw では例外になり、黙って音量下げが止まっていた。
+
+    Args:
+        speakers: AudioUtilities.GetSpeakers() の戻り値
+        activate_endpoint: IMMDevice から IAudioEndpointVolume を作る関数（古い版用）
+    """
+    endpoint = getattr(speakers, "EndpointVolume", None)
+    if endpoint is not None:
+        return endpoint
+    return activate_endpoint(speakers)
+
+
+# COM を初期化済みのスレッド（ワーカーは 1 本だが、念のためスレッドごとに覚える）
+_com_ready = threading.local()
+
+
+def _ensure_com() -> None:
+    """このスレッドで COM を初期化する（ワーカースレッドは自動では初期化されないため）。"""
+    if getattr(_com_ready, "done", False):
+        return
+    import comtypes
+
+    comtypes.CoInitialize()
+    _com_ready.done = True
+
+
 def _default_provider() -> Optional[_PycawController]:
     """既定出力デバイスのマスター音量コントローラを返す（取得不可なら None）。
 
@@ -100,12 +131,16 @@ def _default_provider() -> Optional[_PycawController]:
         from comtypes import CLSCTX_ALL
         from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
 
-        devices = AudioUtilities.GetSpeakers()
-        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        endpoint = cast(interface, POINTER(IAudioEndpointVolume))
-        return _PycawController(endpoint)
+        _ensure_com()
+
+        def activate(device):
+            interface = device.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            return cast(interface, POINTER(IAudioEndpointVolume))
+
+        return _PycawController(_endpoint_volume(AudioUtilities.GetSpeakers(), activate))
     except Exception as e:
-        logger.debug(f"既定出力の音量コントローラを取得できませんでした（ダッキングをスキップ）: {e}")
+        # 失敗理由が見えないと「音量が下がらない」を追えないので、警告で残す
+        logger.warning(f"既定出力の音量を操作できません（音量下げをスキップ）: {type(e).__name__}: {e}")
         return None
 
 
