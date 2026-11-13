@@ -13,7 +13,7 @@ from .types import HotkeyMode
 # アプリケーションメタデータ
 # ============================================
 APP_NAME: str = "voicekey"
-APP_VERSION: str = "2.4.0"
+APP_VERSION: str = "2.4.1"
 
 # ============================================
 # 自動アップデートの署名検証（Windows 配布版）

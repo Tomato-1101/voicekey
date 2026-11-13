@@ -386,7 +386,7 @@ class _PanelIsland(QWidget):
         # 背景のぼかしが無いので、窓の地（不透明に近い）を先に敷いてから島の面を重ねる。
         # 設定画面で島が窓の地の上に乗っているのと同じ色になる。
         base = QColor(p.window)
-        base.setAlphaF(0.97)
+        base.setAlphaF(1.0)
         painter.fillPath(path, base)
         painter.fillPath(path, p.island)
         gradient = QLinearGradient(0, rect.top(), 0, rect.bottom())

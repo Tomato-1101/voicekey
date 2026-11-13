@@ -31,8 +31,8 @@
 
 | プラットフォーム | バージョン | 状態 | 入手方法 |
 |---|---|---|---|
-| 🍎 macOS | **v2.4.0** | ✅ 配布中（Swift ネイティブ） | [brew / curl で 1 行インストール](#-ダウンロードとインストールmacos)、または [ソースからビルド](#ソースからビルドする) |
-| 🪟 Windows | **v2.4.0** | ✅ 配布中（Python / PySide6） | [インストーラをダウンロード](#windows-で使う)、または [ソースから動かす](#windows-完全セットアップpowershell) |
+| 🍎 macOS | **v2.4.1** | ✅ 配布中（Swift ネイティブ） | [brew / curl で 1 行インストール](#-ダウンロードとインストールmacos)、または [ソースからビルド](#ソースからビルドする) |
+| 🪟 Windows | **v2.4.1** | ✅ 配布中（Python / PySide6） | [インストーラをダウンロード](#windows-で使う)、または [ソースから動かす](#windows-完全セットアップpowershell) |
 
 > macOS の版は `macos/Resources/Info.plist`、Windows の版は `src/config/constants.py` の `APP_VERSION` が正本（この表とのズレはテストが検出します）。
 
