@@ -81,6 +81,12 @@ jobs:
           PYTHONUTF8: "1"
         run: python scripts/dev/preview_ui.py ui-preview
 
+      - name: 履歴パネルを本物の画面に出して撮る
+        # オフスクリーンでは OS の窓の合成（半透明・背景のぼかし）を通らないため、実画面で撮る
+        env:
+          PYTHONUTF8: "1"
+        run: python scripts/dev/side_notch_probe.py ui-preview
+
       - name: 試し描きの PNG を保存
         uses: actions/upload-artifact@v4
         with:
