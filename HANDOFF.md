@@ -79,7 +79,7 @@
   ボットのタップ `.mutedWhenTapped`、字幕の短い行の結合の見え方。
 - 見送った低指摘: 字幕停止に最大 1.5 秒、Soniox の文分割が「Mr.」等でずれる可能性（推測）。
 
-## Windows を Mac に追いつかせる・Meet の画面と要約・2.4.1（11-13 更新）
+## Windows を Mac に追いつかせる・Meet の画面と要約・2.5.0（11-15 更新）
 
 - 目的: Windows 版（1.8.0）を Mac（2.3.0）と同じ機能・同じ見た目にし、両 OS を 2.4.0 で出す。**見た目だけ Mac と同一、中身は Windows に合う作り**。ライブ字幕は Windows に入れない。計画は `~/.claude/plans/iterative-purring-aho.md`。
 - 済み（コミット済み）: Windows のログイン層除去（d2d21ef）／HUD を Mac と同じ見た目に＋`ui/theme.py`・`ui/components.py`（05d97de）／Mac の Meet 画面表示・要約・ゲスト参加（01a5e4e。**常用アプリには未反映**＝`build_app.sh` 未実行）。
@@ -89,6 +89,7 @@
 - 済み（11-12）: 画面の試し描き `scripts/dev/preview_ui.py` と CI の PNG（9dc8b23）／Windows 録音経路のレビュー 10 件を修正（97cbfdb・829 件 OK）／版を 2.4.0 に・ドキュメントの「Windows 停止」を解除。
 - 済み（11-12）: Release v2.4.0 公開（Mac zip＋appcast・Windows exe＋.sig）・homebrew-tap 更新・常用 Mac アプリを 2.4.0 で再起動。
 - 済み（11-13・8f8873c/6b80743）: 本人の Windows 実機報告 2 件を修正し 2.4.1 に。音量下げ＝新しい pycaw の `GetSpeakers()` が `.Activate` を持たず黙って失敗していた（`.EndpointVolume` を優先）。左端の履歴パネル＝アクリルと半透明の描画をやめ Mac と同じ見た目で作り直し（CI の実画面撮影では表示 OK。実機で中身が出なかった真因は未確定）。
-- 次: 本人の Windows 実機で 2.4.1 の音量下げと履歴パネルを確認。ほかホットキー・貼り付け・HUD の位置、実会議でのゲスト参加・要約。
+- 済み（11-15・685cc19/d8880eb）: 本人「Windows のフォントがダサい・ネイティブに」で、Windows の見た目を Windows 11 の「設定」アプリに合わせ 2.5.0 に（Segoe UI Variable＋Yu Gothic UI・`theme.px` で Windows の文字段・Fluent の部品・カード・狭い窓で行を縦積み）。一般 › 表示 › アクセント色（オレンジ／Windows の色。Windows のみ）。CI に実画面撮影 `scripts/dev/settings_probe.py`。オンボーディング窓はフォントだけ替え、作りは旧のまま。
+- 次: 本人の Windows 実機で 2.5.0 の見た目と、2.4.1 の音量下げ・履歴パネルを確認。ほかホットキー・貼り付け・HUD の位置、実会議でのゲスト参加・要約。
 - 未検証: 実会議でのゲスト参加（DOM 文言は推測）・未ログインのゲストに字幕が出るか・Groq 要約の実通信・Windows 実機の見た目（Mica は未採用で単色下地）。
 - 注意: テストは偽 keyring で回す（`PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring`。サービス名が Mac の Keychain と同じ）。`.gitignore` の `src/config/embedded_keys.py` 除外行は消さない。
