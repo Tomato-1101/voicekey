@@ -660,7 +660,8 @@ class HomePage(QWidget):
         head = QVBoxLayout()
         head.setContentsMargins(0, 0, 0, 0)
         head.setSpacing(2)
-        head.addWidget(Text("ダッシュボード", size=17, weight=QFont.Weight.Bold))
+        # ほかのページと同じく Windows の「設定」アプリのページ名の大きさ（28・Semibold）
+        head.addWidget(Text("ダッシュボード", size=28, weight=QFont.Weight.DemiBold))
         self.subtitle = MessageLabel(lines=1, size=12)
         head.addWidget(self.subtitle)
         body.addLayout(head)
