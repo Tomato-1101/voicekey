@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core import feedback_client
+from . import theme
 from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -71,7 +72,11 @@ class FeedbackDialog(QDialog):
         hint_text = "匿名で送信されます。"
         hint = QLabel(hint_text)
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: #8E8E93; font-size: 11px;")
+        secondary = theme.palette().text_secondary
+        hint.setStyleSheet(
+            f"color: rgba({secondary.red()}, {secondary.green()}, {secondary.blue()}, {secondary.alpha()});"
+            f" font-size: {theme.px(11)}px;"
+        )
         layout.addWidget(hint)
 
         self._editor = QPlainTextEdit()

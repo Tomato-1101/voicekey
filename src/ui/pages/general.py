@@ -8,7 +8,8 @@
 Windows に無い・src に実装が無いので置かない行:
 - Dock に表示（Mac 専用）
 - 履歴を保存（履歴を止める設定が src に無い）
-代わりに Windows だけの行として「外観」（システムに合わせる／ライト／ダーク）を「表示」に置く。
+代わりに Windows だけの行として「外観」（システムに合わせる／ライト／ダーク）と
+「アクセント色」（voicekey のオレンジ／Windows のアクセント色）を「表示」に置く。
 """
 
 from typing import Callable, List, Optional
@@ -40,6 +41,12 @@ APPEARANCE_OPTIONS = (
     (theme.APPEARANCE_DARK, "ダーク"),
 )
 
+# アクセント色（保存値, 表示名）
+ACCENT_OPTIONS = (
+    (theme.ACCENT_BRAND, "voicekey のオレンジ"),
+    (theme.ACCENT_SYSTEM, "Windows のアクセント色"),
+)
+
 # マイク自動検出の結果を出しておく時間（Mac と同じ: 成功 2 秒・失敗 4 秒）
 _DETECT_OK_MS = 2000
 _DETECT_FAIL_MS = 4000
@@ -61,6 +68,17 @@ def appearance_from(get: Callable) -> str:
     if value in (theme.APPEARANCE_SYSTEM, theme.APPEARANCE_LIGHT, theme.APPEARANCE_DARK):
         return value
     return theme.APPEARANCE_DARK if get("dark_mode", False) else theme.APPEARANCE_SYSTEM
+
+
+def accent_from(get: Callable) -> str:
+    """
+    保存されているアクセント色を読む（無い・知らない値ならオレンジ）。
+
+    Args:
+        get: 設定を読む関数（key, default）
+    """
+    value = get("accent_color", theme.ACCENT_BRAND)
+    return value if value in (theme.ACCENT_BRAND, theme.ACCENT_SYSTEM) else theme.ACCENT_BRAND
 
 
 def _model_label(model: llm_catalog.LLMModel) -> str:
@@ -90,7 +108,7 @@ class GeneralPage(SettingsPage):
 
     Attributes:
         language_picker / device_picker / handsfree_input / delay_input / model_picker / prompt_edit /
-        numeral_switch / counter_switch / pill_switch / notch_switch / appearance_picker /
+        numeral_switch / counter_switch / pill_switch / notch_switch / appearance_picker / accent_picker /
         sound_switch / duck_switch / autostart_switch / sync_switch / sync_url_input /
         sync_token_input: 各行の操作部品
     """
@@ -250,6 +268,13 @@ class GeneralPage(SettingsPage):
         for value, label in APPEARANCE_OPTIONS:
             self.appearance_picker.addItem(label, value)
         group.add_row(SettingRow("外観", trailing=self.appearance_picker))
+        self.accent_picker = Picker()
+        for value, label in ACCENT_OPTIONS:
+            self.accent_picker.addItem(label, value)
+        group.add_row(SettingRow(
+            "アクセント色", "スイッチ・選択中の印・ボタンの色です。Windows の色に合わせることもできます。",
+            self.accent_picker,
+        ))
 
     def _build_sound(self) -> None:
         self.add_section("サウンド")
@@ -332,6 +357,7 @@ class GeneralPage(SettingsPage):
         self.pill_switch.toggled.connect(lambda v: self._save({"hud_always_visible": v}))
         self.notch_switch.toggled.connect(lambda v: self._save({"side_notch_enabled": v}))
         self.appearance_picker.currentIndexChanged.connect(self._on_appearance_changed)
+        self.accent_picker.currentIndexChanged.connect(self._on_accent_changed)
         self.sound_switch.toggled.connect(lambda v: self._save({"sound_effects_enabled": v}))
         self.duck_switch.toggled.connect(lambda v: self._save({"duck_media_enabled": v}))
         self.autostart_switch.toggled.connect(self._on_autostart_toggled)
@@ -385,6 +411,7 @@ class GeneralPage(SettingsPage):
             self.pill_switch.setChecked(bool(get("hud_always_visible", False)))
             self.notch_switch.setChecked(bool(get("side_notch_enabled", True)))
             self.appearance_picker.setCurrentIndex(self.appearance_picker.findData(appearance_from(get)))
+            self.accent_picker.setCurrentIndex(self.accent_picker.findData(accent_from(get)))
             self.sound_switch.setChecked(bool(get("sound_effects_enabled", True)))
             self.duck_switch.setChecked(bool(get("duck_media_enabled", True)))
             # 自動起動の正本はレジストリ（設定ファイルには持たない）
@@ -579,6 +606,13 @@ class GeneralPage(SettingsPage):
         self.ctx.commit({"appearance": mode})
         # 選んだらすぐ見た目を切り替える（保存の結果を待たない）
         Theme.instance().set_mode(mode)
+
+    def _on_accent_changed(self, _index: int) -> None:
+        if self._loading:
+            return
+        mode = self.accent_picker.currentData()
+        self.ctx.commit({"accent_color": mode})
+        Theme.instance().set_accent_mode(mode)
 
     def _on_autostart_toggled(self, checked: bool) -> None:
         """自動起動を切り替える。失敗したらスイッチを元に戻して知らせる（Mac も登録失敗で戻す）。"""

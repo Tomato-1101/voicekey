@@ -87,6 +87,12 @@ jobs:
           PYTHONUTF8: "1"
         run: python scripts/dev/side_notch_probe.py ui-preview
 
+      - name: 設定ウィンドウとピルを本物の画面に出して撮る
+        # オフスクリーンでは日本語が豆腐になり ClearType も通らない。フォントの見え方は実画面で確かめる
+        env:
+          PYTHONUTF8: "1"
+        run: python scripts/dev/settings_probe.py ui-preview
+
       - name: 試し描きの PNG を保存
         uses: actions/upload-artifact@v4
         with:

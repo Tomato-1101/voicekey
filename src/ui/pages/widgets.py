@@ -73,11 +73,11 @@ class SettingsPage(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # 見出し（上 18・左右 20。Mac の SettingsView の見出しと同じ余白）
+        # 見出し（Windows の「設定」アプリと同じく 28px の太字。上は少し広めにあける）
         head, head_body = _centered_column(
-            (Metrics.CONTENT_PADDING, 18, Metrics.CONTENT_PADDING, 10)
+            (Metrics.CONTENT_PADDING, 28, Metrics.CONTENT_PADDING, 12)
         )
-        self.title_label = Text(title, size=17, weight=QFont.Weight.Bold)
+        self.title_label = Text(title, size=28, weight=QFont.Weight.DemiBold)
         head_body.addWidget(self.title_label)
         root.addWidget(head)
 
@@ -94,7 +94,7 @@ class SettingsPage(QWidget):
 
     def add_section(self, title: str) -> Text:
         """
-        棚の上に置く小見出しを足す（左端は行の文字と揃える）。
+        棚の上に置く小見出しを足す（左端はカードの左端と揃える）。
 
         Args:
             title: 小見出し
@@ -102,9 +102,10 @@ class SettingsPage(QWidget):
         Returns:
             足した小見出し
         """
-        self.body.addSpacing(8)
+        self.body.addSpacing(12)
         label = Text(title, size=13, weight=QFont.Weight.DemiBold)
-        label.setContentsMargins(Metrics.ROW_PADDING_H, 0, 0, 0)
+        # Windows の「設定」アプリと同じく、小見出しはカードの左端に揃える
+        label.setContentsMargins(2, 0, 0, 0)
         self.body.addWidget(label)
         return label
 
@@ -170,7 +171,8 @@ def add_row_message(row: SettingRow, lines: int = 1) -> MessageLabel:
     """
     message = MessageLabel(lines=lines)
     labels = row.layout().itemAt(0).layout()
-    labels.addWidget(message)
+    # 最後の伸び（上下中央に置くための余白）より前に入れる
+    labels.insertWidget(labels.count() - 1, message)
     return message
 
 

@@ -208,10 +208,14 @@ class _FitText(Text):
 
     def _fit(self) -> None:
         """いまの幅に収まる文字の大きさを選ぶ（本来の大きさより大きくはしない）。"""
-        need = QFontMetrics(theme.font(self._base_size, self._weight)).horizontalAdvance(self.text())
         size = self._base_size
-        if need > 0 and self.width() > 0 and need > self.width():
-            size = max(self._MIN_SIZE, int(self._base_size * self.width() / need))
+        if self.width() > 0:
+            # 実際の幅で 1 段ずつ確かめる（theme.px の読み替えは大きさに比例しないため、比で求めると外れる）
+            while (
+                size > self._MIN_SIZE
+                and QFontMetrics(theme.font(size, self._weight)).horizontalAdvance(self.text()) > self.width()
+            ):
+                size -= 1
         if size != self._size:
             # Text は大きさを QSS で指定しているので、_size を変えて色ごと付け直す
             self._size = size
@@ -563,10 +567,8 @@ class _AppRow(QWidget):
 
         left = size + 10
         width = self.width() - left
-        name_font = QFont(self.font())
-        name_font.setPixelSize(13)
-        count_font = QFont(self.font())
-        count_font.setPixelSize(11)
+        name_font = theme.font(13)
+        count_font = theme.font(11)
         count_metrics = QFontMetrics(count_font)
         count_width = count_metrics.horizontalAdvance(self._count)
         name_metrics = QFontMetrics(name_font)

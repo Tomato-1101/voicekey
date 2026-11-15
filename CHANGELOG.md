@@ -2,6 +2,25 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
+## [Unreleased] - 2026-11-15
+
+### Changed（Windows）
+- **見た目を Windows 11 の「設定」アプリに合わせた**。ページの並び・文言・アイコン・ロゴ・ピルの形は Mac と同じまま、
+  文字・色・部品を Windows 標準にした。
+  - 文字はすべて Segoe UI Variable（日本語は Yu Gothic UI）。大きさは Windows の段（本文 14・説明 12・ページ名 28）、太字は Semibold まで。
+  - 地はライト #F3F3F3／ダーク #202020。設定の行は 1 行ずつのカード（角丸 4）、ダッシュボードのカードは角丸 8。
+  - 左のナビは選択中の行に薄い面と左端の細い印。トグル（「オン／オフ」付き）・ボタン・選択欄・入力欄・切り替えは Windows の部品の形。
+  - ピル・履歴パネルは不透明の面と細い枠（ガラス風の光沢をやめた）。
+  - 窓を狭めると、説明が読めなくなる前に操作部品を見出しの下へ回す。
+- **アクセント色を選べるようにした**（設定 › 一般 › 表示 › アクセント色）。「voicekey のオレンジ」（既定）か
+  「Windows のアクセント色」（Windows の個人用設定の色に追従。変えるとその場で反映）。
+
+### Technical Details（Windows）
+- `theme.py`: `px`（Mac の数値 → Windows の段）・`ACCENT_BRAND` / `ACCENT_SYSTEM`・`system_accent_shades`（レジストリの AccentPalette）・`Theme.set_accent_mode`
+- `components.py` を Windows 11 の部品に作り直し（`Backdrop` は平らな地だけ・`GlassIsland` は廃止）。保存キー `accent_color`
+- `scripts/dev/settings_probe.py`: CI の Windows で設定ウィンドウとピルを本物の画面に出して撮る（オフスクリーンでは日本語が豆腐になるため）
+- `tests/test_ui_theme.py` を追加
+
 ## [2.4.1] - 2026-11-13
 
 ### Fixed（Windows）

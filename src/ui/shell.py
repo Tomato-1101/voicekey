@@ -1,9 +1,8 @@
 """
 メインウィンドウの骨格
 
-左に浮いた島のサイドバー（ブランド行＋ページ一覧）、右に本文を置く。
-見た目は Mac 版（SettingsView.swift の normalLayout）と同じ:
-浮く島はサイドバーだけで、本文は窓の下地にそのまま載せる。
+左にサイドバー（ブランド行＋ページ一覧）、右に本文を置く。ページの並びと文言は Mac 版と同じ。
+形は Windows 11 の「設定」アプリと同じく、サイドバーも本文も窓の地にそのまま載せる（浮いた島は使わない）。
 
 ページは「開いたとき初めて作る」。全ページを起動時に作ると窓が出るまでが遅くなるため、
 登録するのは作り方（関数）だけにして、選ばれたときに 1 回だけ呼ぶ。
@@ -17,7 +16,7 @@ from PySide6.QtGui import QFont, QPainter, QPainterPath
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QScrollArea, QVBoxLayout, QWidget
 
 from . import brand, theme
-from .components import Backdrop, FadeStack, GlassIsland, NavList, Text
+from .components import Backdrop, FadeStack, NavList, Text
 from .theme import Metrics, Theme
 
 
@@ -77,34 +76,28 @@ class WindowShell(Backdrop):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(Metrics.ISLAND_GAP)
 
-        # 島の左と上下に下地を見せる（右は本文とのすき間）
-        side_holder = QWidget()
-        side_layout = QVBoxLayout(side_holder)
-        side_layout.setContentsMargins(Metrics.WINDOW_PADDING, Metrics.WINDOW_PADDING, 0, Metrics.WINDOW_PADDING)
-        self._sidebar = GlassIsland()
+        self._sidebar = QWidget()
         self._sidebar.setFixedWidth(Metrics.SIDEBAR_W)
-        side_layout.addWidget(self._sidebar)
-        root.addWidget(side_holder)
-        self.add_island(self._sidebar)
+        root.addWidget(self._sidebar)
 
         island = QVBoxLayout(self._sidebar)
         island.setContentsMargins(0, 0, 0, 0)
         island.setSpacing(0)
 
         brand_row = QHBoxLayout()
-        brand_row.setContentsMargins(14, 14, 14, 6)
-        brand_row.setSpacing(8)
+        brand_row.setContentsMargins(16, 16, 16, 12)
+        brand_row.setSpacing(10)
         brand_row.addWidget(BrandMark())
         brand_row.addWidget(Text("voicekey", size=13, weight=QFont.Weight.DemiBold))
         brand_row.addStretch(1)
         island.addLayout(brand_row)
 
-        # 一覧が島の高さを超えたら中でスクロールする（スクロールバーは出さない。Mac と同じ）
+        # 一覧が窓の高さを超えたら中でスクロールする（スクロールバーは出さない）
         self._nav = NavList()
         nav_holder = QWidget()
         nav_holder.setAutoFillBackground(False)
         nav_layout = QVBoxLayout(nav_holder)
-        nav_layout.setContentsMargins(8, 0, 8, 10)
+        nav_layout.setContentsMargins(4, 0, 4, 10)
         nav_layout.addWidget(self._nav)
         nav_layout.addStretch(1)
         scroll = QScrollArea()
@@ -249,7 +242,10 @@ class WindowShell(Backdrop):
         super().showEvent(event)
 
     def changeEvent(self, event) -> None:  # noqa: N802
-        """窓のハンドルが作り直されたら、タイトルバーの明暗を付け直す。"""
+        """窓のハンドルが作り直されたらタイトルバーの明暗を付け直し、OS の色が変わったらアクセント色を読み直す。"""
         if event.type() == QEvent.Type.WinIdChange:
             self._apply_titlebar()
+        elif event.type() == QEvent.Type.ApplicationPaletteChange:
+            # Windows の設定でアクセント色を変えると、アプリ全体の色の変更として届く
+            Theme.instance().refresh_system_accent()
         super().changeEvent(event)

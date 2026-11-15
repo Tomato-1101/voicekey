@@ -95,7 +95,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | VAD / マイク自動検出 / 履歴 | `Core/VoiceActivity.swift` / `MicAutoDetector.swift` / `HistoryStore.swift` | `core/vad.py` / `mic_auto_detect.py` / `history.py` |
 | 履歴同期（Mac ⇄ Windows） | `Core/HistorySync.swift` | `core/history_sync.py` |
 | 使用実績（統計・レベル） | `Core/StatsStore.swift` | `core/stats.py` |
-| 設定画面 UI | `UI/SettingsView.swift` / `HotkeyRecorderView.swift` / `Glass.swift`（ガラス様式・押しやすい行の共通部品）。見た目の確認は `--ui-snapshot`（`CLI/UISnapshotTestMode.swift`・画面外で全ページを PNG 化） | `ui/settings_window.py`（窓とサイドバー）/ `ui/pages/*.py`（1 ページ 1 ファイル・開いたときに作る）/ `ui/theme.py`（色・寸法・QSS）/ `ui/components.py`（行・スイッチ・ボタン等の部品） |
+| 設定画面 UI | `UI/SettingsView.swift` / `HotkeyRecorderView.swift` / `Glass.swift`（ガラス様式・押しやすい行の共通部品）。見た目の確認は `--ui-snapshot`（`CLI/UISnapshotTestMode.swift`・画面外で全ページを PNG 化） | `ui/settings_window.py`（窓とサイドバー）/ `ui/pages/*.py`（1 ページ 1 ファイル・開いたときに作る）/ `ui/theme.py`（色・寸法・QSS・Windows 11 の文字の段とアクセント色）/ `ui/components.py`（Windows 11 の「設定」アプリに合わせた行・スイッチ・ボタン等の部品）。実画面の確認は CI の `scripts/dev/settings_probe.py` |
 | ホーム画面 / ダッシュボード | `UI/HomeView.swift` / `MainWindowView.swift`（ホーム＋設定を 1 ウィンドウで切替・Mac） | `ui/pages/home.py`（設定ウィンドウ先頭「ダッシュボード」） |
 | サイドノッチ（履歴スリット） | `UI/SideNotch.swift`（スリット＋検索付き履歴パネル） | `ui/side_notch.py` |
 | 操作音 / メディアダッキング / フルスクリーン判定 | `Core/SoundFX.swift` / `MediaDucker.swift` / `FrontAppTracker.swift`（Mac） | `core/sound_fx.py` / `media_ducker.py` / `fullscreen.py`、実ブラーは `platform/windows/acrylic.py` |

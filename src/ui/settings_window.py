@@ -18,7 +18,7 @@ from .pages.about import AboutPage
 from .pages.api_keys import ApiKeysPage
 from .pages.context import PageContext
 from .pages.dictionary import DictionaryPage
-from .pages.general import GeneralPage, appearance_from
+from .pages.general import GeneralPage, accent_from, appearance_from
 from .pages.meeting import MeetingPage
 from .pages.translate import TranslatePage
 from .pages.slot import SlotPage
@@ -98,6 +98,7 @@ class SettingsWindow(WindowShell):
 
         # 保存されている外観で始める（Theme.changed で WindowShell が標準部品の見た目も合わせる）
         Theme.instance().set_mode(appearance_from(ctx.get))
+        Theme.instance().set_accent_mode(accent_from(ctx.get))
         self._apply_appearance()
 
         last = ctx.get(LAST_PAGE_KEY, HOME_KEY)

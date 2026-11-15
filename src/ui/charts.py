@@ -12,7 +12,7 @@ from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from . import theme
-from .theme import SIGNAL, Theme, rgba
+from .theme import Theme, with_alpha
 
 
 class MeterBar(QWidget):
@@ -147,7 +147,7 @@ class BarChart(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(rgba(SIGNAL, 0.78))
+        painter.setBrush(with_alpha(theme.palette().accent, 0.78))
         w, h = float(self.width()), float(self.height())
         slot = w / count
         bar_w = max(1.0, min(self._MAX_BAR_W, slot - self._GAP))

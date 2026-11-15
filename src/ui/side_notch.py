@@ -26,7 +26,6 @@ from PySide6.QtGui import (
     QFont,
     QFontMetricsF,
     QGuiApplication,
-    QLinearGradient,
     QPainter,
     QPen,
     QPixmap,
@@ -46,7 +45,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import icons, theme
-from .theme import SIGNAL, Theme, rgba
+from .theme import Theme, with_alpha
 
 
 def relative_time(iso_str: str, now: Optional[datetime] = None) -> str:
@@ -338,7 +337,7 @@ class _SearchField(QWidget):
         p = theme.palette()
         self.edit.setStyleSheet(
             "QLineEdit { border: none; background: transparent; padding: 0;"
-            f" color: {p.text.name()}; selection-background-color: {rgba(SIGNAL, 0.35).name(QColor.NameFormat.HexArgb)}; }}"
+            f" color: {p.text.name()}; selection-background-color: {with_alpha(p.accent, 0.35).name(QColor.NameFormat.HexArgb)}; }}"
         )
         pal = self.edit.palette()
         pal.setColor(pal.ColorRole.PlaceholderText, p.text_secondary)
@@ -374,7 +373,7 @@ class _Divider(QWidget):
 class _PanelIsland(QWidget):
     """履歴パネルの島（面と縁）。中身はこの上に並べる。"""
 
-    RADIUS = 18
+    RADIUS = 8   # Windows 11 のポップアップ（フライアウト）と同じ角丸
 
     def paintEvent(self, _event) -> None:  # noqa: N802
         p = theme.palette()
@@ -383,20 +382,9 @@ class _PanelIsland(QWidget):
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         path = QPainterPath()
         path.addRoundedRect(rect, self.RADIUS, self.RADIUS)
-        # 背景のぼかしが無いので、窓の地（不透明に近い）を先に敷いてから島の面を重ねる。
-        # 設定画面で島が窓の地の上に乗っているのと同じ色になる。
-        base = QColor(p.window)
-        base.setAlphaF(1.0)
-        painter.fillPath(path, base)
-        painter.fillPath(path, p.island)
-        gradient = QLinearGradient(0, rect.top(), 0, rect.bottom())
-        gradient.setColorAt(0.0, p.island_rim_top)
-        gradient.setColorAt(1.0, p.island_rim_bottom)
-        painter.setPen(QPen(gradient, 1.0))
-        painter.drawPath(path)
-        # ライトでは白い縁が地に溶けるので、ごく薄い輪郭を足して形を見せる
-        outline = QColor(p.line)
-        painter.setPen(QPen(outline, 1.0))
+        # Windows 11 のフライアウトと同じ、不透明な面と薄い縁
+        painter.fillPath(path, p.popup)
+        painter.setPen(QPen(p.popup_border, 1.0))
         painter.drawPath(path)
         painter.end()
 
@@ -467,6 +455,7 @@ class SideNotchSlit(QWidget):
         y = (self.height() - h) / 2
         bar_rect = QRectF(0, y, w, h)  # 左端に密着
         radius = min(w, 4)
+        accent = theme.palette().accent
 
         # 録音中は灯りのにじみ（透過ウィンドウでは影エフェクトが効かないため自前で重ねる）
         if self._recording:
@@ -474,14 +463,14 @@ class SideNotchSlit(QWidget):
                 glow = bar_rect.adjusted(-i, -i, i * 2, i)
                 path = QPainterPath()
                 path.addRoundedRect(glow, radius + i, radius + i)
-                painter.fillPath(path, rgba(SIGNAL, max(0.0, 0.24 - i * 0.05)))
+                painter.fillPath(path, with_alpha(accent, max(0.0, 0.24 - i * 0.05)))
 
         alpha = 0.92 if self._recording else (0.85 if self._hovering else 0.7)
         path = QPainterPath()
         path.addRoundedRect(bar_rect, radius, radius)
         painter.fillPath(path, QColor(0, 0, 0, int(alpha * 255)))
         if self._recording:
-            border = rgba(SIGNAL, 0.9)
+            border = with_alpha(accent, 0.9)
         else:
             border = QColor(255, 255, 255, int((0.4 if self._hovering else 0.28) * 255))
         pen = painter.pen()

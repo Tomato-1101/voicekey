@@ -30,7 +30,6 @@ from PySide6.QtGui import (
     QFont,
     QFontMetricsF,
     QGuiApplication,
-    QLinearGradient,
     QPainter,
     QPainterPath,
     QPen,
@@ -640,20 +639,11 @@ class Hud(QWidget):
             painter.fillPath(layer, QColor(0, 0, 0, round(255 * alpha * (blur - i + 1) / total)))
 
         # 面
-        face = theme.rgba(theme.CARBON, 0.92) if p.dark else theme.rgba(theme.BONE, 0.94)
-        painter.fillPath(path, face)
-
-        # 縁（文字色の 9%）と、上端のハイライト（白 14% → 0）
+        # 面と縁は Windows 11 のフライアウト（右クリックメニュー・通知）と同じ色にする
+        painter.fillPath(path, theme.with_alpha(p.popup, 0.96))
         inner = rect.adjusted(0.5, 0.5, -0.5, -0.5)
-        edge = QColor(p.text)
-        edge.setAlphaF(0.09)
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(edge, 1.0))
-        painter.drawRoundedRect(inner, inner.height() / 2, inner.height() / 2)
-        rim = QLinearGradient(inner.topLeft(), inner.bottomLeft())
-        rim.setColorAt(0.0, QColor(255, 255, 255, 36))
-        rim.setColorAt(1.0, QColor(255, 255, 255, 0))
-        painter.setPen(QPen(rim, 1.0))
+        painter.setPen(QPen(p.popup_border, 1.0))
         painter.drawRoundedRect(inner, inner.height() / 2, inner.height() / 2)
 
     def _content_left(self, pill_rect: QRectF, mode: str) -> float:
@@ -678,7 +668,7 @@ class Hud(QWidget):
         self, painter: QPainter, pill_rect: QRectF, p: theme.Palette, mode: str
     ) -> None:
         """録音中: アイコン・灯りの点・（波形 or 途中結果）・自動 Enter と翻訳の印。"""
-        signal = QColor(theme.SIGNAL)
+        signal = QColor(p.accent)
         cy = pill_rect.center().y()
         x = self._content_left(pill_rect, mode)
         x = self._paint_app_icon(painter, x, cy)
@@ -686,8 +676,8 @@ class Hud(QWidget):
         # 状態の点。にじみを足して「点灯」に見せる
         dot_center = QPointF(x + self.DOT_SIZE / 2, cy)
         glow = QRadialGradient(dot_center, self.DOT_SIZE / 2 + 3)
-        glow.setColorAt(0.0, theme.rgba(theme.SIGNAL, 0.6))
-        glow.setColorAt(1.0, theme.rgba(theme.SIGNAL, 0.0))
+        glow.setColorAt(0.0, theme.with_alpha(p.accent, 0.6))
+        glow.setColorAt(1.0, theme.with_alpha(p.accent, 0.0))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(glow)
         painter.drawEllipse(dot_center, self.DOT_SIZE / 2 + 3, self.DOT_SIZE / 2 + 3)

@@ -16,7 +16,7 @@ class WindowsPlatformAdapter(PlatformAdapter):
     """Windows差分実装。"""
 
     name = "windows"
-    font_css_stack = "'Segoe UI', 'Yu Gothic UI', 'Meiryo', 'Arial'"
+    font_css_stack = "'Segoe UI Variable Text', 'Segoe UI', 'Yu Gothic UI', 'Meiryo', 'Arial'"
 
     _MODIFIER_VK_MAP = {
         0xA2: "<ctrl_l>",

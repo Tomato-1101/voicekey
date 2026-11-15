@@ -75,7 +75,7 @@ _STATUS_H = 36
 _LIVE_H = 160
 _LIST_H = 132
 _BODY_H = 220
-_PANE_RADIUS = 9
+_PANE_RADIUS = 4
 _LIST_ROW_H = 40
 # 発言欄に残す行数の上限（長い会議で欄が重くならないように。全文は議事録のファイルにある）
 _LIVE_KEEP = 400
@@ -88,12 +88,12 @@ def _css(color: QColor, alpha: Optional[float] = None) -> str:
 
 
 def _pane_qss(selector: str) -> str:
-    """灰色の欄（本文の文字色の 7%・角丸 9）の見た目。"""
+    """一覧・本文の欄の見た目（Windows の ListView と同じく、地は塗らず細い枠と角丸 4）。"""
     p = theme.palette()
     return (
-        f"{selector} {{ background: {_css(p.text, 0.07)}; border: none;"
+        f"{selector} {{ background: transparent; border: 1px solid {_css(p.line)};"
         f" border-radius: {_PANE_RADIUS}px; padding: 6px 8px; color: {_css(p.text)};"
-        f" font-size: 12px; selection-background-color: {_css(p.accent, 0.35)}; }}"
+        f" font-size: {theme.px(12)}px; selection-background-color: {_css(p.accent, 0.35)}; }}"
     )
 
 
@@ -366,11 +366,9 @@ class MeetingPage(SettingsPage):
 
         self.url_input = QLineEdit()
         self.url_input.setPlaceholderText(_URL_PLACEHOLDER)
-        self.url_input.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.url_input.setFixedHeight(Metrics.FIELD_H)
-        self.url_input.setMinimumWidth(300)
-        # Mac と同じく枠も地も無い入力欄（行そのものが欄に見える）
-        self.url_input.setStyleSheet("QLineEdit { border: none; background: transparent; padding: 0; }")
+        # Windows の普通の入力欄（枠と下の線）で出す。見た目はアプリ全体の QSS に任せる
+        self.url_input.setMinimumWidth(320)
         self.url_input.textChanged.connect(lambda _text: self._render_state(self._state_text))
         self.url_input.returnPressed.connect(self._on_join_clicked)
         group.add_row(SettingRow("会議の URL", trailing=self.url_input))
