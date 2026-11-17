@@ -367,6 +367,26 @@ class TestLiveEndingAndReplay(unittest.TestCase):
         s._input_handler.insert_text.assert_called_once_with("全文がそろった")
         s.notice.emit.assert_not_called()
 
+    def test_completed_but_empty_ends_quietly_without_resend(self):
+        """最後まで確定して空＝本当に無言。録音全体を送り直さず、通知も出さずに終える（Mac と同じ）。"""
+        transcriber = _FakeTranscriber("送り直しの文")
+        s, logs = self._run(_live("completed", ""), transcriber)
+        self.assertEqual(transcriber.calls, 0)
+        s._input_handler.insert_text.assert_not_called()
+        s.notice.emit.assert_not_called()
+        measured = [line for line in logs.output if "[計測]" in line]
+        self.assertEqual(len(measured), 1)
+        self.assertIn("経路=streaming", measured[0])
+        self.assertIn("終わり方=completed", measured[0])
+        self.assertIn("結果=ライブ空(正常終了)", measured[0])
+
+    def test_failed_and_empty_still_resends(self):
+        """途中で切れて空のときは、従来どおり録音全体を送り直す。"""
+        transcriber = _FakeTranscriber("送り直しの文")
+        s, _ = self._run(_live("failed", ""), transcriber)
+        self.assertEqual(transcriber.calls, 1)
+        s._input_handler.insert_text.assert_called_once_with("送り直しの文")
+
     def test_failed_replay_falls_back_to_live_text_and_notifies(self):
         transcriber = _FakeTranscriber(error=TranscriptionError("送り直しも失敗"))
         s, _ = self._run(_live("failed", "ライブの分"), transcriber)

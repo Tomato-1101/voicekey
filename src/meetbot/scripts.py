@@ -71,7 +71,7 @@ def join(display_name: str) -> str:
        拒否しているので、Meet がこれを尋ねてくる）
     2. マイクとカメラを切る（`data-is-muted="false"` は Meet が入れている状態属性）
     3. ゲスト（Google に未ログイン）のときだけ出る名前欄を埋める
-    4. 「今すぐ参加」か「参加をリクエスト」を押す
+    4. 「今すぐ参加」か「参加をリクエスト」を押す（本人と同じアカウントで会議にいるときは「このデバイスでも参加」）
 
     名前を入れた直後はボタンがまだ押せないことがあるが、呼び出し側が数秒おきに押し直すので待たない。
 
@@ -104,11 +104,26 @@ def join(display_name: str) -> str:
         nameFilled = true;
     }
 
-    const clicked = clickByPattern([
+    // 同じ Google アカウントで本人が既に会議にいると、Meet は「今すぐ参加」を出さず
+    // 「このデバイスに切り替える」（本人の通話をこちらへ奪う）と「その他の参加方法」だけを出す
+    // （2026-11-18 実測。英語 UI は Switch here / Other ways to join）。切り替え・コンパニオン・
+    // 画面共有は絶対に押さない。「その他の参加方法」を開き、次の押し直しで「このデバイスでも参加」を押す
+    // （開いた直後は項目の描画が間に合わないので、同じ呼び出しでは押さない）。
+    const forbidden = /切り替え|Switch here|コンパニオン|Companion|画面を共有|Present/i;
+    const pick = (patterns) => {
+        for (const p of patterns) {
+            const re = new RegExp(p, 'i');
+            const hit = buttons().find((b) => re.test(label(b)) && !forbidden.test(label(b)));
+            if (hit) { hit.click(); return label(hit).slice(0, 40); }
+        }
+        return null;
+    };
+    const clicked = pick([
         '今すぐ参加', 'Join now',
         '参加をリクエスト', 'Ask to join',
+        'このデバイスでも参加', 'Join here too',
         '参加$', '^Join$'
-    ]);
+    ]) || pick(['その他の参加方法', 'Other ways to join']);
     return { clicked, nameFilled };
 })()"""
     )
@@ -125,7 +140,7 @@ PAGE_STATUS = (
     const text = inMeeting ? '' : (document.body ? document.body.innerText : '').slice(0, 3000);
     const signInPage = location.host === 'accounts.google.com';
     const joinButton = !!buttons().find((b) =>
-        /今すぐ参加|Join now|参加をリクエスト|Ask to join/i.test(label(b)));
+        /今すぐ参加|Join now|参加をリクエスト|Ask to join|このデバイスでも参加|Join here too|その他の参加方法|Other ways to join/i.test(label(b)));
     const nameField = [...document.querySelectorAll('input[type="text"],input:not([type])')].some(vis);
     return { inMeeting, text, signInPage, joinControls: joinButton || nameField };
 })()"""

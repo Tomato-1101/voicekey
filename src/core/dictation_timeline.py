@@ -19,6 +19,8 @@ OUTCOME_PASTE_FAILED = "貼付失敗"
 OUTCOME_TOO_SHORT = "短すぎ"
 OUTCOME_NO_SPEECH = "無音"
 OUTCOME_EMPTY_RESULT = "空結果"
+# ライブ接続が最後まで確定して本文が空だった（本当に無言。Mac 版と同じ呼び名）
+OUTCOME_LIVE_EMPTY_COMPLETED = "ライブ空(正常終了)"
 OUTCOME_TRANSCRIBE_FAILED = "文字起こし失敗"
 OUTCOME_NO_CONTEXT = "コンテキストなし"
 OUTCOME_UNFINISHED = "未完了"
@@ -87,6 +89,7 @@ class DictationTimeline:
         characters: 貼り付けた文字数
         target: 貼り付け先アプリ（実行ファイル名。本文やウィンドウ名は入れない）
         auto_enter: 貼り付け後に Enter を送る回か
+        release_by_poll: 離鍵をフックが落とし、見回りが拾って止めた回か
     """
 
     generation: int = 0
@@ -111,6 +114,7 @@ class DictationTimeline:
     characters: Optional[int] = None
     target: Optional[str] = None
     auto_enter: bool = False
+    release_by_poll: bool = False
 
     def summary_line(self) -> str:
         """
@@ -148,4 +152,8 @@ class DictationTimeline:
             f"貼付先={self.target or '-'}",
             f"auto_enter={'true' if self.auto_enter else 'false'}",
         ]
+        # 見回りが拾った回は離鍵の時刻が実際より遅い（フックが落としたので本当の時刻は分からない）。
+        # 「離鍵→」の値を読み違えないよう印を付ける。既存の項目の位置を動かさないため末尾に足す
+        if self.release_by_poll:
+            fields.append("離鍵=見回り")
         return "[計測] " + " ".join(fields)

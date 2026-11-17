@@ -20,9 +20,12 @@
 import base64
 import hashlib
 import json
+import os
 import queue
+import sys
 import threading
 import time
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 import httpx
@@ -75,9 +78,16 @@ _SONIOX_RESEND_CONNECT_GRACE: float = _SONIOX_PROBE_TIMEOUT + _OPEN_TIMEOUT + 1.
 _OPENAI_LIVE_URL: str = "wss://api.openai.com/v1/realtime?intent=transcription"
 _OPENAI_LIVE_RATE: int = 24000
 
-# キーの指紋 → 判定済みの Soniox リージョン（アプリが動いている間だけ覚える）
+# キーの指紋 → 判定済みの Soniox リージョン。ファイルにも残し、次の起動でも判定をやり直さない
+# （Mac は UserDefaults に覚えている。覚えないと起動のたびに最初の録音で最大 2 秒待つ）
 _soniox_regions: Dict[str, str] = {}
 _soniox_regions_lock = threading.Lock()
+# ファイルから読み込み済みか（読むのは最初の 1 回だけ）
+_soniox_regions_loaded = False
+# キーの指紋 → 進行中の判定の完了通知。同じキーの判定が同時に頼まれたら 1 本にまとめる
+# （録音開始時に、接続スレッドと prewarm が同時に判定を頼むため）
+_soniox_probes: Dict[str, threading.Event] = {}
+SONIOX_REGIONS_FILE_NAME = "soniox_regions.json"
 
 
 def _float32_to_pcm16le(samples: npt.NDArray[np.float32]) -> bytes:
@@ -126,13 +136,59 @@ def _probe_status(url: str, key: str) -> int:
         return 0
 
 
+def _soniox_regions_path() -> Path:
+    """判定結果を覚えるファイルの場所（settings.yaml / stats.json と同じ配置。テストは差し替える）。"""
+    if getattr(sys, "frozen", False):
+        # PyInstaller 実行時は実行ファイルと同じディレクトリ
+        base_dir = Path(sys.executable).parent
+    else:
+        # 開発時はプロジェクトルート
+        base_dir = Path(__file__).parent.parent.parent
+    return base_dir / SONIOX_REGIONS_FILE_NAME
+
+
+def _load_soniox_regions_locked() -> None:
+    """覚えてある判定結果をファイルから読む（最初の 1 回だけ。_soniox_regions_lock を持って呼ぶ）。"""
+    global _soniox_regions_loaded
+    if _soniox_regions_loaded:
+        return
+    _soniox_regions_loaded = True
+    try:
+        data = json.loads(_soniox_regions_path().read_text(encoding="utf-8"))
+    except Exception:
+        return  # 無い・壊れているときは覚えていない扱い（判定し直せば済む）
+    if not isinstance(data, dict):
+        return
+    for fingerprint, region in data.items():
+        # 知らない値は捨てる。このプロセスで判定済みのものはファイルの値で上書きしない
+        if region in _SONIOX_WS_URLS:
+            _soniox_regions.setdefault(str(fingerprint), region)
+
+
+def _save_soniox_regions_locked() -> None:
+    """判定結果をファイルへ書く（_soniox_regions_lock を持って呼ぶ）。
+
+    入れるのはキーの指紋とリージョン名だけで、キーそのものは書かない。
+    書けなくても動作には影響しない（次の起動でもう一度判定するだけ）。
+    """
+    path = _soniox_regions_path()
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(_soniox_regions, indent=2), encoding="utf-8")
+        # 書きかけのファイルを読ませないよう、書き終えてから置き換える
+        os.replace(tmp, path)
+    except Exception as e:
+        logger.debug(f"Soniox のリージョンを保存できませんでした: {type(e).__name__}")
+
+
 def soniox_region(key: str) -> Optional[str]:
     """
     その API キーが使える Soniox のリージョンを返す。
 
     キーはリージョン（日本 / 米国）ごとに別で、違う方へつなぐと認証エラーになる。利用者に
-    リージョンを選ばせる代わりに、両方へ同時に問い合わせて通った方を使う。結果はキーごとに
-    覚えるので、問い合わせるのは最初の 1 回だけ。
+    リージョンを選ばせる代わりに、両方へ同時に問い合わせて通った方を使う。結果はキーの指紋ごとに
+    ファイルへ覚えるので、問い合わせるのはキー 1 本につき最初の 1 回だけ（再起動しても覚えている）。
+    同じキーの判定が進行中なら、新しく問い合わせずにその結果を待つ。
 
     Args:
         key: API キー
@@ -141,12 +197,43 @@ def soniox_region(key: str) -> Optional[str]:
         "jp" か "us"。どちらも通らなければ None（通信できないだけかもしれないので覚えない）
     """
     # キーそのものを辞書のキーにして持ち回らないよう、指紋にする
+    # （Mac の SonioxRegion.fingerprint と同じ: SHA256 の先頭 8 バイトの hex）
     fingerprint = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
     with _soniox_regions_lock:
+        _load_soniox_regions_locked()
         known = _soniox_regions.get(fingerprint)
-    if known:
-        return known
+        if known:
+            return known
+        in_flight = _soniox_probes.get(fingerprint)
+        if in_flight is None:
+            mine = threading.Event()
+            _soniox_probes[fingerprint] = mine
+    if in_flight is not None:
+        # 先に始まった判定の結果をそのまま使う（判定できなかったなら同じく None）。
+        # 問い合わせ自体に待ち上限があるが、万一戻らなくても固まらないよう上限を置く
+        in_flight.wait(_SONIOX_PROBE_TIMEOUT * 4 + 1.0)
+        with _soniox_regions_lock:
+            return _soniox_regions.get(fingerprint)
 
+    try:
+        return _detect_soniox_region(key, fingerprint)
+    finally:
+        with _soniox_regions_lock:
+            _soniox_probes.pop(fingerprint, None)
+        mine.set()
+
+
+def _detect_soniox_region(key: str, fingerprint: str) -> Optional[str]:
+    """
+    両リージョンへ同時に問い合わせて判定し、判定できたときだけ覚える。
+
+    Args:
+        key: API キー
+        fingerprint: キーの指紋（覚えるときの見出し）
+
+    Returns:
+        "jp" か "us"。どちらも通らなければ None
+    """
     results: Dict[str, int] = {}
 
     def probe(region: str) -> None:
@@ -162,6 +249,7 @@ def soniox_region(key: str) -> Optional[str]:
     if region:
         with _soniox_regions_lock:
             _soniox_regions[fingerprint] = region
+            _save_soniox_regions_locked()
         logger.info(f"Soniox のリージョンを判定しました: {region}")
     return region
 
@@ -216,6 +304,7 @@ class StreamingTranscriber:
         self._failed = False                  # 途中で失敗した（録音全体の送り直しへ）
         self._completed = False               # サーバーが最後まで確定した
         self._end_sent = False                # 終わりの合図を送った
+        self._close_started = False           # WebSocket の close を始めた（二重に閉じない）
         # finish() 後の終わり方（"completed" / "failed" / "timeout"）。確定を待ちきれずに
         # 打ち切った回を「最後まで確定した」と区別し、呼び出し側が送り直しを判断できるようにする
         self._ending = ""
@@ -365,14 +454,18 @@ class StreamingTranscriber:
                 self._mark_failed()
 
         self._done_event.wait(timeout)
-        self._shutdown_socket()
+        # 接続の後始末は待たない。close は相手の応答を最長 10 秒待つことがあり、待つとそのぶん
+        # 確定した文字を貼るのが遅れる（Mac は URLSession の cancel で即返る）。
+        # 終わり方は、受信・送信ループを止める印（_closed）と同じロックの中で確定させる
         with self._lock:
+            self._closed = True
             if self._failed:
                 self._ending = "failed"
             elif self._completed:
                 self._ending = "completed"
             else:
                 self._ending = "timeout"
+        self._shutdown_socket(wait=False)
         # 待ち時間切れで届いたぶんだけを成功として返すと、後半が欠けた文がそのまま貼られる。
         # 最後まで確定した回だけ返し、それ以外は呼び出し側に録音全体を送り直させる
         # （届いていたぶんは partial_text に残り、送り直しが失敗したときの退避に使える）
@@ -399,7 +492,9 @@ class StreamingTranscriber:
             reason: 通知に出せる短い理由（最初に記録されたものを残す）
         """
         with self._lock:
-            if self._failed:
+            # finish() が終わり方を確定した後は変えない（後始末の close を待たなくなったので、
+            # 閉じる途中の送受信エラーが後から届く。それで結果を失敗に塗り替えない）
+            if self._failed or self._ending:
                 return
             self._failed = True
             self._closed = True
@@ -412,16 +507,33 @@ class StreamingTranscriber:
             self._completed = True
         self._done_event.set()
 
-    def _shutdown_socket(self) -> None:
-        """受信・送信ループを止めて WebSocket を閉じる（何度呼んでもよい）。"""
+    def _shutdown_socket(self, wait: bool = True) -> None:
+        """
+        受信・送信ループを止めて WebSocket を閉じる（何度呼んでもよい。閉じるのは最初の 1 回だけ）。
+
+        Args:
+            wait: False なら閉じ終わるのを待たず、別スレッドで閉じる
+        """
         with self._lock:
             self._closed = True
             ws = self._ws
-        if ws is not None:
-            try:
-                ws.close()
-            except Exception as e:
-                logger.debug(f"WebSocket close エラー（無視）: {type(e).__name__}")
+            # finish() が別スレッドで閉じている最中に cancel() が来ても、二重に閉じない
+            if ws is None or self._close_started:
+                return
+            self._close_started = True
+        if wait:
+            self._close_ws(ws)
+        else:
+            threading.Thread(
+                target=self._close_ws, args=(ws,), daemon=True, name=f"{self.engine_id}-close"
+            ).start()
+
+    def _close_ws(self, ws) -> None:
+        """WebSocket を閉じる（相手の応答を待つことがある）。"""
+        try:
+            ws.close()
+        except Exception as e:
+            logger.debug(f"WebSocket close エラー（無視）: {type(e).__name__}")
 
     def _current_text(self) -> str:
         """確定 + 途中経過をつないだ現在の全文。"""
@@ -431,7 +543,9 @@ class StreamingTranscriber:
     def _notify_interim(self) -> None:
         """HUD へ現在の全文を渡す。"""
         cb = self.on_interim
-        if cb is None:
+        # finish() / cancel() の後は渡さない（close を待たなくなったので、閉じる途中に届いた
+        # 応答で、次の録音が始まった HUD に前の文を出さないため）
+        if cb is None or self._closed:
             return
         try:
             cb(self.partial_text)

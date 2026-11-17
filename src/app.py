@@ -100,6 +100,9 @@ _LLKHF_INJECTED: int = 0x10
 # 見回りの間隔（秒）と、「離れている」が何回続いたら離鍵とみなすか（1 回だけの読み違いで止めない）
 _HOLD_POLL_SEC: float = 0.4
 _HOLD_POLL_MISSES: int = 2
+# 「離れている」と読めた後、確かめ直すまでの間隔（秒）。次の見回りまで待つと停止が最大 0.8 秒
+# 遅れるので、確かめ直しだけ早める（2 回続けて読む決まりは変えない）
+_HOLD_POLL_CONFIRM_SEC: float = 0.1
 # 録音キーの設定名 → Windows の仮想キーコード（GetAsyncKeyState で押下状態を読む）。
 # どれか 1 つでも押されていれば押下とみなす。IME 系（変換・無変換・かな・半角/全角・英数）は
 # 読める値が IME の状態に左右されて当てにならないので載せない（そのキーは見回らない）
@@ -192,7 +195,8 @@ class TaskContext:
         gen: 録音の通し番号（ログの突き合わせ用。0 は不明）
         pressed_at: 録音キーを押した時刻（perf_counter 秒）
         record_started_at: マイクが実際に録り始めた時刻（perf_counter 秒）
-        released_at: 録音の停止を頼んだ時刻（perf_counter 秒）
+        released_at: 録音キーを離した（録音の停止を頼んだ）時刻（perf_counter 秒）
+        release_by_poll: 離鍵をフックが落とし、見回りが拾って止めた回か
         target_app: 録音開始時の前面アプリ（表示名, 実行ファイルパス）。取れなければ None
         translate: この回を翻訳するか。録音開始時は「常に翻訳して入力」の値で、
             録音終了時に 1 回翻訳キーの状態を合わせて確定する
@@ -210,6 +214,7 @@ class TaskContext:
     pressed_at: Optional[float] = None
     record_started_at: Optional[float] = None
     released_at: Optional[float] = None
+    release_by_poll: bool = False
     target_app: Optional[Tuple[str, str]] = None
     translate: bool = False
     translate_target: str = dictation_translator.DEFAULT_TARGET
@@ -924,6 +929,9 @@ class VoicekeyApp(QObject):
                 return
 
             if key_str is not None and self._key_in_slot(key_str, slot):
+                # フックが離鍵を受けた時刻。[計測] の離鍵はこれを使う（2 打目待ちを挟む回でも、
+                # 待ちが明けた時刻ではなく実際に離した時刻から測る）
+                released_at = time.perf_counter()
                 logger.info(
                     f"ホットキー離鍵 slot={recording_slot} mode=hold "
                     f"auto_enter={self._auto_enter}"
@@ -931,7 +939,7 @@ class VoicekeyApp(QObject):
                 # ダブルタップ確定後（auto_enter）の離鍵は 2 打目の待ち窓に入れず即停止する。
                 # ここで再び _DOUBLE_TAP_SEC 待つと、短い録音でも Enter 自動送信が 0.4 秒遅れていた
                 if self._auto_enter:
-                    self._finish_recording()
+                    self._finish_recording(released_at=released_at)
                     return
                 now = time.monotonic()
                 if now - self._recording_started < _DOUBLE_TAP_SEC:
@@ -948,13 +956,13 @@ class VoicekeyApp(QObject):
                         timer = threading.Timer(
                             _DOUBLE_TAP_SEC,
                             self._finish_recording,
-                            kwargs={"quiet_if_no_speech": True},
+                            kwargs={"quiet_if_no_speech": True, "released_at": released_at},
                         )
                         timer.daemon = True
                         self._pending_tap_timer = timer
                     timer.start()
                 else:
-                    self._finish_recording()
+                    self._finish_recording(released_at=released_at)
             elif key_str is None and not self._pressed_keys:
                 # 正規化失敗でキー状態が消失した場合の保険（永久録音防止）
                 logger.warning("キー状態の消失を検出したため録音を停止します")
@@ -1069,8 +1077,10 @@ class VoicekeyApp(QObject):
             watched: 見回るトークン → 仮想キーコード
         """
         misses = 0
+        # 「離れている」と最初に読めた時刻（[計測] の離鍵時刻に使う）
+        first_miss_at: Optional[float] = None
         while True:
-            time.sleep(_HOLD_POLL_SEC)
+            time.sleep(_HOLD_POLL_CONFIRM_SEC if misses else _HOLD_POLL_SEC)
             with self._state_lock:
                 ctx = self._active_context
                 if ctx is None or ctx.gen != gen or self._recording_slot is None:
@@ -1084,6 +1094,8 @@ class VoicekeyApp(QObject):
             if not released:
                 misses = 0
                 continue
+            if misses == 0:
+                first_miss_at = time.perf_counter()
             misses += 1
             if misses < _HOLD_POLL_MISSES:
                 continue
@@ -1092,7 +1104,8 @@ class VoicekeyApp(QObject):
             for t in released:
                 for name in self._acceptable_names(t):
                     self._pressed_keys.discard(name)
-            self._finish_recording(expected_gen=gen)
+            # 本当に離した時刻は分からないので、離れていると最初に読めた時刻を離鍵として記録する
+            self._finish_recording(expected_gen=gen, released_at=first_miss_at, by_poll=True)
             return
 
     def _on_record_started(self, ok: bool, gen: Optional[int] = None) -> None:
@@ -1140,7 +1153,8 @@ class VoicekeyApp(QObject):
         self._emit_state()
 
     def _finish_recording(
-        self, quiet_if_no_speech: bool = False, expected_gen: Optional[int] = None
+        self, quiet_if_no_speech: bool = False, expected_gen: Optional[int] = None,
+        released_at: Optional[float] = None, by_poll: bool = False,
     ) -> None:
         """録音を停止し文字起こしタスクを積む（即座に返る）。
 
@@ -1149,8 +1163,12 @@ class VoicekeyApp(QObject):
                 （ダブルタップ待ち期限切れ＝誤タップの可能性が高い経路で使う）
             expected_gen: 止めたい録音の世代。いまの録音が別の世代なら止めない
                 （離鍵の見回りが判定した直後に、別の録音が始まっていた場合）
+            released_at: 録音キーを離した時刻（perf_counter 秒）。フックが離鍵を受けた時刻を渡す。
+                None ならいま（離鍵以外で止める経路）
+            by_poll: 離鍵の見回りが止めた回か（[計測] に印を付ける）
         """
-        released_at = time.perf_counter()
+        if released_at is None:
+            released_at = time.perf_counter()
         with self._state_lock:
             slot_id = self._recording_slot
             if slot_id is None:
@@ -1164,6 +1182,7 @@ class VoicekeyApp(QObject):
             context = self._active_context  # 録音開始時に確定した処理コンテキスト
             if context is not None:
                 context.released_at = released_at
+                context.release_by_poll = by_poll
                 # 翻訳するかはここで確定する（常に ON、または録音中に 1 回翻訳キーを押した回）
                 context.translate = dictation_translator.should_translate(
                     context.translate, self._translate_once
@@ -1260,6 +1279,7 @@ class VoicekeyApp(QObject):
                 record_started_at=ctx.record_started_at,
                 recording_sec=len(task.audio_data) / SAMPLE_RATE,
                 released_at=ctx.released_at,
+                release_by_poll=ctx.release_by_poll,
                 stopped_at=task.timestamp,
                 # 本文やウィンドウ名は入れない（実行ファイル名だけ）
                 target=os.path.basename(target_app[1]) if target_app else None,
@@ -1335,7 +1355,17 @@ class VoicekeyApp(QObject):
                 # 実績を集計（貼り付けの後に行うので遅延に影響しない）
                 self._record_stats(streamed, task.audio_data, ctx.target_app)
                 return
-            # 確定が空（接続失敗・待ち時間切れ・無音など）→ 取得済みバッファで録音全体を送り直す
+            # サーバーが最後まで処理して空＝本当に無言（咳・短いタップ）。送り直すと Soniox は
+            # 録音全体の再送になり、空振りのたびに通信と待ち時間を足すので、静かに終える（Mac と同じ）。
+            # 接続自身が「最後まで確定した」と言った回だけ（終わり方を持たない接続は従来どおり送り直す）
+            if ctx.slot.backend == "soniox" and getattr(streamer, "ending", "") == "completed":
+                logger.info("ライブの確定が空（正常終了）のため入力なし")
+                timeline.route = dictation_timeline.route(ctx.slot.backend, True, True)
+                timeline.finalized_at = time.perf_counter()
+                timeline.stt_ms = (timeline.finalized_at - stt_start) * 1000
+                timeline.outcome = dictation_timeline.OUTCOME_LIVE_EMPTY_COMPLETED
+                return
+            # 確定が空（接続失敗・待ち時間切れなど）→ 取得済みバッファで録音全体を送り直す
             partial = streamer.partial_text
             logger.info("ストリーミング結果が空のため録音全体を送り直します")
 

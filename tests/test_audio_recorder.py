@@ -469,5 +469,64 @@ class TestCrossRecordingChunkBinding(unittest.TestCase):
         self.assertEqual(len(b_chunks), 1)
 
 
+class TestLowLatencyStream(unittest.TestCase):
+    """入力ストリームを低遅延（約 40ms 刻み）で開き、受け付けないデバイスでは既定の設定で開き直す。
+
+    sounddevice の既定（latency='high'）だと、キーを離したときの stream.stop() が
+    残りの音声を吐き出し終えるまで長く待たされる。
+    """
+
+    def _recorder(self):
+        rec = object.__new__(AudioRecorder)
+        rec.sample_rate = 16000
+        rec._input_device = None
+        rec._stream = None
+        rec._stream_device = None
+        rec._session_id = 0
+        return rec
+
+    def _fake_sd(self, reject):
+        """InputStream に渡された引数を記録する偽 sounddevice。reject が True を返す引数では開けない。"""
+        opened = []
+
+        def input_stream(**kwargs):
+            opened.append(kwargs)
+            if reject(kwargs):
+                raise RuntimeError("開けない")
+            return _FakeStream(**kwargs)
+
+        fake = types.ModuleType("sounddevice")
+        fake.InputStream = input_stream
+        return fake, opened
+
+    def test_opens_with_low_latency_and_40ms_blocks(self):
+        rec = self._recorder()
+        fake, opened = self._fake_sd(lambda kw: False)
+        rec._open_stream(fake)
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(opened[0]["latency"], "low")
+        self.assertEqual(opened[0]["blocksize"], 640)  # 16kHz の 40ms
+        self.assertIsNotNone(rec._stream)
+
+    def test_falls_back_to_defaults_when_rejected(self):
+        rec = self._recorder()
+        fake, opened = self._fake_sd(lambda kw: "latency" in kw)
+        rec._open_stream(fake)
+        self.assertEqual(len(opened), 2)
+        self.assertNotIn("latency", opened[1])
+        self.assertNotIn("blocksize", opened[1])
+        self.assertIsNotNone(rec._stream)
+
+    def test_missing_device_still_falls_back_to_default_device(self):
+        """指定デバイスが消えているときの既定デバイスへの切り替えは、従来どおり効く。"""
+        rec = self._recorder()
+        rec._input_device = 7
+        fake, opened = self._fake_sd(lambda kw: kw.get("device") == 7)
+        rec._open_stream(fake)
+        self.assertIsNone(rec._stream_device)
+        self.assertNotIn("device", opened[-1])
+        self.assertEqual(opened[-1]["latency"], "low")
+
+
 if __name__ == "__main__":
     unittest.main()

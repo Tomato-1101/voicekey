@@ -31,8 +31,8 @@
 
 | プラットフォーム | バージョン | 状態 | 入手方法 |
 |---|---|---|---|
-| 🍎 macOS | **v2.5.0** | ✅ 配布中（Swift ネイティブ） | [brew / curl で 1 行インストール](#-ダウンロードとインストールmacos)、または [ソースからビルド](#ソースからビルドする) |
-| 🪟 Windows | **v2.5.0** | ✅ 配布中（Python / PySide6） | [インストーラをダウンロード](#windows-で使う)、または [ソースから動かす](#windows-完全セットアップpowershell) |
+| 🍎 macOS | **v2.5.1** | ✅ 配布中（Swift ネイティブ） | [brew / curl で 1 行インストール](#-ダウンロードとインストールmacos)、または [ソースからビルド](#ソースからビルドする) |
+| 🪟 Windows | **v2.5.1** | ✅ 配布中（Python / PySide6） | [インストーラをダウンロード](#windows-で使う)、または [ソースから動かす](#windows-完全セットアップpowershell) |
 
 > macOS の版は `macos/Resources/Info.plist`、Windows の版は `src/config/constants.py` の `APP_VERSION` が正本（この表とのズレはテストが検出します）。
 
@@ -206,6 +206,7 @@ Windows で使えるのは Soniox / ElevenLabs / OpenAI / Microsoft MAI / OpenAI
        「ボット用ブラウザで Google にログイン…」で一度ログインしておくと入れます（ログインは任意・以後はプロファイルに残ります）
     4. 会議が終わって退出すると、議事録が `~/Documents/voicekey/transcripts/` に保存され、**通知を押すと開けます**。
        記録中はメニューの状態行（「記録中 N 行 — 会議名」）で分かります。途中で抜けるときはメニューの「会議から退出」
+  - **ボットを自分と同じ Google アカウントでログインさせていても入れます**。自分がすでにその会議にいるときは、自分の通話を奪う「このデバイスに切り替える」は押さず、「その他の参加方法」→「このデバイスでも参加」で入ります（参加者一覧には自分の名前が 2 つ並びます。ボット専用のアカウントは必須ではありません）
   - **議事録は、ライブ字幕の「字幕の文字起こしを保存」スイッチに関係なく必ず保存されます**（会議ごとに 1 ファイル）
   - 字幕が 60 秒読めないときは通知と状態行で知らせます。参加ボタンは最大 5 回まで自動で押し直します
   - ボット用の Chrome は**普段使いの Chrome とは別のプロファイル**（Mac `~/Library/Application Support/voicekey/meetbot-profile`・Windows `%APPDATA%\voicekey\meetbot-profile`）で

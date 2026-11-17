@@ -31,7 +31,7 @@ def _watch_self(gen=1, pending_tap=False):
         _acceptable_names=VoicekeyApp._acceptable_names,
     )
 
-    def finish(expected_gen=None):
+    def finish(expected_gen=None, released_at=None, by_poll=False):
         s._recording_slot = None
         s._active_context = None
 
@@ -59,7 +59,13 @@ class TestWatchHoldRelease(unittest.TestCase):
         s = _watch_self()
         polls = self._run(s, [False, False])
         self.assertEqual(len(polls), _HOLD_POLL_MISSES)
-        s._finish_recording.assert_called_once_with(expected_gen=1)
+        # 「離れている」と読めた後の確かめ直しは、次の見回りを待たずに早く行う
+        self.assertEqual(polls, [app_mod._HOLD_POLL_SEC, app_mod._HOLD_POLL_CONFIRM_SEC])
+        # 見回りが止めた回だと分かる印と、離れていると最初に読めた時刻を渡す
+        s._finish_recording.assert_called_once_with(
+            expected_gen=1, released_at=mock.ANY, by_poll=True
+        )
+        self.assertIsInstance(s._finish_recording.call_args.kwargs["released_at"], float)
         # 押したままの記録を消し、次に押したときキーリピート扱いで無視されないようにする
         self.assertEqual(s._pressed_keys, {"a"})
 

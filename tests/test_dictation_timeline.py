@@ -75,6 +75,13 @@ class TestSummaryLine(unittest.TestCase):
             "貼付先=- auto_enter=false",
         )
 
+    def test_release_by_poll_is_marked_at_end(self):
+        """見回りが離鍵を拾った回は末尾に印を付ける（既存の項目の位置は動かさない）。"""
+        plain = DictationTimeline().summary_line()
+        marked = DictationTimeline(release_by_poll=True).summary_line()
+        self.assertNotIn("離鍵=見回り", plain)
+        self.assertEqual(marked, plain + " 離鍵=見回り")
+
 
 if __name__ == "__main__":
     unittest.main()

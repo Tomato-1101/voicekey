@@ -6,11 +6,14 @@
 """
 
 import base64
+import hashlib
 import json
 import queue
+import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
@@ -96,8 +99,15 @@ class _StreamTestCase(unittest.TestCase):
     """キーと接続を偽物に差し替える共通の準備。"""
 
     def setUp(self):
-        # リージョンの記憶はプロセス内に残るので、テストごとに空にする
+        # リージョンの記憶はプロセス内に残るので、テストごとに空にする。
+        # 記憶のファイルは一時ディレクトリへ向ける（本物の置き場所を読み書きしない）
         stream_mod._soniox_regions.clear()
+        stream_mod._soniox_probes.clear()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.regions_path = Path(tmp.name) / "soniox_regions.json"
+        self._patch(stream_mod, "_soniox_regions_path", lambda: self.regions_path)
+        self._patch(stream_mod, "_soniox_regions_loaded", False)
         self.connections = []  # (url, headers) の記録
         self.ws = FakeWS()
         self._patch(stream_mod.engines, "api_key", lambda engine_id: "TEST-KEY")
@@ -163,6 +173,75 @@ class TestSonioxRegion(_StreamTestCase):
         with patch.object(stream_mod, "_probe_status", lambda url, key: 0):
             self.assertIsNone(soniox_region("K"))
         self.assertEqual(soniox_region("K"), "jp")
+
+    def _forget_in_memory(self):
+        """アプリを再起動した状態にする（メモリの記憶を消し、ファイルを読み直させる）。"""
+        stream_mod._soniox_regions.clear()
+        stream_mod._soniox_regions_loaded = False
+
+    def test_result_survives_restart_without_probing(self):
+        """判定結果はファイルに残り、再起動後は問い合わせずに使う（毎回の起動で最大 2 秒待たない）。"""
+        self.assertEqual(soniox_region("K"), "jp")
+        self._forget_in_memory()
+        calls = []
+
+        def probe(url, key):
+            calls.append(url)
+            return 0
+
+        with patch.object(stream_mod, "_probe_status", probe):
+            self.assertEqual(soniox_region("K"), "jp")
+        self.assertEqual(calls, [])
+
+    def test_file_holds_fingerprint_not_key(self):
+        """ファイルに入れるのはキーの指紋（Mac と同じ SHA256 先頭 8 バイトの hex）だけ。"""
+        soniox_region("SECRET-KEY-VALUE")
+        raw = self.regions_path.read_text(encoding="utf-8")
+        self.assertNotIn("SECRET-KEY-VALUE", raw)
+        fingerprint = hashlib.sha256(b"SECRET-KEY-VALUE").hexdigest()[:16]
+        self.assertEqual(json.loads(raw), {fingerprint: "jp"})
+
+    def test_unknown_is_not_written(self):
+        with patch.object(stream_mod, "_probe_status", lambda url, key: 0):
+            self.assertIsNone(soniox_region("K"))
+        self.assertFalse(self.regions_path.exists())
+
+    def test_broken_file_is_ignored(self):
+        """壊れたファイル・知らない値は覚えていない扱いにして判定し直す。"""
+        self.regions_path.write_text("{ こわれた", encoding="utf-8")
+        self.assertEqual(soniox_region("K"), "jp")
+        self._forget_in_memory()
+        fingerprint = hashlib.sha256(b"K").hexdigest()[:16]
+        self.regions_path.write_text(json.dumps({fingerprint: "mars"}), encoding="utf-8")
+        with patch.object(stream_mod, "_probe_status", lambda url, key: 401 if ".jp." in url else 200):
+            self.assertEqual(soniox_region("K"), "us")
+
+    def test_concurrent_calls_share_one_probe(self):
+        """接続スレッドと prewarm が同時に頼んでも、問い合わせは 1 組だけ（2 リージョンへ 1 回ずつ）。"""
+        calls = []
+        release = threading.Event()
+
+        def probe(url, key):
+            calls.append(url)
+            release.wait(2.0)
+            return 200 if ".jp." in url else 401
+
+        results = []
+        with patch.object(stream_mod, "_probe_status", probe):
+            threads = [
+                threading.Thread(target=lambda: results.append(soniox_region("K")))
+                for _ in range(3)
+            ]
+            for t in threads:
+                t.start()
+            # 1 本目の問い合わせが 2 リージョンへ出そろい、残りがその結果を待っている状態にする
+            self.assertTrue(_wait_until(lambda: len(calls) == 2))
+            time.sleep(0.05)
+            release.set()
+            for t in threads:
+                t.join(3.0)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(results, ["jp", "jp", "jp"])
 
     def test_open_connects_to_resolved_region(self):
         SonioxStreamer("stt-rt-v5")._open("K")
@@ -368,7 +447,8 @@ class TestSonioxSession(_StreamTestCase):
         self.assertTrue(_wait_until(lambda: "こん" in seen))
         self.assertEqual(s.finish(timeout=2.0), "こんにちは")
         self.assertFalse(s.failed)
-        self.assertTrue(self.ws.closed)
+        # 接続を閉じるのは別スレッド（finish は待たない）
+        self.assertTrue(_wait_until(lambda: self.ws.closed))
         self.assertEqual(self.connections[0][0], stream_mod._SONIOX_WS_URLS["jp"])
         # 送った順: 設定 → 音声 → 無音 → finalize → 空
         sent = self.ws.sent
@@ -378,6 +458,58 @@ class TestSonioxSession(_StreamTestCase):
         self.assertEqual(json.loads(sent[3]), {"type": "finalize"})
         self.assertEqual(sent[4], b"")
         self.assertEqual(len(sent), 5)
+
+    def test_finish_does_not_wait_for_close(self):
+        """確定した文字は接続を閉じ終わる前に返す（close は相手の応答を最長 10 秒待つことがある）。"""
+        closing = threading.Event()
+        let_close = threading.Event()
+        close_calls = []
+
+        class SlowCloseWS(FakeWS):
+            def close(self):
+                close_calls.append(1)
+                closing.set()
+                let_close.wait(5.0)
+                self.closed = True
+
+        self.ws = SlowCloseWS(
+            after_end=[
+                {"tokens": [{"text": "こんにちは", "is_final": True}]},
+                {"tokens": [{"text": "<fin>", "is_final": True}]},
+            ],
+            is_end=lambda f: _is_text(f, "finalize"),
+        )
+        self.addCleanup(let_close.set)
+        s = SonioxStreamer("stt-rt-v5")
+        s.start()
+        s.send(np.zeros(1600, dtype=np.float32))
+        started = time.monotonic()
+        self.assertEqual(s.finish(timeout=2.0), "こんにちは")
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertEqual(s.ending, "completed")
+        # close は始まっているが、まだ終わっていない
+        self.assertTrue(closing.wait(2.0))
+        self.assertFalse(self.ws.closed)
+        # 閉じている最中に cancel() が来ても二重に閉じず、待たされもしない
+        s.cancel()
+        self.assertEqual(len(close_calls), 1)
+        # 閉じる途中のエラーで、確定済みの結果を失敗に塗り替えない
+        s._mark_failed("後から届いたエラー")
+        self.assertFalse(s.failed)
+        self.assertEqual(s.ending, "completed")
+        let_close.set()
+        self.assertTrue(_wait_until(lambda: self.ws.closed))
+
+    def test_interim_is_not_notified_after_finish(self):
+        """finish の後に届いた応答で HUD を更新しない（次の録音の表示に前の文を出さない）。"""
+        self.ws = self._session_ws([{"tokens": [{"text": "<fin>", "is_final": True}]}])
+        seen = []
+        s = SonioxStreamer("stt-rt-v5", on_interim=seen.append)
+        s.start()
+        s.finish(timeout=2.0)
+        before = list(seen)
+        s._handle({"tokens": [{"text": "遅れて届いた", "is_final": False}]})
+        self.assertEqual(seen, before)
 
     def test_drop_before_final_returns_empty_but_keeps_partial(self):
         # 確定前に切れたら空文字（＝録音全体の送り直し）。届いていた分は partial_text に残る

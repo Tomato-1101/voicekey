@@ -48,6 +48,8 @@ logger = get_logger(__name__)
 _IDLE_CLOSE_SEC: float = 30.0
 # 音声レベルコールバックの最小間隔（HUD 描画用、約 30fps）
 _LEVEL_INTERVAL_SEC: float = 0.033
+# マイクから 1 回に受け取る音声の長さ（秒）。Mac 版と同じ約 40ms
+_BLOCK_SEC: float = 0.04
 
 
 class _StopCompletion:
@@ -602,7 +604,7 @@ class AudioRecorder:
             stream_kwargs["device"] = self._input_device
 
         try:
-            self._stream = sd.InputStream(**stream_kwargs)
+            self._stream = self._new_input_stream(sd, stream_kwargs)
             self._stream_device = self._input_device
         except Exception as e:
             if self._input_device is None:
@@ -613,8 +615,32 @@ class AudioRecorder:
                 f"デフォルトデバイスへフォールバックします: {e}"
             )
             stream_kwargs.pop("device", None)
-            self._stream = sd.InputStream(**stream_kwargs)
+            self._stream = self._new_input_stream(sd, stream_kwargs)
             self._stream_device = None
+
+    def _new_input_stream(self, sd, stream_kwargs: dict):
+        """入力ストリームを低遅延の設定で作る。デバイスが受け付けなければ指定なしで作り直す。
+
+        sounddevice の既定（latency='high'・ブロック長おまかせ）だと 1 回に届く音声が大きく、
+        キーを離したときの stream.stop() が残りを吐き出し終えるまで長く待たされる。
+        Mac 版と同じ約 40ms 刻みにして、離してから音声が揃うまでを短くする。
+
+        Args:
+            sd: sounddevice モジュール
+            stream_kwargs: サンプルレート・コールバックなど共通の引数
+
+        Returns:
+            開いた入力ストリーム
+
+        Raises:
+            Exception: 指定なしでも開けなかったとき（呼び出し側が既定デバイスへ切り替える）
+        """
+        blocksize = max(1, int(round(self.sample_rate * _BLOCK_SEC)))
+        try:
+            return sd.InputStream(**stream_kwargs, latency="low", blocksize=blocksize)
+        except Exception as e:
+            logger.warning(f"低遅延の設定で入力を開けないため、既定の設定で開きます: {e}")
+            return sd.InputStream(**stream_kwargs)
 
     def _close_stream(self) -> None:
         """ストリームを閉じる（制御スレッド上）。ハングしてもブロックは本スレッドのみ。"""
