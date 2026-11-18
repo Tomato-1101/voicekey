@@ -158,6 +158,18 @@ private struct MeetBotSettingsContent: View {
                     lines: 2
                 )
             }
+
+            LabeledContent {
+                // 動いている間は始められない（退出は上のボタンで）
+                Button { bot.startNewMeeting() } label: { Text("会議を始める").frame(width: 84) }
+                    .disabled(!chromeInstalled || bot.state.isActive)
+            } label: {
+                FixedRowLabel(
+                    title: "新しい会議を始める",
+                    detail: "ボットが新しい会議を作って入り、URL をコピーしてブラウザで開きます。ボットの Google ログインが要ります。",
+                    lines: 2
+                )
+            }
         }
     }
 

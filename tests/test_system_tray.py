@@ -79,7 +79,7 @@ class TestSystemTrayMenu(unittest.TestCase):
             self.tray._rebuild_meet_menu()
         sub = ["-" if a.isSeparator() else a.text() for a in self.tray._meet_menu.actions()]
         self.assertEqual(sub, [
-            "参加していません", "文字起こし: Meet の字幕", "-", "会議に参加…", "-",
+            "参加していません", "文字起こし: Meet の字幕", "-", "会議に参加…", "会議を始める", "-",
             "ボット用ブラウザで Google にログイン…", "-",
             "最新の議事録を開く", "議事録フォルダを開く", "議事録・会議の設定…",
         ])

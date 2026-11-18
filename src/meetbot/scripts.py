@@ -134,6 +134,9 @@ def join(display_name: str) -> str:
 # 会議中は字幕の本文が画面の文字に混ざるので、会議中は文字を持ち帰らない。
 # signInPage: Google のログイン画面へ飛ばされたか（ゲストが入れない会議）
 # joinControls: 参加ボタンか名前欄が見えているか（見えている間は「ゲストは入れない」と決めつけない）
+# participants: 会議にいる人数（ボット自身を含む）。会議の外や読めないときは 0。
+#   参加者のタイルが持つ data-participant-id の種類数と、人数バッジの data-avatar-count の大きい方
+#   （2026-11-18 実測: 本人＋ボットでどちらも 2、ボットだけでどちらも 1）。片方が消えても読めるよう両方見る。
 PAGE_STATUS = (
     "(() => {" + _HELPERS + r"""
     const inMeeting = !!buttons().find((b) => /通話から退出|Leave call|退出/i.test(label(b)));
@@ -142,7 +145,17 @@ PAGE_STATUS = (
     const joinButton = !!buttons().find((b) =>
         /今すぐ参加|Join now|参加をリクエスト|Ask to join|このデバイスでも参加|Join here too|その他の参加方法|Other ways to join/i.test(label(b)));
     const nameField = [...document.querySelectorAll('input[type="text"],input:not([type])')].some(vis);
-    return { inMeeting, text, signInPage, joinControls: joinButton || nameField };
+    let participants = 0;
+    if (inMeeting) {
+        const ids = [...document.querySelectorAll('[data-participant-id]')]
+            .map((el) => el.getAttribute('data-participant-id')).filter((id) => !!id);
+        participants = new Set(ids).size;
+        document.querySelectorAll('[data-avatar-count]').forEach((el) => {
+            const raw = (el.getAttribute('data-avatar-count') || '').trim();
+            if (/^[0-9]+$/.test(raw)) participants = Math.max(participants, parseInt(raw, 10));
+        });
+    }
+    return { inMeeting, text, signInPage, joinControls: joinButton || nameField, participants };
 })()"""
 )
 
@@ -311,3 +324,6 @@ LEAVE = (
 
 # 会議名（タブの題名）を読む
 TITLE = "document.title"
+
+# いまのアドレスを読む（新しい会議を始めたとき、/new から変わった先の会議 URL を知るため）
+LOCATION = "location.href"

@@ -50,6 +50,7 @@ _HINT_FAILED = "直したら、もう一度「参加」を押してください�
 _HINT_NO_CHROME = "Google Chrome が必要です。インストールすると使えるようになります。"
 _HINT_NO_SERVICE = "このビルドでは議事録ボットを使えません。"
 _JOIN_GUEST = f"ゲスト「{rules.BOT_DISPLAY_NAME}」として参加をリクエストします。主催者の承認が要ります。"
+_NEW_CAPTION = "ボットが新しい会議を作って入り、URL をコピーしてブラウザで開きます。ボットの Google ログインが要ります。"
 _JOIN_ACCOUNT = "ログイン中の Google アカウントの名前で入ります。ほかの人の会議では主催者の承認が要ります。"
 _LIVE_EMPTY = "会議に参加すると、発言がここに流れます。"
 _LIST_EMPTY = "まだ議事録がありません。会議に参加すると、ここに並びます。"
@@ -390,6 +391,14 @@ class MeetingPage(SettingsPage):
         self.join_caption = add_row_message(self.join_row, lines=3)
         group.add_row(self.join_row)
 
+        self.new_button = CapsuleButton("会議を始める")
+        # 文言は変わらないが、押せない間も幅が動かないよう固定しておく（参加ボタンと同じ流儀）
+        self.new_button.setFixedWidth(self.new_button.sizeHint().width())
+        self.new_button.clicked.connect(self._on_new_clicked)
+        self.new_row = SettingRow("新しい会議を始める", trailing=self.new_button)
+        add_row_message(self.new_row, lines=2).show_message(_NEW_CAPTION)
+        group.add_row(self.new_row)
+
     def _build_live(self) -> None:
         self.add_section("記録中の発言")
         group = self.add_group()
@@ -534,6 +543,14 @@ class MeetingPage(SettingsPage):
             # 断られた理由は補足の欄に出す（状態は変えない）
             self.status_hint.show_message(refused, "warn")
 
+    def _on_new_clicked(self) -> None:
+        if self._bot is None or self._is_active():
+            return
+        self._finish_message = ""
+        refused = self._bot.start_new()
+        if refused:
+            self.status_hint.show_message(refused, "warn")
+
     def _on_state(self, state: str, text: str) -> None:
         if state == rules.STATE_LAUNCHING and not self._is_active():
             # 新しい会議が始まった。前の会議の発言を片付ける
@@ -598,6 +615,8 @@ class MeetingPage(SettingsPage):
         self.join_button.setText("会議から退出" if active else "参加")
         # 退出はいつでも押せる。参加は URL が入っているときだけ（Mac と同じ）
         self.join_button.setEnabled(self._bot is not None and (active or bool(self.url_input.text().strip())))
+        # 動いている間は新しい会議を始められない（退出は上のボタンで）
+        self.new_button.setEnabled(self._bot is not None and not active)
         self.url_input.setEnabled(not active)
         self.language_picker.setEnabled(not active)
         self.login_button.setVisible(state == rules.STATE_FAILED)

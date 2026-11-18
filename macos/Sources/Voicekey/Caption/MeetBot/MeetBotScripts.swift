@@ -138,6 +138,10 @@ extension MeetBotService {
     /// ゲスト参加の判定用に 2 つ足してある:
     /// - `signInPage`: Google のログイン画面へ飛ばされたか（ゲストが入れない会議）
     /// - `joinControls`: 参加ボタンか名前欄が見えているか（見えている間は「ゲストは入れない」と決めつけない）
+    ///
+    /// `participants` は会議にいる人数（ボット自身を含む）。参加者のタイル（`data-participant-id`）の種類の数と、
+    /// 人数バッジ（`data-avatar-count`）の大きい方を採る（2026-11-18 実測: 本人＋ボットで 2、ボットだけで 1）。
+    /// 会議の外や読めなかったときは 0。
     static let pageStatusScript = """
         (() => {
             \(helpers)
@@ -147,7 +151,17 @@ extension MeetBotService {
             const joinButton = !!buttons().find((b) =>
                 /今すぐ参加|Join now|参加をリクエスト|Ask to join|このデバイスでも参加|Join here too|その他の参加方法|Other ways to join/i.test(label(b)));
             const nameField = [...document.querySelectorAll('input[type="text"],input:not([type])')].some(vis);
-            return { inMeeting, text, signInPage, joinControls: joinButton || nameField };
+            let participants = 0;
+            if (inMeeting) {
+                const ids = [...document.querySelectorAll('[data-participant-id]')]
+                    .map((el) => el.getAttribute('data-participant-id')).filter((id) => !!id);
+                participants = new Set(ids).size;
+                document.querySelectorAll('[data-avatar-count]').forEach((el) => {
+                    const raw = (el.getAttribute('data-avatar-count') || '').trim();
+                    if (/^[0-9]+$/.test(raw)) participants = Math.max(participants, parseInt(raw, 10));
+                });
+            }
+            return { inMeeting, text, signInPage, joinControls: joinButton || nameField, participants };
         })()
         """
 

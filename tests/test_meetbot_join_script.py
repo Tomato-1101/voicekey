@@ -60,5 +60,53 @@ class JoinScriptTest(unittest.TestCase):
         self.assertEqual(self._pressed(["このデバイスに切り替える", "画面を共有"]), [])
 
 
+STATUS_HARNESS = """
+const spec = %s;
+const element = (attributes, text) => ({
+    offsetParent: {}, innerText: text || '',
+    getAttribute: (name) => (name in attributes ? attributes[name] : null),
+});
+const buttons = spec.buttons.map((text) => element({}, text));
+const tiles = spec.ids.map((id) => element({ 'data-participant-id': id }));
+const counts = spec.counts.map((count) => element({ 'data-avatar-count': count }));
+globalThis.document = {
+    body: { innerText: '' },
+    querySelectorAll: (s) => {
+        if (s.includes('data-participant-id')) return tiles;
+        if (s.includes('data-avatar-count')) return counts;
+        if (s.includes('button')) return buttons;
+        return [];
+    },
+};
+globalThis.window = {};
+globalThis.location = { host: 'meet.google.com' };
+console.log(JSON.stringify(%s));
+"""
+
+
+@unittest.skipUnless(NODE, "node が無い")
+class PageStatusParticipantsTest(unittest.TestCase):
+    """偽の会議画面で状態取得スクリプトを走らせ、参加人数の読み取りを確かめる"""
+
+    def _participants(self, buttons, ids, counts):
+        """退出ボタン・参加者のタイル・人数バッジを並べたページで実行し、participants を返す"""
+        spec = {"buttons": buttons, "ids": ids, "counts": counts}
+        code = STATUS_HARNESS % (json.dumps(spec, ensure_ascii=False), scripts.PAGE_STATUS)
+        out = subprocess.run([NODE, "-e", code], capture_output=True, text=True, timeout=20, check=True)
+        return json.loads(out.stdout)["participants"]
+
+    def test_counts_distinct_participants_and_badge(self):
+        # 同じ参加者のタイルが複数あっても 1 人と数え、人数バッジと比べて大きい方を採る
+        device = "spaces/x/devices/"
+        self.assertEqual(self._participants(["通話から退出"], [device + "1", device + "1", device + "2"], ["2"]), 2)
+        self.assertEqual(self._participants(["通話から退出"], [device + "1"], ["1"]), 1)
+        self.assertEqual(self._participants(["通話から退出"], [device + "1"], ["3", "x"]), 3)
+        self.assertEqual(self._participants(["通話から退出"], [], []), 0)
+
+    def test_zero_outside_meeting(self):
+        # 会議の外（ロビーなど）では、それらしい要素があっても 0
+        self.assertEqual(self._participants(["今すぐ参加"], ["spaces/x/devices/1"], ["2"]), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

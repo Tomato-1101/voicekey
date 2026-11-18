@@ -201,6 +201,8 @@ class SystemTray(QSystemTrayIcon):
             else:
                 # Windows は URL を聞く小窓を出さず、URL 欄のある議事録・会議ページを開く
                 menu.addAction("会議に参加…").triggered.connect(self.open_meeting.emit)
+                # 新しい会議を作ってボットを入れる。URL はコピーされ、ブラウザでも開く
+                menu.addAction("会議を始める").triggered.connect(lambda: bot.start_new())
             menu.addSeparator()
             login = menu.addAction("ボット用ブラウザで Google にログイン…")
             login.setEnabled(not active)

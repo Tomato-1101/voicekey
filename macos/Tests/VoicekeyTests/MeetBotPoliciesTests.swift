@@ -387,3 +387,58 @@ private final class SilentWebSocketServer: @unchecked Sendable {
         queue.sync { connections.forEach { $0.cancel() } }
     }
 }
+
+/// ボットだけが残ったときの自動退出（時刻を引数で渡し、60 秒・15 分の境目を待たずに確かめる）
+final class LonelyMeetingWatchTests: XCTestCase {
+
+    private let start = Date(timeIntervalSince1970: 1_000_000)
+
+    private func at(_ seconds: TimeInterval) -> Date { start.addingTimeInterval(seconds) }
+
+    /// ほかの人を見たあと、1 人が 59 秒では退出せず、60 秒で退出する
+    func testLeavesAfterAloneForAMinute() {
+        var watch = LonelyMeetingWatch(start: start)
+        XCTAssertNil(watch.observe(participants: 2, now: at(10)))
+        XCTAssertNil(watch.observe(participants: 1, now: at(20)))
+        XCTAssertNil(watch.observe(participants: 1, now: at(79)))
+        XCTAssertEqual(watch.observe(participants: 1, now: at(80)), MeetBotText.leftAlone)
+    }
+
+    /// 途中で 2 人に戻ったら、1 人の連続を数え直す
+    func testSomeoneComingBackResets() {
+        var watch = LonelyMeetingWatch(start: start)
+        _ = watch.observe(participants: 2, now: at(0))
+        _ = watch.observe(participants: 1, now: at(10))
+        XCTAssertNil(watch.observe(participants: 2, now: at(60)))
+        XCTAssertNil(watch.observe(participants: 1, now: at(70)))
+        XCTAssertNil(watch.observe(participants: 1, now: at(129)))
+        XCTAssertEqual(watch.observe(participants: 1, now: at(130)), MeetBotText.leftAlone)
+    }
+
+    /// 人数を読めなかった回（0）が挟まったら、1 人の連続を数え直す
+    func testUnreadableCountResets() {
+        var watch = LonelyMeetingWatch(start: start)
+        _ = watch.observe(participants: 2, now: at(0))
+        _ = watch.observe(participants: 1, now: at(10))
+        XCTAssertNil(watch.observe(participants: 0, now: at(60)))
+        XCTAssertNil(watch.observe(participants: 1, now: at(71)))
+        XCTAssertNil(watch.observe(participants: 1, now: at(130)))
+        XCTAssertEqual(watch.observe(participants: 1, now: at(131)), MeetBotText.leftAlone)
+    }
+
+    /// だれも来ないまま 14 分 59 秒では退出せず、15 分で退出する
+    func testNobodyCameForFifteenMinutes() {
+        var watch = LonelyMeetingWatch(start: start)
+        XCTAssertNil(watch.observe(participants: 1, now: at(0)))
+        XCTAssertNil(watch.observe(participants: 1, now: at(899)))
+        XCTAssertEqual(watch.observe(participants: 1, now: at(900)), MeetBotText.nobodyCame)
+    }
+
+    /// 人数が読めないままなら、15 分たっても退出しない
+    func testUnreadableCountNeverLeaves() {
+        var watch = LonelyMeetingWatch(start: start)
+        for seconds in [0.0, 600, 900, 3600] {
+            XCTAssertNil(watch.observe(participants: 0, now: at(seconds)))
+        }
+    }
+}

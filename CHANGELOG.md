@@ -2,6 +2,21 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
+## [2.5.2] - 2026-11-18
+
+### Added（Mac・Windows）
+- **Meet 議事録ボットで会議を始められるようにした**（設定の「議事録・会議」ページとメニューの「会議を始める」）。
+  ボットが `meet.google.com/new` で新しい会議を作って先に入り、会議の URL をクリップボードへコピーしてブラウザで開く。
+  始めた瞬間からボットが会議にいるので、最初から記録できる。ボット用ブラウザの Google ログインが必要（未ログインなら理由を出して止まる）。
+- **会議が終わったらボットが自分で退出するようにした**。ほかの参加者を一度見たあと、ボットだけの状態が 60 秒続いたら退出して議事録を保存する。
+  誰も来ないまま入室から 15 分たったときも退出する（会議が終わっても Chrome が残り続けないように）。人数が読めないときは判断に使わない。
+
+### Technical Details
+- `MeetBotPolicies.swift` / `src/meetbot/rules.py`: `LonelyMeetingWatch`（60 秒・15 分の純ロジック）
+- `MeetBotScripts.swift` / `src/meetbot/scripts.py`: 状態取得に `participants`（会議中は異なる `data-participant-id` の数と `data-avatar-count` の大きい方・会議外は 0）
+- `MeetBotService.swift` / `src/meetbot/service.py`: `startNewMeeting()` / `start_new()`・入室後の実 URL（`?authuser` 除去）で議事録名を付ける・自動退出は通話から退出を押してから閉じる
+- テスト: `MeetBotPoliciesTests.swift`・`MeetBotPageStatusScriptTests`・`tests/test_meetbot_rules.py` ほか
+
 ## [2.5.1] - 2026-11-18
 
 ### Fixed（Mac・Windows）

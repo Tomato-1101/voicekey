@@ -26,6 +26,10 @@ _LOOKUP_PATH = re.compile(r"^/lookup/[A-Za-z0-9_-]+/?$")
 
 INVALID_URL_MESSAGE = "Meet の会議 URL ではありません（meet.google.com/abc-defg-hij の形）"
 
+# 新しい会議を作る URL。ログイン済みのブラウザで開くと、ロビー無しでそのまま会議に入った状態になり、
+# アドレスは会議コードの URL へ変わる（2026-11-18 実測）。ゲスト（未ログイン）では作れない。
+NEW_MEETING_URL = "https://meet.google.com/new"
+
 
 def normalize_meet_url(text: str) -> Optional[str]:
     """
@@ -161,6 +165,24 @@ def page_status_from_payload(payload: Any) -> Optional[str]:
     )
 
 
+def participants_from_payload(payload: Any) -> int:
+    """
+    `scripts.PAGE_STATUS` の戻り値から、会議にいる人数（ボット自身を含む）を読む。
+
+    Args:
+        payload: スクリプトの戻り値
+
+    Returns:
+        人数（会議の外・読めなかったときは 0＝判断材料にしない）
+    """
+    if not isinstance(payload, dict):
+        return 0
+    value = payload.get("participants")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return max(0, int(value))
+
+
 # ============================================
 # 字幕ボタン
 # ============================================
@@ -273,6 +295,8 @@ class MeetBotError(Exception):
     BROWSER_CLOSED = "browser_closed"
     DISCONNECTED = "disconnected"
     BROWSER_FAILED = "browser_failed"
+    NEW_MEETING_NEEDS_LOGIN = "new_meeting_needs_login"
+    NEW_MEETING_NOT_STARTED = "new_meeting_not_started"
 
     _MESSAGES = {
         DENIED: "参加を断られました（ホストが拒否したか、外部の参加を受け付けない会議です）",
@@ -292,6 +316,8 @@ class MeetBotError(Exception):
         CHROME_NOT_RESPONDING: "Chrome が応答しません",
         BROWSER_CLOSED: "ブラウザが終了しました",
         DISCONNECTED: "ブラウザとの接続が切れました",
+        NEW_MEETING_NEEDS_LOGIN: "会議を始めるにはボットの Google ログインが必要です",
+        NEW_MEETING_NOT_STARTED: "90 秒たっても会議を始められませんでした",
     }
 
     def __init__(self, kind: str, message: Optional[str] = None):
@@ -317,7 +343,9 @@ class MeetBotError(Exception):
     @property
     def suggests_login(self) -> bool:
         """ボット用ブラウザで Google にログインすると解決しうる失敗か（画面でログインの導線を出す目印）。"""
-        return self.kind in (self.GUEST_NOT_APPROVED, self.GUEST_NOT_ALLOWED, self.NOT_LOGGED_IN)
+        return self.kind in (
+            self.GUEST_NOT_APPROVED, self.GUEST_NOT_ALLOWED, self.NOT_LOGGED_IN, self.NEW_MEETING_NEEDS_LOGIN,
+        )
 
 
 # ============================================
@@ -499,6 +527,58 @@ class MeetingPresenceWatch:
         return "ended" if self._not_in_meeting >= self.NOT_IN_MEETING_LIMIT else None
 
 
+class LonelyMeetingWatch:
+    """
+    記録中の「ボットだけが会議に残っている」状態の見張り。
+
+    ほかの人が全員抜けた後もボットが居座ると、見えない Chrome が会議に入ったまま CPU とメモリを
+    使い続ける。人数（ボット自身を含む）を読み、ボットだけになったら自分から退出する。
+
+    人数 0（読めなかった）は判断材料にしない。読めないあいだに勝手に抜けないよう、
+    1 人の連続も、だれも来ない判定も「1 人と読めている間」だけ成立させる。
+    """
+
+    # ほかの人がいなくなってから退出するまでの秒数。実測では本人の退出から 5 秒以内に人数が 1 になるが、
+    # 回線の入り直しや画面の描き直しで一瞬 1 人に見えただけで抜けないよう、1 分続くのを待つ
+    ALONE_LIMIT = 60.0
+    # だれも来ないまま待つ上限の秒数。会議を始めてから本人が入るまでの準備（URL を配る・人を待つ）には
+    # 足り、忘れて放置しても Chrome が残り続けない長さとして 15 分
+    NOBODY_LIMIT = 15 * 60.0
+
+    def __init__(self, start: float):
+        """
+        Args:
+            start: 見張りを始めた時刻（入室した時刻）
+        """
+        self._start = start
+        self._seen_others = False
+        self._alone_since: Optional[float] = None
+
+    def observe(self, participants: int, now: float) -> Optional[str]:
+        """
+        1 回分の人数を取り込む。
+
+        Args:
+            participants: 会議にいる人数（ボット自身を含む。読めなかったら 0）
+            now: 読み取った時刻
+
+        Returns:
+            退出すべきなら、その理由の文（まだなら None）
+        """
+        if participants >= 2:
+            self._seen_others = True
+            self._alone_since = None
+            return None
+        if participants != 1:
+            self._alone_since = None
+            return None
+        if self._alone_since is None:
+            self._alone_since = now
+        if self._seen_others:
+            return REASON_ALONE if now - self._alone_since >= self.ALONE_LIMIT else None
+        return REASON_NOBODY if now - self._start >= self.NOBODY_LIMIT else None
+
+
 class CaptionPresenceWatch:
     """
     「Meet の字幕が読めていない」状態の見張り。
@@ -621,6 +701,16 @@ LOGIN_WAITING = "ログイン待ち"
 REASON_LEFT = "会議から退出しました"
 REASON_ENDED = "会議が終了しました"
 REASON_REMOVED = "会議から外されました"
+REASON_ALONE = "ほかの参加者がいなくなったので退出しました"
+REASON_NOBODY = "15 分だれも参加しなかったので退出しました"
+
+# 新しい会議を始めたときの知らせ。本人は同じアカウントで入ることが多く、そのとき Meet が出す
+# 「切り替える」を押すとボットの通話が本人へ移ってボットが外れるので、押すボタンを添える
+NEW_MEETING_STARTED = (
+    "会議を始めました。URL をコピーしてブラウザで開きました。参加時は「その他の参加方法」→"
+    "「このデバイスでも参加」を選んでください（「切り替える」を押すとボットが外れます）"
+)
+NEW_MEETING_URL_UNREADABLE = "会議を始めましたが、会議の URL を読めませんでした"
 
 
 def state_text(state: str, detail: str = "") -> str:
@@ -728,6 +818,8 @@ def join_failure_notice(error: Exception) -> str:
         return "主催者に承認されませんでした。もう一度参加して承認してもらってください。" + LOGIN_HINT
     if kind == MeetBotError.GUEST_NOT_ALLOWED:
         return "この会議はゲストが入れません。ボットに Google ログインをさせると入れます。" + LOGIN_HINT
+    if kind == MeetBotError.NEW_MEETING_NEEDS_LOGIN:
+        return error.message
     message = error.message if isinstance(error, MeetBotError) else str(error)
     return f"会議に参加できませんでした: {message}"
 

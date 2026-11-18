@@ -13,9 +13,10 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List, Optional, Tuple
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QGuiApplication
 
 from ..utils.logger import get_logger
 from . import rules, scripts, summarizer, transcript
@@ -97,6 +98,7 @@ class MeetBotService(QObject):
         summary_finished(path, text, message): 要約ができた。text は要約の本文、message は保存の結果
         summary_failed(path, message): 要約できなかった
         login_state_changed(text): ボット用ブラウザのログイン状態の表示
+        meeting_created(url): 新しい会議を始めて入室した。url はその会議の URL
     """
 
     state_changed = Signal(str, str)
@@ -107,6 +109,7 @@ class MeetBotService(QObject):
     summary_finished = Signal(str, str, str)
     summary_failed = Signal(str, str)
     login_state_changed = Signal(str)
+    meeting_created = Signal(str)
 
     def __init__(
         self,
@@ -116,6 +119,7 @@ class MeetBotService(QObject):
         directory: Optional[Path] = None,
         timing: Optional[Timing] = None,
         chat: Optional[Callable[[str, str], str]] = None,
+        share_meeting: Optional[Callable[[str], None]] = None,
         parent: Optional[QObject] = None,
     ):
         """
@@ -126,6 +130,8 @@ class MeetBotService(QObject):
             directory: 議事録の保存先（省略時は `Documents/voicekey/transcripts`）
             timing: 待ち時間の一式
             chat: 要約の問い合わせ（テストで差し替える。省略時は Groq）
+            share_meeting: 始めた会議の URL を本人へ渡す処理（テストで差し替える。
+                省略時はクリップボードへコピーして既定のブラウザで開く）
             parent: Qt の親
         """
         super().__init__(parent)
@@ -135,6 +141,10 @@ class MeetBotService(QObject):
         self._directory = directory
         self._timing = timing or Timing()
         self._chat = chat
+        self._share_meeting = share_meeting or self._copy_and_open
+        # クリップボードは画面のスレッドでしか触れない。作業スレッドからはシグナルで渡す
+        # （このオブジェクトは画面のスレッドに属するので、Qt が画面のスレッドで呼び直す）
+        self.meeting_created.connect(self._on_meeting_created)
 
         self._lock = threading.Lock()
         self._state = rules.STATE_IDLE
@@ -173,12 +183,28 @@ class MeetBotService(QObject):
         normalized = rules.normalize_meet_url(url)
         if not normalized:
             return rules.INVALID_URL_MESSAGE
+        return self._begin(normalized, new_meeting=False)
+
+    def start_new(self) -> Optional[str]:
+        """
+        新しい会議を始めて、ボットを最初の参加者として入れる（記録もそのまま始まる）。
+
+        入室できたら会議の URL をクリップボードへコピーし、既定のブラウザで開く。
+        ボット用ブラウザが Google にログインしていなければ始めない（ゲストは会議を作れない）。
+
+        Returns:
+            受け付けたら None。断ったときは、その理由の文（画面にそのまま出せる）
+        """
+        return self._begin(rules.NEW_MEETING_URL, new_meeting=True)
+
+    def _begin(self, url: str, new_meeting: bool) -> Optional[str]:
+        """作業スレッドを起こす（動いている最中なら断る）。"""
         with self._lock:
             if self.is_active():
                 return rules.JOIN_WHILE_CLOSING if self._stop.is_set() else rules.ALREADY_ACTIVE
             self._stop = threading.Event()
             self._thread = threading.Thread(
-                target=self._run_meeting, args=(normalized, self._stop), name="meetbot", daemon=True,
+                target=self._run_meeting, args=(url, self._stop, new_meeting), name="meetbot", daemon=True,
             )
             self._thread.start()
         return None
@@ -272,8 +298,15 @@ class MeetBotService(QObject):
     # ============================================
     # 会議への参加〜記録
     # ============================================
-    def _run_meeting(self, url: str, stop: threading.Event) -> None:
-        """作業スレッドの本体（参加 → 記録 → 後片付け）。"""
+    def _run_meeting(self, url: str, stop: threading.Event, new_meeting: bool = False) -> None:
+        """
+        作業スレッドの本体（参加 → 記録 → 後片付け）。
+
+        Args:
+            url: 開く URL（新しい会議を始めるときは `rules.NEW_MEETING_URL`）
+            stop: 止める合図
+            new_meeting: 新しい会議を始めるか
+        """
         browser: Any = None
         page: Any = None
         try:
@@ -286,6 +319,9 @@ class MeetBotService(QObject):
 
             self._set_state(rules.STATE_JOINING, "ログインを確認しています")
             mode = rules.join_mode(self._logged_in(browser))
+            if new_meeting and mode != rules.MODE_ACCOUNT:
+                # ゲスト（未ログイン）では会議を作れない。開いても紹介ページへ飛ばされるだけなので始めない
+                raise MeetBotError(MeetBotError.NEW_MEETING_NEEDS_LOGIN)
             try:
                 browser.deny_media(_MEET_ORIGIN)
             except CDPError:
@@ -297,7 +333,7 @@ class MeetBotService(QObject):
                 raise MeetBotError(MeetBotError.CHROME_NOT_RESPONDING) from None
 
             streak = rules.TimeoutStreak()
-            meeting_name = self._join(browser, page, streak, stop, mode, url)
+            meeting_name, url = self._join(browser, page, streak, stop, mode, url, new_meeting)
             self._record(browser, page, streak, stop, url, meeting_name)
         except _Stopped:
             self._set_state(rules.STATE_IDLE)
@@ -386,12 +422,18 @@ class MeetBotService(QObject):
         streak.record(False)
         return value
 
-    def _join(self, browser: Any, page: Any, streak: rules.TimeoutStreak, stop: threading.Event, mode: str, url: str) -> str:
+    def _join(
+        self, browser: Any, page: Any, streak: rules.TimeoutStreak, stop: threading.Event, mode: str, url: str,
+        new_meeting: bool = False,
+    ) -> Tuple[str, str]:
         """
         会議に入る（参加ボタンを押し、入室か失敗が決まるまで待つ）。
 
+        新しい会議を始めるときは参加ボタンを押さない。ロビーが無く、開くだけで会議に入った状態になる。
+        参加スクリプトは会議画面のボタンも対象にしてしまうので、関係ないボタンを押さないよう走らせない。
+
         Returns:
-            会議名（読めなければ会議コード）
+            (会議名（読めなければ会議コード）, 会議の URL（新しい会議では、作られた会議の URL）)
 
         Raises:
             MeetBotError: 入れなかった
@@ -417,8 +459,9 @@ class MeetBotService(QObject):
             found = isinstance(result, dict) and bool(result.get("clicked") or result.get("nameFilled"))
             retry.record_press(found, time.monotonic())
 
-        self._set_state(rules.STATE_JOINING, "参加ボタンを押しています")
-        press()
+        if not new_meeting:
+            self._set_state(rules.STATE_JOINING, "参加ボタンを押しています")
+            press()
         self._set_state(rules.STATE_JOINING, "会議への入室を待っています")
 
         deadline = time.monotonic() + timing.join_limit
@@ -439,12 +482,26 @@ class MeetBotService(QObject):
                     deadline = now + rules.approval_wait_limit(mode)
                     self._set_state(rules.STATE_WAITING_APPROVAL, text=rules.waiting_status_line(mode))
                     self.notice.emit(rules.waiting_notice(mode))
-            elif step.action == rules.STEP_PRESS_JOIN and retry.should_press(status, now):
+            elif not new_meeting and step.action == rules.STEP_PRESS_JOIN and retry.should_press(status, now):
                 self._set_state(rules.STATE_JOINING, f"参加ボタンを押し直しています（{retry.attempts + 1} 回目）")
                 press()
                 self._set_state(rules.STATE_JOINING, "会議への入室を待っています")
             if now >= deadline:
+                if new_meeting and not waiting_seen:
+                    raise MeetBotError(MeetBotError.NEW_MEETING_NOT_STARTED)
                 raise rules.join_timeout(mode, waiting_seen, retry.button_found)
+
+        if new_meeting:
+            # /new から変わった先が、作られた会議の URL。以後の会議名・議事録のファイル名にはこちらを使う
+            href = run(scripts.LOCATION)
+            actual = rules.normalize_meet_url(href) if isinstance(href, str) else None
+            if actual:
+                # 本人や他の人へ渡す URL なので、Meet が付けた問い合わせ部分（?authuser= など）は落とす
+                url = f"{_MEET_ORIGIN}/{rules.meeting_code(actual)}"
+                self.meeting_created.emit(url)
+                self.notice.emit(rules.NEW_MEETING_STARTED)
+            else:
+                self.notice.emit(rules.NEW_MEETING_URL_UNREADABLE)
 
         title = run(scripts.TITLE)
         name = title.strip() if isinstance(title, str) else ""
@@ -455,7 +512,20 @@ class MeetBotService(QObject):
         run(scripts.ENSURE_MUTED)
         self._set_state(rules.STATE_JOINING, "字幕をオンにしています")
         self._enable_captions(run, stop)
-        return name
+        return name, url
+
+    def _on_meeting_created(self, url: str) -> None:
+        """始めた会議の URL を本人へ渡す（画面のスレッドで呼ばれる）。"""
+        try:
+            self._share_meeting(url)
+        except Exception as error:
+            logger.warning(f"Meet ボット: 会議の URL を渡せませんでした（{type(error).__name__}）")
+
+    @staticmethod
+    def _copy_and_open(url: str) -> None:
+        """会議の URL をクリップボードへコピーして、既定のブラウザで開く。"""
+        QGuiApplication.clipboard().setText(url)
+        QDesktopServices.openUrl(QUrl(url))
 
     def _enable_captions(self, run: Callable[[str], Any], stop: threading.Event) -> None:
         """Meet の字幕をオンにして、言語を設定に合わせる（できなくても参加は続け、後で知らせる）。"""
@@ -488,6 +558,7 @@ class MeetBotService(QObject):
         )
         tracker = CaptionSettleTracker()
         presence = rules.MeetingPresenceWatch()
+        lonely = rules.LonelyMeetingWatch(time.monotonic())
         captions = rules.CaptionPresenceWatch(time.monotonic())
 
         def refresh() -> None:
@@ -524,12 +595,18 @@ class MeetBotService(QObject):
                         refresh()
                 if now >= next_status:
                     next_status = now + timing.status_poll
-                    status = rules.page_status_from_payload(self._evaluate(browser, page, streak, scripts.PAGE_STATUS))
+                    raw = self._evaluate(browser, page, streak, scripts.PAGE_STATUS)
+                    status = rules.page_status_from_payload(raw)
                     ending = presence.observe(status) if status else None
                     if ending == "removed":
                         reason = rules.REASON_REMOVED
                     elif ending == "ended":
                         reason = rules.REASON_ENDED
+                    else:
+                        # ボットだけが残ったら、退出ボタンを押してから閉じる（Chrome を会議に居座らせない）
+                        alone = lonely.observe(rules.participants_from_payload(raw), now)
+                        if alone:
+                            reason, leave = alone, True
         except MeetBotError as error:
             # 記録の途中で Chrome を失った。ここまでの議事録は残っているので、理由を添えて閉じる
             reason = error.message

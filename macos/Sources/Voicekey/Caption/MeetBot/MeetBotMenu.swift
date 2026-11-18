@@ -96,6 +96,10 @@ final class MeetBotMenuController: NSObject, NSMenuDelegate {
             let join = NSMenuItem(title: "会議に参加…", action: #selector(joinMeeting), keyEquivalent: "")
             join.target = self
             menu.addItem(join)
+            // 新しい会議を作ってボットを入れる。URL はコピーされ、ブラウザでも開く
+            let start = NSMenuItem(title: "会議を始める", action: #selector(startMeeting), keyEquivalent: "")
+            start.target = self
+            menu.addItem(start)
         }
 
         menu.addItem(.separator())
@@ -149,6 +153,10 @@ final class MeetBotMenuController: NSObject, NSMenuDelegate {
         // ログインは必須ではない（未ログインならゲストとして参加をリクエストする）
         guard let url = Self.askMeetingURL() else { return }
         bot.join(urlString: url)
+    }
+
+    @objc private func startMeeting() {
+        controller?.meetBot.startNewMeeting()
     }
 
     @objc private func leaveMeeting() {

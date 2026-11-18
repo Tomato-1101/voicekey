@@ -9,6 +9,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from PySide6.QtCore import Qt
 
@@ -52,6 +53,7 @@ class FakePage:
         self.closed = False
         self.gate = None  # 字幕を読み始めたら立つ合図（テストが記録中まで待つのに使う）
         self.fail_captions_with = None
+        self.location = None  # 新しい会議を始めたあとの location.href
 
     def _next(self, items):
         return items.pop(0) if len(items) > 1 else (items[0] if items else None)
@@ -77,6 +79,8 @@ class FakePage:
             return "週次定例 - Google Meet"
         if java_script == scripts.LEFT_MEETING_PAGE:
             return False
+        if java_script == scripts.LOCATION:
+            return self.location
         return {"clicked": False}
 
     def close(self):
@@ -145,13 +149,16 @@ class ServiceTestCase(unittest.TestCase):
 
     def make(self, browser, chat=None, config=None):
         """偽のブラウザを使うサービスを作り、シグナルを記録につなぐ。"""
+        self.shared = []
         service = MeetBotService(
             config=config, browser_factory=lambda: browser, directory=self.directory, timing=FAST, chat=chat,
+            # 本物のクリップボードとブラウザに触らない
+            share_meeting=self.shared.append,
         )
         self.addCleanup(service.shutdown, 2.0)
         for name in (
             "state_changed", "line_confirmed", "finished", "notice",
-            "summary_progress", "summary_finished", "summary_failed", "login_state_changed",
+            "summary_progress", "summary_finished", "summary_failed", "login_state_changed", "meeting_created",
         ):
             # 画面のイベントループが無いので、出したスレッドの上でそのまま受ける
             getattr(service, name).connect(
@@ -244,6 +251,52 @@ class MeetingFlowTests(ServiceTestCase):
         self.assertTrue(Path(path).exists(), "0 行でも参加した記録としてファイルが残ること")
         self.assertNotIn(scripts.LEAVE, page.calls)
         self.assertEqual(self.states()[-1], rules.STATE_ENDED)
+
+    def test_leaves_when_only_bot_remains(self):
+        """ほかの参加者がいなくなったら、退出ボタンを押してから閉じる。"""
+        together = dict(IN_MEETING, participants=2)
+        alone = dict(IN_MEETING, participants=1)
+        page = FakePage([together, together, alone], [captions()])
+        service = self.make(FakeBrowser(page))
+        with mock.patch.object(rules.LonelyMeetingWatch, "ALONE_LIMIT", 0.0):
+            service.start(URL)
+            self.wait(service)
+        (_, message), = self.of("finished")
+        self.assertTrue(message.startswith(rules.REASON_ALONE))
+        self.assertEqual(page.calls[-1], scripts.LEAVE)
+        self.assertEqual(self.of("state_changed")[-1], (rules.STATE_ENDED, f"終了 — {rules.REASON_ALONE}"))
+
+    def test_new_meeting_uses_created_url_and_shares_it(self):
+        """新しい会議は参加ボタンを押さずに入り、作られた会議の URL を議事録と本人へ渡す。"""
+        page = FakePage([IN_MEETING], [captions()])
+        page.location = "https://meet.google.com/xyz-abcd-efg?authuser=0"
+        page.gate = threading.Event()
+        browser = FakeBrowser(page, cookies=[{"name": "SID", "domain": ".google.com", "expires": -1}])
+        service = self.make(browser)
+
+        self.assertIsNone(service.start_new())
+        self.assertTrue(page.gate.wait(5.0), "記録中まで進むこと")
+        service.stop()
+        self.wait(service)
+
+        self.assertEqual(browser.opened, rules.NEW_MEETING_URL)
+        self.assertNotIn(scripts.join(rules.BOT_DISPLAY_NAME), page.calls, "参加ボタンのスクリプトを走らせないこと")
+        self.assertEqual(self.of("meeting_created"), [("https://meet.google.com/xyz-abcd-efg",)])
+        self.assertEqual(self.of("notice"), [(rules.NEW_MEETING_STARTED,)])
+        (path, _), = self.of("finished")
+        self.assertTrue(Path(path).name.endswith("-xyz-abcd-efg.md"))
+        service._on_meeting_created("https://meet.google.com/xyz-abcd-efg")
+        self.assertEqual(self.shared, ["https://meet.google.com/xyz-abcd-efg"])
+
+    def test_new_meeting_needs_login(self):
+        """ログインしていないボットでは会議を始めない（ページも開かない）。"""
+        browser = FakeBrowser(FakePage([IN_MEETING]))
+        service = self.make(browser)
+        self.assertIsNone(service.start_new())
+        self.wait(service)
+        self.assertFalse(hasattr(browser, "opened"))
+        self.assertEqual(self.states()[-1], rules.STATE_FAILED)
+        self.assertEqual(self.of("notice"), [("会議を始めるにはボットの Google ログインが必要です",)])
 
     def test_disconnect_while_recording_keeps_transcript(self):
         """記録の途中で接続が切れても、そこまでの議事録を残して理由つきで閉じる。"""

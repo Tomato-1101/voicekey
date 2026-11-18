@@ -163,11 +163,15 @@ enum MeetBotError: Error, CustomStringConvertible, Equatable {
     case chromeNotResponding
     /// DevTools のポートを別のアプリが使っている
     case portBusy(Int)
+    /// 新しい会議を始めようとしたが、ボット用ブラウザが Google にログインしていない（ゲストは会議を作れない）
+    case newMeetingNeedsLogin
+    /// 新しい会議のページを開いたが、会議が始まらなかった
+    case newMeetingNotStarted
 
     /// ボット用ブラウザで Google にログインすれば入れる見込みがあるか（画面とメニューでログインへ案内する）
     var suggestsLogin: Bool {
         switch self {
-        case .guestNotApproved, .guestNotAllowed, .notLoggedIn: return true
+        case .guestNotApproved, .guestNotAllowed, .notLoggedIn, .newMeetingNeedsLogin: return true
         default: return false
         }
     }
@@ -190,6 +194,8 @@ enum MeetBotError: Error, CustomStringConvertible, Equatable {
         case .meetingNotFound: return "この会議は見つかりませんでした。URL（会議コード）を確かめてください"
         case .chromeNotResponding: return "Chrome が応答しません"
         case let .portBusy(port): return "ポート \(port) を別のアプリが使っています（Chrome のリモートデバッグなど）"
+        case .newMeetingNeedsLogin: return "会議を始めるにはボットの Google ログインが必要です"
+        case .newMeetingNotStarted: return "90 秒たっても会議を始められませんでした"
         }
     }
 }
@@ -268,6 +274,8 @@ final class MeetBotService: ObservableObject {
 
     /// 記録中の会議画面の見張り（外された・終わったを数回続けて確かめてから確定する）
     private var presenceWatch = MeetingPresenceWatch()
+    /// ボットだけが残っていないかの見張り（記録を始めるたびに作り直す）
+    private var lonelyWatch = LonelyMeetingWatch(start: Date())
     /// 記録中の見張りで Chrome の時間切れが続いた回数
     private var statusTimeouts = TimeoutStreak()
     /// 字幕が読めているかの見張り（Meet 字幕モードでだけ使う）
@@ -430,23 +438,50 @@ final class MeetBotService: ObservableObject {
     ///
     /// - Parameter urlString: Meet の会議 URL（`https://meet.google.com/xxx-yyyy-zzz`）
     func join(urlString: String) {
-        guard !state.isActive else { return }
-        // 前の会議の保存中に押されたら、無言で無視せず理由を知らせる（押したのに何も起きないと壊れたように見える）
-        guard !isClosing else {
-            notifier.prepare()
-            notifier.post(MeetBotText.joinWhileClosing)
-            return
-        }
-        guard ChromeDevTools.isChromeInstalled else {
-            state = .failed("Google Chrome が必要です")
-            return
-        }
+        guard canStart() else { return }
         guard let url = Self.normalizedMeetURL(urlString) else {
             state = .failed("Meet の会議 URL ではありません（meet.google.com/abc-defg-hij の形）")
             return
         }
-        meetingCode = Self.meetingCode(from: url)
-        meetingName = meetingCode ?? "Google Meet"
+        begin(url: url, newMeeting: false)
+    }
+
+    /// 新しい会議を始めて、ボットを最初の参加者として入れる（記録もそのまま始まる）
+    ///
+    /// 入室できたら会議の URL をクリップボードへコピーし、既定のブラウザで開く。
+    /// ボット用ブラウザが Google にログインしていなければ始めない（ゲストは会議を作れない）。
+    func startNewMeeting() {
+        guard canStart() else { return }
+        begin(url: Self.newMeetingURL, newMeeting: true)
+    }
+
+    /// 開くだけで新しい会議が作られる URL（ログイン済みなら、作られた会議の URL へ移る）
+    private static let newMeetingURL = URL(string: "https://meet.google.com/new")!
+
+    /// いま参加を始められるか（始められないときは理由を出す）
+    private func canStart() -> Bool {
+        guard !state.isActive else { return false }
+        // 前の会議の保存中に押されたら、無言で無視せず理由を知らせる（押したのに何も起きないと壊れたように見える）
+        guard !isClosing else {
+            notifier.prepare()
+            notifier.post(MeetBotText.joinWhileClosing)
+            return false
+        }
+        guard ChromeDevTools.isChromeInstalled else {
+            state = .failed("Google Chrome が必要です")
+            return false
+        }
+        return true
+    }
+
+    /// 参加の試行を始める
+    ///
+    /// - Parameters:
+    ///   - url: 開く URL
+    ///   - newMeeting: 新しい会議を始めるか（会議コードは入室後に読む）
+    private func begin(url: URL, newMeeting: Bool) {
+        meetingCode = newMeeting ? nil : Self.meetingCode(from: url)
+        meetingName = meetingCode ?? (newMeeting ? "新しい会議" : "Google Meet")
         activeSource = CaptionSettings.meetTranscriptSource
         activeLanguage = CaptionSettings.meetBotLanguage
         recordedLines = 0
@@ -471,7 +506,7 @@ final class MeetBotService: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.startChromeAndJoin(url: url, generation: current)
+                try await self.startChromeAndJoin(url: url, generation: current, newMeeting: newMeeting)
             } catch {
                 // 退出・再参加で古くなった試行は黙って捨てる（新しい試行の状態を壊さない）
                 guard self.generation.isCurrent(current) else { return }
@@ -579,7 +614,7 @@ final class MeetBotService: ObservableObject {
     ///
     /// await のたびに `ensureCurrent` で世代を確かめる。退出・再参加・アプリ終了のあとに
     /// 古い試行が状態を書き換えたり、記録を始めたりしないようにするため。
-    private func startChromeAndJoin(url: URL, generation current: Int) async throws {
+    private func startChromeAndJoin(url: URL, generation current: Int, newMeeting: Bool) async throws {
         // ログイン用に開いた見える Chrome が残っていれば閉じる（見える窓で会議に入らない）
         if let existing = chrome {
             existing.terminationHandler = nil
@@ -617,6 +652,8 @@ final class MeetBotService: ObservableObject {
         try ensureCurrent(current)
         joinMode = mode
         logger.notice("参加の立場: \(mode == .guest ? "ゲスト" : "アカウント", privacy: .public)")
+        // ゲスト（未ログイン）では会議を作れない。開いても紹介ページへ飛ばされるだけなので始めない
+        if newMeeting, mode != .account { throw MeetBotError.newMeetingNeedsLogin }
         await denyMediaPermissions()
         try ensureCurrent(current)
 
@@ -650,8 +687,28 @@ final class MeetBotService: ObservableObject {
         try ensureCurrent(current)
 
         // 参加ボタンは入室待ちの中で押す（ロビーの組み上がりが遅いときは数秒おきに押し直す）
-        state = .joining("参加ボタンを押しています")
-        try await waitUntilInMeeting(tools: tools, generation: current, mode: mode)
+        // 新しい会議はロビーが無く、開くだけで会議に入った状態になる。参加スクリプトは会議画面のボタンも
+        // 対象にしてしまうので、関係ないボタンを押さないよう走らせない
+        state = .joining(newMeeting ? "会議への入室を待っています" : "参加ボタンを押しています")
+        try await waitUntilInMeeting(tools: tools, generation: current, mode: mode, pressesJoin: !newMeeting)
+
+        if newMeeting {
+            // /new から変わった先が、作られた会議の URL。以後の会議名・議事録のファイル名にはこちらを使う
+            let href = try? await tools.evaluate("location.href") as? String
+            try ensureCurrent(current)
+            if let actual = href.flatMap(Self.normalizedMeetURL), let code = Self.meetingCode(from: actual),
+               // 本人や他の人へ渡す URL なので、Meet が付けた問い合わせ部分（?authuser= など）は落とす
+               let shared = URL(string: "https://meet.google.com/\(code)") {
+                meetingCode = code
+                meetingName = code
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(shared.absoluteString, forType: .string)
+                NSWorkspace.shared.open(shared)
+                notifier.post(MeetBotText.newMeetingStarted)
+            } else {
+                notifier.post(MeetBotText.newMeetingURLUnreadable)
+            }
+        }
 
         if let title = try? await tools.evaluate("document.title") as? String, !title.isEmpty {
             meetingName = title.replacingOccurrences(of: " - Google Meet", with: "")
@@ -688,7 +745,8 @@ final class MeetBotService: ObservableObject {
 
         if !captionsOn {
             notifier.post("会議に参加しましたが、Meet の字幕をオンにできませんでした。議事録に何も残らない可能性があります。")
-        } else {
+        } else if !newMeeting {
+            // 新しい会議は、始めた時点の通知（URL と入り方の案内）を上書きしない
             notifier.post("会議に参加しました（\(meetingName)）。議事録を記録しています。")
         }
     }
@@ -704,8 +762,10 @@ final class MeetBotService: ObservableObject {
     /// 承認待ちに入ったら待ち時間を延ばし（ゲストは 5 分・ログイン済みは 10 分）、通知で知らせる。
     /// Chrome の時間切れが続いたら「Chrome が応答しません」で諦める（固まった Chrome を 90 秒待たない）。
     /// 画面の状態から次に何をするかは `MeetJoinFlow` が決める（純粋なロジック・回帰テスト済み）。
+    ///
+    /// - Parameter pressesJoin: 参加ボタンを押すか（新しい会議では押さない）
     private func waitUntilInMeeting(
-        tools: ChromeDevTools, generation current: Int, mode: MeetJoinMode
+        tools: ChromeDevTools, generation current: Int, mode: MeetJoinMode, pressesJoin: Bool
     ) async throws {
         let start = Date()
         var deadline = start.addingTimeInterval(90)
@@ -741,7 +801,7 @@ final class MeetBotService: ObservableObject {
             case let .fail(error):
                 throw error
             case .pressJoin:
-                if !waitingNotified, retry.shouldPress(status: .other, now: Date()) {
+                if pressesJoin, !waitingNotified, retry.shouldPress(status: .other, now: Date()) {
                     if retry.attempts > 0 { state = .joining("参加ボタンを押し直しています（\(retry.attempts + 1) 回目）") }
                     var clicked: String?
                     do {
@@ -762,6 +822,7 @@ final class MeetBotService: ObservableObject {
                 break
             }
             guard Date() < deadline else {
+                if !pressesJoin, !waitingNotified { throw MeetBotError.newMeetingNotStarted }
                 throw MeetJoinFlow.timeout(
                     mode: mode, waitingSeen: waitingNotified, joinButtonFound: retry.buttonFound
                 )
@@ -930,6 +991,7 @@ final class MeetBotService: ObservableObject {
     private func startStatusPolling() {
         statusTimer?.invalidate()
         presenceWatch = MeetingPresenceWatch()
+        lonelyWatch = LonelyMeetingWatch(start: Date())
         statusTimeouts = TimeoutStreak()
         statusPollInFlight = false
         let timer = Timer.scheduledTimer(withTimeInterval: Self.statusPollInterval, repeats: true) { [weak self] _ in
@@ -967,7 +1029,14 @@ final class MeetBotService: ObservableObject {
         switch presenceWatch.observe(status) {
         case .removed?: endMeeting(reason: "会議から外されました")
         case .ended?: endMeeting(reason: "会議が終了しました")
-        case nil: break
+        case nil:
+            // ボットだけが残ったら、退出ボタンを押してから閉じる（Chrome を会議に居座らせない）
+            let participants = (raw["participants"] as? Int) ?? 0
+            if let reason = lonelyWatch.observe(participants: participants, now: Date()) {
+                ActionLog.shared.write("caption.MeetBot", "Meet ボット終了（\(reason)）")
+                logger.notice("自分から退出: \(reason, privacy: .public)")
+                finish(.ended(reason), leaveMeetingFirst: true, closingReason: reason)
+            }
         }
     }
 

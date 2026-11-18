@@ -72,6 +72,56 @@ struct MeetingPresenceWatch {
     }
 }
 
+/// 記録中の「ボットだけが会議に残っている」状態の見張り
+///
+/// ほかの人が全員抜けた後もボットが居座ると、見えない Chrome が会議に入ったまま CPU とメモリを
+/// 使い続ける。人数（ボット自身を含む）を読み、ボットだけになったら自分から退出する。
+///
+/// 人数 0（読めなかった）は判断材料にしない。読めないあいだに勝手に抜けないよう、
+/// 1 人の連続も、だれも来ない判定も「1 人と読めている間」だけ成立させる。
+struct LonelyMeetingWatch {
+
+    /// ほかの人がいなくなってから退出するまでの秒数。実測では本人の退出から 5 秒以内に人数が 1 になるが、
+    /// 回線の入り直しや画面の描き直しで一瞬 1 人に見えただけで抜けないよう、1 分続くのを待つ
+    static let aloneLimit: TimeInterval = 60
+    /// だれも来ないまま待つ上限の秒数。会議を始めてから本人が入るまでの準備（URL を配る・人を待つ）には
+    /// 足り、忘れて放置しても Chrome が残り続けない長さとして 15 分
+    static let nobodyLimit: TimeInterval = 15 * 60
+
+    private let start: Date
+    private var seenOthers = false
+    private var aloneSince: Date?
+
+    /// - Parameter start: 見張りを始めた時刻（入室した時刻）
+    init(start: Date) {
+        self.start = start
+    }
+
+    /// 1 回分の人数を取り込む
+    ///
+    /// - Parameters:
+    ///   - participants: 会議にいる人数（ボット自身を含む。読めなかったら 0）
+    ///   - now: 読み取った時刻
+    /// - Returns: 退出すべきなら、その理由の文（まだなら nil）
+    mutating func observe(participants: Int, now: Date) -> String? {
+        if participants >= 2 {
+            seenOthers = true
+            aloneSince = nil
+            return nil
+        }
+        guard participants == 1 else {
+            aloneSince = nil
+            return nil
+        }
+        let since = aloneSince ?? now
+        aloneSince = since
+        if seenOthers {
+            return now.timeIntervalSince(since) >= Self.aloneLimit ? MeetBotText.leftAlone : nil
+        }
+        return now.timeIntervalSince(start) >= Self.nobodyLimit ? MeetBotText.nobodyCame : nil
+    }
+}
+
 /// 「Meet の字幕が読めていない」状態の見張り
 ///
 /// 字幕がオフのまま・Meet の画面が変わった、などで 1 行も取れていないのに、画面は「記録中 0 行」のままだと
@@ -316,10 +366,24 @@ enum MeetBotText {
             return "主催者に承認されませんでした。もう一度参加して承認してもらってください。" + loginHint
         case .guestNotAllowed?:
             return "この会議はゲストが入れません。ボットに Google ログインをさせると入れます。" + loginHint
+        case .newMeetingNeedsLogin?:
+            return message
         default:
             return "会議に参加できませんでした: \(message)"
         }
     }
+
+    /// ボットだけが残って自分から退出したときの理由
+    static let leftAlone = "ほかの参加者がいなくなったので退出しました"
+    /// だれも来ないまま退出したときの理由
+    static let nobodyCame = "15 分だれも参加しなかったので退出しました"
+    /// 新しい会議を始めたときの通知。本人は同じアカウントで入ることが多く、そのとき Meet が出す
+    /// 「切り替える」を押すとボットの通話が本人へ移ってボットが外れるので、押すボタンを添える
+    static let newMeetingStarted =
+        "会議を始めました。URL をコピーしてブラウザで開きました。参加時は「その他の参加方法」→"
+        + "「このデバイスでも参加」を選んでください（「切り替える」を押すとボットが外れます）"
+    /// 新しい会議には入れたが、URL を読めなかったときの通知
+    static let newMeetingURLUnreadable = "会議を始めましたが、会議の URL を読めませんでした"
 
     /// 字幕が取れていないときの状態行・通知
     static let captionMissing = "字幕が取れていません（Meet の字幕が ON か確認）"
