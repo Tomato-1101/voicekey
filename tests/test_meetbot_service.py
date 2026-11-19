@@ -7,6 +7,7 @@ Meet ボット本体の状態遷移のテスト（Chrome も通信も使わな�
 
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -22,7 +23,7 @@ URL = "https://meet.google.com/abc-defg-hij"
 # 待ち時間を詰めた一式（実時間で待たない）
 FAST = Timing(
     devtools_wait=0.5, ready_poll=0.001, page_load=0.001, consent_wait=0.001, join_poll=0.001, join_limit=0.3,
-    join_retry=0.0, caption_retry=0.001, caption_poll=0.002, status_poll=0.0, leave_wait=0.0,
+    join_retry=0.0, caption_retry=0.001, access_step=0.0, caption_poll=0.002, status_poll=0.0, leave_wait=0.0,
     login_poll=0.002, login_cookie=0.0, login_limit=2.0,
 )
 
@@ -54,6 +55,8 @@ class FakePage:
         self.gate = None  # 字幕を読み始めたら立つ合図（テストが記録中まで待つのに使う）
         self.fail_captions_with = None
         self.location = None  # 新しい会議を始めたあとの location.href
+        # 会議を「オープン」にするスクリプトが 1 手ごとに返す進み具合
+        self.access_steps = ["menu", "panel", "selected", "done"]
 
     def _next(self, items):
         return items.pop(0) if len(items) > 1 else (items[0] if items else None)
@@ -81,6 +84,8 @@ class FakePage:
             return False
         if java_script == scripts.LOCATION:
             return self.location
+        if java_script == scripts.OPEN_ACCESS:
+            return self._next(self.access_steps)
         return {"clicked": False}
 
     def close(self):
@@ -104,6 +109,7 @@ class FakeBrowser:
         self.denied = []
 
     def close_leftover(self):
+        self.leftover_checked = getattr(self, "leftover_checked", 0) + 1
         return False
 
     def is_answering(self):
@@ -283,10 +289,30 @@ class MeetingFlowTests(ServiceTestCase):
         self.assertNotIn(scripts.join(rules.BOT_DISPLAY_NAME), page.calls, "参加ボタンのスクリプトを走らせないこと")
         self.assertEqual(self.of("meeting_created"), [("https://meet.google.com/xyz-abcd-efg",)])
         self.assertEqual(self.of("notice"), [(rules.NEW_MEETING_STARTED,)])
+        self.assertEqual(page.calls.count(scripts.OPEN_ACCESS), 4, "メニュー → 主催者用 → オープン → 閉じるの 4 手")
+        self.assertLess(page.calls.index(scripts.OPEN_ACCESS), page.calls.index(scripts.TITLE))
         (path, _), = self.of("finished")
         self.assertTrue(Path(path).name.endswith("-xyz-abcd-efg.md"))
         service._on_meeting_created("https://meet.google.com/xyz-abcd-efg")
         self.assertEqual(self.shared, ["https://meet.google.com/xyz-abcd-efg"])
+
+    def test_new_meeting_still_shares_url_when_access_cannot_open(self):
+        """主催者用ボタンが無くても URL は渡し、別アカウントでは入れないことを知らせる。"""
+        page = FakePage([IN_MEETING], [captions()])
+        page.location = "https://meet.google.com/xyz-abcd-efg"
+        page.access_steps = ["unavailable"]
+        page.gate = threading.Event()
+        browser = FakeBrowser(page, cookies=[{"name": "SID", "domain": ".google.com", "expires": -1}])
+        service = self.make(browser)
+
+        self.assertIsNone(service.start_new())
+        self.assertTrue(page.gate.wait(5.0), "記録中まで進むこと")
+        service.stop()
+        self.wait(service)
+
+        self.assertEqual(self.of("meeting_created"), [("https://meet.google.com/xyz-abcd-efg",)])
+        self.assertEqual(self.of("notice"), [(rules.NEW_MEETING_ACCESS_FAILED,)])
+        self.assertEqual(page.calls.count(scripts.OPEN_ACCESS), 2, "2 回続けて無ければ諦める")
 
     def test_new_meeting_needs_login(self):
         """ログインしていないボットでは会議を始めない（ページも開かない）。"""
@@ -429,6 +455,16 @@ class JoinFailureTests(ServiceTestCase):
         self.assertEqual(self.states()[-1], rules.STATE_IDLE)
         self.assertEqual(self.of("finished"), [])
         self.assertTrue(browser.closed)
+
+    def test_closes_leftover_chrome_at_launch(self):
+        """起動時に、前回の取り残し（ボット用 Chrome）を裏で片付ける。"""
+        browser = FakeBrowser()
+        service = self.make(browser)
+        service.close_leftover_at_launch()
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not getattr(browser, "leftover_checked", 0):
+            time.sleep(0.01)
+        self.assertEqual(browser.leftover_checked, 1)
 
     def test_rejects_invalid_url(self):
         service = self.make(FakeBrowser())

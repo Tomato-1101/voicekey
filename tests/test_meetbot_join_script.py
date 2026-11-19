@@ -110,3 +110,80 @@ class PageStatusParticipantsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# 主催者用ボタンのパネルを真似た偽ページ。メニュー・パネルの開閉を状態で持ち、
+# スクリプトを 1 手ずつ繰り返して、押した順と最後の状態を返す。
+# 「会議の準備が整いました」ダイアログの閉じるを別に置き、パネルの閉じるだけを押すかも見る（2026-11-19 実測の形）
+ACCESS_HARNESS = """
+const spec = %s;
+const clicks = [];
+const state = { menu: false, panel: false };
+const element = (text, aria, onClick, visible) => ({
+    get offsetParent() { return !visible || visible() ? {} : null; },
+    innerText: text,
+    getAttribute: (name) => (name === 'aria-label' ? aria : null),
+    click: onClick,
+});
+const more = element('more_vert', 'その他のオプション', () => { clicks.push('more'); state.menu = !state.menu; });
+const dialogClose = element('close', '閉じる', () => clicks.push('dialog-close'));
+const panelClose = element('close', '閉じる', () => { clicks.push('panel-close'); state.panel = false; }, () => state.panel);
+const body = { parentElement: null, querySelectorAll: (s) => (s.includes('button') ? [more, dialogClose, panelClose] : []) };
+const panel = { parentElement: body, querySelectorAll: (s) => (s.includes('button') ? [panelClose] : []) };
+const group = { parentElement: panel, querySelectorAll: () => [] };
+const radio = (text, checked) => ({
+    labels: [{ innerText: text }], getAttribute: () => null, parentElement: group, checked,
+    click() { clicks.push(text); radios.forEach((r) => { r.checked = r === this; }); },
+});
+const radios = [radio('オープン', spec.startOpen), radio('信頼済み', !spec.startOpen)];
+const items = [element('settings 設定', null, () => clicks.push('settings'))];
+if (spec.hostItem) {
+    items.push(element('lock_person 主催者用ボタン', null, () => { clicks.push('host'); state.menu = false; state.panel = true; }));
+}
+globalThis.document = {
+    querySelectorAll: (s) => {
+        if (s.includes('radio')) return state.panel ? radios : [];
+        if (s.includes('menuitem')) return state.menu ? items : [];
+        if (s.includes('button')) return [more, dialogClose, panelClose];
+        return [];
+    },
+};
+globalThis.window = {};
+const step = () => %s;
+const steps = [];
+for (let i = 0; i < 12; i++) {
+    const r = step();
+    steps.push(r);
+    if (r === 'done' || r === 'unavailable') break;
+}
+console.log(JSON.stringify({ steps, clicks, open: radios[0].checked, panel: state.panel, menu: state.menu }));
+"""
+
+
+@unittest.skipUnless(NODE, "node が無い")
+class OpenAccessScriptTest(unittest.TestCase):
+    """ボットが始めた会議を「オープン」にするスクリプトを偽の主催者用パネルで走らせる"""
+
+    def _run(self, host_item=True, start_open=False):
+        spec = json.dumps({"hostItem": host_item, "startOpen": start_open})
+        code = ACCESS_HARNESS % (spec, scripts.OPEN_ACCESS)
+        out = subprocess.run([NODE, "-e", code], capture_output=True, text=True, timeout=20, check=True)
+        return json.loads(out.stdout)
+
+    def test_selects_open_and_closes_only_the_panel(self):
+        r = self._run()
+        self.assertEqual(r["steps"], ["menu", "panel", "selected", "done"])
+        self.assertEqual(r["clicks"], ["more", "host", "オープン", "panel-close"])
+        self.assertTrue(r["open"])
+        self.assertFalse(r["panel"])
+
+    def test_already_open_is_left_as_is(self):
+        r = self._run(start_open=True)
+        self.assertEqual(r["steps"], ["menu", "panel", "done"])
+        self.assertNotIn("オープン", r["clicks"])
+
+    def test_without_host_controls_closes_menu_and_gives_up(self):
+        r = self._run(host_item=False)
+        self.assertEqual(r["steps"], ["menu", "unavailable"])
+        self.assertEqual(r["clicks"], ["more", "more"])
+        self.assertFalse(r["menu"])

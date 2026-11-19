@@ -35,6 +35,8 @@ _LOGIN_URL = "https://accounts.google.com/"
 _TITLE_SUFFIX = " - Google Meet"
 # 字幕をオンにする操作を試す回数
 _CAPTION_ATTEMPTS = 4
+# 会議を「オープン」にする操作の手数の上限（メニュー → 主催者用ボタン → オープン → 閉じる＋待ち）
+_ACCESS_STEPS = 12
 
 SUMMARY_BUSY = "別の議事録を要約しています。終わってからもう一度お試しください。"
 SUMMARY_UNREADABLE = "議事録を読めませんでした"
@@ -54,6 +56,7 @@ class Timing:
         join_limit: 入室待ちの上限（承認待ちに入ったら承認待ちの上限へ延ばす）
         join_retry: 参加ボタンを押し直す間隔
         caption_retry: 字幕をオンにする操作の間隔
+        access_step: 会議を「オープン」にする操作の 1 手ごとの待ち（メニューやパネルが開くのを待つ）
         caption_poll: 字幕を読む間隔
         status_poll: 会議に居続けているかを確かめる間隔
         leave_wait: 退出ボタンを押してから Chrome を閉じるまでの待ち
@@ -70,6 +73,7 @@ class Timing:
     join_limit: float = 90.0
     join_retry: float = 4.0
     caption_retry: float = 1.5
+    access_step: float = 0.8
     caption_poll: float = 1.0
     status_poll: float = 3.0
     leave_wait: float = 1.5
@@ -196,6 +200,22 @@ class MeetBotService(QObject):
             受け付けたら None。断ったときは、その理由の文（画面にそのまま出せる）
         """
         return self._begin(rules.NEW_MEETING_URL, new_meeting=True)
+
+    def close_leftover_at_launch(self) -> None:
+        """
+        前回 voicekey が落ちたときに会議へ残ったボット用 Chrome を、アプリの起動時に裏で終わらせる。
+
+        次にボットを使うまで待つと、そのあいだ誰もいない会議に入り続けて PC の資源を食う。
+        起動直後にボットを始めた場合に新しい Chrome を閉じてしまわないよう、ロックを持ったまま
+        「動いていないとき」だけ片付ける（片付けの間は参加の受け付けを数秒待たせるだけ）。
+        """
+        def work() -> None:
+            with self._lock:
+                if self.is_active():
+                    return
+                self._browser_factory().close_leftover()
+
+        threading.Thread(target=work, name="meetbot-leftover", daemon=True).start()
 
     def _begin(self, url: str, new_meeting: bool) -> Optional[str]:
         """作業スレッドを起こす（動いている最中なら断る）。"""
@@ -498,8 +518,10 @@ class MeetBotService(QObject):
             if actual:
                 # 本人や他の人へ渡す URL なので、Meet が付けた問い合わせ部分（?authuser= など）は落とす
                 url = f"{_MEET_ORIGIN}/{rules.meeting_code(actual)}"
+                # URL を渡す前にオープンにする（先に渡すと、設定が変わる前に本人がリクエストで止まる）
+                opened = self._open_access(run, stop)
                 self.meeting_created.emit(url)
-                self.notice.emit(rules.NEW_MEETING_STARTED)
+                self.notice.emit(rules.NEW_MEETING_STARTED if opened else rules.NEW_MEETING_ACCESS_FAILED)
             else:
                 self.notice.emit(rules.NEW_MEETING_URL_UNREADABLE)
 
@@ -526,6 +548,27 @@ class MeetBotService(QObject):
         """会議の URL をクリップボードへコピーして、既定のブラウザで開く。"""
         QGuiApplication.clipboard().setText(url)
         QDesktopServices.openUrl(QUrl(url))
+
+    def _open_access(self, run: Callable[[str], Any], stop: threading.Event) -> bool:
+        """
+        ボットが始めた会議を「オープン」（誰でもリクエストなしで参加できる）にする。
+
+        Returns:
+            オープンになったら True（主催者用ボタンが無い・時間内に終わらないときは False）
+        """
+        unavailable = 0
+        for _ in range(_ACCESS_STEPS):
+            step = run(scripts.OPEN_ACCESS)
+            if step == "done":
+                logger.info("Meet ボット: 会議をオープンにしました")
+                return True
+            if step == "unavailable":
+                unavailable += 1
+                if unavailable >= 2:
+                    break
+            self._pause(stop, self._timing.access_step)
+        logger.warning(f"Meet ボット: 会議をオープンにできませんでした（最後の手: {step}）")
+        return False
 
     def _enable_captions(self, run: Callable[[str], Any], stop: threading.Event) -> None:
         """Meet の字幕をオンにして、言語を設定に合わせる（できなくても参加は続け、後で知らせる）。"""

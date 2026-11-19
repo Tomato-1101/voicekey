@@ -131,3 +131,106 @@ final class MeetBotPageStatusScriptTests: XCTestCase {
         XCTAssertEqual(try participants(buttons: ["今すぐ参加"], ids: ["spaces/x/devices/1"], counts: ["2"]), 0)
     }
 }
+
+/// ボットが始めた会議を「オープン」にするスクリプトの回帰テスト
+///
+/// 主催者用ボタンのパネルを真似た偽ページ（メニュー・パネルの開閉を状態で持つ）で 1 手ずつ繰り返し、
+/// 押した順と最後の状態を見る。「会議の準備が整いました」ダイアログの閉じるを別に置き、
+/// パネルの閉じるだけを押すかも確かめる（2026-11-19 実測の形）。
+@available(macOS 26.0, *)
+@MainActor
+final class MeetBotOpenAccessScriptTests: XCTestCase {
+
+    private struct Outcome {
+        let steps: [String]
+        let clicks: [String]
+        let open: Bool
+        let panel: Bool
+        let menu: Bool
+    }
+
+    private func simulate(hostItem: Bool = true, startOpen: Bool = false) throws -> Outcome {
+        let context = try XCTUnwrap(JSContext())
+        context.exceptionHandler = { _, error in
+            XCTFail("JS の例外: \(error?.toString() ?? "?")")
+        }
+        context.setObject(hostItem, forKeyedSubscript: "hostItem" as NSString)
+        context.setObject(startOpen, forKeyedSubscript: "startOpen" as NSString)
+        context.evaluateScript("""
+            var clicks = [];
+            var state = { menu: false, panel: false };
+            var element = function (text, aria, onClick, visible) {
+                return {
+                    get offsetParent() { return !visible || visible() ? {} : null; },
+                    innerText: text,
+                    getAttribute: function (name) { return name === 'aria-label' ? aria : null; },
+                    click: onClick
+                };
+            };
+            var more = element('more_vert', 'その他のオプション', function () { clicks.push('more'); state.menu = !state.menu; });
+            var dialogClose = element('close', '閉じる', function () { clicks.push('dialog-close'); });
+            var panelClose = element('close', '閉じる', function () { clicks.push('panel-close'); state.panel = false; },
+                                     function () { return state.panel; });
+            var body = { parentElement: null, querySelectorAll: function (s) { return s.indexOf('button') >= 0 ? [more, dialogClose, panelClose] : []; } };
+            var panel = { parentElement: body, querySelectorAll: function (s) { return s.indexOf('button') >= 0 ? [panelClose] : []; } };
+            var group = { parentElement: panel, querySelectorAll: function () { return []; } };
+            var radios = [];
+            var radio = function (text, checked) {
+                var r = { labels: [{ innerText: text }], getAttribute: function () { return null; }, parentElement: group, checked: checked };
+                r.click = function () { clicks.push(text); radios.forEach(function (x) { x.checked = x === r; }); };
+                return r;
+            };
+            radios.push(radio('オープン', startOpen), radio('信頼済み', !startOpen));
+            var items = [element('settings 設定', null, function () { clicks.push('settings'); })];
+            if (hostItem) {
+                items.push(element('lock_person 主催者用ボタン', null, function () { clicks.push('host'); state.menu = false; state.panel = true; }));
+            }
+            var document = {
+                querySelectorAll: function (s) {
+                    if (s.indexOf('radio') >= 0) return state.panel ? radios : [];
+                    if (s.indexOf('menuitem') >= 0) return state.menu ? items : [];
+                    if (s.indexOf('button') >= 0) return [more, dialogClose, panelClose];
+                    return [];
+                }
+            };
+            var window = {};
+            var steps = [];
+            """)
+        for _ in 0..<12 {
+            let step = try XCTUnwrap(context.evaluateScript(MeetBotService.openAccessScript)?.toString())
+            context.objectForKeyedSubscript("steps").invokeMethod("push", withArguments: [step])
+            if step == "done" || step == "unavailable" { break }
+        }
+        return Outcome(
+            steps: context.objectForKeyedSubscript("steps").toArray() as? [String] ?? [],
+            clicks: context.objectForKeyedSubscript("clicks").toArray() as? [String] ?? [],
+            open: context.evaluateScript("radios[0].checked").toBool(),
+            panel: context.evaluateScript("state.panel").toBool(),
+            menu: context.evaluateScript("state.menu").toBool()
+        )
+    }
+
+    /// メニュー → 主催者用ボタン → オープン → パネルの閉じる（ダイアログの閉じるは押さない）
+    func testSelectsOpenAndClosesOnlyThePanel() throws {
+        let r = try simulate()
+        XCTAssertEqual(r.steps, ["menu", "panel", "selected", "done"])
+        XCTAssertEqual(r.clicks, ["more", "host", "オープン", "panel-close"])
+        XCTAssertTrue(r.open)
+        XCTAssertFalse(r.panel)
+    }
+
+    /// 既にオープンなら選び直さない
+    func testAlreadyOpenIsLeftAsIs() throws {
+        let r = try simulate(startOpen: true)
+        XCTAssertEqual(r.steps, ["menu", "panel", "done"])
+        XCTAssertFalse(r.clicks.contains("オープン"))
+    }
+
+    /// 主催者用ボタンが無ければメニューを閉じて諦める
+    func testWithoutHostControlsClosesMenuAndGivesUp() throws {
+        let r = try simulate(hostItem: false)
+        XCTAssertEqual(r.steps, ["menu", "unavailable"])
+        XCTAssertEqual(r.clicks, ["more", "more"])
+        XCTAssertFalse(r.menu)
+    }
+}

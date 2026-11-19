@@ -2,6 +2,21 @@
 
 voicekeyの変更履歴を記録するファイルです。
 
+## [2.5.3] - 2026-11-19
+
+### Fixed（Mac・Windows）
+- **「会議を始める」で作った会議に自分が入れなかったのを修正**。会議を作ったボットが主催者になり、会議へのアクセスが既定の「信頼済み」のままだったため、
+  別のアカウントで入ると「参加をリクエスト」で止まり、承諾できる人がいなかった。ボットが入室後に「その他のオプション」→「主催者用ボタン」→
+  「会議へのアクセスの種類」を「オープン」（リクエストなしで参加できる）にしてパネルを閉じ、それから URL をコピーして開くようにした。
+  オープンにできなかったときも URL は渡し、別アカウントでは入れないことを通知する。実会議で設定が「オープン」になり、パネルが閉じることを確認。
+- **voicekey が落ちたときに会議へ残ったボット用 Chrome を、起動時に終わらせるようにした**（これまでは次にボットを使うまで残り、誰もいない会議に入り続けていた）。
+  ボット用プロファイルの Chrome だけが対象。
+
+### Technical Details
+- `MeetBotScripts.swift` / `src/meetbot/scripts.py`: `openAccessScript` / `OPEN_ACCESS`（1 回 1 手。`menu`→`panel`→`selected`→`done`、無ければ `unavailable`。閉じるはオープンの選択肢に近い祖先から探す＝「会議の準備が整いました」の閉じるを押さない）
+- `MeetBotService.swift` / `src/meetbot/service.py`: 新しい会議の URL を渡す前に `openMeetingAccess` / `_open_access`（最大 12 手・0.8 秒おき・`unavailable` 2 回で諦める）。起動時の `terminateStaleChrome` / `close_leftover_at_launch`
+- テスト: `MeetBotOpenAccessScriptTests`（JavaScriptCore の偽パネル）・`OpenAccessScriptTest`（node の偽パネル）・`tests/test_meetbot_service.py`
+
 ## [2.5.2] - 2026-11-18
 
 ### Added（Mac・Windows）

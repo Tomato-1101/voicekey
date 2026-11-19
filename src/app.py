@@ -450,6 +450,7 @@ class VoicekeyApp(QObject):
 
         # --- Google Meet 議事録ボット（参加するまで Chrome は起動しない。要約の料金も同じ記録へ） ---
         self._meetbot = MeetBotService(config=self._config, usage_store=self._api_usage)
+        self._meetbot.close_leftover_at_launch()
 
         # --- UI ---
         # 自動アップデータは設定ウィンドウ（「バージョン情報」タブ）にも渡すため先に生成する。

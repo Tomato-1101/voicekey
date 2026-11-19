@@ -193,6 +193,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 議事録ボットの通知を押したら議事録を開く delegate を、ボットを使う前（再起動後）から有効にする
         MeetBotNotifier.installDelegateAtLaunch()
+        // 前回 voicekey が落ちたときに会議へ残ったボット用 Chrome を、次にボットを使うまで待たずに終わらせる
+        // （残したままだと誰もいない会議に入り続けて PC の資源を食う）。ボット用プロファイルの Chrome だけが対象
+        if #available(macOS 26.0, *) {
+            Task { await ChromeDevTools.terminateStaleChrome(profileDirectory: MeetBotService.profileDirectory) }
+        }
 
         // API 使用量のファイル読み込みを起動時に裏で済ませる（初回の音声入力の確定直後に
         // 遅延初期化のディスク読みが走らないように。日数ぶん JSON が育つため）。

@@ -159,6 +159,40 @@ PAGE_STATUS = (
 })()"""
 )
 
+# ボットが始めた会議を「誰でもリクエストなしで参加できる」（会議へのアクセスの種類＝オープン）にする。
+# ボットが主催者になるので、既定（信頼済み）のままだと別アカウントの本人や招待した人が
+# 「参加をリクエスト」で止まり、承諾できる人が誰もいない（2026-11-19 実測）。
+# 1 回の呼び出しで 1 手だけ進め、進み具合を返す（メニューやパネルが開くのを呼び出し側が待つ）:
+#   'menu' その他のオプションを開いた / 'panel' 主催者用ボタンを開いた / 'selected' オープンを選んだ /
+#   'done' オープンになっている（パネルを閉じた） / 'unavailable' 主催者用ボタンやオープンが無い
+# パネルの中身は実測（2026-11-19）: <input type="radio" name="accessType"> と <label for> の「オープン」「信頼済み」。
+OPEN_ACCESS = (
+    "(() => {" + _HELPERS + r"""
+    const textOf = (r) => ((r.labels && r.labels[0] && r.labels[0].innerText) || r.getAttribute('aria-label') || '').trim();
+    const open = [...document.querySelectorAll('input[type="radio"]')].find((r) => /^(オープン|Open)$/i.test(textOf(r)));
+    if (open) {
+        if (!open.checked) { open.click(); return 'selected'; }
+        // パネルの閉じるボタンは、選択肢にいちばん近い祖先の中にある
+        for (let node = open.parentElement; node; node = node.parentElement) {
+            const close = [...node.querySelectorAll('button')].find((b) =>
+                vis(b) && /^(閉じる|Close)$/i.test((b.getAttribute('aria-label') || '').trim()));
+            if (close) { close.click(); break; }
+        }
+        return 'done';
+    }
+    const more = buttons().find((b) => /^(その他のオプション|More options)$/i.test((b.getAttribute('aria-label') || '').trim()));
+    const items = [...document.querySelectorAll('[role="menuitem"]')].filter(vis);
+    if (items.length) {
+        const host = items.find((m) => /主催者用ボタン|Host controls/i.test(label(m)));
+        if (host) { host.click(); return 'panel'; }
+        if (more) more.click();  // 主催者の項目が無いメニューは閉じて戻す
+        return 'unavailable';
+    }
+    if (more) { more.click(); return 'menu'; }
+    return 'unavailable';
+})()"""
+)
+
 # 会議に入ったあと、マイクとカメラが切れていることを確かめる。
 # Chrome 側で拒否しているので通常は何も押さない。万一オンで入っていたら切る。
 ENSURE_MUTED = r"""(() => {

@@ -701,10 +701,13 @@ final class MeetBotService: ObservableObject {
                let shared = URL(string: "https://meet.google.com/\(code)") {
                 meetingCode = code
                 meetingName = code
+                // URL を渡す前にオープンにする（先に渡すと、設定が変わる前に本人がリクエストで止まる）
+                let opened = await openMeetingAccess(tools: tools, generation: current)
+                try ensureCurrent(current)
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(shared.absoluteString, forType: .string)
                 NSWorkspace.shared.open(shared)
-                notifier.post(MeetBotText.newMeetingStarted)
+                notifier.post(opened ? MeetBotText.newMeetingStarted : MeetBotText.newMeetingAccessFailed)
             } else {
                 notifier.post(MeetBotText.newMeetingURLUnreadable)
             }
@@ -845,6 +848,30 @@ final class MeetBotService: ObservableObject {
     /// 状態を読んでから押す。押した後も読み直し、オンになったのを確かめる（試行は 4 回まで）。
     ///
     /// - Returns: オンにできた（オンだと確かめられた）か
+    /// ボットが始めた会議を「オープン」（誰でもリクエストなしで参加できる）にする
+    ///
+    /// - Returns: オープンになったら true（主催者用ボタンが無い・時間内に終わらないときは false）
+    private func openMeetingAccess(tools: ChromeDevTools, generation current: Int) async -> Bool {
+        var unavailable = 0
+        var last = ""
+        // メニュー → 主催者用ボタン → オープン → 閉じる。1 手ごとに開くのを待つ
+        for _ in 0..<12 {
+            guard generation.isCurrent(current) else { return false }
+            last = (try? await tools.evaluate(Self.openAccessScript) as? String) ?? ""
+            if last == "done" {
+                logger.notice("会議をオープンにしました")
+                return true
+            }
+            if last == "unavailable" {
+                unavailable += 1
+                if unavailable >= 2 { break }
+            }
+            try? await Task.sleep(for: .seconds(0.8))
+        }
+        logger.error("会議をオープンにできませんでした（最後の手: \(last, privacy: .public)）")
+        return false
+    }
+
     private func enableCaptions(tools: ChromeDevTools, generation current: Int) async -> Bool {
         var shortcutTried = false
         for _ in 0..<4 {
