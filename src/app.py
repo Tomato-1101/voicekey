@@ -22,6 +22,7 @@
    録音時間上限、リスナースレッド生存確認を兼任する。
 """
 
+import ntpath
 import os
 import queue
 import subprocess
@@ -48,6 +49,7 @@ from .core import (
     StreamingTranscriber,
     TranscriptionError,
 )
+from .core import ai_destination
 from .core import dictation_timeline
 from .core import dictation_translator
 from .core import engines
@@ -56,10 +58,11 @@ from .core import text_formatter
 from .core.api_transcriber import create_transcriber
 from .core.streaming_transcriber import SonioxTranscriber, create_streamer, resolve_replay
 from .core import media_ducker
-from .core import numeral_normalizer
+from .core import numeral_normalizer, symbol_filter
 from .core import sound_fx
 from .core.audio_preprocess import preprocess as preprocess_audio
 from .core.text_utils import join_segments
+from .core.clipboard_history import ClipboardHistoryStore
 from .core.history import HistoryStore
 from .core.history_sync import HistorySync
 from .core.api_usage import ApiUsageStore
@@ -202,6 +205,7 @@ class TaskContext:
             録音終了時に 1 回翻訳キーの状態を合わせて確定する
         translate_target: 翻訳先の言語コード
         translate_model: 翻訳に使う Groq モデル名
+        skip_format_for_ai: 貼り付け先が AI のとき整形を省くか（録音開始時の設定値）
     """
     slot: HotkeySlot
     language: str
@@ -219,6 +223,7 @@ class TaskContext:
     translate: bool = False
     translate_target: str = dictation_translator.DEFAULT_TARGET
     translate_model: str = llm_catalog.RECOMMENDED_MODEL
+    skip_format_for_ai: bool = True
 
 
 @dataclass
@@ -440,7 +445,19 @@ class VoicekeyApp(QObject):
         # Mac と履歴を共有。貼り付け経路は enqueue だけ＝ファイル追記のみでブロックしない。
         # on_changed は同期スレッドから呼ばれるため Signal 経由で UI スレッドへ渡す
         self._history_sync = HistorySync(self._config, on_changed=self.history_sync_changed.emit)
-        self._history = HistoryStore(on_add=self._history_sync.enqueue)
+        self._history = HistoryStore(
+            on_add=self._history_sync.enqueue,
+            limit=self._config.get("history_limit", 200),
+        )
+
+        # --- クリップボードの履歴（サイドノッチに音声入力の履歴と並べて出す。Mac の ClipboardHistoryStore と対） ---
+        # 記録の開始・停止は設定に合わせて _apply_ui_config（UI スレッド）で行う。
+        # 貼り付けの一時書き込みと原本の復元は自分の書き込みなので、本文を先に知らせて 1 回だけ記録しない
+        self._clipboard_history = ClipboardHistoryStore(
+            limit=self._config.get("clipboard_history_limit", 200),
+            app_provider=self._clipboard_source_app,
+        )
+        self._input_handler.on_self_write = self._clipboard_history.ignore_next_change
 
         # --- 使用実績（節約時間・レベル・連続日数。設定の「実績」タブで表示。貼り付け後に集計する） ---
         self._stats = StatsStore()
@@ -468,6 +485,7 @@ class VoicekeyApp(QObject):
             updater=self._updater,
             api_usage=self._api_usage,
             meetbot=self._meetbot,
+            clipboard_history=self._clipboard_history,
         )
         self._settings_window.settings_saved.connect(self._apply_config_changes)
         # Mac 側の履歴が届いたら開いている履歴表示を作り直す（キュー接続で UI スレッド上で実行される）
@@ -519,11 +537,14 @@ class VoicekeyApp(QObject):
         self._side_notch = SideNotch(
             history=self._history,
             enabled=bool(self._config.get("side_notch_enabled", True)),
+            clipboard=self._clipboard_history,
         )
         self.status_changed.connect(self._side_notch.set_status)
         self._side_notch.open_home_requested.connect(self._open_home)
         # 監視スレッドを起動する前に繋ぐ（起動直後のホットリロードも取りこぼさない）
         self.ui_config_changed.connect(self._apply_ui_config)
+        # 履歴の件数とクリップボードの記録の ON/OFF を起動時の設定で一度反映する（記録はここで始まる）
+        self._apply_history_config()
 
         # --- 背景スレッド ---
         self._monitoring = True
@@ -660,6 +681,11 @@ class VoicekeyApp(QObject):
             ),
             translate_model=llm_catalog.normalize_model(
                 self._config.get("translate_input_model", llm_catalog.RECOMMENDED_MODEL)
+            ),
+            # 整形体験中は voicekey 自身の窓が前面なので、AI 宛ての省略は効かせない
+            skip_format_for_ai=(
+                bool(self._config.get("skip_format_for_ai", True))
+                and not self._practice_format_override
             ),
         )
 
@@ -1038,7 +1064,7 @@ class VoicekeyApp(QObject):
                 slot.api_model,
                 language=self._config.get("language", "ja"),
                 prompt=slot.api_prompt,
-                on_interim=self.interim_text.emit,  # 受信スレッド → シグナルでメインへ
+                on_interim=self._make_interim_handler(),  # 受信スレッド → シグナルでメインへ
             )
             if stream.start():
                 with self._state_lock:
@@ -1525,6 +1551,17 @@ class VoicekeyApp(QObject):
         """
         if not ctx.slot.format_enabled:
             return text
+        # 貼り付け先が AI（Claude・ターミナル等）なら整形を省く（Mac の AIDestination と同じ）。
+        # 判定に使うのは録音開始時に別スレッドで控えた前面アプリ（ctx.target_app）だけで、
+        # ここで OS に問い合わせ直さない（録音〜貼り付けの経路に待ち時間を足さないため）。
+        # まだ取れていない回は AI とみなさず、今までどおり整形する（安全側）
+        # Windows のパス（"C:\\...\\claude.exe"）なので ntpath で切る（どの OS のテストでも同じ結果にする）
+        exe = ntpath.basename(ctx.target_app[1]) if ctx.target_app else None
+        if ai_destination.should_skip_format(True, ctx.skip_format_for_ai, exe):
+            logger.info(f"[整形] 整形=省略(AI 宛て) app={exe}")
+            if run is not None:
+                run.timeline.format_skip_note = ai_destination.SKIPPED_LABEL
+            return text
         on_usage = None
         if run is not None:
             def on_usage(data: dict) -> None:
@@ -1579,7 +1616,15 @@ class VoicekeyApp(QObject):
             f"[翻訳] gen={ctx.gen} engine=groq target={ctx.translate_target} "
             f"{elapsed_ms:.0f}ms 結果={outcome}"
         )
-        return result
+        if outcome != "ok":
+            return result
+        # 翻訳 LLM は記号を足すことがあるので、訳文にも記号の自動削除をかける。
+        # 辞書の置き換えでわざと入れた記号は訳文でも消さない
+        protect = [
+            r.get("to", "") for r in (self._config.get("replacements", []) or [])
+            if isinstance(r, dict) and r.get("enabled", True) and r.get("from", "")
+        ]
+        return self._remove_symbols(result, protect)
 
     def _capture_target_app(self, ctx: TaskContext) -> None:
         """録音開始時の前面アプリ（＝貼り付け先）を控え、HUD へアイコンの元を渡す（専用スレッド上）。
@@ -1658,6 +1703,46 @@ class VoicekeyApp(QObject):
                 result = result.replace(src, rule.get("to", ""))
         return result
 
+    def _remove_symbols(self, text: str, protect: Optional[List[str]] = None) -> str:
+        """設定どおりに入力文の記号を自動で消す（Mac の SymbolFilter.filter と同じ規則）。
+
+        Args:
+            text: 対象の文
+            protect: 消さずに守る文字列（辞書の置き換え先など）
+
+        Returns:
+            記号を消した文（設定が OFF なら原文そのまま）
+        """
+        return symbol_filter.filter_symbols(
+            text,
+            enabled=bool(self._config.get("symbol_removal_enabled", True)),
+            keep_groups=self._config.get("symbol_keep_groups", None),
+            protect=protect,
+        )
+
+    def _make_interim_handler(self) -> Callable[[str], None]:
+        """ライブ表示（途中経過）へ流す前に、確定入力と同じ順で数字の正規化と記号の削除をかける関数を作る。
+
+        設定は録音開始時の値で固定する（喋っている最中に「記号あり→確定で消える」と
+        表示がチラつかないように、確定と同じ処理を同じ設定で途中経過にもかける）。
+
+        Returns:
+            受信スレッドから呼ばれ、結果をシグナルでメインスレッドへ送る関数
+        """
+        num_enabled = bool(self._config.get("numeral_normalize_enabled", True))
+        num_counter = bool(self._config.get("numeral_convert_counter", True))
+        num_protect = self._config.get("numeral_protect_words", None)
+        sym_enabled = bool(self._config.get("symbol_removal_enabled", True))
+        sym_keep = self._config.get("symbol_keep_groups", None)
+
+        def on_interim(text: str) -> None:
+            text = numeral_normalizer.normalize(
+                text, enabled=num_enabled, convert_counter=num_counter, protect_words=num_protect,
+            )
+            self.interim_text.emit(symbol_filter.filter_symbols(text, sym_enabled, sym_keep))
+
+        return on_interim
+
     def _insert_and_enter(
         self,
         text: str,
@@ -1682,11 +1767,19 @@ class VoicekeyApp(QObject):
             convert_counter=bool(self._config.get("numeral_convert_counter", True)),
             protect_words=self._config.get("numeral_protect_words", None),
         )
+        # 記号の自動削除。数字の正規化の後・辞書置換の前（辞書でわざと入れた記号を消さないため）
+        text = self._remove_symbols(text)
         # ユーザー辞書の確定置換を貼り付け直前に適用（履歴にも置換後を残す）
         text = self._apply_replacements(text)
         # 翻訳は整形・数字の正規化・置換の後（貼り付ける直前の文をそのまま訳す）
         if ctx is not None:
             text = self._maybe_translate(text, ctx, run)
+        # 記号を消した結果が空（「！」だけ等）なら何も貼らず、Enter も送らない
+        if not text.strip():
+            logger.info("最終テキストが空のため貼り付けをスキップ")
+            if run is not None:
+                run.timeline.outcome = dictation_timeline.OUTCOME_EMPTY_RESULT
+            return
         # 貼り付けに失敗しても履歴から救出できるよう、貼り付け前に記録する
         self._history.add(text)
         # 本文は残さない（文字数だけ）。「貼り付けたのに入らない」を切り分けるため対で記録する
@@ -1808,6 +1901,32 @@ class VoicekeyApp(QObject):
         self._hud.enabled = bool(self._config.get("hud_enabled", True))
         self._hud.always_visible = bool(self._config.get("hud_always_visible", False))
         self._side_notch.set_enabled(bool(self._config.get("side_notch_enabled", True)))
+        self._apply_history_config()
+
+    def _apply_history_config(self) -> None:
+        """履歴の保存件数とクリップボードの記録の ON/OFF を反映する（UI スレッドで実行）。
+
+        QClipboard の監視は UI スレッドでしか張れないので、設定の再読み込み（監視スレッド）からは
+        ui_config_changed 経由でここへ来る。
+        """
+        self._history.limit = self._config.get("history_limit", 200)
+        self._clipboard_history.limit = self._config.get("clipboard_history_limit", 200)
+        if bool(self._config.get("clipboard_history_enabled", True)):
+            self._clipboard_history.start()
+        else:
+            self._clipboard_history.stop()
+
+    def _clipboard_source_app(self) -> Tuple[Optional[str], Optional[str]]:
+        """クリップボード履歴に添えるコピー元（＝コピーした瞬間の前面アプリ）を返す。
+
+        Returns:
+            (実行ファイル名の小文字, 表示名)。取れなければ (None, None)
+        """
+        app = self._platform.foreground_app()
+        if not app:
+            return (None, None)
+        name, path = app
+        return (ntpath.basename(path).lower() or None, name)
 
     def _watchdog_check(self) -> None:
         """録音時間上限・PortAudio ハング・リスナー死活を確認する。"""
@@ -2039,6 +2158,9 @@ class VoicekeyApp(QObject):
 
         self._task_q.put(None)  # ワーカー停止
         self._history_sync.stop()
+        # クリップボードの記録を止め、保存待ちの履歴を書き切る（保存は専用スレッドなので終了で失わないように）
+        self._clipboard_history.stop()
+        self._clipboard_history.flush()
         # 会議中ならボットを退出させ、議事録を書き終えてから Chrome を閉じる
         self._meetbot.shutdown()
         # ストリームを閉じてマイクを OS に返す（ハング時も 1 秒で諦める。

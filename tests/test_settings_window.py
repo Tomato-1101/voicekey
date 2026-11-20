@@ -276,7 +276,7 @@ class _FakeHistorySync:
     def status(self):
         return dict(self._status)
 
-    def merged_items(self, local_items):
+    def merged_items(self, local_items, limit=None):
         return list(local_items)
 
     def request_fetch(self):
@@ -413,6 +413,100 @@ class TestImmediateSave(_SettingsWindowTestBase):
             self._reloaded(cm).get("replacements"),
             [{"from": "ぼいすきー", "to": "voicekey", "enabled": True}],
         )
+
+
+class _FakeClipboardStore:
+    """クリップボード履歴の最小フェイク（clear の成否だけ返す）。"""
+
+    def __init__(self, ok=True):
+        self.ok = ok
+        self.cleared = 0
+
+    def clear(self):
+        self.cleared += 1
+        return self.ok
+
+
+class TestHistoryAndSymbolSettings(_SettingsWindowTestBase):
+    """一般 › 履歴の件数・クリップボード、整形の AI 省略、辞書 › 記号。"""
+
+    def _window(self, cm, clipboard=None):
+        from src.ui.settings_window import SettingsWindow
+
+        win = SettingsWindow(config_manager=cm, clipboard_history=clipboard)
+        self._windows.append(win)
+        return win
+
+    def test_defaults_loaded(self):
+        win = self._window(self._config({"language": "ja"}))
+        page = win.page("general")
+        self.assertTrue(page.skip_ai_switch.isChecked())
+        self.assertEqual(page.history_limit_picker.currentData(), 200)
+        self.assertTrue(page.clipboard_switch.isChecked())
+        self.assertEqual(page.clipboard_limit_picker.currentData(), 200)
+        # ストアが無いときは消去ボタンを押せない
+        self.assertFalse(page.clipboard_clear_button.isEnabled())
+
+    def test_invalid_limit_falls_back_to_default(self):
+        win = self._window(self._config({"language": "ja", "history_limit": 123}))
+        self.assertEqual(win.page("general").history_limit_picker.currentData(), 200)
+
+    def test_history_settings_saved(self):
+        cm = self._config({"language": "ja"})
+        page = self._window(cm).page("general")
+        page.history_limit_picker.setCurrentIndex(page.history_limit_picker.findData(500))
+        page.clipboard_limit_picker.setCurrentIndex(page.clipboard_limit_picker.findData(50))
+        page.clipboard_switch.setChecked(False)
+        page.skip_ai_switch.setChecked(False)
+        page.ctx.flush()
+        saved = self._reloaded(cm)
+        self.assertEqual(saved.get("history_limit"), 500)
+        self.assertEqual(saved.get("clipboard_history_limit"), 50)
+        self.assertFalse(saved.get("clipboard_history_enabled"))
+        self.assertFalse(saved.get("skip_format_for_ai"))
+
+    def test_clear_asks_before_clearing(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        store = _FakeClipboardStore()
+        page = self._window(self._config({"language": "ja"}), store).page("general")
+        self.assertTrue(page.clipboard_clear_button.isEnabled())
+        with mock.patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Cancel):
+            page.clipboard_clear_button.click()
+        self.assertEqual(store.cleared, 0)
+        with mock.patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+            page.clipboard_clear_button.click()
+        self.assertEqual(store.cleared, 1)
+
+    def test_clear_failure_shows_message(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        page = self._window(self._config({"language": "ja"}), _FakeClipboardStore(ok=False)).page("general")
+        with mock.patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+            page.clipboard_clear_button.click()
+        self.assertEqual(page.clipboard_clear_message.text(), "消去できませんでした")
+
+    def test_symbol_defaults(self):
+        from src.core import symbol_filter
+
+        page = self._window(self._config({"language": "ja"})).page("dictionary")
+        self.assertTrue(page.symbol_switch.isChecked())
+        kept = [gid for gid, sw in page.keep_switches.items() if sw.isChecked()]
+        self.assertEqual(sorted(kept), sorted(symbol_filter.DEFAULT_KEEP_GROUPS))
+        self.assertEqual(len(page.keep_switches), len(symbol_filter.GROUPS))
+
+    def test_symbol_settings_saved(self):
+        cm = self._config({"language": "ja"})
+        page = self._window(cm).page("dictionary")
+        page.keep_switches["comma"].setChecked(False)
+        page.symbol_switch.setChecked(False)
+        page.ctx.flush()
+        saved = self._reloaded(cm)
+        self.assertFalse(saved.get("symbol_removal_enabled"))
+        self.assertNotIn("comma", saved.get("symbol_keep_groups"))
+        self.assertIn("kuten", saved.get("symbol_keep_groups"))
+        # マスター OFF の間は残す記号の一覧を触れない
+        self.assertFalse(page.keep_switches["kuten"].isEnabled())
 
 
 class TestPagesAndNavigation(_SettingsWindowTestBase):

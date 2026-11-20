@@ -34,6 +34,7 @@ class PageContext(QObject):
         history_sync: Mac との履歴同期（無ければ None）
         api_usage: API の利用料金の記録（無ければ None）
         meetbot: Google Meet 議事録ボット（無ければ None。議事録ページは参加・要約を押せなくなる）
+        clipboard_history: クリップボードの履歴（無ければ None。一般 › 履歴の「消去」が押せなくなる）
     """
 
     # 設定を保存した（アプリ本体が受けて、ホットキーなどをすぐ適用する）
@@ -54,6 +55,7 @@ class PageContext(QObject):
         history_sync=None,
         api_usage=None,
         meetbot=None,
+        clipboard_history=None,
         parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent)
@@ -65,6 +67,7 @@ class PageContext(QObject):
         self.history_sync = history_sync
         self.api_usage = api_usage
         self.meetbot = meetbot
+        self.clipboard_history = clipboard_history
 
         self._pending: Dict[str, Any] = {}
         self._timer = QTimer(self)

@@ -52,6 +52,7 @@ class SettingsWindow(WindowShell):
         history_sync=None,
         api_usage=None,
         meetbot=None,
+        clipboard_history=None,
     ) -> None:
         """
         Args:
@@ -63,6 +64,7 @@ class SettingsWindow(WindowShell):
             history_sync: Mac との履歴共有（None なら同期の状況は出さない）
             api_usage: API 料金の記録（ダッシュボードで使う）
             meetbot: Google Meet 議事録ボット（議事録・会議ページで使う）
+            clipboard_history: クリップボードの履歴（一般 › 履歴の消去で使う）
         """
         super().__init__()
         self.setWindowTitle("voicekey")
@@ -76,6 +78,7 @@ class SettingsWindow(WindowShell):
             history_sync=history_sync,
             api_usage=api_usage,
             meetbot=meetbot,
+            clipboard_history=clipboard_history,
             parent=self,
         )
         self.ctx.settings_saved.connect(self.settings_saved)

@@ -143,7 +143,7 @@ def _worker_self(pasted=True, enter_ok=True, config=None):
     )
     for name in (
         "_run_task", "_maybe_format", "_maybe_translate", "_insert_and_enter",
-        "_record_stats", "_apply_replacements", "_transcribe_parallel",
+        "_record_stats", "_apply_replacements", "_transcribe_parallel", "_remove_symbols",
     ):
         setattr(s, name, getattr(VoicekeyApp, name).__get__(s))
     return s

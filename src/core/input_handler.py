@@ -6,10 +6,11 @@
 日本語などのマルチバイト文字にも対応。
 """
 
+import sys
 import threading
 import time
 from enum import Enum
-from typing import Optional
+from typing import Callable, Optional
 
 import pyperclip
 from pynput.keyboard import Controller, Key
@@ -96,6 +97,9 @@ class InputHandler:
         # 文字起こしの貼り付けと再貼り付けは別スレッドから来るので、待っている 50ms の間に
         # もう一方が割り込むと、クリップボードの中身とキーの順番が入れ違って別の文が貼られる
         self._paste_lock = threading.Lock()
+        # voicekey 自身がクリップボードへ書く本文を、書く直前に知らせる先
+        # （クリップボード履歴の ignore_next_change。貼り付けの一時書き込みと原本の復元を履歴に入れないため）
+        self.on_self_write: Optional[Callable[[str], None]] = None
 
     def insert_text(self, text: str) -> bool:
         """
@@ -142,8 +146,9 @@ class InputHandler:
                 self._saved_original = original
                 self._injected_text = text
 
-            # クリップボードにコピー
-            pyperclip.copy(text)
+            # クリップボードにコピー（履歴・Win+V に残さない印付き）
+            self._notify_self_write(text)
+            self._copy_injected_text(text)
 
             # キーの合成まで終わったときだけ、元の内容へ戻すタイマーを登録する。
             # 合成に失敗した回まで戻すと、1 秒後に文字起こし結果がクリップボードからも消え、
@@ -191,6 +196,37 @@ class InputHandler:
             logger.error(f"テキスト挿入エラー: {e}")
             return False
 
+    def _notify_self_write(self, text: str) -> None:
+        """これからクリップボードへ書く本文を知らせる（失敗しても貼り付けは止めない）。
+
+        Args:
+            text: 書く本文
+        """
+        callback = self.on_self_write
+        if callback is None:
+            return
+        try:
+            callback(text)
+        except Exception as e:
+            logger.warning(f"クリップボード書き込みの通知に失敗（無視）: {type(e).__name__}")
+
+    @staticmethod
+    def _copy_injected_text(text: str) -> None:
+        """貼り付け用の本文をクリップボードへ書く。
+
+        Windows では「履歴・監視に残さないで」の印を付けて書き、Win+V の履歴や
+        他のクリップボード管理アプリにも残させない。書けなければ従来の pyperclip.copy に戻る。
+
+        Args:
+            text: 貼り付ける本文
+        """
+        if sys.platform == "win32":
+            from ..platform.windows.clipboard import copy_text_excluded
+
+            if copy_text_excluded(text):
+                return
+        pyperclip.copy(text)
+
     def _restore_clipboard(self, gen: int) -> None:
         """退避したクリップボード内容を復元する（貼り付け完了後にバックグラウンドで遅延実行）。
 
@@ -227,6 +263,8 @@ class InputHandler:
                 self._saved_original = None
 
             if decision is RestoreDecision.RESTORE:
+                # 戻すのは利用者の原本だが、voicekey の書き込みなので履歴に入れ直さない
+                self._notify_self_write(original)
                 pyperclip.copy(original)
             elif decision is RestoreDecision.CLEAR:
                 # 戻せる原本が無い（空 or 画像などの非テキスト）。ここで何もしないと

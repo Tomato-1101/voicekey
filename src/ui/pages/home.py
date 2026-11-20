@@ -1042,7 +1042,8 @@ class HomePage(QWidget):
         local = self.ctx.history.items() if self.ctx.history is not None else []
         sync = self.ctx.history_sync
         if sync is not None and sync.enabled:
-            return sync.merged_items(local)
+            # 表示件数はローカル履歴の保存件数に合わせる（limit を持たない差し替えでも既定の 200）
+            return sync.merged_items(local, limit=getattr(self.ctx.history, "limit", 200))
         return local
 
     def _refresh_apps(self) -> None:

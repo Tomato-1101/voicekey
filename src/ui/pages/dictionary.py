@@ -12,8 +12,9 @@ from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QFont, QPainter
 from PySide6.QtWidgets import QHBoxLayout, QLineEdit, QStackedWidget, QVBoxLayout, QWidget
 
+from ...core import symbol_filter
 from .. import icons, theme
-from ..components import CapsuleButton, SettingsGroup, Switch, Text
+from ..components import CapsuleButton, SettingRow, SettingsGroup, Switch, Text
 from ..theme import Metrics, Theme
 from .context import PageContext
 from .widgets import SettingsPage, _centered_column
@@ -96,6 +97,8 @@ class DictionaryPage(SettingsPage):
         super().__init__("ユーザー辞書", parent)
         self.ctx = ctx
         self.rows: List[_RuleRow] = []
+        # 記号の設定を画面へ写している間は保存しない
+        self._loading = False
 
         # 空のときの案内と一覧は同じ場所に重ね、どちらかを見せる（行の出し入れで下部が動かないように）
         self.stack = QStackedWidget()
@@ -117,6 +120,7 @@ class DictionaryPage(SettingsPage):
         self.group = SettingsGroup()
         self.stack.addWidget(self.group)
         self.body.addWidget(self.stack)
+        self._build_symbols()
         self.finish()
 
         # 下部（スクロールの外・区切り線の下に固定）: 左に「追加」、右に注記
@@ -135,6 +139,61 @@ class DictionaryPage(SettingsPage):
 
         self.add_button.clicked.connect(self._on_add)
         self._build(self._saved_rules())
+        self._load_symbols()
+        self.symbol_switch.toggled.connect(self._on_symbol_toggled)
+        for switch in self.keep_switches.values():
+            switch.toggled.connect(self._save_keep_groups)
+
+    # ----- 記号（Mac の 辞書と数字 › 記号 と同じ中身） -----
+
+    def _build_symbols(self) -> None:
+        """「記号を自動で消す」と、消さずに残す記号の一覧を作る。"""
+        self.add_section("記号")
+        group = self.add_group()
+        self.symbol_switch = Switch()
+        group.add_row(SettingRow(
+            "記号を自動で消す",
+            "下の一覧でチェックを外した記号を入力から消します。一覧にない記号は変えません。"
+            "英数字の途中にある一部の記号は保護します。",
+            self.symbol_switch,
+        ))
+        self.add_section("残す記号")
+        keep_group = self.add_group()
+        # ON にした記号は消さずに残す（id → スイッチ。並びは symbol_filter.GROUPS のまま）
+        self.keep_switches = {}
+        for gid, name, chars in symbol_filter.GROUPS:
+            switch = Switch()
+            # 「,，」のように詰めると読めないので 1 文字ずつ空けて見せる
+            keep_group.add_row(SettingRow(name, " ".join(chars), switch))
+            self.keep_switches[gid] = switch
+
+    def _load_symbols(self) -> None:
+        """保存されている記号の設定を画面へ写す（保存はしない）。"""
+        self._loading = True
+        try:
+            enabled = bool(self.ctx.get("symbol_removal_enabled", True))
+            self.symbol_switch.setChecked(enabled)
+            keep = self.ctx.get("symbol_keep_groups", None)
+            if not isinstance(keep, list):
+                keep = symbol_filter.DEFAULT_KEEP_GROUPS
+            for gid, switch in self.keep_switches.items():
+                switch.setChecked(gid in keep)
+                # マスターが OFF のあいだは一覧を触れなくする（Mac の disabled と同じ）
+                switch.setEnabled(enabled)
+        finally:
+            self._loading = False
+
+    def _on_symbol_toggled(self, value: bool) -> None:
+        for switch in self.keep_switches.values():
+            switch.setEnabled(value)
+        if not self._loading:
+            self.ctx.commit({"symbol_removal_enabled": value})
+
+    def _save_keep_groups(self, *_args) -> None:
+        if self._loading:
+            return
+        keep = [gid for gid, switch in self.keep_switches.items() if switch.isChecked()]
+        self.ctx.commit({"symbol_keep_groups": keep})
 
     # ----- 読み込み -----
 
@@ -165,6 +224,7 @@ class DictionaryPage(SettingsPage):
         ]
         if saved != self._collect():
             self._build(saved)
+        self._load_symbols()
 
     # ----- 行の出し入れ -----
 

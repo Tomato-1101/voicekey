@@ -83,6 +83,7 @@ class DictationTimeline:
         stt_ms: 文字起こしにかかった時間
         vad_ms: 発話区間の検出にかかった時間
         format_ms: 整形にかかった時間
+        format_skip_note: 整形を省いた理由（例: ai_destination.SKIPPED_LABEL）。入っていれば整形欄に時間の代わりに出す
         translate_ms: 翻訳にかかった時間
         paste_ms: 貼り付けにかかった時間
         pasted_at: 貼り付けが終わった時刻
@@ -108,6 +109,7 @@ class DictationTimeline:
     stt_ms: Optional[float] = None
     vad_ms: Optional[float] = None
     format_ms: Optional[float] = None
+    format_skip_note: Optional[str] = None
     translate_ms: Optional[float] = None
     paste_ms: Optional[float] = None
     pasted_at: Optional[float] = None
@@ -143,7 +145,7 @@ class DictationTimeline:
             f"停止→確定={_span(self.stopped_at, self.finalized_at)}",
             f"STT={_ms(self.stt_ms)}",
             f"VAD={_ms(self.vad_ms)}",
-            f"整形={_ms(self.format_ms)}",
+            f"整形={self.format_skip_note or _ms(self.format_ms)}",
             f"翻訳={_ms(self.translate_ms)}",
             f"貼付={_ms(self.paste_ms)}",
             f"離鍵→貼付完了={_span(self.released_at, self.pasted_at)}",

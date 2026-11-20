@@ -5,7 +5,7 @@
 settings.yamlが存在しない場合のデフォルト設定を定義する。
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 from .types import HotkeyMode
 
@@ -45,6 +45,10 @@ AUDIO_DTYPE: str = "float32"  # 音声データ型
 # タイミング設定
 # ============================================
 CONFIG_CHECK_INTERVAL_SEC: int = 1          # 設定ファイル監視間隔（秒）
+
+# 履歴の保存件数の選択肢と既定（音声入力・クリップボード共通。Mac の ConfigStore.historyLimitOptions と同じ）
+HISTORY_LIMIT_OPTIONS: Tuple[int, ...] = (50, 100, 200, 500, 1000)
+DEFAULT_HISTORY_LIMIT: int = 200
 # ============================================
 # デフォルト設定
 # ============================================
@@ -81,6 +85,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "format_model": "qwen/qwen3.8-27b",
     # 整形プロンプト本文（空 = スロットごとの「整え方」の本文を使用）
     "format_auto_prompt": "",
+    # 貼り付け先が AI（Claude・ChatGPT・ターミナル等。判定は core/ai_destination.py）のときは整形を省くか。
+    # AI は言いよどみ入りでも理解できるので Groq の往復を省いて速く・安く入力する（既定 ON・Mac の skipFormatForAI と同義）
+    "skip_format_for_ai": True,
 
     # ユーザー辞書（確定置換）。文字起こし・整形が終わった最終テキストに対し、
     # 貼り付け直前で from→to を機械置換する（API を通さないので遅延ゼロ）。
@@ -99,6 +106,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         # いちばん（＝最も）・いちど（もう一度）を守る（番・度は助数詞なので既定では 1番/1度 になる）
         "一番", "一度",
     ],
+
+    # 入力文から記号を自動で消す（core/symbol_filter・Mac 版 ConfigStore と同義）。
+    # symbol_removal_enabled: マスター（False で完全パススルー）
+    # symbol_keep_groups: 消さずに残す記号グループの id（symbol_filter.GROUPS。既定は読点・句点・カンマ・ドット）
+    "symbol_removal_enabled": True,
+    "symbol_keep_groups": ["comma", "period", "touten", "kuten"],
 
     # ホットキー1 設定＝普通入力（既定: Soniox・押している間。しゃべりながら送り、離した瞬間に入力）。
     # backend はエンジン id（core/engines.py の一覧・Mac 版と同じ文字列）。
@@ -167,6 +180,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # False かつ「起動時に settings.yaml が存在しなかった（＝完全な初回起動）」ときだけ
     # セットアップウィンドウを出す。既存ユーザー（ファイルが既にあった）は補完して出さない。
     "did_complete_onboarding": False,
+
+    # 音声入力の履歴の保存件数（HISTORY_LIMIT_OPTIONS のどれか。Mac の historyLimit と同義）
+    "history_limit": 200,
+    # コピーしたテキストをクリップボードの履歴に残すか（Mac の clipboardHistoryEnabled と同義・既定 ON）
+    "clipboard_history_enabled": True,
+    # クリップボードの履歴の保存件数（Mac の clipboardHistoryLimit と同義）
+    "clipboard_history_limit": 200,
 
     # Mac と履歴を共有する Cloudflare Worker（sync-worker/）。トークンは keyring（voicekey.SyncToken）に置き、設定ファイルには書かない
     "history_sync": {

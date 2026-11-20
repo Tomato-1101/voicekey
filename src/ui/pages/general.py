@@ -15,8 +15,9 @@ Windows に無い・src に実装が無いので置かない行:
 from typing import Callable, List, Optional
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import QHBoxLayout, QLineEdit, QPlainTextEdit, QSpinBox, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLineEdit, QMessageBox, QPlainTextEdit, QSpinBox, QWidget
 
+from ...config.constants import DEFAULT_HISTORY_LIMIT, HISTORY_LIMIT_OPTIONS
 from ...core import llm_catalog, text_formatter
 from ...core.audio_recorder import AudioRecorder
 from ...utils import autostart, secrets
@@ -79,6 +80,22 @@ def accent_from(get: Callable) -> str:
     """
     value = get("accent_color", theme.ACCENT_BRAND)
     return value if value in (theme.ACCENT_BRAND, theme.ACCENT_SYSTEM) else theme.ACCENT_BRAND
+
+
+def _limit_picker() -> Picker:
+    """履歴の保存件数を選ぶ部品（選択肢は Mac の historyLimitOptions と同じ）。"""
+    picker = Picker()
+    for count in HISTORY_LIMIT_OPTIONS:
+        picker.addItem(f"{count} 件", count)
+    return picker
+
+
+def _select_limit(picker: Picker, value) -> None:
+    """保存値の件数を選ぶ（選択肢に無い値は既定の 200 件。設定の読み込みでも同じ値に直される）。"""
+    index = picker.findData(value)
+    if index < 0:
+        index = picker.findData(DEFAULT_HISTORY_LIMIT)
+    picker.setCurrentIndex(index)
 
 
 def _model_label(model: llm_catalog.LLMModel) -> str:
@@ -219,6 +236,13 @@ class GeneralPage(SettingsPage):
         self.prompt_edit.setFixedHeight(line * 8 + 16)
         prompt_row.body.addWidget(self.prompt_edit)
         group.add_row(prompt_row)
+        self.skip_ai_switch = Switch()
+        group.add_row(SettingRow(
+            "貼り付け先が AI のときは整形しない",
+            "Claude・ChatGPT・ターミナル（Claude Code）などへ貼るときは、言いよどみがあっても AI は理解できるので、"
+            "整形を省いて速く入力します。",
+            self.skip_ai_switch,
+        ))
         self.add_note("整形するかどうかは「録音キー」の各ページで切り替えます。")
 
     def _build_numeral(self) -> None:
@@ -301,6 +325,25 @@ class GeneralPage(SettingsPage):
 
     def _build_history(self) -> None:
         self.add_section("履歴")
+        # 保存件数とクリップボードの履歴（Mac の 一般 › 履歴 と同じ並び）
+        local = self.add_group()
+        self.history_limit_picker = _limit_picker()
+        local.add_row(SettingRow("音声入力の保存件数", trailing=self.history_limit_picker))
+        self.clipboard_switch = Switch()
+        local.add_row(SettingRow(
+            "クリップボードの履歴を残す",
+            "パスワード管理アプリなど、履歴に残さない印が付いたコピーは記録しません。",
+            self.clipboard_switch,
+        ))
+        self.clipboard_limit_picker = _limit_picker()
+        local.add_row(SettingRow("クリップボードの保存件数", trailing=self.clipboard_limit_picker))
+        self.clipboard_clear_button = CapsuleButton("消去", kind="destructive")
+        clear_row = SettingRow("クリップボードの履歴を消去", trailing=self.clipboard_clear_button)
+        self.clipboard_clear_message = add_row_message(clear_row)
+        local.add_row(clear_row)
+        if self.ctx.clipboard_history is None:
+            self.clipboard_clear_button.setEnabled(False)
+
         group = self.add_group()
         self.sync_switch = Switch()
         group.add_row(SettingRow("Mac と履歴を共有", _SYNC_CAPTION, self.sync_switch))
@@ -343,6 +386,7 @@ class GeneralPage(SettingsPage):
         self.delay_input.valueChanged.connect(self._on_delay_changed)
 
         self.model_picker.currentIndexChanged.connect(self._on_model_changed)
+        self.skip_ai_switch.toggled.connect(lambda v: self._save({"skip_format_for_ai": v}))
         self.prompt_edit.textChanged.connect(self._on_prompt_changed)
         self.prompt_reset_button.clicked.connect(
             lambda: self.prompt_edit.setPlainText(text_formatter.DEFAULT_FORMAT_PROMPT)
@@ -361,6 +405,15 @@ class GeneralPage(SettingsPage):
         self.sound_switch.toggled.connect(lambda v: self._save({"sound_effects_enabled": v}))
         self.duck_switch.toggled.connect(lambda v: self._save({"duck_media_enabled": v}))
         self.autostart_switch.toggled.connect(self._on_autostart_toggled)
+
+        self.history_limit_picker.currentIndexChanged.connect(
+            lambda _i: self._save({"history_limit": self.history_limit_picker.currentData()})
+        )
+        self.clipboard_switch.toggled.connect(lambda v: self._save({"clipboard_history_enabled": v}))
+        self.clipboard_limit_picker.currentIndexChanged.connect(
+            lambda _i: self._save({"clipboard_history_limit": self.clipboard_limit_picker.currentData()})
+        )
+        self.clipboard_clear_button.clicked.connect(self._clear_clipboard_history)
 
         self.sync_switch.toggled.connect(lambda v: self._save({"history_sync": {"enabled": v}}))
         self.sync_url_input.textChanged.connect(self._on_sync_url_changed)
@@ -401,6 +454,7 @@ class GeneralPage(SettingsPage):
             shown = prompt or text_formatter.DEFAULT_FORMAT_PROMPT
             if self.prompt_edit.toPlainText() != shown:
                 self.prompt_edit.setPlainText(shown)
+            self.skip_ai_switch.setChecked(bool(get("skip_format_for_ai", True)))
 
             self.numeral_switch.setChecked(bool(get("numeral_normalize_enabled", True)))
             self.counter_switch.setChecked(bool(get("numeral_convert_counter", True)))
@@ -416,6 +470,10 @@ class GeneralPage(SettingsPage):
             self.duck_switch.setChecked(bool(get("duck_media_enabled", True)))
             # 自動起動の正本はレジストリ（設定ファイルには持たない）
             self.autostart_switch.setChecked(autostart.is_supported() and autostart.is_enabled())
+
+            _select_limit(self.history_limit_picker, get("history_limit", DEFAULT_HISTORY_LIMIT))
+            self.clipboard_switch.setChecked(bool(get("clipboard_history_enabled", True)))
+            _select_limit(self.clipboard_limit_picker, get("clipboard_history_limit", DEFAULT_HISTORY_LIMIT))
 
             sync = get("history_sync", {}) or {}
             self.sync_switch.setChecked(bool(sync.get("enabled", False)))
@@ -459,6 +517,25 @@ class GeneralPage(SettingsPage):
     def _save(self, changes: dict) -> None:
         if not self._loading:
             self.ctx.commit(changes)
+
+    def _clear_clipboard_history(self) -> None:
+        """クリップボードの履歴を消す（元に戻せないので確認してから。失敗したら行に出す）。"""
+        store = self.ctx.clipboard_history
+        if store is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "クリップボードの履歴を消去",
+            "クリップボードの履歴をすべて消去しますか？この操作は取り消せません。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        if store.clear():
+            self.clipboard_clear_message.show_message("")
+        else:
+            self.clipboard_clear_message.show_message("消去できませんでした", "danger")
 
     def _update_buttons(self, *_args) -> None:
         self.handsfree_clear.setEnabled(bool(self.handsfree_input.value()))

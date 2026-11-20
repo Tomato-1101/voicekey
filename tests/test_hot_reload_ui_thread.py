@@ -48,6 +48,7 @@ class _UiProbe(QObject):
                 object.__setattr__(self, name, value)
 
         self._hud = _Hud()
+        self._apply_history_config = mock.Mock()  # 履歴の件数・クリップボード監視の反映（ここでは配線だけ見る）
         self._side_notch = mock.Mock()
         self._side_notch.set_enabled.side_effect = (
             lambda enabled: self.applied_on.append(threading.current_thread())
@@ -93,6 +94,7 @@ class TestHotReloadUiThread(unittest.TestCase):
             _config=config,
             _hud=SimpleNamespace(enabled=True, always_visible=False),
             _side_notch=mock.Mock(),
+            _apply_history_config=mock.Mock(),
         )
         VoicekeyApp._apply_ui_config(s)
         self.assertEqual((s._hud.enabled, s._hud.always_visible), (False, True))
