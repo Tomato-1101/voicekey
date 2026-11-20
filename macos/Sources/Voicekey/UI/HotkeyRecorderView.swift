@@ -26,24 +26,41 @@ struct HotkeyRecorderView: View {
 
     var body: some View {
         Button(action: toggleRecording) {
-            HStack {
-                Text(displayText)
-                    .foregroundStyle(isRecording ? Brand.signal : Color.primary)
-                Spacer()
+            HStack(spacing: 6) {
+                // 割り当て済みのキーはキーキャップ（チップ）で見せる。文字列の「右⌘+Space」より
+                // 「どのキーを押すのか」が一目で分かるため（HANDOFF の改善候補「ホットキーのチップ化」）
+                if !displayTokens.isEmpty {
+                    ForEach(Array(displayTokens.enumerated()), id: \.offset) { _, token in
+                        KeyCapChip(text: KeyToken.displayName(token), highlighted: isRecording)
+                    }
+                } else {
+                    Text(placeholderText)
+                        .foregroundStyle(isRecording ? Brand.signal : Color.secondary)
+                }
+                Spacer(minLength: 4)
                 if isRecording {
                     Text("ESC で取り消し")
                         .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    // 押すと割り当て直せることを示す（チップだけだとただの表示に見えるため）
+                    Image(systemName: "keyboard")
+                        .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, minHeight: 30)
             .background(
-                RoundedRectangle(cornerRadius: 6)
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(isRecording ? Brand.signal.opacity(0.08) : Color.primary.opacity(0.03))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
                     .strokeBorder(
-                        isRecording ? Brand.signal : Color.secondary.opacity(0.4),
-                        lineWidth: 1
+                        isRecording ? Brand.signal : Color.secondary.opacity(0.35),
+                        lineWidth: isRecording ? 1.5 : 1
                     )
             )
             .contentShape(Rectangle())
@@ -52,15 +69,14 @@ struct HotkeyRecorderView: View {
         .onDisappear { stopRecording() }
     }
 
-    private var displayText: String {
-        if isRecording {
-            return heldModifiers.isEmpty
-                ? "入力待ち"
-                : heldModifiers.map { KeyToken.displayName($0) }.joined(separator: "+")
-        }
-        return hotkey.isEmpty
-            ? emptyLabel
-            : hotkey.map { KeyToken.displayName($0) }.joined(separator: "+")
+    /// チップで見せるキー（捕捉中は押されている修飾キー、それ以外は割り当て済みのキー）
+    private var displayTokens: [String] {
+        isRecording ? heldModifiers : hotkey
+    }
+
+    /// キーが 1 つも無いときの文言（捕捉中は「キーを押してください」、未割り当ては emptyLabel）
+    private var placeholderText: String {
+        isRecording ? "キーを押してください…" : emptyLabel
     }
 
     private func toggleRecording() {
@@ -115,5 +131,31 @@ struct HotkeyRecorderView: View {
     private func commit(_ tokens: [String]) {
         hotkey = tokens
         stopRecording()
+    }
+}
+
+/// キーキャップ風のチップ（1 キー分）。録音キー・ハンズフリーキーなどの表示とサイドバーで使う。
+struct KeyCapChip: View {
+    let text: String
+    /// 捕捉中など、灯り色で縁取るか
+    var highlighted: Bool = false
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 12, weight: .semibold, design: .rounded))
+            .lineLimit(1)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .frame(minWidth: 24)
+            .background(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(Color.primary.opacity(0.08))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 5)
+                    .strokeBorder(highlighted ? Brand.signal : Color.primary.opacity(0.20), lineWidth: 1)
+            )
+            // 下辺にだけ薄い影を落として、押せるキーの厚みを出す
+            .shadow(color: .black.opacity(0.10), radius: 0, x: 0, y: 1)
     }
 }

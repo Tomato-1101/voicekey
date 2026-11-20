@@ -35,8 +35,8 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | 項目 | personal（唯一の版） |
 |---|---|
 | 文字起こしの選択肢 | **Mac**: Soniox（ライブ・stt-rt-v5）/ OpenAI ライブ / OpenAI（gpt-transcribe）/ Microsoft MAI（MAI-Transcribe-2）/ ElevenLabs（scribe_v2・v1）/ Groq を**実名表示**＋ **ローカル（Apple）オンデバイス**（macOS 26+・キー不要）。新規インストールの既定は macOS 26+ なら両録音キーともローカル（Apple）、それ以前は録音キー 1 = Soniox / 2 = Groq。Deepgram は選択肢から外し、保存済みの Deepgram は Soniox へ自動移行。**Windows** もローカル（Apple）以外は同じ 6 種（`core/engines.py`）。既定は録音キー 1 = Soniox / 2 = Groq。保存済みの Deepgram は Soniox へ自動移行 |
-| モデル選択 | あり（フルコントロール） |
-| テキスト整形（Groq） | トグルあり・モデル/プロンプト選択可＋整え方プリセット 4 種（標準/そのまま/すっきり/箇条書き）。既定はエンジン別（録音後に送るエンジン=ON / 録音しながら送るエンジン・ローカル=OFF）。Windows は画面でモデル/プロンプトを選ばず、整形モデルは `llm_catalog.RECOMMENDED_MODEL` |
+| モデル選択 | あり（フルコントロール）。**Mac** はエンジンとモデルを 1 つのポップアップで選ぶ（提供元の見出しの下にモデル。録音キー・字幕翻訳・翻訳して入力で共通の作り） |
+| テキスト整形（Groq） | トグルあり（録音キーごと）・モデル/プロンプト選択可。**Mac** のプロンプトは録音キー 1・2 共通の 1 つ（設定「プロンプト」ページ。正本は `autoFormatPrompt`）にし、整え方 4 種（標準/そのまま/すっきり/箇条書き）は指示文のひな形として選ぶ。既定はエンジン別（録音後に送るエンジン=ON / 録音しながら送るエンジン・ローカル=OFF）。貼り付け先が AI（Claude・ChatGPT・ターミナル等）なら録音開始時の前面アプリで判定して整形を省く（Mac・Windows 共通・既定 ON・一覧は Mac `Core/AIDestination.swift`）。Windows は画面でモデル/プロンプトを選ばず、整形モデルは `llm_catalog.RECOMMENDED_MODEL` |
 | API キー | 利用者が設定 › API キー で入力（アプリ専用 Keychain 項目）。読み順は **アプリ項目 → 環境変数 → 中央 Keychain（service = 変数名 / account = `shared`）**（`Keychain.resolve` の 1 か所）。**ログイン・課金・アクティベーションキーは無し**（サーバー往復ゼロ＝最速） |
 | personal 限定機能 | ライブ字幕 / ローカル（Apple）文字起こし / 翻訳して入力（いずれも Mac・macOS 26+） |
 
@@ -55,13 +55,15 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | ハンズフリー録音 | 切替キーで開始・停止（録音中は HUD 表示） | ✅ | ✅ |
 | ダブルタップ Enter | ホットキーを素早く 2 回 → 貼り付け後に Enter（送信） | ✅ | ✅ |
 | テキスト整形 | 文字起こし後に Groq で整文（§3 参照・トグルで ON/OFF） | ✅ | ✅ |
-| ユーザー辞書（確定置換） | 貼り付け直前に from→to を機械置換（「ユーザー辞書」タブで編集・部分一致・ローカル処理＝遅延ゼロ） | ✅ | ✅ |
-| 数字変換 v2 | 貼付直前に漢数字→半角（全角半角化・裸数字列・位取り〔千二百三十四→1234〕・助数詞つき単独漢数字〔三時→3時〕）。決定的・純関数・冪等（LLM 不使用）。設定「数字入力」で 2 トグル＋保護リスト編集（誤変換を防ぐ語・先頭アンカー照合） | ✅ | ✅ |
+| ユーザー辞書（確定置換） | 貼り付け直前に from→to を機械置換（設定「辞書と数字」ページで編集・部分一致・ローカル処理＝遅延ゼロ） | ✅ | ✅ |
+| 数字変換 v2 | 貼付直前に漢数字→半角（全角半角化・裸数字列・位取り〔千二百三十四→1234〕・助数詞つき単独漢数字〔三時→3時〕）。決定的・純関数・冪等（LLM 不使用）。設定「辞書と数字」の「数字の書き方」で 2 トグル＋保護リスト編集（誤変換を防ぐ語・先頭アンカー照合） | ✅ | ✅ |
+| 記号の自動削除 | 貼付直前に「残す記号」以外の記号（！？「」（）… など 14 グループ）を消す。既定で残すのは 、。,. のみ。3.5・1,000・10:30・example.com・don't は保護。訳文・ライブ表示にも適用。設定「辞書と数字」の「記号」で編集（`SymbolFilter` / `symbol_filter.py`） | ✅ | ✅ |
 | VAD / 長文分割 / ストリーミング / 録音 HUD | 常時 ON 固定（§3） | ✅ | ✅ |
 | マイク自動検出 | 入力レベルの分散で使用マイクを推定 | ✅ | ✅ |
-| 履歴 | 直近の文字起こし結果を保持（Mac は 200 件＋貼付先アプリ・日時のメタデータ、検索付き） | ✅ | ✅ |
+| 履歴 | 直近の文字起こし結果を保持（両 OS とも既定 200 件〔設定で 50〜1000〕＋貼付先アプリ・日時のメタデータ、検索付き。Win のアプリ名は Win32 API の実行ファイル名＋FileDescription） | ✅ | ✅ |
 | ホーム画面 / ダッシュボード | 統計 3 カード（累計入力／節約できた時間／この期間）＋最近の履歴のダッシュボード。**Mac** は起動・再オープンで開くメインウィンドウのホーム面（アプリ別使用率・マイクテスト・ガイド再表示・サイドバーで同一ウィンドウ設定切替つき。再オープン時は最後の画面を復元）／**Win** は設定ウィンドウ先頭の「ホーム」ページ（アプリ別使用率は履歴のアプリ情報なしのため非対応）。詳細は CHANGELOG | ✅ | ✅ |
 | API の利用料金 | ホームに今日/今月/累計の推定料金（USD）・プロバイダー×モデル別内訳・直近 30 日推移（定価／実際に払った分の切替つき）、メニュー（Win はトレイ）に「今日の API 代」。10/2 以前はログ・統計から推定（`Core/ApiUsageBackfill.swift`）。単価表は `Core/ApiPricing.swift`、日次集計は `Core/ApiUsageStore.swift`（api-usage.json・数量のみ保存） | ✅ | ✅ |
+| クリップボード履歴 | コピーしたテキストを記録し、サイドノッチの履歴パネルに音声入力の履歴と並べて出す（すべて／音声入力／クリップボードの切替・パスワード管理アプリ等の印付きは記録しない・件数は設定で 50〜1000・既定 ON） | ✅ | ✅ |
 | サイドノッチ | 画面左端の履歴スリット → クリックで検索付き履歴パネル（黒基調・録音中はアクセント点灯・フォーカス非奪取・既定 ON。検索は Mac＝テキスト/アプリ名・Win＝テキスト） | ✅ | ✅ |
 | 操作音 / メディアダッキング | 録音開始/停止のブリップ音（同一周波数で合成）・録音中はメディア音量を自動で下げる（既定 ON。Win ダッキングは Core Audio/pycaw・非対応時は無害スキップ） | ✅ | ✅ |
 | 最後の入力を再貼り付け | グローバルキー（既定 Mac ⌃⌘V・Win Ctrl+Alt+V）で直前の入力を再貼り付け | ✅ | ✅ |
@@ -73,6 +75,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | Google Meet 議事録ボット（personal のみ・macOS 26+・要 Chrome） | 会議 URL を渡すと専用プロファイルの Chrome を裏で起動して参加し、文字起こしを議事録へ保存。**取得元は 2 択**（既定＝Meet の内蔵字幕・話者名つき / 端末内の Apple 認識・外に出さない）。マイク・カメラは切って参加。本人と同じアカウントで本人が在室中でも「このデバイスでも参加」で入る（「切り替える」は押さない）。voicekey から会議を始められる（ボットが先に入り、会議をオープン＝承諾なしで参加可にしてから URL をコピーして開く）。ほかの参加者がいなくなって 60 秒・誰も来ないまま 15 分で自動退出。落ちて残ったボット用 Chrome は次の起動時に終わらせる。議事録は字幕の保存スイッチに関係なく必ず保存（会議ごとに 1 ファイル）・終了通知から開ける | ✅ | ✅（Meet の字幕のみ） |
 | ローカル文字起こし「ローカル（Apple）」（personal のみ・macOS 26+） | 文字起こしを Apple のオンデバイス音声認識（SpeechAnalyzer）で Mac の中だけで行う。通信・API キーなし＝オフライン可。録音中から並行認識し離した瞬間に確定（実測 92〜155ms）。認識言語は「言語」設定に従い、初回だけモデル DL（進捗は録音 HUD） | ✅ | ❌ |
 | 翻訳して入力（personal のみ・macOS 26+） | 文字起こしの最終テキストを訳してから貼り付ける（本命は「日本語で話す→英語が入力される」）。**全体で 1 トグル**・出力言語は 英/中/韓/西/日 から選択・エンジンは Apple オンデバイス（既定）/ Groq の 2 択（Gemini は出さない）。貼り付け直前に 1 回だけ適用し、失敗時は原文フォールバック。録音中に押すとその回だけ翻訳する「1 回翻訳キー」（既定 右⇧）つき | ✅ | ✅（Groq のみ） |
+| スクリーンショット添付 | 録音中に撮影キー（既定 左⌃）を押して離すと範囲選択で撮影し、文に `[画像N]` の印を入れて画像と一緒に貼る（GUI は画像→文を ⌘V、ターミナルは印で区切って画像を ⌃V）。撮るとハンズフリーへ切替・ピルに枚数（`Core/ScreenshotAttach.swift` / `Paster.pasteSequence`・計画 `docs/SCREENSHOT_ATTACH_PLAN.md`） | ✅ | ❌ |
 | 履歴同期（Mac ⇄ Windows） | Cloudflare Workers + D1 経由で音声入力履歴を共有（自分専用・共有トークン 1 本・既定オフ）。詳細は `docs/HISTORY_SYNC.md` | ✅ | ✅ |
 
 ## 5. アーキ地図（責務 → ファイル）
@@ -94,8 +97,9 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | 文字入力（貼り付け） | `Core/Paster.swift`（復元判定は `ClipboardRestorePolicy` / `CLI/PasteRestoreTestMode.swift` が `--paste-restore-test` で実動検証） | `core/input_handler.py`（判定は `decide_restore`） |
 | VAD / マイク自動検出 / 履歴 | `Core/VoiceActivity.swift` / `MicAutoDetector.swift` / `HistoryStore.swift` | `core/vad.py` / `mic_auto_detect.py` / `history.py` |
 | 履歴同期（Mac ⇄ Windows） | `Core/HistorySync.swift` | `core/history_sync.py` |
+| クリップボード履歴 | `Core/ClipboardHistoryStore.swift`（changeCount のポーリング・clipboard-history.json） | `core/clipboard_history.py`（`QClipboard.dataChanged`・clipboard_history.json） |
 | 使用実績（統計・レベル） | `Core/StatsStore.swift` | `core/stats.py` |
-| 設定画面 UI | `UI/SettingsView.swift` / `HotkeyRecorderView.swift` / `Glass.swift`（ガラス様式・押しやすい行の共通部品）。見た目の確認は `--ui-snapshot`（`CLI/UISnapshotTestMode.swift`・画面外で全ページを PNG 化） | `ui/settings_window.py`（窓とサイドバー）/ `ui/pages/*.py`（1 ページ 1 ファイル・開いたときに作る）/ `ui/theme.py`（色・寸法・QSS・Windows 11 の文字の段とアクセント色）/ `ui/components.py`（Windows 11 の「設定」アプリに合わせた行・スイッチ・ボタン等の部品）。実画面の確認は CI の `scripts/dev/settings_probe.py` |
+| 設定画面 UI | `UI/SettingsView.swift`（サイドバー＝はじめに / 音声入力 / 字幕と議事録 / アプリ・タブ id は `MainWindowView.TabID`）/ `HotkeyRecorderView.swift`（キーキャップ表示）/ `GroupedChoiceMenu.swift`＋`Config/EngineModelChoice.swift`（エンジン＋モデルの 1 ポップアップ）/ `Core/FormatPromptTemplates.swift`（整形プロンプトのひな形）/ `Glass.swift`（ガラス様式・押しやすい行の共通部品）。見た目の確認は `--ui-snapshot`（`CLI/UISnapshotTestMode.swift`・画面外で全ページを PNG 化） | `ui/settings_window.py`（窓とサイドバー）/ `ui/pages/*.py`（1 ページ 1 ファイル・開いたときに作る）/ `ui/theme.py`（色・寸法・QSS・Windows 11 の文字の段とアクセント色）/ `ui/components.py`（Windows 11 の「設定」アプリに合わせた行・スイッチ・ボタン等の部品）。実画面の確認は CI の `scripts/dev/settings_probe.py` |
 | ホーム画面 / ダッシュボード | `UI/HomeView.swift` / `MainWindowView.swift`（ホーム＋設定を 1 ウィンドウで切替・Mac） | `ui/pages/home.py`（設定ウィンドウ先頭「ダッシュボード」） |
 | サイドノッチ（履歴スリット） | `UI/SideNotch.swift`（スリット＋検索付き履歴パネル） | `ui/side_notch.py` |
 | 操作音 / メディアダッキング / フルスクリーン判定 | `Core/SoundFX.swift` / `MediaDucker.swift` / `FrontAppTracker.swift`（Mac） | `core/sound_fx.py` / `media_ducker.py` / `fullscreen.py`、実ブラーは `platform/windows/acrylic.py` |
@@ -110,7 +114,7 @@ Mac はメニューバー常駐、Windows はタスクトレイ常駐。文字�
 | 翻訳して入力（personal のみ） | `Core/DictationTranslator.swift`（設定 `DictationTranslation` ＋ Apple/Groq 翻訳・1 回翻訳キーの判定） / `AppController.swift`（貼り付け直前の 1 回適用・1 回翻訳キーのトグル） / `UI/SettingsView.swift`（「翻訳して入力」タブ） | `core/dictation_translator.py` / `app.py`（1 回翻訳キー）/ `ui/pages/translate.py` |
 | OS 権限 | `AppController.swift`（マイク/入力監視/アクセシビリティ） | — （Windows は OS ゲートなし） |
 | OS 抽象化 / ログイン起動 / ログ | ネイティブ API 直 | `platform/` / `utils/autostart.py` / `utils/logger.py` |
-| 行動ログ（操作と状態遷移の記録・14 日で自動削除） | `Core/ActionLog.swift`（`~/Library/Logs/voicekey/voicekey-YYYY-MM-DD.log`）/ `Core/DiagnosticLog.swift`（1 回ごとの `[計測]` 行・ライブ接続・設定差分の診断ログ） | `utils/logger.py`（日付ローテート・`%LOCALAPPDATA%\voicekey\logs\app.log`） |
+| 行動ログ（操作と状態遷移の記録・14 日で自動削除） | `Core/ActionLog.swift`（`~/Library/Logs/voicekey/voicekey-YYYY-MM-DD.log`）/ `Core/DiagnosticLog.swift`（1 回ごとの `[計測]` 行・ライブ接続・設定差分の診断ログ） | `utils/logger.py`（日付ローテート・`%LOCALAPPDATA%\voicekey\logs\app.log`）/ `core/diagnostics.py`（1 回ごとの `[計測]` 行） |
 
 **履歴同期**: Mac と Windows の音声入力履歴を共有する機能。両 OS 共通のバックエンドとして `sync-worker/`
 （Cloudflare Workers + D1、1 Worker・共有トークン 1 本）を新設し、Mac（`Core/HistorySync.swift`）と
@@ -142,6 +146,9 @@ Windows（`core/history_sync.py`）の両クライアントを実装済み。詳
 | `CONTRIBUTING.md` | コミット規約・バージョニング | コミット時 |
 | `docs/BUILD_WINDOWS.md` | Windows ビルド/実機チェックリスト | Windows 配布時 |
 | `docs/HISTORY_SYNC.md` | 履歴同期の API 仕様・構築手順・障害対応 | 履歴同期に触るとき |
+| `docs/SCREENSHOT_ATTACH_PLAN.md` | 録音中のスクショ添付の実装計画（着手前・本人と仕様詰め中） | 着手するとき |
+| `docs/FILE_MENTION_PLAN.md` | 録音中に @ でファイルのパスを差し込む計画（未着手・要否を本人と検討中） | 着手するとき |
+| `docs/WINDOWS_CATCHUP_PLAN.md` | Windows 版を Mac 版に追いつかせる計画（10-19 着手） | Windows に触るとき |
 | `design/brand/` | ロゴ「17 LEGEND」のマスター SVG・生成スクリプト・展開先の一覧（`README.md`） | アイコン・ロゴを作り直すとき |
 
 ## 8. 更新ルール（重要・README 更新ルールと同じ精神）

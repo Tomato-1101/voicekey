@@ -84,6 +84,26 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertTrue(store.items.isEmpty)
     }
 
+    // ファイルがあるのに読めないときは、空で始めても上書きしない（再起動で読めるようになれば残っている）
+    func testUnreadableFileIsNotOverwritten() throws {
+        let dir = makeTempDir()
+        let path = dir.appendingPathComponent("history.json").path
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+            try? FileManager.default.removeItem(at: dir)
+        }
+        let original = #"[{"id":"00000000-0000-0000-0000-000000000001","text":"残す","date":"2026-01-01T00:00:00Z"}]"#
+        write(original, to: dir)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: path)
+
+        let store = HistoryStore(directory: dir)
+        XCTAssertTrue(store.items.isEmpty)
+        store.add("新しい入力")
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+        XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), original)
+    }
+
     // add は 200 件を超えたら古いものを捨てる（新しい順を保つ）
     func testAddCapsAt200() {
         let dir = makeTempDir()
@@ -91,8 +111,8 @@ final class HistoryStoreTests: XCTestCase {
 
         let store = HistoryStore(directory: dir)
         for i in 0..<205 { store.add("テキスト\(i)") }
-        XCTAssertEqual(store.items.count, HistoryStore.maxItems)
-        XCTAssertEqual(HistoryStore.maxItems, 200)
+        XCTAssertEqual(store.items.count, store.limit)
+        XCTAssertEqual(store.limit, 200)
         XCTAssertEqual(store.items.first?.text, "テキスト204")  // 最後に追加したものが先頭
         XCTAssertEqual(store.items.last?.text, "テキスト5")     // 0〜4 は押し出された
     }
@@ -129,5 +149,24 @@ final class HistoryStoreTests: XCTestCase {
         let store = HistoryStore(directory: dir)
         store.add("   \n ")
         XCTAssertTrue(store.items.isEmpty)
+    }
+
+    // limit を下げると即座に切り詰めて保存し、表示用一覧も追従する。読み込みも limit を使う
+    func testLimitChangeTrimsAndSaves() {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let store = HistoryStore(directory: dir, limit: 500)
+        for i in 0..<300 { store.add("テキスト\(i)") }
+        XCTAssertEqual(store.items.count, 300)
+        XCTAssertEqual(store.allItems.count, 300)
+
+        store.limit = 50
+        XCTAssertEqual(store.items.count, 50)
+        XCTAssertEqual(store.allItems.count, 50)
+        XCTAssertEqual(store.items.first?.text, "テキスト299")
+
+        XCTAssertEqual(HistoryStore(directory: dir, limit: 500).items.count, 50)
+        XCTAssertEqual(HistoryStore(directory: dir, limit: 10).items.count, 10)
     }
 }

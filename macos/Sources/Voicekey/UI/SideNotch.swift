@@ -7,6 +7,8 @@
 //    ホバーで少し太くなり、録音中はアクセント色のグローで点灯する。config.sideNotchEnabled で表示切替。
 //  - クリックで履歴パネル（glass 島）が左端から出る。上部に検索フィールド、行クリックでコピー、
 //    下部に「ホームを開く」。外側クリック or スリット再クリックで閉じる（全消去はホーム側だけに置く）。
+//  - 履歴パネルには音声入力の履歴とクリップボードの履歴を出す。「すべて / 音声入力 / クリップボード」で
+//    絞り込め、「すべて」は両方を日時の新しい順に混ぜて 1 本のリストにする。
 //  - クリック透過の完全禁止（v3.2）: macOS は「透明ピクセル」のクリックを下のアプリへ通してしまう。
 //    スリット・履歴パネルとも、可視要素の外側まで含めてパネル全域に極薄の実体塗りを敷き、透明ピクセルを残さない。
 //  - フォーカス制御: スリットは非キーのまま。履歴パネルは検索フィールドへキー入力を届けるため
@@ -164,12 +166,58 @@ final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
+// MARK: - 履歴パネルの行の種類
+
+/// 履歴パネルの 1 行。音声入力とクリップボードを 1 本のリストに混ぜて並べるための共通化
+enum SideNotchEntry: Identifiable {
+    case voice(HistoryItem)
+    case clip(ClipboardItem)
+
+    var id: UUID {
+        switch self {
+        case .voice(let item): return item.id
+        case .clip(let item): return item.id
+        }
+    }
+    var date: Date {
+        switch self {
+        case .voice(let item): return item.date
+        case .clip(let item): return item.date
+        }
+    }
+    /// コピーする本文（全文）
+    var text: String {
+        switch self {
+        case .voice(let item): return item.text
+        case .clip(let item): return item.text
+        }
+    }
+    var appBundleID: String? {
+        switch self {
+        case .voice(let item): return item.appBundleID
+        case .clip(let item): return item.appBundleID
+        }
+    }
+    var appName: String? {
+        switch self {
+        case .voice(let item): return item.appName
+        case .clip(let item): return item.appName
+        }
+    }
+}
+
+/// 履歴パネルの絞り込み
+enum SideNotchFilter: Hashable {
+    case all, voice, clipboard
+}
+
 // MARK: - 履歴パネルの中身（SwiftUI）
 
 /// サイドノッチから開く履歴リスト。HomeView の履歴行と同等（アプリアイコン・2 行省略・相対時刻）
 /// だが、幅の狭いパネル向けに自己完結した簡潔なレイアウトにしている（無理な共通化はしない）。
 struct SideNotchHistoryView: View {
     @ObservedObject var history: HistoryStore
+    @ObservedObject var clipboard: ClipboardHistoryStore
     /// 「ホームを開く」= パネルを閉じてホームを開く
     let onOpenHome: () -> Void
     /// ヘッダの × でパネルを閉じる
@@ -179,6 +227,8 @@ struct SideNotchHistoryView: View {
     @State private var copiedId: UUID?
     /// 検索クエリ（部分一致・大文字小文字無視・アプリ名も対象）
     @State private var query: String = ""
+    /// 絞り込み（パネルは閉じるたびに作り直すので、開くたびに「すべて」へ戻る）
+    @State private var filter: SideNotchFilter = .all
     /// 検索フィールドのフォーカス（開いた直後に自動でフォーカスして即入力できるようにする）
     @FocusState private var searchFocused: Bool
     @Environment(\.colorScheme) private var colorScheme
@@ -186,13 +236,17 @@ struct SideNotchHistoryView: View {
     static let panelWidth: CGFloat = 320
     static let panelHeight: CGFloat = 440
 
-    /// クエリで絞り込んだ履歴（空クエリなら全件）。テキストとアプリ名の両方を大文字小文字無視で部分一致。
-    private var filteredItems: [HistoryItem] {
+    /// 絞り込みとクエリで選んだ行（空クエリなら全件）。テキストとアプリ名の両方を大文字小文字無視で部分一致。
+    /// 「すべて」は音声入力とクリップボードを日時の新しい順に混ぜる。
+    private var filteredItems: [SideNotchEntry] {
+        let voice = filter == .clipboard ? [] : history.allItems.map(SideNotchEntry.voice)
+        let clips = filter == .voice ? [] : clipboard.items.map(SideNotchEntry.clip)
+        let entries = filter == .all ? (voice + clips).sorted { $0.date > $1.date } : voice + clips
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty else { return history.allItems }
-        return history.allItems.filter { item in
-            item.text.localizedCaseInsensitiveContains(q)
-                || (item.appName?.localizedCaseInsensitiveContains(q) ?? false)
+        guard !q.isEmpty else { return entries }
+        return entries.filter { entry in
+            entry.text.localizedCaseInsensitiveContains(q)
+                || (entry.appName?.localizedCaseInsensitiveContains(q) ?? false)
         }
     }
 
@@ -204,6 +258,7 @@ struct SideNotchHistoryView: View {
             VStack(alignment: .leading, spacing: 0) {
                 header
                 searchField
+                filterPicker
                 Divider().opacity(0.5)
                 if filteredItems.isEmpty {
                     emptyState
@@ -275,11 +330,26 @@ struct SideNotchHistoryView: View {
         .padding(.bottom, 10)
     }
 
+    // MARK: 絞り込み
+
+    private var filterPicker: some View {
+        Picker("", selection: $filter) {
+            Text("すべて").tag(SideNotchFilter.all)
+            Text("音声入力").tag(SideNotchFilter.voice)
+            Text("クリップボード").tag(SideNotchFilter.clipboard)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .controlSize(.small)
+        .padding(.horizontal, 14)
+        .padding(.bottom, 10)
+    }
+
     // MARK: リスト
 
     private var list: some View {
         ScrollView {
-            // 履歴は最大 200 行あるため VStack だと全行を即描画してしまう。
+            // 履歴は音声入力とクリップボードで数百〜数千行あるため VStack だと全行を即描画してしまう。
             // LazyVStack にして画面に入った分だけ描画・アイコン解決するようにする。
             LazyVStack(spacing: 0) {
                 let items = filteredItems
@@ -294,8 +364,8 @@ struct SideNotchHistoryView: View {
         }
     }
 
-    /// 履歴 1 行（アプリアイコン＋テキスト 2 行＋相対時刻。クリックでコピー）
-    private func row(_ entry: HistoryItem) -> some View {
+    /// 履歴 1 行（アプリアイコン＋テキスト 2 行＋種類＋相対時刻。クリックでコピー）
+    private func row(_ entry: SideNotchEntry) -> some View {
         Button {
             copy(entry)
         } label: {
@@ -308,6 +378,9 @@ struct SideNotchHistoryView: View {
                         .multilineTextAlignment(.leading)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     HStack(spacing: 6) {
+                        // 音声入力かクリップボードかを小さな印で見分けられるようにする
+                        Image(systemName: kindSymbol(entry))
+                            .font(.caption2).foregroundStyle(.secondary)
                         Text(Self.relativeFormatter.localizedString(for: entry.date, relativeTo: Date()))
                             .font(.caption2).foregroundStyle(.secondary)
                         Spacer()
@@ -328,8 +401,23 @@ struct SideNotchHistoryView: View {
         .buttonStyle(.plain)
     }
 
-    private func displayText(_ entry: HistoryItem) -> String {
-        entry.device != nil && entry.device != "mac" ? "[Windows] \(entry.text)" : entry.text
+    private func displayText(_ entry: SideNotchEntry) -> String {
+        switch entry {
+        case .voice(let item):
+            return item.device != nil && item.device != "mac" ? "[Windows] \(item.text)" : item.text
+        case .clip(let item):
+            // 巨大なテキストで描画が重くならないよう先頭だけ出す（コピーは全文）。2 行表示なので改行は詰める
+            return String(item.text.prefix(500))
+                .components(separatedBy: .newlines)
+                .joined(separator: " ")
+        }
+    }
+
+    private func kindSymbol(_ entry: SideNotchEntry) -> String {
+        switch entry {
+        case .voice: return "mic"
+        case .clip: return "doc.on.clipboard"
+        }
     }
 
     // MARK: フッタ
@@ -367,10 +455,18 @@ struct SideNotchHistoryView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             } else {
-                Text("音声入力すると、ここに履歴が残ります。\nクリックでコピーできます。")
+                Text(emptyMessage)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                // クリップボードを含む絞り込みで記録が OFF なら、空の理由を 1 行添える
+                if filter != .voice, !clipboard.isRunning {
+                    Text("クリップボードの履歴は記録しない設定になっています。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.top, 4)
+                }
             }
             Spacer()
         }
@@ -378,14 +474,25 @@ struct SideNotchHistoryView: View {
         .padding(.horizontal, 20)
     }
 
+    /// 絞り込みごとの空状態の文言
+    private var emptyMessage: String {
+        switch filter {
+        case .all: return "音声入力やコピーをすると、ここに履歴が残ります。\nクリックでコピーできます。"
+        case .voice: return "音声入力すると、ここに履歴が残ります。\nクリックでコピーできます。"
+        case .clipboard: return "コピーすると、ここに履歴が残ります。\nクリックでコピーできます。"
+        }
+    }
+
     // MARK: 動作
 
     /// 履歴テキストをクリップボードへコピーし、その行に一時フィードバックを出す。
     /// NSPasteboard 経由なのでフォーカスを奪わない（前面アプリの入力状態を壊さない）。
-    private func copy(_ entry: HistoryItem) {
+    private func copy(_ entry: SideNotchEntry) {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(entry.text, forType: .string)
+        // パネルからのコピーをクリップボード履歴に記録し直さない（並びが変わったり重複したりしないように）
+        pasteboard.setData(Data(), forType: ClipboardHistoryStore.transientType)
         copiedId = entry.id
         Task {
             try? await Task.sleep(for: .seconds(1.5))
@@ -442,6 +549,7 @@ struct SideNotchHistoryView: View {
 final class SideNotchController {
 
     private let history: HistoryStore
+    private let clipboard: ClipboardHistoryStore
     private let config: ConfigStore
     /// 「ホームを開く」で呼ぶ（StatusItemController.showHome）
     private let onOpenHome: () -> Void
@@ -463,11 +571,13 @@ final class SideNotchController {
 
     init(
         history: HistoryStore,
+        clipboard: ClipboardHistoryStore,
         config: ConfigStore,
         onOpenHome: @escaping () -> Void,
         onRequestFetch: @escaping () -> Void = {}
     ) {
         self.history = history
+        self.clipboard = clipboard
         self.config = config
         self.onOpenHome = onOpenHome
         self.onRequestFetch = onRequestFetch
@@ -609,6 +719,7 @@ final class SideNotchController {
         let view = FirstMouseHostingView(
             rootView: SideNotchHistoryView(
                 history: history,
+                clipboard: clipboard,
                 onOpenHome: { [weak self] in
                     // ホームを開く前にパネルを閉じる（重ならないように）
                     self?.closeHistory()
