@@ -390,6 +390,13 @@ enum MeetBotText {
 
     /// 字幕が取れていないときの状態行・通知
     static let captionMissing = "字幕が取れていません（Meet の字幕が ON か確認）"
+    /// 録音の文字起こしエンジンが使えず、Apple（端末内）に切り替えたときの通知文
+    static func recognitionFallback(provider: String, reason: String) -> String {
+        "\(provider) が使えないため（\(reason)）、この会議は Apple（端末内）で文字起こしします。"
+    }
+    /// Apple への切り替えにも失敗したときの通知文（議事録が止まっていることを必ず知らせる）
+    static let recognitionFallbackFailed =
+        "文字起こしを Apple（端末内）へ切り替えられませんでした。議事録が止まっています。ボットを退出させて、もう一度参加させてください。"
     /// 前の会議の後片付け中に参加が押されたときの案内
     static let joinWhileClosing = "前の会議を保存中です。数秒後にもう一度お試しください。"
     /// 字幕が取れていない通知文（誰も話していないだけの場合に慌てないよう添える）

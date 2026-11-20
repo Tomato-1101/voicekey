@@ -120,6 +120,13 @@ final class OpenAILiveTranscriber: LiveTranscribing, @unchecked Sendable {
     private var closeRequested = false
     private var finishContinuation: CheckedContinuation<Void, Never>?
     private var done = false
+    /// finish() がどう終わったか（"completed" / "error" / "disconnect" / "timeout" など。終わる前は nil）。
+    /// 字幕・議事録の連続文字起こしが「無言だった」と「接続が壊れた」を見分けるために読む
+    private var _finishReason: String?
+    var finishReason: String? {
+        lock.lock(); defer { lock.unlock() }
+        return _finishReason
+    }
     private let createdAt = Date()
     private var firstResultLogged = false
     /// 行動ログ用の接続計測（接続確立・最初の送信/結果・終わり方を 1 行にまとめる）
@@ -466,6 +473,7 @@ final class OpenAILiveTranscriber: LiveTranscribing, @unchecked Sendable {
         finishContinuation = nil
         let wasDone = done
         done = true
+        if !wasDone { _finishReason = reason }
         let usageBytes = sentBytes
         lock.unlock()
         if !wasDone, usageBytes > 0 {

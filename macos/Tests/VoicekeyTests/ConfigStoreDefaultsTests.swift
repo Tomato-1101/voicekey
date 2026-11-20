@@ -70,6 +70,7 @@ final class ConfigStoreDefaultsTests: XCTestCase {
         let store = ConfigStore(defaults: defaults)
         XCTAssertEqual(store.captionAutoStart, CaptionSettings.startsOnLaunch)
         XCTAssertEqual(store.captionEngine, CaptionSettings.translationEngine)
+        XCTAssertEqual(store.captionRecognition, CaptionSettings.recognition)
         XCTAssertEqual(store.captionFrontmostOnly, CaptionSettings.captureScopeMode == .frontmost)
         XCTAssertEqual(store.captionSpeak, CaptionSettings.speakTranslation)
         XCTAssertEqual(store.captionShowSource, CaptionSettings.showSourceText)

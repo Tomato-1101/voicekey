@@ -49,17 +49,17 @@ final class SettingsRedesignTests: XCTestCase {
         )
         XCTAssertEqual(groups.count, 1)
         XCTAssertNil(groups[0].title)
-        XCTAssertEqual(groups[0].options.map(\.label), ["Soniox · stt-rt-v5"])
+        XCTAssertEqual(groups[0].options.map(\.label), ["Soniox · stt-rt-v5（おすすめ）"])
     }
 
-    /// 複数モデルのエンジンは既定モデルに「（推奨）」が付く
-    func testRecommendedModelIsMarked() {
+    /// 「（おすすめ）」は一覧全体で 1 つ（Soniox）だけ。提供元ごとの既定モデルには付けない
+    func testProviderDefaultModelIsNotMarked() {
         let groups = EngineModelCatalog.groups(
             current: EngineModelChoice(backend: .elevenlabs, model: "scribe_v2"),
             selectable: [.elevenlabs]
         )
         XCTAssertEqual(groups.first?.title, "ElevenLabs")
-        XCTAssertEqual(groups.first?.options.map(\.label), ["scribe_v2（推奨）", "scribe_v1"])
+        XCTAssertEqual(groups.first?.options.map(\.label), ["scribe_v2", "scribe_v1"])
     }
 
     /// 一覧に無い保存済みモデル（自由入力・旧モデル）も、選択状態のまま見えるように残る

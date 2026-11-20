@@ -129,17 +129,20 @@ enum SonioxCaptionLinkState: Equatable {
     case reconnecting
 
     /// メニューに出す 1 行
-    var menuText: String {
+    var menuText: String { menuText(provider: "Soniox") }
+
+    /// メニューに出す 1 行（提供元の名前つき。Soniox 以外のエンジンでも同じ言い方にそろえる）
+    func menuText(provider: String) -> String {
         switch self {
-        case .connected: return "Soniox 接続中"
-        case .idle: return "Soniox 待機中（無音のため切断）"
-        case .reconnecting: return "Soniox 再接続中…"
+        case .connected: return "\(provider) 接続中"
+        case .idle: return "\(provider) 待機中（無音のため切断）"
+        case .reconnecting: return "\(provider) 再接続中…"
         }
     }
 
-    /// Soniox を諦めて Apple に切り替えている間の 1 行
-    static func fallbackMenuText(reason: String) -> String {
-        "Soniox → Apple に切替中（\(reason)）"
+    /// 選んだエンジンを諦めて Apple に切り替えている間の 1 行
+    static func fallbackMenuText(provider: String = "Soniox", reason: String) -> String {
+        "\(provider) → Apple に切替中（\(reason)）"
     }
 }
 

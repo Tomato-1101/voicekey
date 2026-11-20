@@ -39,8 +39,15 @@ struct EngineModelChoice: Hashable {
     let model: String
 }
 
-/// 録音キーの「文字起こしエンジン」ポップアップの中身を作る
+/// 「文字起こしエンジン」ポップアップの中身を作る（録音キー・ライブ字幕・Meet ボットの録音で共用）
 enum EngineModelCatalog {
+
+    /// 一覧で「（おすすめ）」を付ける 1 件（2026-11-20 ユーザー指示「おすすめは名前の後ろに付けて」）
+    ///
+    /// 一覧ごとに 1 つだけにする。提供元ごとの既定モデルに印を付けると、何を選べばよいかが分からなくなる。
+    static let recommended = EngineModelChoice(backend: .soniox, model: "stt-rt-v5")
+    /// おすすめの印（全ての一覧で同じ言い方にそろえる）
+    static let recommendedSuffix = "（おすすめ）"
 
     /// 提供元ごとのまとまり（並びは `Backend.selectableCases` のおすすめ順。同じ提供元は 1 つにまとめる）
     ///
@@ -74,7 +81,8 @@ enum EngineModelCatalog {
         return providers.map { provider in
             let choices = entries[provider] ?? []
             if choices.count == 1, let only = choices.first {
-                return ChoiceMenuGroup(title: nil, options: [.init(id: only, label: title(only))])
+                let label = title(only) + (only == recommended ? recommendedSuffix : "")
+                return ChoiceMenuGroup(title: nil, options: [.init(id: only, label: label)])
             }
             return ChoiceMenuGroup(
                 title: provider,
@@ -89,13 +97,11 @@ enum EngineModelCatalog {
         return "\(choice.backend.providerName) · \(choice.model)"
     }
 
-    /// 見出しの下に並べるモデル名（同じエンジンにモデルが複数あるときだけ既定に「（推奨）」）
+    /// 見出しの下に並べるモデル名（一覧全体のおすすめ 1 件にだけ「（おすすめ）」）
     static func modelLabel(_ choice: EngineModelChoice) -> String {
         let backend = choice.backend
         var label = choice.model
-        if backend.knownModels.count > 1, choice.model == backend.defaultModel {
-            label += "（推奨）"
-        }
+        if choice == recommended { label += recommendedSuffix }
         // 同じ OpenAI の見出しの下で、録音後に送る方式と話しながら送る方式を見分けられるようにする
         if backend == .openaiLive { label += "（ライブ）" }
         return label

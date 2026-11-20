@@ -26,6 +26,9 @@ struct TranscriptionError: LocalizedError {
     /// サーバー応答本文（1 行化・切り詰め済み）。原因の切り分けに要るが、生 JSON を
     /// HUD に出すと読めないうえ通知が長くなるので message とは分け、行動ログにだけ出す
     var detail: String? = nil
+    /// レート制限（HTTP 429）による失敗か。字幕・議事録の連続文字起こしが、続けて送っても同じ失敗を
+    /// 繰り返さずに Apple へ切り替えるために見る
+    var isRateLimited: Bool = false
     var errorDescription: String? { message }
 
     /// 応答本文を行動ログ 1 行に収まる形へ整える（改行・制御文字を空白にして詰め、limit 文字で切る）。
@@ -577,7 +580,10 @@ final class Transcriber: @unchecked Sendable {
                 needsApiKey: true
             )
         case 429:
-            throw TranscriptionError(message: "\(backend.label) API のレート制限に達しました（しばらく待って再試行してください）")
+            throw TranscriptionError(
+                message: "\(backend.label) API のレート制限に達しました（しばらく待って再試行してください）",
+                isRateLimited: true
+            )
         default:
             // 本文は HUD に出さない（detail に分けて行動ログの transcriber 行にだけ残す）
             throw TranscriptionError(

@@ -56,6 +56,8 @@ private struct MeetBotSettingsContent: View {
     @State private var urlText = ""
     @State private var source: MeetTranscriptSource = .meetCaptions
     @State private var language: CaptionLanguage = .japanese
+    /// 自分で録音するときの文字起こしエンジン（正本は `CaptionSettings.meetRecognition`）
+    @State private var recognition = CaptionRecognitionPolicy.defaultChoice
     /// 参加したときゲストになるか（ログインの確認中に案内文を行き来させないよう、確認が済んだ値を持つ）
     @State private var joinsAsGuest = true
 
@@ -86,6 +88,7 @@ private struct MeetBotSettingsContent: View {
         .padding(.vertical, 8)
         .onAppear {
             source = CaptionSettings.meetTranscriptSource
+            recognition = CaptionSettings.meetRecognition
             language = CaptionSettings.meetBotLanguage
             notes.reload()
             // 会議 URL は直前にコピーしていることが多いので、入っていれば初期値にする
@@ -399,15 +402,39 @@ private struct MeetBotSettingsContent: View {
                 }
             } label: {
                 FixedRowLabel(
-                    title: "取り方",
+                    title: "議事録の取り方",
                     detail: source == .meetCaptions
                         ? "Meet の字幕を読みます。話者名が残ります（認識は Google 側）。"
-                        : "会議の音声をこの Mac の中で文字にします。音声は外に出ませんが、話者名は取れたときだけです。",
+                        : "会議の音声を録音して、下で選んだエンジンで文字にします。話者名は取れたときだけです。",
                     lines: 2
                 )
             }
             .disabled(bot.state.isActive)
             .onChange(of: source) { _, newValue in CaptionSettings.meetTranscriptSource = newValue }
+
+            // 録音のときだけ効く設定。取り方を切り替えても下の行が動かないよう、行は常に出して押せなくする
+            LabeledContent {
+                GroupedChoiceMenu(
+                    groups: EngineModelCatalog.groups(current: recognition),
+                    selection: Binding(
+                        get: { recognition },
+                        set: { newValue in
+                            recognition = newValue
+                            CaptionSettings.meetRecognition = newValue
+                        }
+                    ),
+                    currentTitle: EngineModelCatalog.title(recognition)
+                )
+            } label: {
+                FixedRowLabel(
+                    title: "録音の文字起こしエンジン",
+                    // 最小幅（760）でも 2 行に収まる長さにする（切れると有料であることが読めない）
+                    detail: "録音して文字起こしするときに使います。Apple 以外は音声を送ります（有料）。"
+                        + "使えないときは Apple に切り替えます。",
+                    lines: 2
+                )
+            }
+            .disabled(bot.state.isActive || source != .localSpeech)
 
             Picker(selection: $language) {
                 ForEach(CaptionLanguage.allCases, id: \.self) { item in

@@ -20,18 +20,20 @@ enum TranslationEngine: String, CaseIterable {
     case groq
     /// Soniox のリアルタイム認識＋翻訳（WebSocket・有料）
     ///
-    /// 他の 3 つと違い**認識ごと置き換える**（Apple の音声認識を使わず、音声を Soniox へ流して
-    /// 原文と訳文の両方を受け取る）。確定待ちが無いぶん最も速い（2026-10-12 ユーザー指示
+    /// 他の 3 つと違い**認識と一緒に訳す**（音声を Soniox へ流して原文と訳文の両方を受け取る）。
+    /// 確定待ちが無いぶん最も速い（2026-10-12 ユーザー指示
     /// 「精度が落ちてもいいから速さ重視・リアルタイムがいい」「これも全部選べ」）。
+    /// 文字起こしエンジン（`CaptionSettings.recognition`）が Soniox のときだけ選べる
+    /// （2026-11-20 に認識と翻訳の選択を分けた。実効値は `CaptionRecognitionPolicy`）。
     case soniox
 
     /// メニューに出す表示名
     var displayName: String {
         switch self {
-        case .apple: return "Apple 翻訳（オンデバイス・無料）"
+        case .apple: return "Apple 翻訳（端末内・無料）"
         case .gemini: return "Gemini API"
         case .groq: return "Groq API"
-        case .soniox: return "Soniox（リアルタイム・有料 約 $0.12/時）"
+        case .soniox: return "Soniox（認識と一緒に訳す）"
         }
     }
 
@@ -111,8 +113,8 @@ enum MeetTranscriptSource: String, CaseIterable {
     /// メニュー・設定に出す表示名
     var displayName: String {
         switch self {
-        case .meetCaptions: return "Meet の字幕を使う（話者名つき）"
-        case .localSpeech: return "端末内で文字起こし（Apple・外に出さない）"
+        case .meetCaptions: return "Meet の字幕を読む（おすすめ）"
+        case .localSpeech: return "自分で録音して文字起こし"
         }
     }
 
@@ -120,8 +122,72 @@ enum MeetTranscriptSource: String, CaseIterable {
     var summary: String {
         switch self {
         case .meetCaptions: return "Meet の字幕"
-        case .localSpeech: return "端末内（Apple）"
+        case .localSpeech: return "録音（\(EngineModelCatalog.title(CaptionSettings.meetRecognition))）"
         }
+    }
+}
+
+/// 字幕・Meet ボットの「文字起こしエンジン」と翻訳エンジンの組み合わせの決まり（純ロジック）
+///
+/// 2026-11-20 ユーザー指示「全ての場所で全てのプロバイダーを自分で選べるように」で、
+/// 認識（文字起こし）と翻訳の選択を分けた。以前は翻訳エンジン = Soniox が認識ごと置き換えていた。
+enum CaptionRecognitionPolicy {
+    /// 既定の認識エンジン（Apple のオンデバイス認識。キー不要・課金なしで初回から使える）
+    static let defaultChoice = EngineModelChoice(backend: .appleLocal, model: Backend.appleLocal.defaultModel)
+
+    /// 保存値から認識エンジンを決める
+    ///
+    /// - 認識エンジンが保存済みならそれを使う（モデルが空・未保存ならそのエンジンの既定）
+    /// - 未保存で、翻訳エンジンが Soniox（分ける前の「Soniox」＝認識ごと任せる設定）なら Soniox。
+    ///   以前と同じ動きを保つための移行
+    /// - それ以外は Apple（従来どおり）
+    ///
+    /// - Parameters:
+    ///   - storedBackend: 保存されている認識エンジンの rawValue（未保存なら nil）
+    ///   - storedModel: 保存されているモデル名（未保存なら nil）
+    ///   - translationRaw: 保存されている翻訳エンジンの rawValue（移行の判定に使う。Meet ボットでは nil）
+    static func resolve(storedBackend: String?, storedModel: String?, translationRaw: String?) -> EngineModelChoice {
+        if let raw = storedBackend, let backend = Backend(rawValue: raw), Backend.selectableCases.contains(backend) {
+            let model = storedModel.flatMap { $0.isEmpty ? nil : $0 } ?? backend.defaultModel
+            return EngineModelChoice(backend: backend, model: model)
+        }
+        if translationRaw == TranslationEngine.soniox.rawValue {
+            return EngineModelChoice(backend: .soniox, model: Backend.soniox.defaultModel)
+        }
+        return defaultChoice
+    }
+
+    /// 実際に使う翻訳エンジン
+    ///
+    /// 「Soniox（認識と一緒に訳す）」は認識が Soniox のときしか成り立たない。認識を別のエンジンへ
+    /// 変えたのに翻訳が Soniox のまま残っていたら、**課金の無い Apple** で訳す（勝手に別の課金エンジンへは倒さない）。
+    static func effectiveTranslation(chosen: TranslationEngine, recognition: Backend) -> TranslationEngine {
+        chosen == .soniox && recognition != .soniox ? .apple : chosen
+    }
+
+    /// 翻訳エンジンの一覧に出す候補（Soniox は認識が Soniox のときだけ）
+    static func translationChoices(recognition: Backend) -> [TranslationEngine] {
+        TranslationEngine.allCases.filter { $0 != .soniox || recognition == .soniox }
+    }
+
+    /// 翻訳エンジンの一覧に出す名前（「（おすすめ）」が一覧に 1 つだけになるよう付け外しする）
+    static func markedTranslationLabel(_ label: String, engine: TranslationEngine, recognition: Backend) -> String {
+        let suffix = EngineModelCatalog.recommendedSuffix
+        let base = label.replacingOccurrences(of: suffix, with: "")
+        // おすすめでないエンジンの下にあるモデルの印は外す（一覧に印が 2 つ以上並ぶと選べなくなる）
+        guard engine == recommendedTranslation(recognition: recognition) else { return base }
+        switch engine {
+        // LLM は「どのモデルがおすすめか」の印が既に付いているので、そのまま使う
+        case .gemini, .groq: return label
+        case .apple, .soniox: return base + suffix
+        }
+    }
+
+    /// 翻訳エンジンの一覧で「（おすすめ）」を付ける 1 つ
+    ///
+    /// 認識が Soniox なら訳まで任せるのが最も速い。それ以外は確定文を Groq で訳すのが速さと質の釣り合いが良い。
+    static func recommendedTranslation(recognition: Backend) -> TranslationEngine {
+        recognition == .soniox ? .soniox : .groq
     }
 }
 
@@ -145,6 +211,10 @@ enum CaptionSettings {
         static let saveTranscript = "captionSaveTranscript"
         static let meetSource = "meetBotTranscriptSource"
         static let meetLanguage = "meetBotLanguage"
+        static let sttBackend = "captionSttBackend"
+        static let sttModel = "captionSttModel"
+        static let meetSttBackend = "meetBotSttBackend"
+        static let meetSttModel = "meetBotSttModel"
         static let geminiModel = "captionGeminiModel"
         static let groqModel = "captionGroqModel"
         static let autoStart = "captionAutoStart"
@@ -290,6 +360,44 @@ enum CaptionSettings {
         set { UserDefaults.standard.set(newValue.rawValue, forKey: Key.meetLanguage) }
     }
 
+    /// ライブ字幕の文字起こしエンジンとモデル（既定 Apple のオンデバイス認識）
+    ///
+    /// 未保存で翻訳エンジンが Soniox のとき（認識と翻訳を分ける前の設定）は Soniox を返す。
+    /// 読むだけで書き戻さないのは、UserDefaults を読むたびに書く経路を作らないため
+    /// （移行後の値は、利用者が一覧で選んだ時点で保存される）。
+    static var recognition: EngineModelChoice {
+        get {
+            let defaults = UserDefaults.standard
+            return CaptionRecognitionPolicy.resolve(
+                storedBackend: defaults.string(forKey: Key.sttBackend),
+                storedModel: defaults.string(forKey: Key.sttModel),
+                translationRaw: defaults.string(forKey: Key.engine)
+            )
+        }
+        set {
+            UserDefaults.standard.set(newValue.backend.rawValue, forKey: Key.sttBackend)
+            UserDefaults.standard.set(newValue.model, forKey: Key.sttModel)
+        }
+    }
+
+    /// Meet ボットが「自分で録音して文字起こし」するときのエンジンとモデル（既定 Apple）
+    ///
+    /// ライブ字幕の設定とは別に持つ（字幕は速さ、議事録は精度、と選び分けられるように）。
+    static var meetRecognition: EngineModelChoice {
+        get {
+            let defaults = UserDefaults.standard
+            return CaptionRecognitionPolicy.resolve(
+                storedBackend: defaults.string(forKey: Key.meetSttBackend),
+                storedModel: defaults.string(forKey: Key.meetSttModel),
+                translationRaw: nil
+            )
+        }
+        set {
+            UserDefaults.standard.set(newValue.backend.rawValue, forKey: Key.meetSttBackend)
+            UserDefaults.standard.set(newValue.model, forKey: Key.meetSttModel)
+        }
+    }
+
     /// 使用する翻訳エンジン（既定 Apple）
     ///
     /// 既定をオンデバイスにしているのは、キー設定なしで初回から使えて課金も発生しないため。
@@ -299,7 +407,14 @@ enum CaptionSettings {
                   let engine = TranslationEngine(rawValue: raw) else { return .apple }
             return engine
         }
-        set { UserDefaults.standard.set(newValue.rawValue, forKey: Key.engine) }
+        set {
+            // 認識エンジンが未保存のまま翻訳だけ変えると、移行の判定（翻訳 = Soniox なら認識も Soniox）が
+            // 変わって認識エンジンまで黙って切り替わる。先にいまの認識エンジンを保存して固定する。
+            if UserDefaults.standard.string(forKey: Key.sttBackend) == nil {
+                recognition = recognition
+            }
+            UserDefaults.standard.set(newValue.rawValue, forKey: Key.engine)
+        }
     }
 
     /// 既定の Gemini モデル（おすすめは `LLMModelCatalog` に集約）

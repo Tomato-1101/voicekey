@@ -146,7 +146,8 @@ struct CaptionSettingsTab: View {
                 SettingRowLabel(
                     title: "字幕の動作",
                     detail: config.captionMode == .transcribe
-                        ? "端末内（Apple の音声認識）で文字起こしします。翻訳もクラウド送信も行いません。"
+                        // どこで認識するかは下の「文字起こしエンジン」が決めるので、ここでは触れない
+                        ? "訳さずに、聞こえた言葉をそのまま字幕にします。"
                         : "英語を聞いて日本語に訳します（認識は英語で固定）。"
                 )
             }
@@ -199,7 +200,19 @@ struct CaptionSettingsTab: View {
     /// 以前は「翻訳エンジン」を選んでから、その下に出る「Gemini / Groq のモデル」をもう一度選ぶ 2 段だった
     /// （2026-10-19 ユーザー指示「1 個のポップアップで、プロバイダーを選んですぐにモデルを選べるように」）
     private var engineSection: some View {
-        Section("翻訳") {
+        Section("文字起こしと翻訳") {
+            // 文字起こし（音を文字にする）と翻訳（文字を訳す）は別々に選ぶ（2026-11-20 ユーザー指示
+            // 「全ての場所で全てのプロバイダーを自分で選べるように」）。録音キーと同じポップアップを使う
+            LabeledContent {
+                GroupedChoiceMenu(
+                    groups: EngineModelCatalog.groups(current: config.captionRecognition),
+                    selection: recognitionBinding,
+                    currentTitle: EngineModelCatalog.title(config.captionRecognition)
+                )
+            } label: {
+                SettingRowLabel(title: "文字起こしエンジン", detail: recognitionDetail)
+            }
+
             LabeledContent {
                 GroupedChoiceMenu(
                     groups: engineChoiceGroups,
@@ -210,13 +223,6 @@ struct CaptionSettingsTab: View {
                 SettingRowLabel(title: "翻訳エンジン", detail: engineDetail)
             }
 
-            if config.captionEngine == .soniox {
-                // 課金があるので、選んだときに何が起きるかをはっきり出す
-                Text("Soniox は音声を送り続けて認識と翻訳を同時に行います（最速）。字幕を動かしている間ずっと"
-                     + "課金されます（約 $0.12/時）。キーは「設定 › API キー」の Soniox を使い、"
-                     + "未設定や接続できないときは Apple で表示します。")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
         }
         .task {
             // 一覧外の提供終了モデルを選ばせないよう、開いたときに実在一覧を取り直す（一覧 GET は無料）。
@@ -258,29 +264,52 @@ struct CaptionSettingsTab: View {
     }
 
     /// ポップアップの中身（Apple・Soniox は 1 項目、Gemini・Groq は見出しの下にモデル。並びは allCases の順）
+    ///
+    /// Soniox は文字起こしが Soniox のときだけ出す（認識と一緒に訳す方式なので、他の認識とは組めない）。
+    /// 「（おすすめ）」は一覧に 1 つだけ（`CaptionRecognitionPolicy.markedTranslationLabel`）。
     private var engineChoiceGroups: [ChoiceMenuGroup<CaptionEngineChoice>] {
-        TranslationEngine.allCases.map { engine in
+        let recognition = config.captionRecognition.backend
+        func marked(_ label: String, _ engine: TranslationEngine) -> String {
+            CaptionRecognitionPolicy.markedTranslationLabel(label, engine: engine, recognition: recognition)
+        }
+        return CaptionRecognitionPolicy.translationChoices(recognition: recognition).map { engine in
             switch engine {
-            case .apple:
+            case .apple, .soniox:
                 return ChoiceMenuGroup(title: nil, options: [
-                    ChoiceMenuOption(id: CaptionEngineChoice(engine: .apple, model: ""), label: "Apple 翻訳（端末内・無料）"),
-                ])
-            case .soniox:
-                return ChoiceMenuGroup(title: nil, options: [
-                    ChoiceMenuOption(id: CaptionEngineChoice(engine: .soniox, model: ""),
-                                     label: "Soniox（リアルタイム・有料 約 $0.12/時）"),
+                    ChoiceMenuOption(id: CaptionEngineChoice(engine: engine, model: ""),
+                                     label: marked(engine.displayName, engine)),
                 ])
             case .gemini:
                 let options = LLMModelCatalog.options(.gemini, current: config.captionGeminiModel, available: geminiAvailable)
                 return ChoiceMenuGroup(title: "Gemini", options: options.map {
-                    ChoiceMenuOption(id: CaptionEngineChoice(engine: .gemini, model: $0.id), label: $0.label)
+                    ChoiceMenuOption(id: CaptionEngineChoice(engine: .gemini, model: $0.id), label: marked($0.label, .gemini))
                 })
             case .groq:
                 let options = LLMModelCatalog.options(.groq, current: config.captionGroqModel, available: groqAvailable)
                 return ChoiceMenuGroup(title: "Groq", options: options.map {
-                    ChoiceMenuOption(id: CaptionEngineChoice(engine: .groq, model: $0.id), label: $0.label)
+                    ChoiceMenuOption(id: CaptionEngineChoice(engine: .groq, model: $0.id), label: marked($0.label, .groq))
                 })
             }
+        }
+    }
+
+    /// 選んだ文字起こしエンジンの説明
+    ///
+    /// 行の高さが選択で変わらないよう、どのエンジンでも 2 行ぶんの文にそろえる。
+    private var recognitionDetail: String {
+        switch config.captionRecognition.backend {
+        case .appleLocal:
+            return "端末内で認識します（キー不要・無料）。音声は外へ送りません。\n"
+                + "ほかのエンジンは「API キー」ページのキーを使い、音声をそのサービスへ送ります。"
+        case .soniox:
+            return "音声を送り続けて認識します（最速・約 $0.12/時）。無音が 30 秒続くと切断して課金を止めます。\n"
+                + "キー未設定や接続できないときは、Apple（端末内）で表示します。"
+        case .openaiLive:
+            return "声が出ている間だけ接続して認識します（話しながら途中経過も出ます・有料）。\n"
+                + "キー未設定や失敗が続いたときは、Apple（端末内）で表示します。"
+        default:
+            return "声のある区間だけを、無音か 15 秒ごとに区切って送ります（確定した文だけ出ます・有料）。\n"
+                + "キー未設定や失敗が続いたときは、Apple（端末内）で表示します。"
         }
     }
 
@@ -288,7 +317,7 @@ struct CaptionSettingsTab: View {
     private var engineChoiceTitle: String {
         switch config.captionEngine {
         case .apple: return "Apple 翻訳（端末内）"
-        case .soniox: return "Soniox（リアルタイム）"
+        case .soniox: return "Soniox（認識と一緒に訳す）"
         case .gemini: return "Gemini · \(LLMModelCatalog.displayName(.gemini, id: config.captionGeminiModel))"
         case .groq: return "Groq · \(LLMModelCatalog.displayName(.groq, id: config.captionGroqModel))"
         }
@@ -394,6 +423,23 @@ struct CaptionSettingsTab: View {
             set: { newValue in
                 config.captionSaveTranscript = newValue
                 controller?.caption.savesTranscript = newValue
+            }
+        )
+    }
+
+    /// 文字起こしエンジン（動作中のサービスにも即反映する）
+    private var recognitionBinding: Binding<EngineModelChoice> {
+        Binding(
+            get: { config.captionRecognition },
+            set: { newValue in
+                config.captionRecognition = newValue
+                // 動作中でなくても字幕サービスは作ってよい（設定画面を開いた時点で生成済み）
+                controller?.caption.recognition = newValue
+                // 「Soniox（認識と一緒に訳す）」は認識が Soniox のときだけ。サービス側が Apple 翻訳へ
+                // 戻した結果を、画面の選択にも映す
+                if newValue.backend != .soniox, config.captionEngine == .soniox {
+                    config.captionEngine = .apple
+                }
             }
         )
     }

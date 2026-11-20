@@ -59,8 +59,8 @@ final class CaptionService {
     private var pipeline: CapturePipeline?
     private var coordinator: TranslationCoordinator?
     private var partialDriver: PartialTranslationDriver?
-    /// Soniox エンジンのときの接続（それ以外は nil）
-    private var sonioxStream: SonioxCaptionStream?
+    /// 外部の文字起こしエンジン（Apple 以外）へ音声を流す接続（Apple のときは nil）
+    private var speechStream: CaptionSpeechStream?
     /// 確定文をローカルへ保存する記録係（議事録）
     private let recorder = TranscriptRecorder()
 
@@ -78,15 +78,19 @@ final class CaptionService {
         var mode: CaptionMode
         var localeID: String
         var scope: CaptureScopeMode
-        var usesSoniox: Bool
+        /// 文字起こしエンジンとモデル（Apple なら端末内の認識）
+        var recognition: EngineModelChoice
+        /// Soniox に翻訳までさせるか（認識も翻訳も Soniox のときだけ。音声の流し方が変わる）
+        var sonioxTranslates: Bool
     }
     private var sessionConfig: SessionConfig?
 
-    /// このセッションだけ使うエンジン（Soniox が使えないときの Apple 代替）
+    /// このセッションだけ、選んだ文字起こしエンジンの代わりに Apple で認識しているか
     ///
+    /// キー未設定・残高不足・レート制限などで外部のエンジンが使えないときに立てる。
     /// 保存済みの設定は書き換えない（エンジンの切替はユーザー操作だけの恒久要件）。
     /// 翻訳器の解決は翻訳キューから呼ばれるので lock で守る。
-    private let sessionEngineOverride = OSAllocatedUnfairLock<TranslationEngine?>(initialState: nil)
+    private let recognitionFallback = OSAllocatedUnfairLock<Bool>(initialState: false)
 
     /// 記録に残す対象アプリ名（認識コールバックから読むので lock 付きで持つ）
     ///
@@ -155,12 +159,12 @@ final class CaptionService {
     /// いま対象にしているアプリ名（すべてモード・未確定なら nil）
     private(set) var captureTargetName: String?
 
-    /// Soniox の接続状態（Soniox で動いていないときは nil。メニュー表示用・メインスレッド）
-    private(set) var sonioxLinkState: SonioxCaptionLinkState?
-    /// Soniox を諦めてこのセッションだけ Apple で出している理由（メニュー表示用・メインスレッド）
-    private(set) var sonioxFallbackReason: String?
+    /// 外部エンジンの接続状態（常時接続のエンジンで動いていないときは nil。メニュー表示用・メインスレッド）
+    private(set) var speechLinkState: SonioxCaptionLinkState?
+    /// 選んだエンジンを諦めてこのセッションだけ Apple で認識している理由（メニュー表示用・メインスレッド）
+    private(set) var recognitionFallbackReason: String?
 
-    /// メニューに出す Soniox の状態行（Soniox を選んでいないときは nil）
+    /// メニューに出す文字起こしエンジンの状態行（Apple を選んでいるときは nil）
     ///
     /// 課金はストリームを開いている時間ぶんなので、いま繋いでいるか（＝課金中か）と、
     /// Apple に切り替わっているならその理由を、本人が見て分かるように出す。
@@ -169,12 +173,13 @@ final class CaptionService {
         state.isActive ? appleDegradedNote : nil
     }
 
-    var sonioxStatusLine: String? {
-        guard CaptionSettings.translationEngine == .soniox, state.isActive else { return nil }
-        if let reason = sonioxFallbackReason {
-            return SonioxCaptionLinkState.fallbackMenuText(reason: reason)
+    var recognitionStatusLine: String? {
+        let backend = CaptionSettings.recognition.backend
+        guard backend != .appleLocal, state.isActive else { return nil }
+        if let reason = recognitionFallbackReason {
+            return SonioxCaptionLinkState.fallbackMenuText(provider: backend.providerName, reason: reason)
         }
-        return sonioxLinkState?.menuText
+        return speechLinkState?.menuText(provider: backend.providerName)
     }
 
     /// 原文（英語）を併記するか
@@ -226,17 +231,38 @@ final class CaptionService {
         }
     }
 
+    /// 使用する文字起こしエンジンとモデル
+    ///
+    /// 音声の流し先が変わるので、動作中に変えたらセッションを張り直す。
+    var recognition: EngineModelChoice {
+        get { CaptionSettings.recognition }
+        set {
+            CaptionSettings.recognition = newValue
+            // 「Soniox（認識と一緒に訳す）」は認識が Soniox のときだけ成り立つ。認識を他へ変えたら
+            // 課金の無い Apple 翻訳へ戻す（別の課金エンジンへ勝手に切り替えない）
+            if newValue.backend != .soniox, CaptionSettings.translationEngine == .soniox {
+                CaptionSettings.translationEngine = .apple
+            }
+            // ユーザーが選び直したら、使えなかったときの代替は解除する（もう一度試す）
+            recognitionFallback.withLock { $0 = false }
+            recognitionFallbackReason = nil
+            logger.notice("文字起こしエンジンを切り替えました: \(newValue.backend.rawValue, privacy: .public)")
+            if restartIfSessionOutdated() { return }
+            if state.isActive {
+                prepareAppleTranslationIfNeeded()
+                prepareAppleLiveLineIfNeeded()
+            }
+        }
+    }
+
     /// 使用する翻訳エンジン
     ///
     /// Apple / Gemini / Groq の間は 1 文ごとに解決しているので、動作中に切り替えても次の文から反映される。
-    /// Soniox は音声の流し先ごと変わるので、Soniox に出入りするときだけ張り直す。
+    /// Soniox は音声の流し方（訳まで任せるか）が変わるので、Soniox に出入りするときだけ張り直す。
     var translationEngine: TranslationEngine {
         get { CaptionSettings.translationEngine }
         set {
             CaptionSettings.translationEngine = newValue
-            // ユーザーが選び直したら、Soniox が使えなかったときの代替は解除する（もう一度試す）
-            sessionEngineOverride.withLock { $0 = nil }
-            sonioxFallbackReason = nil
             logger.notice("翻訳エンジンを切り替えました: \(newValue.rawValue, privacy: .public)")
             if restartIfSessionOutdated() { return }
             // Apple へ切り替えたら、その場でモデルの準備状況を確かめて画面に出す
@@ -262,8 +288,8 @@ final class CaptionService {
         ActionLog.shared.write("caption.CaptionService", "ライブ字幕を開始 (mode=\(CaptionSettings.mode.rawValue))")
         pendingRestart?.cancel()
         pendingRestart = nil
-        sessionEngineOverride.withLock { $0 = nil }
-        sonioxFallbackReason = nil
+        recognitionFallback.withLock { $0 = false }
+        recognitionFallbackReason = nil
         appleDegradedNote = nil
         appleFailureStreak.withLock { $0.reset() }
         state = .preparing("音声認識モデルを確認中…")
@@ -280,8 +306,8 @@ final class CaptionService {
         ActionLog.shared.write("caption.CaptionService", "ライブ字幕を停止")
         pendingRestart?.cancel()
         pendingRestart = nil
-        sessionEngineOverride.withLock { $0 = nil }
-        sonioxFallbackReason = nil
+        recognitionFallback.withLock { $0 = false }
+        recognitionFallbackReason = nil
         appleDegradedNote = nil
         teardownSession()
         state = .stopped
@@ -320,12 +346,12 @@ final class CaptionService {
         // HUD を捨てる経路でもピルを戻せるようにしておく（畳みアニメの完了通知は届かない）
         onHUDVisibilityChanged?(false)
         endAntiNap()
-        let stream = sonioxStream
-        sonioxStream = nil
+        let stream = speechStream
+        speechStream = nil
         let pipeline = self.pipeline
         self.pipeline = nil
         guard pipeline != nil || stream != nil else { return }
-        // Soniox の停止は終端への返事を最大 1.5 秒待つので、パイプラインと同じ 3 秒の枠の中で待つ
+        // 外部エンジンの停止は最後の返事を少し待つので、パイプラインと同じ 3 秒の枠の中で待つ
         let semaphore = DispatchSemaphore(value: 0)
         Task {
             await pipeline?.stop()
@@ -376,7 +402,9 @@ final class CaptionService {
             mode: CaptionSettings.mode,
             localeID: CaptionSettings.recognitionLocale.identifier,
             scope: CaptionSettings.effectiveCaptureScopeMode,
-            usesSoniox: effectiveEngine == .soniox
+            recognition: effectiveRecognition,
+            // 文字起こしモードでは訳さないので、翻訳エンジンを変えても張り直さない
+            sonioxTranslates: CaptionSettings.mode == .translate && effectiveEngine == .soniox
         )
     }
 
@@ -422,23 +450,25 @@ final class CaptionService {
         recordingTarget.withLock { $0 = nil }
 
         let pipeline: CapturePipeline
-        if config.usesSoniox, let stream = makeSonioxStream(generation: gen, isTranscribing: isTranscribing) {
-            // Soniox は認識も翻訳も向こうで行う。端末内の認識は起動せず、音声だけを流す
+        let usesExternal = config.recognition.backend != .appleLocal
+        if usesExternal, let stream = makeSpeechStream(config: config, generation: gen, isTranscribing: isTranscribing) {
+            // 認識は外部のエンジンで行う。端末内の認識は起動せず、音声だけを流す
             pipeline = CapturePipeline(
                 locale: CaptionSettings.recognitionLocale,
                 recognitionPriority: .userInitiated,
                 usesOnDeviceRecognizer: false
             )
             pipeline.onAudio = { buffer in stream.send(buffer) }
-            sonioxStream = stream
+            speechStream = stream
         } else {
-            if config.usesSoniox {
+            if usesExternal {
                 // キー未設定など。保存済みの設定は変えず、このセッションだけ Apple で出す
-                sessionEngineOverride.withLock { $0 = .apple }
-                sonioxFallbackReason = "APIキー未設定"
+                let provider = config.recognition.backend.providerName
+                recognitionFallback.withLock { $0 = true }
+                recognitionFallbackReason = "APIキー未設定"
                 sessionConfig = desiredSessionConfig()
-                logger.notice("Soniox の API キーが無いため Apple で字幕を出します")
-                hud.showNotice("Soniox の API キーが未設定のため Apple で表示します")
+                logger.notice("\(provider, privacy: .public) の API キーが無いため Apple で字幕を出します")
+                hud.showNotice("\(provider) の API キーが未設定のため Apple で表示します")
             }
             pipeline = makeOnDevicePipeline(generation: gen, isTranscribing: isTranscribing)
         }
@@ -487,8 +517,42 @@ final class CaptionService {
         }
     }
 
+    /// 確定文と途中経過を受け取って、字幕（と議事録）へ流す入口
+    ///
+    /// 端末内の認識と外部の文字起こしエンジンのどちらで認識しても、ここから先（翻訳・表示・保存）は同じにする。
+    private struct RecognitionSink {
+        /// 確定した 1 文（任意スレッドから呼ぶ）
+        let final: @Sendable (String) -> Void
+        /// 途中経過（任意スレッドから呼ぶ）
+        let volatile: @Sendable (String) -> Void
+    }
+
     /// 端末内の認識（Apple）で動くパイプラインと翻訳経路を組む
     private func makeOnDevicePipeline(generation gen: Int, isTranscribing: Bool) -> CapturePipeline {
+        let sink = makeRecognitionSink(generation: gen, isTranscribing: isTranscribing)
+        // 認識ロケールはモードで決まる（翻訳＝英語固定 / 文字起こし＝選んだ言語）。
+        // 字幕は速さ重視なので、認識の優先度を上げ、0.3 秒の切れ目で確定を前倒しする。
+        let pipeline = CapturePipeline(
+            locale: CaptionSettings.recognitionLocale,
+            recognitionPriority: .userInitiated,
+            finalizesOnPause: true
+        )
+        pipeline.onSegment = { [weak self] segment in
+            guard let self else { return }
+            if segment.isFinal {
+                self.latency.noteFinal(audioEndSeconds: segment.range.end.seconds)
+                sink.final(segment.text)
+            } else {
+                guard self.generation.isCurrent(gen) else { return }
+                self.latency.noteVolatile(audioEndSeconds: segment.range.end.seconds)
+                sink.volatile(segment.text)
+            }
+        }
+        return pipeline
+    }
+
+    /// 翻訳経路（確定文の翻訳と、ライブ行の部分訳）を組み、認識結果の入口を返す
+    private func makeRecognitionSink(generation gen: Int, isTranscribing: Bool) -> RecognitionSink {
         let coordinator = TranslationCoordinator(
             translatorProvider: { [weak self] in self?.currentTranslator() ?? MockTranslator() },
             sequenceProvider: { [weak self] in self?.nextSequence() ?? 0 },
@@ -561,63 +625,91 @@ final class CaptionService {
         }
         self.partialDriver = partialDriver
 
-        // 認識ロケールはモードで決まる（翻訳＝英語固定 / 文字起こし＝選んだ言語）。
-        // 字幕は速さ重視なので、認識の優先度を上げ、0.3 秒の切れ目で確定を前倒しする。
-        let pipeline = CapturePipeline(
-            locale: CaptionSettings.recognitionLocale,
-            recognitionPriority: .userInitiated,
-            finalizesOnPause: true
-        )
-        pipeline.onSegment = { [weak self] segment in
+        let final: @Sendable (String) -> Void = { [weak self] text in
             guard let self else { return }
-            if segment.isFinal {
-                self.logger.notice("確定: \(segment.text, privacy: .private)")
-                self.latency.noteFinal(audioEndSeconds: segment.range.end.seconds)
-                // 保存するのは文字起こしだけ（訳文は保存しない）。停止後に届いた最後の文も残す。
-                self.saveTranscript(segment.text)
-                // 停止・張り直しの後は訳さない（画面に出ない訳のためにクラウドを呼ばない）
-                guard self.generation.isCurrent(gen) else { return }
-                // この文の途中経過はもう要らない。投げ済みの部分訳が後から届いても出さない
-                partialDriver.reset()
-                if isTranscribing {
-                    DispatchQueue.main.async {
-                        guard self.generation.isCurrent(gen) else { return }
-                        self.hud.showTranscript(segment.text)
-                    }
-                } else {
-                    coordinator.submit(segment.text)
+            self.logger.notice("確定: \(text, privacy: .private)")
+            // 保存するのは文字起こしだけ（訳文は保存しない）。停止後に届いた最後の文も残す。
+            self.saveTranscript(text)
+            // 停止・張り直しの後は訳さない（画面に出ない訳のためにクラウドを呼ばない）
+            guard self.generation.isCurrent(gen) else { return }
+            // この文の途中経過はもう要らない。投げ済みの部分訳が後から届いても出さない
+            partialDriver.reset()
+            if isTranscribing {
+                DispatchQueue.main.async {
+                    guard self.generation.isCurrent(gen) else { return }
+                    self.hud.showTranscript(text)
                 }
             } else {
-                guard self.generation.isCurrent(gen) else { return }
-                self.latency.noteVolatile(audioEndSeconds: segment.range.end.seconds)
-                if isTranscribing {
-                    DispatchQueue.main.async {
-                        guard self.generation.isCurrent(gen) else { return }
-                        self.hud.showLiveTranscript(segment.text)
-                    }
-                } else {
-                    partialDriver.submit(segment.text)
-                    DispatchQueue.main.async {
-                        guard self.generation.isCurrent(gen) else { return }
-                        self.hud.showListening(segment.text)
-                    }
+                coordinator.submit(text)
+            }
+        }
+        let volatile: @Sendable (String) -> Void = { [weak self] text in
+            guard let self, self.generation.isCurrent(gen) else { return }
+            if isTranscribing {
+                DispatchQueue.main.async {
+                    guard self.generation.isCurrent(gen) else { return }
+                    self.hud.showLiveTranscript(text)
+                }
+            } else {
+                partialDriver.submit(text)
+                DispatchQueue.main.async {
+                    guard self.generation.isCurrent(gen) else { return }
+                    self.hud.showListening(text)
                 }
             }
         }
-        return pipeline
+        return RecognitionSink(final: final, volatile: volatile)
     }
 
-    /// Soniox の接続を用意する（キー未設定などで使えなければ nil）
-    private func makeSonioxStream(generation gen: Int, isTranscribing: Bool) -> SonioxCaptionStream? {
+    /// 外部の文字起こしエンジンへの接続を用意する（キー未設定などで使えなければ nil）
+    private func makeSpeechStream(
+        config: SessionConfig, generation gen: Int, isTranscribing: Bool
+    ) -> CaptionSpeechStream? {
         // 翻訳モードは英語固定（訳は英→日だけ）。文字起こしモードは選んだ言語をヒントにする
         let language = isTranscribing ? CaptionSettings.language.rawValue : CaptionLanguage.english.rawValue
-        let stream = SonioxCaptionStream(translates: !isTranscribing, language: language)
+        let provider = config.recognition.backend.providerName
+        guard let stream = CaptionSpeechStreamFactory.make(
+            choice: config.recognition, language: language, sonioxTranslates: config.sonioxTranslates
+        ) else { return nil }
+        if config.sonioxTranslates {
+            // 訳まで Soniox に任せる（確定待ちが無いぶん最も速い）。翻訳コーディネータは通さない
+            connectSonioxTranslation(stream, generation: gen)
+        } else {
+            // 認識だけを任せ、訳は選んだ翻訳エンジンで出す（ライブ行は Apple の端末内翻訳）
+            let sink = makeRecognitionSink(generation: gen, isTranscribing: isTranscribing)
+            stream.onLive = { source, _ in
+                if !source.isEmpty { sink.volatile(source) }
+            }
+            stream.onConfirmed = { source, _ in
+                if !source.isEmpty { sink.final(source) }
+            }
+        }
+        stream.onGiveUp = { [weak self] reason in
+            DispatchQueue.main.async {
+                guard let self, self.generation.isCurrent(gen) else { return }
+                // 保存済みの設定は変えず、このセッションだけ Apple に切り替えて続ける
+                self.logger.error("\(provider, privacy: .public) が使えないため Apple に切り替えます: \(reason, privacy: .public)")
+                self.recognitionFallback.withLock { $0 = true }
+                self.recognitionFallbackReason = reason
+                self.restartSession()
+                self.hud.showNotice("\(reason) — Apple に切り替えました")
+            }
+        }
+        stream.onLinkStateChange = { [weak self] linkState in
+            DispatchQueue.main.async {
+                guard let self, self.generation.isCurrent(gen) else { return }
+                self.speechLinkState = linkState
+            }
+        }
+        return stream.start() ? stream : nil
+    }
+
+    /// Soniox が認識と一緒に返す訳を、そのまま字幕に出す結線（翻訳モード・翻訳エンジン = Soniox）
+    private func connectSonioxTranslation(_ stream: CaptionSpeechStream, generation gen: Int) {
         stream.onLive = { [weak self] source, translation in
             DispatchQueue.main.async {
                 guard let self, self.generation.isCurrent(gen) else { return }
-                if isTranscribing {
-                    self.hud.showLiveTranscript(source)
-                } else if translation.isEmpty {
+                if translation.isEmpty {
                     self.hud.showListening(source)
                 } else {
                     self.hud.showTranslation(source: source, japanese: translation, isPartial: true)
@@ -631,9 +723,7 @@ final class CaptionService {
             DispatchQueue.main.async {
                 guard self.generation.isCurrent(gen) else { return }
                 self.logger.notice("確定: \(source, privacy: .private) / \(translation, privacy: .private)")
-                if isTranscribing {
-                    self.hud.showTranscript(source)
-                } else if !translation.isEmpty {
+                if !translation.isEmpty {
                     self.hud.showTranslation(source: source, japanese: translation)
                     if self.speaksTranslation { self.narrator.enqueue(translation) }
                 } else if !source.isEmpty {
@@ -642,38 +732,20 @@ final class CaptionService {
                 }
             }
         }
-        stream.onGiveUp = { [weak self] reason in
-            DispatchQueue.main.async {
-                guard let self, self.generation.isCurrent(gen) else { return }
-                // 保存済みの設定は変えず、このセッションだけ Apple に切り替えて続ける
-                self.logger.error("Soniox が使えないため Apple に切り替えます: \(reason, privacy: .public)")
-                self.sessionEngineOverride.withLock { $0 = .apple }
-                self.sonioxFallbackReason = reason
-                self.restartSession()
-                self.hud.showNotice("\(reason) — Apple に切り替えました")
-            }
-        }
-        stream.onLinkStateChange = { [weak self] linkState in
-            DispatchQueue.main.async {
-                guard let self, self.generation.isCurrent(gen) else { return }
-                self.sonioxLinkState = linkState
-            }
-        }
-        return stream.start() ? stream : nil
     }
 
     /// 動作中のセッションを畳む（停止・張り直し共通）
     ///
     /// 先に世代を進めるので、この後に届く認識・翻訳の結果は HUD に出ない。
-    /// パイプラインと Soniox は最後まで吐き切らせてから閉じる（最後の確定文を議事録に残すため）。
+    /// パイプラインと外部エンジンの接続は最後まで吐き切らせてから閉じる（最後の確定文を議事録に残すため）。
     private func teardownSession() {
         let ended = generation.invalidate()
         sessionConfig = nil
         let pipeline = self.pipeline
         self.pipeline = nil
-        let stream = sonioxStream
-        sonioxStream = nil
-        sonioxLinkState = nil
+        let stream = speechStream
+        speechStream = nil
+        speechLinkState = nil
         coordinator?.reset()
         coordinator = nil
         partialDriver?.reset()
@@ -700,11 +772,19 @@ final class CaptionService {
 
     /// このセッションで実際に使うエンジン
     ///
-    /// Soniox を選んでいても使えないときは、このセッションだけ代替（Apple）にする。
+    /// 「Soniox（認識と一緒に訳す）」は認識が Soniox のときだけ成り立つ。認識が Soniox でない
+    /// （別のエンジンを選んだ・使えなくて Apple で代替している）ときは Apple で訳す。
     private var effectiveEngine: TranslationEngine {
-        let chosen = CaptionSettings.translationEngine
-        guard chosen == .soniox, let override = sessionEngineOverride.withLock({ $0 }) else { return chosen }
-        return override
+        CaptionRecognitionPolicy.effectiveTranslation(
+            chosen: CaptionSettings.translationEngine, recognition: effectiveRecognition.backend
+        )
+    }
+
+    /// このセッションで実際に使う文字起こしエンジン
+    ///
+    /// 選んだエンジンが使えないときは、このセッションだけ Apple（端末内の認識）にする。
+    private var effectiveRecognition: EngineModelChoice {
+        recognitionFallback.withLock { $0 } ? CaptionRecognitionPolicy.defaultChoice : CaptionSettings.recognition
     }
 
     /// 表示順の連番を 1 つ払い出す

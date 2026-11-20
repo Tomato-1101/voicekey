@@ -55,9 +55,13 @@ final class CaptionMenuController: NSObject, NSMenuDelegate {
         // 2. 状態（読み取り専用）
         menu.addItem(disabledItem(service.state.menuTitle))
         menu.addItem(disabledItem(translationStatusLine(service)))
-        // Soniox は繋いでいる時間で課金されるので、いま繋いでいるか・Apple に切り替わった理由を出す
-        if let soniox = service.sonioxStatusLine {
-            menu.addItem(disabledItem(soniox))
+        // 翻訳モードの上の行は翻訳の構成だけなので、端末内以外で認識しているときは認識の行も出す
+        if service.mode == .translate, service.recognition.backend != .appleLocal {
+            menu.addItem(disabledItem("文字起こし: \(EngineModelCatalog.title(service.recognition))"))
+        }
+        // 常時接続のエンジンは繋いでいる時間で課金されるので、いま繋いでいるか・Apple に切り替わった理由を出す
+        if let status = service.recognitionStatusLine {
+            menu.addItem(disabledItem(status))
         }
         if let degraded = service.appleDegradedStatusLine {
             menu.addItem(disabledItem(degraded))
@@ -109,10 +113,29 @@ final class CaptionMenuController: NSObject, NSMenuDelegate {
         menu.addItem(checkItem("英語の原文も表示", #selector(toggleSource), service.showsSourceText))
         menu.addItem(.separator())
 
-        // 5. 翻訳エンジン
+        // 5. 文字起こしエンジン（設定の「ライブ字幕」ページと同じ一覧）
+        let recognition = service.recognition
+        let recognitionItem = NSMenuItem(title: "文字起こしエンジン", action: nil, keyEquivalent: "")
+        let recognitionMenu = NSMenu()
+        for group in EngineModelCatalog.groups(current: recognition) {
+            if let title = group.title {
+                recognitionMenu.addItem(.sectionHeader(title: title))
+            }
+            for option in group.options {
+                let item = NSMenuItem(title: option.label, action: #selector(selectRecognition(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = [option.id.backend.rawValue, option.id.model]
+                item.state = option.id == recognition ? .on : .off
+                recognitionMenu.addItem(item)
+            }
+        }
+        recognitionItem.submenu = recognitionMenu
+        menu.addItem(recognitionItem)
+
+        // 6. 翻訳エンジン（Soniox は文字起こしが Soniox のときだけ出す）
         let engineItem = NSMenuItem(title: "翻訳エンジン", action: nil, keyEquivalent: "")
         let engineMenu = NSMenu()
-        for engine in TranslationEngine.allCases {
+        for engine in CaptionRecognitionPolicy.translationChoices(recognition: recognition.backend) {
             let item = NSMenuItem(title: engine.displayName, action: #selector(selectEngine(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = engine.rawValue
@@ -133,8 +156,9 @@ final class CaptionMenuController: NSObject, NSMenuDelegate {
     private func translationStatusLine(_ service: CaptionService) -> String {
         // 文字起こしモードでは翻訳器を一切使わないので、翻訳の構成ではなく認識言語を出す
         if service.mode == .transcribe {
-            // Soniox は文字起こしモードでも Soniox が認識する（端末内ではない）
-            let engine = service.translationEngine == .soniox ? "Soniox・リアルタイム" : "端末内・Apple"
+            // 認識するのは選んだ文字起こしエンジン（Apple なら端末内）
+            let backend = service.recognition.backend
+            let engine = backend == .appleLocal ? "端末内・Apple" : backend.providerName
             return "文字起こし: \(service.language.displayName)（\(engine)）"
         }
         if CaptionService.usesMockTranslator {
@@ -253,6 +277,17 @@ final class CaptionMenuController: NSObject, NSMenuDelegate {
         let directory = CaptionService.transcriptDirectory
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         NSWorkspace.shared.open(directory)
+    }
+
+    /// 文字起こしエンジンを選ぶ（動作中なら CaptionService 側が認識セッションを張り直す）
+    @objc private func selectRecognition(_ sender: NSMenuItem) {
+        guard let pair = sender.representedObject as? [String], pair.count == 2,
+              let backend = Backend(rawValue: pair[0]), let controller else { return }
+        let choice = EngineModelChoice(backend: backend, model: pair[1])
+        controller.caption.recognition = choice
+        controller.config.captionRecognition = choice
+        // 認識を Soniox 以外にすると、サービス側が「Soniox（認識と一緒に訳す）」を Apple 翻訳へ戻す
+        controller.config.captionEngine = controller.caption.translationEngine
     }
 
     @objc private func selectEngine(_ sender: NSMenuItem) {

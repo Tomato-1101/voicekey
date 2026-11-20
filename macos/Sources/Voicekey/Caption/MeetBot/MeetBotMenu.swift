@@ -118,6 +118,28 @@ final class MeetBotMenuController: NSObject, NSMenuDelegate {
         sourceItem.submenu = sourceMenu
         menu.addItem(sourceItem)
 
+        // 自分で録音するときの文字起こしエンジン（設定の「議事録・会議」ページと同じ一覧）
+        let recognition = CaptionSettings.meetRecognition
+        let recognitionItem = NSMenuItem(title: "録音の文字起こしエンジン", action: nil, keyEquivalent: "")
+        let recognitionMenu = NSMenu()
+        for group in EngineModelCatalog.groups(current: recognition) {
+            if let title = group.title {
+                recognitionMenu.addItem(.sectionHeader(title: title))
+            }
+            for option in group.options {
+                let item = NSMenuItem(title: option.label, action: #selector(selectRecognition(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = [option.id.backend.rawValue, option.id.model]
+                item.state = option.id == recognition ? .on : .off
+                item.isEnabled = !bot.state.isActive
+                recognitionMenu.addItem(item)
+            }
+        }
+        recognitionItem.submenu = recognitionMenu
+        // 録音を選んでいないときは効かない設定なので、押せなくしておく
+        recognitionItem.isEnabled = CaptionSettings.meetTranscriptSource == .localSpeech
+        menu.addItem(recognitionItem)
+
         let login = NSMenuItem(
             title: "ボット用ブラウザで Google にログイン…", action: #selector(openLogin), keyEquivalent: ""
         )
@@ -168,6 +190,13 @@ final class MeetBotMenuController: NSObject, NSMenuDelegate {
         guard let raw = sender.representedObject as? String,
               let source = MeetTranscriptSource(rawValue: raw) else { return }
         CaptionSettings.meetTranscriptSource = source
+    }
+
+    /// 録音の文字起こしエンジンを選ぶ（次に参加したときから効く）
+    @objc private func selectRecognition(_ sender: NSMenuItem) {
+        guard let pair = sender.representedObject as? [String], pair.count == 2,
+              let backend = Backend(rawValue: pair[0]) else { return }
+        CaptionSettings.meetRecognition = EngineModelChoice(backend: backend, model: pair[1])
     }
 
     @objc private func openLogin() {

@@ -4,6 +4,30 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased] - 2026-11-20
 
+### Added（Mac）
+- **ライブ字幕と Meet ボットの録音で、文字起こしエンジンを選べるようにした**（これまでは Apple の端末内認識だけ。ライブ字幕は翻訳に Soniox を選んだときだけ Soniox）。
+  録音キーと同じ一覧（Apple / Soniox / OpenAI ライブ / OpenAI / ElevenLabs / Microsoft MAI / Groq・提供元 · モデル）から選ぶ。**既定は今までどおり Apple**。
+  - ライブ字幕: 設定「ライブ字幕」ページとメニューに「文字起こしエンジン」を追加（翻訳エンジンとは別の設定）。
+  - Meet ボット: 設定「議事録・会議」ページとメニューに「録音の文字起こしエンジン」を追加（取り方が「自分で録音して文字起こし」のときに効く）。
+  - Soniox は話している間つなぎ続ける（無音 30 秒で切断）。OpenAI ライブは一言ごとにつなぐ。OpenAI / ElevenLabs / Microsoft MAI / Groq は
+    声のある区間だけを無音 0.6 秒か上限 15 秒で区切って送る（黙っている間は何も送らない）。
+  - キー未設定・キー無効・残高不足・失敗が 3 回続いたときは Apple に切り替え、理由を通知とメニューに出す（勝手に別の有料エンジンへは切り替えない）。
+
+### Changed（Mac）
+- ライブ字幕の翻訳エンジン **Soniox は、文字起こしエンジンも Soniox のときだけ選べる**ようにした。これまで翻訳に Soniox を選んでいた設定は、
+  「文字起こし = Soniox・翻訳 = Soniox」として引き継ぐ（動きは変わらない）。
+- 一覧の印を「（推奨）」から**「（おすすめ）」に統一し、一覧ごとに 1 つだけ**にした（録音キー・字幕・Meet の文字起こし = Soniox · stt-rt-v5、
+  字幕の翻訳 = 文字起こしが Soniox なら Soniox・それ以外は Groq、Meet の議事録の取り方 = Meet の字幕を読む）。
+- 表示名を統一: Apple の翻訳は「端末内・無料」、Meet の取り方は「Meet の字幕を読む（おすすめ）」「自分で録音して文字起こし」。
+  ライブ字幕の「文字起こし」モードの説明から「端末内」「クラウド送信なし」の文言を外した（どこで認識するかは文字起こしエンジンで決まるため）。
+
+### Technical Details（Mac）
+- 追加: `Caption/Recognition/`（`CaptionSpeechStream` 共通の形と `CaptionSpeechStreamFactory`・`UtteranceSegmenter`・`UtteranceCaptionStream`）、
+  `CaptionRecognitionPolicy`（`CaptionSettings.swift`・保存値の解決と旧設定の移行・翻訳との組み合わせ）、テスト `CaptionRecognitionTests`。
+- `CaptionService` / `MeetBotService`: Apple 以外のときは `CapturePipeline(usesOnDeviceRecognizer: false)` の音声を共通ストリームへ流す。
+  Apple への切り替えは一方向で 1 回だけ（タップの作り直しをループさせない）。
+- `TranscriptionError.isRateLimited`、`EngineModelCatalog.recommended` を追加。
+
 ### Fixed（Mac・Windows）
 - **サイドノッチの履歴パネルからクリップボード履歴が消えていたのを修正**。11-03〜11-10 に別ブランチで作った機能が
   2.4〜2.5 に入っていなかったため。同じ理由で抜けていた Mac の設定画面の作り直し・貼り付け先が AI なら整形を省く・

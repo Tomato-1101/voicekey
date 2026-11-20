@@ -256,6 +256,8 @@ final class MeetBotService: ObservableObject {
     private var chromeIsVisible = false
     private var devTools: ChromeDevTools?
     private var pipeline: CapturePipeline?
+    /// 録音を外部の文字起こしエンジンへ流す接続（Apple の端末内認識のときは nil）
+    private var speechStream: CaptionSpeechStream?
     private var speakerTimer: Timer?
     private var captionTimer: Timer?
     private var statusTimer: Timer?
@@ -308,6 +310,10 @@ final class MeetBotService: ObservableObject {
     /// この会議で使う文字起こしの取り方と言語（参加した時点の設定で固定する）
     private var activeSource: MeetTranscriptSource = .meetCaptions
     private var activeLanguage: CaptionLanguage = .japanese
+    /// この会議の録音で使う文字起こしエンジン（参加した時点の設定で固定する）
+    ///
+    /// 使えなくなったら Apple（端末内）へ**一度だけ**落とす。戻さないので、タップの作り直しは会議 1 回につき高々 1 回。
+    private var activeRecognition = CaptionRecognitionPolicy.defaultChoice
 
     /// いま話している参加者（DOM から拾えたときだけ入る）
     ///
@@ -483,6 +489,7 @@ final class MeetBotService: ObservableObject {
         meetingCode = newMeeting ? nil : Self.meetingCode(from: url)
         meetingName = meetingCode ?? (newMeeting ? "新しい会議" : "Google Meet")
         activeSource = CaptionSettings.meetTranscriptSource
+        activeRecognition = CaptionSettings.meetRecognition
         activeLanguage = CaptionSettings.meetBotLanguage
         recordedLines = 0
         saveError = nil
@@ -591,13 +598,13 @@ final class MeetBotService: ObservableObject {
         loginWatcher = nil
         flushPendingCaptions()
         generation.invalidate()
-        let pipeline = detachResources(leaveMeetingFirst: false)
+        let stopRecording = detachResources(leaveMeetingFirst: false)
         // タップと Aggregate Device は終了前に確実に畳む（残すと HAL にゴーストデバイスが溜まる）。
         // 議事録はその後で閉じる（停止処理の中で確定した最後の 1 文を、閉じた後に受けて捨てないため）。
-        if let pipeline {
+        if let stopRecording {
             let semaphore = DispatchSemaphore(value: 0)
             Task.detached {
-                await pipeline.stop()
+                await stopRecording()
                 semaphore.signal()
             }
             _ = semaphore.wait(timeout: .now() + Self.stopWaitLimit)
@@ -1255,27 +1262,111 @@ final class MeetBotService: ObservableObject {
         onWillStartRecording?()
 
         state = .joining("音声認識を準備しています")
+        try await startRecordingPipeline(chromePID: chromePID, generation: current)
+    }
+
+    /// 会議音声を拾うパイプラインを張る（文字起こしは `activeRecognition` のエンジン）
+    ///
+    /// 外部のエンジンを選んでいてもキーが無ければ、この会議だけ Apple（端末内）で認識する。
+    private func startRecordingPipeline(chromePID: pid_t, generation current: Int) async throws {
         let language = activeLanguage
-        let pipeline = CapturePipeline(locale: language.locale, fixedPID: chromePID, processTreeOnly: true)
-        pipeline.onSegment = { [weak self] segment in
-            guard let self else { return }
-            if segment.isFinal {
-                self.recordFinal(segment.text)
-            } else {
-                // 発話中に見えている話者を覚えておく（確定時にはもう切り替わっていることがある）
-                if let speaker = self.speakerNow.withLock({ $0 }) {
-                    self.speakerForCurrentSegment.withLock { $0 = speaker }
+        var stream: CaptionSpeechStream?
+        if activeRecognition.backend != .appleLocal {
+            stream = makeSpeechStream(chromePID: chromePID, generation: current)
+            if stream == nil {
+                let provider = activeRecognition.backend.providerName
+                activeRecognition = CaptionRecognitionPolicy.defaultChoice
+                logger.notice("\(provider, privacy: .public) の API キーが無いため Apple で文字起こしします")
+                notifier.post(MeetBotText.recognitionFallback(provider: provider, reason: "APIキー未設定"))
+            }
+        }
+
+        let pipeline: CapturePipeline
+        if let stream {
+            // 認識は外部のエンジンで行う。端末内の認識は起動せず、音声だけを流す
+            pipeline = CapturePipeline(
+                locale: language.locale, fixedPID: chromePID, processTreeOnly: true, usesOnDeviceRecognizer: false
+            )
+            pipeline.onAudio = { buffer in stream.send(buffer) }
+        } else {
+            pipeline = CapturePipeline(locale: language.locale, fixedPID: chromePID, processTreeOnly: true)
+            pipeline.onSegment = { [weak self] segment in
+                guard let self else { return }
+                if segment.isFinal {
+                    self.recordFinal(segment.text)
+                } else {
+                    self.rememberSpeaker()
                 }
             }
         }
-        try await pipeline.start()
+        do {
+            try await pipeline.start()
+        } catch {
+            await stream?.stop()
+            throw error
+        }
         // 準備している間に退出していたら、張ったタップをすぐ畳む（残すと HAL にゴーストが溜まる）
         guard generation.isCurrent(current) else {
             await pipeline.stop()
+            await stream?.stop()
             throw MeetBotError.superseded
         }
         self.pipeline = pipeline
-        logger.notice("会議音声のローカル認識を開始 pid=\(chromePID, privacy: .public) locale=\(language.rawValue, privacy: .public)")
+        self.speechStream = stream
+        logger.notice("会議音声の認識を開始 pid=\(chromePID, privacy: .public) locale=\(language.rawValue, privacy: .public) engine=\(self.activeRecognition.backend.rawValue, privacy: .public)")
+    }
+
+    /// 発話中に見えている話者を覚えておく（確定時にはもう切り替わっていることがある）
+    nonisolated private func rememberSpeaker() {
+        if let speaker = speakerNow.withLock({ $0 }) {
+            speakerForCurrentSegment.withLock { $0 = speaker }
+        }
+    }
+
+    /// 選んだ文字起こしエンジンへの接続を用意する（キー未設定などで使えなければ nil）
+    private func makeSpeechStream(chromePID: pid_t, generation current: Int) -> CaptionSpeechStream? {
+        guard let stream = CaptionSpeechStreamFactory.make(
+            choice: activeRecognition, language: activeLanguage.rawValue, sonioxTranslates: false
+        ) else { return nil }
+        let provider = activeRecognition.backend.providerName
+        stream.onLive = { [weak self] source, _ in
+            if !source.isEmpty { self?.rememberSpeaker() }
+        }
+        stream.onConfirmed = { [weak self] source, _ in
+            if !source.isEmpty { self?.recordFinal(source) }
+        }
+        stream.onGiveUp = { [weak self] reason in
+            Task { @MainActor [weak self] in
+                self?.fallBackToLocalRecognition(
+                    provider: provider, reason: reason, chromePID: chromePID, generation: current
+                )
+            }
+        }
+        return stream.start() ? stream : nil
+    }
+
+    /// 外部のエンジンが使えなくなったので、この会議の残りを Apple（端末内）の認識で録る
+    ///
+    /// 議事録を途切れさせないための一方向の切り替え（`activeRecognition` を Apple にするので二度は起きない
+    /// ＝ タップの作り直しをループさせない）。保存済みの設定は書き換えない。
+    private func fallBackToLocalRecognition(provider: String, reason: String, chromePID: pid_t, generation current: Int) {
+        guard generation.isCurrent(current), state.isActive, activeRecognition.backend != .appleLocal else { return }
+        activeRecognition = CaptionRecognitionPolicy.defaultChoice
+        logger.error("\(provider, privacy: .public) が使えないため Apple に切り替えます: \(reason, privacy: .public)")
+        notifier.post(MeetBotText.recognitionFallback(provider: provider, reason: reason))
+        let stopRecording = detachRecording()
+        Task { [weak self] in
+            await stopRecording?()
+            // タップの作り直しは Mac 全体の既定デバイス再評価を誘発するので、畳み終わる時間を置いてから張る
+            try? await Task.sleep(for: .seconds(0.6))
+            guard let self, self.generation.isCurrent(current) else { return }
+            do {
+                try await self.startRecordingPipeline(chromePID: chromePID, generation: current)
+            } catch {
+                self.logger.error("Apple の認識へ切り替えられませんでした: \(error.localizedDescription, privacy: .public)")
+                self.notifier.post(MeetBotText.recognitionFallbackFailed)
+            }
+        }
     }
 
     /// 確定した文字起こしを議事録へ書く（本文はログに出さない）
@@ -1345,15 +1436,15 @@ final class MeetBotService: ObservableObject {
     private func finish(_ newState: MeetBotState, leaveMeetingFirst: Bool = false, closingReason: String? = nil) {
         flushPendingCaptions()
         generation.invalidate()
-        let pipeline = detachResources(leaveMeetingFirst: leaveMeetingFirst)
-        guard let pipeline else {
+        let stopRecording = detachResources(leaveMeetingFirst: leaveMeetingFirst)
+        guard let stopRecording else {
             closeSession(newState, closingReason: closingReason)
             return
         }
         // タップと Aggregate Device は必ず畳む（残すと HAL にゴーストデバイスが溜まる）
         isClosing = true
         Task { [weak self] in
-            let stopped = await StopWaiter.wait(limit: Self.stopWaitLimit) { await pipeline.stop() }
+            let stopped = await StopWaiter.wait(limit: Self.stopWaitLimit) { await stopRecording() }
             guard let self else { return }
             if !stopped { self.logger.error("音声パイプラインの停止が 3 秒で終わりませんでした（議事録は閉じます）") }
             self.isClosing = false
@@ -1387,8 +1478,8 @@ final class MeetBotService: ObservableObject {
     /// Chrome・接続・タイマーを手放す（すぐ再参加しても新しい Chrome を巻き込まないよう、先に参照を外す）
     ///
     /// - Parameter leaveMeetingFirst: 退出ボタンを押してから閉じるか
-    /// - Returns: 止める必要のある音声パイプライン（呼び出し側が止め方を選ぶ）
-    private func detachResources(leaveMeetingFirst: Bool) -> CapturePipeline? {
+    /// - Returns: 録音を止める処理（録音していなければ nil。呼び出し側が待ち方を選ぶ）
+    private func detachResources(leaveMeetingFirst: Bool) -> (@Sendable () async -> Void)? {
         speakerTimer?.invalidate()
         speakerTimer = nil
         captionTimer?.invalidate()
@@ -1396,8 +1487,7 @@ final class MeetBotService: ObservableObject {
         statusTimer?.invalidate()
         statusTimer = nil
         _ = settleTracker.flush()
-        let pipeline = self.pipeline
-        self.pipeline = nil
+        let stopRecording = detachRecording()
         let tools = devTools
         devTools = nil
         tools?.onDisconnect = nil
@@ -1420,7 +1510,22 @@ final class MeetBotService: ObservableObject {
             tools?.close()
             if let process, process.isRunning { process.terminate() }
         }
-        return pipeline
+        return stopRecording
+    }
+
+    /// 録音のパイプラインと外部エンジンの接続を手放し、止める処理を返す（録音していなければ nil）
+    ///
+    /// 先に音の取り込みを止めてから接続を閉じる（接続側が、話し途中だった最後の 1 文を確定して返すため）。
+    private func detachRecording() -> (@Sendable () async -> Void)? {
+        let pipeline = self.pipeline
+        self.pipeline = nil
+        let stream = speechStream
+        speechStream = nil
+        guard pipeline != nil || stream != nil else { return nil }
+        return {
+            await pipeline?.stop()
+            await stream?.stop()
+        }
     }
 
     /// Chrome を終わらせ、終わるまで待つ（上限 5 秒）

@@ -32,7 +32,7 @@ enum DictationTranslationEngine: String, Codable, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .apple: return "Apple 翻訳（オンデバイス・無料）"
+        case .apple: return "Apple 翻訳（端末内・無料）"
         case .groq: return "Groq（LLM・APIキーが必要）"
         }
     }

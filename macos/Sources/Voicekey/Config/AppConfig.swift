@@ -349,6 +349,8 @@ final class ConfigStore: ObservableObject {
     @Published var captionSaveTranscript: Bool
     /// ライブ字幕の翻訳エンジン（Apple / Gemini / Groq）
     @Published var captionEngine: TranslationEngine
+    /// ライブ字幕の文字起こしエンジンとモデル（正本は `CaptionSettings.recognition`）
+    @Published var captionRecognition: EngineModelChoice
     /// ライブ字幕で最前面のアプリだけを対象にするか（既定 ON）
     @Published var captionFrontmostOnly: Bool
     /// ライブ字幕の訳文を読み上げるか（既定 OFF）
@@ -515,6 +517,7 @@ final class ConfigStore: ObservableObject {
         captionLanguage = CaptionSettings.language
         captionSaveTranscript = CaptionSettings.savesTranscript
         captionEngine = CaptionSettings.translationEngine
+        captionRecognition = CaptionSettings.recognition
         captionFrontmostOnly = CaptionSettings.captureScopeMode == .frontmost
         captionSpeak = CaptionSettings.speakTranslation
         captionShowSource = CaptionSettings.showSourceText
@@ -625,6 +628,7 @@ final class ConfigStore: ObservableObject {
         $captionLanguage.dropFirst().sink { CaptionSettings.language = $0 }.store(in: &cancellables)
         $captionSaveTranscript.dropFirst().sink { CaptionSettings.savesTranscript = $0 }.store(in: &cancellables)
         $captionEngine.dropFirst().sink { CaptionSettings.translationEngine = $0 }.store(in: &cancellables)
+        $captionRecognition.dropFirst().sink { CaptionSettings.recognition = $0 }.store(in: &cancellables)
         $captionFrontmostOnly.dropFirst().sink { CaptionSettings.captureScopeMode = $0 ? .frontmost : .all }
             .store(in: &cancellables)
         $captionSpeak.dropFirst().sink { CaptionSettings.speakTranslation = $0 }.store(in: &cancellables)
