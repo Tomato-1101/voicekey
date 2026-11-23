@@ -485,29 +485,6 @@ EOF
 git push origin <branch>
 ```
 
-#### ユーザーへの報告
-
-コミット後は、以下を報告：
-
-```
-✅ 変更をコミット & push しました
-- コミットID: abc1234
-- ファイル: app.py, settings_window.py, CHANGELOG.md
-- ブランチ: feature/xxx
-- remote: origin/feature/xxx
-```
-
-main / master の場合は push せずに以下のように報告：
-
-```
-✅ 変更をコミットしました（push は手動で）
-- コミットID: abc1234
-- ファイル: app.py, settings_window.py, CHANGELOG.md
-- ブランチ: main
-
-main への push は手動で実行してください: `git push origin main`
-```
-
 ### バージョニング規則
 
 セマンティックバージョニング (MAJOR.MINOR.PATCH) を使用:
