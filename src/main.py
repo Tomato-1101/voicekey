@@ -50,6 +50,7 @@ def main() -> int:
         single = SingleInstance()
         if not single.try_become_primary():
             return 0
+        _hold_running_mutex()
 
         # macOS では Dock / Cmd+Tab から隠す（メニューバー常駐アプリとして動作）。
         # Windows / Linux ではアダプタが no-op なので副作用なし。
@@ -71,6 +72,30 @@ def main() -> int:
     except Exception as e:
         _handle_critical_error(e)
         return 1
+
+
+# 更新のインストーラ（installer/windows/voicekey.iss の AppMutex 判定）と名前を揃える
+_RUNNING_MUTEX_NAME = "voicekey-running"
+# ハンドルはプロセスが終わるまで持ち続ける（終われば OS が閉じ、インストーラが「終わった」と分かる）
+_running_mutex = None
+
+
+def _hold_running_mutex() -> None:
+    """
+    Windows で「voicekey が動いている」ことを示す名前付きミューテックスを作って持ち続ける。
+
+    更新のインストーラはこれが消えるのを待ってからファイルを置き換える。プロセス一覧（WMI）で
+    数える方式は呼び出しが無期限に止まり得るため、すぐ答えが返るミューテックスで判定する。
+    """
+    global _running_mutex
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        _running_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, _RUNNING_MUTEX_NAME)
+    except Exception as e:  # 作れなくても起動は続ける（インストーラは強制で閉じる側に倒れる）
+        logger.warning(f"実行中を示すミューテックスを作れませんでした: {e}")
 
 
 def _configure_high_dpi() -> None:

@@ -9,7 +9,7 @@
 ;   （自動アップデートのサイレント実行が管理者権限なしで完結する）
 ; - AppId は固定 GUID。変更すると更新時に別アプリ扱いになるので絶対に変えない
 ; - 自動更新ではアプリがインストーラを起動してから自分で終了する。インストーラは PrepareToInstall で
-;   旧プロセス（voicekey.exe）が終わるのを最大 30 秒待ってからファイルを置き換え、[Run] で新版を起動する。
+;   旧プロセス（voicekey.exe・ミューテックス voicekey-running）が終わるのを最大 30 秒待ってからファイルを置き換え、[Run] で新版を起動する。
 ;   待たずに進むと、終了途中の旧プロセスがファイルを掴んだまま「使用中」で中止され（/SUPPRESSMSGBOXES は
 ;   中止を選ぶ）、新版も起動しなかった。待っても残っていれば CloseApplications=force で閉じる
 ; - ログイン時起動は **アプリの設定 UI（HKCU\...\Run）に一元化** する（item 14）。
@@ -75,24 +75,14 @@ Type: files; Name: "{autostartup}\voicekey.lnk"
 Filename: "{app}\voicekey.exe"; Flags: nowait postinstall
 
 [Code]
-{ 実行中の voicekey.exe の数を数える（WMI。自分のユーザーのプロセスが見えれば足りる）。
-  数えられなかった時は 0 を返し、待たずに CloseApplications に任せる }
-function CountRunningVoicekey(): Integer;
 var
-  Locator, Service, Procs: Variant;
-begin
-  Result := 0;
-  try
-    Locator := CreateOleObject('WbemScripting.SWbemLocator');
-    Service := Locator.ConnectServer('.', 'root\CIMV2');
-    Procs := Service.ExecQuery('SELECT ProcessId FROM Win32_Process WHERE Name = ''voicekey.exe''');
-    Result := Procs.Count;
-  except
-    Result := 0;
-  end;
-end;
+  { ファイルの置き換えまで済んだか（失敗したサイレント更新で、閉じたアプリを起動し直すため） }
+  InstallSucceeded: Boolean;
 
 { ファイルを置き換える前に、旧プロセスが自分で終わるのを待つ（最大 30 秒）。
+  アプリは動いている間だけ名前付きミューテックス voicekey-running を持つ（src/main.py）。
+  CheckForMutexes はすぐ答えを返すので、プロセス一覧（WMI）のように待ちが止まり続けることがない。
+  ミューテックスを持たない旧版（2.5.3 以前）はすぐ素通りし、CloseApplications=force が閉じる。
   アプリ側は更新のための終了を 12 秒で打ち切るので、通常はその前に終わる }
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
@@ -101,9 +91,36 @@ begin
   Result := '';
   for I := 1 to 120 do
   begin
-    if CountRunningVoicekey() = 0 then
+    if not CheckForMutexes('voicekey-running') then
       Exit;
     Sleep(250);
   end;
   Log('voicekey.exe が 30 秒で終わらなかったため、CloseApplications で閉じます');
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    InstallSucceeded := True;
+end;
+
+{ サイレント更新が途中で失敗したとき（インストーラは変更を巻き戻す）、閉じたアプリが消えたままに
+  ならないよう、入っている版を起動し直す。まだ動いていれば単一起動の仕組みで新しい方がすぐ終わる }
+procedure DeinitializeSetup();
+var
+  ResultCode: Integer;
+  ExePath: String;
+begin
+  if InstallSucceeded or not WizardSilent() then
+    Exit;
+  try
+    ExePath := ExpandConstant('{app}\voicekey.exe');
+    if FileExists(ExePath) then
+    begin
+      Log('更新が完了しなかったため、入っている voicekey を起動し直します');
+      Exec(ExePath, '', '', SW_SHOWNORMAL, ewNoWait, ResultCode);
+    end;
+  except
+    { インストール先が決まる前に失敗したときは何もしない }
+  end;
 end;

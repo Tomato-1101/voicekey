@@ -5,9 +5,10 @@
 #   インストーラは旧プロセス（voicekey.exe）が終わるのを待ってからファイルを置き換え、新版を起動する。
 #
 # 確かめること:
-#   1. 配布物が小さいこと（torch を入れない）と、凍結したアプリが起動して落ちないこと
-#   2. 旧プロセスが途中で終わる場合: インストールが成功し、版が上がり、新しいプロセスが起動している
-#   3. 旧プロセスが終わらない場合: 30 秒待ってから強制で閉じ、同じく成功して新しいプロセスが起動している
+#   1. 配布物が小さいこと（torch を入れない）
+#   2. いま配布中の v2.5.3 が動いたままでも、新版のインストーラで入れ替わり、新版が起動して落ちないこと
+#   3. 旧プロセスが途中で終わる場合: すぐ入れ替わり、新しいプロセスが起動している
+#   4. 旧プロセスが終わらない場合: 30 秒待ってから強制で閉じ、同じく成功して新しいプロセスが起動している
 #
 # 同じ dist から版番号だけ違うインストーラを 2 本作って入れ替える（アプリ内の版は同じで構わない）。
 # 鍵・課金 API・リリースには一切触れない。
@@ -71,7 +72,7 @@ jobs:
           $Flags = @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/CLOSEAPPLICATIONS", "/NORESTART")
           $LogDir = Join-Path $env:LOCALAPPDATA "voicekey\logs"
 
-          function Get-App { Get-Process voicekey -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $Exe } }
+          function Get-App { Get-Process voicekey -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $Exe } | Select-Object -First 1 }
           function Wait-App([int]$sec) {
             for ($i = 0; $i -lt $sec * 2; $i++) { $p = Get-App; if ($p) { return $p }; Start-Sleep -Milliseconds 500 }
             return $null
@@ -91,41 +92,52 @@ jobs:
             return $sec
           }
 
-          Write-Host "== 1. 初回インストール（0.0.1）と起動"
-          $job = Install "dist\installer\voicekey-0.0.1-windows-setup.exe" "$env:RUNNER_TEMP\i1.log"
-          Finish $job "$env:RUNNER_TEMP\i1.log" "0.0.1" | Out-Null
-          $app = Wait-App 30
-          if (-not $app) { throw "インストール後に voicekey.exe が起動していません" }
-          Start-Sleep -Seconds 15
-          if (-not (Get-App)) {
-            if (Test-Path "$LogDir\error_log.txt") { Get-Content "$LogDir\error_log.txt" }
-            throw "凍結したアプリが起動後に落ちました"
+          function Assert-NewAlive($old, [string]$log, [string]$what) {
+            $new = Wait-App 30
+            if (-not $new -or $new.Id -eq $old) { Get-Content $log -Tail 40; throw "$what の後に新しい voicekey.exe が起動していません" }
+            Start-Sleep -Seconds 15
+            if (-not (Get-Process -Id $new.Id -ErrorAction SilentlyContinue)) {
+              if (Test-Path "$LogDir\error_log.txt") { Get-Content "$LogDir\error_log.txt" }
+              throw "$what の後に起動した voicekey.exe が 15 秒以内に落ちました"
+            }
+            Write-Host "  $what OK（pid $old → $($new.Id)・15 秒後も動作中）"
           }
-          Write-Host "  起動 OK（pid $($app.Id)）"
 
-          Write-Host "== 2. 旧プロセスが途中で終わる更新（0.0.1 → 0.0.2）"
+          Write-Host "== 1. いま配布中の v2.5.3 を入れて起動（実際の利用者と同じ旧版）"
+          $Old = "$env:RUNNER_TEMP\voicekey-2.5.3-windows-setup.exe"
+          curl.exe -sSfL -o $Old "https://github.com/Tomato-1101/voicekey/releases/download/v2.5.3/voicekey-2.5.3-windows-setup.exe"
+          if ($LASTEXITCODE -ne 0) { throw "v2.5.3 のインストーラを取得できませんでした" }
+          $job = Install $Old "$env:RUNNER_TEMP\i1.log"
+          Finish $job "$env:RUNNER_TEMP\i1.log" "2.5.3" | Out-Null
+          if (-not (Wait-App 30)) { Start-Process $Exe }
+          $app = Wait-App 30
+          if (-not $app) { throw "v2.5.3 が起動していません" }
+          Start-Sleep -Seconds 10
+
+          Write-Host "== 2. v2.5.3 が動いたまま新版（0.0.1）へ更新（旧版は印を持たないので閉じられて入れ替わるはず）"
           $old = (Get-App).Id
-          $job = Install "dist\installer\voicekey-0.0.2-windows-setup.exe" "$env:RUNNER_TEMP\i2.log"
+          $job = Install "dist\installer\voicekey-0.0.1-windows-setup.exe" "$env:RUNNER_TEMP\i2.log"
+          $sec = Finish $job "$env:RUNNER_TEMP\i2.log" "0.0.1"
+          if (Get-Process -Id $old -ErrorAction SilentlyContinue) { throw "v2.5.3 のプロセスが残っています" }
+          Assert-NewAlive $old "$env:RUNNER_TEMP\i2.log" "v2.5.3 からの更新（$sec 秒）"
+
+          Write-Host "== 3. 旧プロセスが途中で終わる更新（0.0.1 → 0.0.2）"
+          $old = (Get-App).Id
+          $job = Install "dist\installer\voicekey-0.0.2-windows-setup.exe" "$env:RUNNER_TEMP\i3.log"
           # アプリが後片付けを終えて自分で終わる代わりに、3 秒後に止める
           Start-Sleep -Seconds 3
           Stop-Process -Id $old -Force
-          $sec = Finish $job "$env:RUNNER_TEMP\i2.log" "0.0.2"
+          $sec = Finish $job "$env:RUNNER_TEMP\i3.log" "0.0.2"
           if ($sec -gt 25) { throw "旧プロセスが終わった後も待ち続けています（$sec 秒）" }
-          $new = Wait-App 30
-          if (-not $new -or $new.Id -eq $old) { Get-Content "$env:RUNNER_TEMP\i2.log" -Tail 40; throw "更新後に新しい voicekey.exe が起動していません" }
-          Write-Host "  更新 OK・再起動 OK（pid $old → $($new.Id)）"
-          Start-Sleep -Seconds 10
+          Assert-NewAlive $old "$env:RUNNER_TEMP\i3.log" "旧プロセスが終わる更新（$sec 秒）"
 
-          Write-Host "== 3. 旧プロセスが終わらない更新（0.0.2 → 0.0.1 を上書き）"
+          Write-Host "== 4. 新版が終わらないまま更新（0.0.2 → 0.0.1 を上書き。30 秒待ってから閉じるはず）"
           $old = (Get-App).Id
-          $job = Install "dist\installer\voicekey-0.0.1-windows-setup.exe" "$env:RUNNER_TEMP\i3.log"
-          $sec = Finish $job "$env:RUNNER_TEMP\i3.log" "0.0.1"
-          if ($sec -lt 25) { Write-Host "  （30 秒待たずに進んだ: 旧プロセスが閉じられたため）" }
+          $job = Install "dist\installer\voicekey-0.0.1-windows-setup.exe" "$env:RUNNER_TEMP\i4.log"
+          $sec = Finish $job "$env:RUNNER_TEMP\i4.log" "0.0.1"
+          if ($sec -lt 28) { Get-Content "$env:RUNNER_TEMP\i4.log" -Tail 40; throw "実行中の印（ミューテックス）を待たずに進みました（$sec 秒）" }
           if (Get-Process -Id $old -ErrorAction SilentlyContinue) { throw "旧プロセスが残っています" }
-          $new = Wait-App 30
-          if (-not $new -or $new.Id -eq $old) { Get-Content "$env:RUNNER_TEMP\i3.log" -Tail 40; throw "強制で閉じた後に新しい voicekey.exe が起動していません" }
-          Write-Host "  強制クローズでの更新 OK・再起動 OK（pid $old → $($new.Id)）"
-          Select-String -Path "$env:RUNNER_TEMP\i3.log" -Pattern "CloseApplications|30 秒|Shutting down|closing" | Select-Object -First 10 | ForEach-Object { "  log: " + $_.Line }
+          Assert-NewAlive $old "$env:RUNNER_TEMP\i4.log" "強制で閉じる更新（$sec 秒）"
 
       - name: ログの保存
         if: always()

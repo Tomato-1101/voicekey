@@ -289,11 +289,15 @@ class Updater(QObject):
 
             # サイレント更新: インストーラは旧プロセスが自分で終わるのを待ってから上書きし
             # （installer/windows/voicekey.iss の PrepareToInstall）、[Run] セクションで新版を
-            # 自動再起動する。待っても終わらなければ /CLOSEAPPLICATIONS で閉じさせる
+            # 自動再起動する。待っても終わらなければ /CLOSEAPPLICATIONS で閉じさせる。
+            # アプリはこの後終わるのでインストーラの成否を見届けられない。失敗の原因を後から
+            # 追えるよう、インストーラ自身にログ（%TEMP%\voicekey-update.log）を書かせる
             self.installing.emit()
-            logger.info(f"インストーラを起動します: {run_path}")
+            log_path = os.path.join(tempfile.gettempdir(), "voicekey-update.log")
+            logger.info(f"インストーラを起動します: {run_path}（ログ: {log_path}）")
             subprocess.Popen(
-                [run_path, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CLOSEAPPLICATIONS", "/NORESTART"],
+                [run_path, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CLOSEAPPLICATIONS", "/NORESTART",
+                 f"/LOG={log_path}"],
                 close_fds=True,
             )
             # 終了はメインスレッド側（app._quit_app）に委ねる（クリーンアップを通すため）

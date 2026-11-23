@@ -255,6 +255,7 @@ class TestUpdaterInstall(unittest.TestCase):
         # サイレント更新フラグ（UAC なし・旧プロセスを閉じる）が付いていること
         self.assertIn("/VERYSILENT", args)
         self.assertIn("/CLOSEAPPLICATIONS", args)
+        self.assertTrue(any(a.startswith("/LOG=") and a.endswith("voicekey-update.log") for a in args))
         self.assertEqual(self.quit_requests, [True])
         self.assertEqual(self.failed, [])
 
