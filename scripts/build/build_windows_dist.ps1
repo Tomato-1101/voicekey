@@ -79,9 +79,23 @@ if (-not $OrtCore) {
 }
 Write-Host "==> onnxruntime 同梱を確認（VAD 有効）: $($OrtCore[0].Name)"
 
+# --- 2.6 VAD モデルの同梱と torch の非同梱チェック ---
+# モデル（silero_vad\data\silero_vad.onnx）が無いと VAD が黙って無効になる。torch は実行時に使わず、
+# 入ると配布物が 300MB を超えて自動更新のダウンロードが長くなる（voicekey.spec の excludes）
+$VadModel = Join-Path $Root "dist\voicekey\_internal\silero_vad\data\silero_vad.onnx"
+if (-not (Test-Path $VadModel)) {
+    Write-Error "VAD のモデルが dist に同梱されていません: $VadModel（voicekey.spec の collect_data_files('silero_vad') を確認してください）"
+}
+$TorchDir = Get-ChildItem (Join-Path $Root "dist\voicekey") -Recurse -Directory -Filter "torch" -ErrorAction SilentlyContinue
+if ($TorchDir) {
+    Write-Error "dist に torch が入っています（voicekey.spec の excludes を確認してください）: $($TorchDir[0].FullName)"
+}
+$DistMB = [math]::Round(((Get-ChildItem (Join-Path $Root "dist\voicekey") -Recurse -File | Measure-Object Length -Sum).Sum / 1MB), 1)
+Write-Host "==> VAD モデル同梱・torch 非同梱を確認（dist\voicekey 合計 $DistMB MB）"
+
 # --- 3. 自分のソース平文混入チェック ---
 # 目的は「自分の proprietary な src/ が平文 .py で同梱されていないこと」の確認。
-# torch / torchaudio 等の OSS ライブラリは PyInstaller onedir では .py を必ず同梱する
+# OSS ライブラリは PyInstaller onedir では .py を同梱することがある
 # （しかも公開コードなので IP 漏洩には当たらない）。ここでは src 配下の .py のみを対象にする。
 # src は voicekey.spec で datas=[] とし PYZ にバイトコード格納するため、本来 0 件のはず。
 $LeakedPy = Get-ChildItem (Join-Path $Root "dist\voicekey") -Recurse -Filter "*.py" -ErrorAction SilentlyContinue |
@@ -94,7 +108,7 @@ Write-Host "==> 自分のソース平文混入なし（dist\voicekey に src の
 
 # --- 3.5 プロバイダーキー混入チェック（自分の exe にキーが無いこと） ---
 # 作者のキーを配布物に入れないための安全装置。万一の混入をここで止める（外さないこと）。
-# torch 等 OSS の DLL 群は誤検出ノイズになるため走査対象に含めず、自分の exe だけ渡す。
+# OSS の DLL 群は誤検出ノイズになるため走査対象に含めず、自分の exe だけ渡す。
 $ExeForScan = Join-Path $Root "dist\voicekey\voicekey.exe"
 & $Python (Join-Path $Root "scripts\build\verify_no_embedded_keys.py") $ExeForScan
 if ($LASTEXITCODE -ne 0) { Write-Error "鍵混入チェックに失敗しました（exe にプロバイダーキーの痕跡）" }

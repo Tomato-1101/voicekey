@@ -3,10 +3,10 @@
 
 本リポジトリの GitHub Releases の Latest（releases/latest API・認証なし）を定期チェックし、
 Windows 用インストーラが付いた新しいバージョンがあればトレイ通知とメニュー項目で知らせる。
-インストールはユーザーがメニューを選んだときに、インストーラをダウンロード → サイズ照合 →
-固定公開鍵による Ed25519 署名検証 ＋ SHA256（GitHub が資産ごとに出す digest）照合 →
-サイレント実行 → アプリ終了、の順で行う（Inno Setup が旧プロセスを閉じて上書きし、
-新版を再起動する）。署名検証により、リリースが改竄・MITM されても秘密鍵を持たない第三者は
+インストールはユーザーがメニューを選んだときに、インストーラをダウンロード（進み具合を
+トレイと設定画面に出す）→ サイズ照合 → 固定公開鍵による Ed25519 署名検証 ＋ SHA256
+（GitHub が資産ごとに出す digest）照合 → サイレント実行 → アプリ終了、の順で行う
+（インストーラは旧プロセスが終わるのを待ってから上書きし、新版を再起動する）。署名検証により、リリースが改竄・MITM されても秘密鍵を持たない第三者は
 不正な更新を実行できない（Mac 版 Sparkle EdDSA と同方針）。
 
 リリースは Mac 版が先に（appcast 付きで）作り、Windows 用の資産は後から足す運用。
@@ -87,6 +87,35 @@ def parse_version(version: str) -> tuple:
     return tuple(int(p) for p in cleaned.split("."))
 
 
+def _copy_with_progress(src, dst, total, report, chunk_size: int = 1024 * 1024) -> None:
+    """src を dst へ写しながら、進み具合（%）が変わったときだけ report を呼ぶ。
+
+    Args:
+        src: 読み出し元（HTTP の応答など read() を持つもの）
+        dst: 書き込み先
+        total: 全体のバイト数（リリースの記載）。不明なら None で、report(-1) を 1 回だけ呼ぶ
+        report: 進み具合を受け取る関数（0〜100 / 不明は -1）
+        chunk_size: 1 回に読む大きさ
+    """
+    if not isinstance(total, int) or total <= 0:
+        report(-1)
+        shutil.copyfileobj(src, dst, chunk_size)
+        return
+    done = 0
+    last = -1
+    while True:
+        chunk = src.read(chunk_size)
+        if not chunk:
+            break
+        dst.write(chunk)
+        done += len(chunk)
+        percent = min(100, done * 100 // total)
+        # 1% 刻みでだけ知らせる（UI スレッドへ毎チャンク送ると無駄に詰まる）
+        if percent != last:
+            last = percent
+            report(percent)
+
+
 class Updater(QObject):
     """
     バージョンチェックとインストーラ起動を担う自動アップデータ。
@@ -95,12 +124,16 @@ class Updater(QObject):
         update_available: 新バージョン検知（引数: バージョン文字列）
         up_to_date: 最新版だった（手動チェック時に「最新です」と表示するため）
         update_failed: ダウンロード/検証の失敗（引数: エラーメッセージ）
+        download_progress: ダウンロードの進み具合（引数: 0〜100 の %。大きさが分からなければ -1）
+        installing: 検証を終えてインストーラを起動する直前（アプリがこのあと終了する）
         quit_requested: インストーラ起動後のアプリ終了要求
     """
 
     update_available = Signal(str)
     up_to_date = Signal()
     update_failed = Signal(str)
+    download_progress = Signal(int)
+    installing = Signal()
     quit_requested = Signal()
 
     def __init__(self, parent: Optional[QObject] = None) -> None:
@@ -140,6 +173,9 @@ class Updater(QObject):
         if self._installing or self._info is None:
             return
         self._installing = True
+        # 押した直後に何か見えるようにする（配布物は数百 MB あり、黙ってダウンロードすると
+        # 「押しても何も起きない」に見える）
+        self.download_progress.emit(0)
         threading.Thread(target=self._install, daemon=True, name="UpdateInstall").start()
 
     # ----- 内部処理（バックグラウンドスレッド） -----
@@ -205,7 +241,7 @@ class Updater(QObject):
             # 「インストール中」から戻れなくなる。timeout 付き urlopen + ストリームコピーで
             # 確実に打ち切れるようにする
             with _open(url, timeout=30) as res, open(path, "wb") as f:
-                shutil.copyfileobj(res, f)
+                _copy_with_progress(res, f, info.get("size"), self.download_progress.emit)
 
             # 配布物の検証はメモリに 1 回読み込んだバイト列に対して行う（サイズ・SHA256・署名で共用）。
             # Ed25519 検証は全メッセージを必要とするため（標準 Ed25519 はストリーミング不可）。
@@ -251,8 +287,10 @@ class Updater(QObject):
             with os.fdopen(fd, "wb") as f:
                 f.write(data)
 
-            # サイレント更新: Inno Setup が実行中の旧プロセスを閉じて上書きし、
-            # [Run] セクションで新版を自動再起動する
+            # サイレント更新: インストーラは旧プロセスが自分で終わるのを待ってから上書きし
+            # （installer/windows/voicekey.iss の PrepareToInstall）、[Run] セクションで新版を
+            # 自動再起動する。待っても終わらなければ /CLOSEAPPLICATIONS で閉じさせる
+            self.installing.emit()
             logger.info(f"インストーラを起動します: {run_path}")
             subprocess.Popen(
                 [run_path, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CLOSEAPPLICATIONS", "/NORESTART"],

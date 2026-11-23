@@ -229,5 +229,24 @@ class TestSegmentMerge(unittest.TestCase):
         self._assert_no_short_segment(segs, 2)
 
 
+class TestFindModelPath(unittest.TestCase):
+    """配布版（PyInstaller）ではパッケージ本体を入れずモデルだけを置くので、そこから見つけられること。"""
+
+    def test_frozen_bundle_uses_model_file_without_package(self):
+        import os
+        import sys
+        import tempfile
+
+        from src.core import vad as vad_module
+
+        with tempfile.TemporaryDirectory() as bundle:
+            model = os.path.join(bundle, "silero_vad", "data", "silero_vad.onnx")
+            os.makedirs(os.path.dirname(model))
+            open(model, "wb").close()
+            with patch.object(sys, "_MEIPASS", bundle, create=True), \
+                    patch("importlib.util.find_spec", return_value=None):
+                self.assertEqual(vad_module._find_model_path(), model)
+
+
 if __name__ == "__main__":
     unittest.main()

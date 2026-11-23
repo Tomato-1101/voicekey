@@ -4,6 +4,24 @@ voicekeyの変更履歴を記録するファイルです。
 
 ## [Unreleased] - 2026-11-20
 
+### Fixed（Windows）
+- **「vX に更新して再起動」を押しても更新されない・起動し直さないことがあった**のを直した。アプリが閉じきる前にインストーラが
+  ファイルを置き換えようとして「使用中」で黙って中止され、新しい版も起動していなかった。インストーラは旧プロセスが終わるのを最大 30 秒待ち、
+  残っていれば閉じてから入れ替え、終わったら新しい版を起動する。アプリ側も更新のための終了を 12 秒で打ち切る。
+- 更新のダウンロード中に進み具合（%）とインストール中の表示をトレイのメニューと設定 › バージョン情報に出す（以前は押しても何も起きないように見えた）。
+- インストーラを小さくした（約 309MB → torch と使わない PySide6 の部品を外した）。VAD のモデル（ONNX）だけを同梱する。
+
+### Removed（Windows）
+- トレイのメニューの「強制リセット（フリーズ復帰）」を消した（録音が固まったときの自動の見張りは残す。Mac には元から無い）。
+
+### Technical Details（Windows）
+- `installer/windows/voicekey.iss`: `CloseApplications=force`、`PrepareToInstall` で WMI から voicekey.exe の数を数えて待つ。
+- `src/utils/updater.py`: `download_progress` / `installing` シグナルと `_copy_with_progress`。`src/app.py`: `_quit_for_update`（12 秒で `os._exit`）、`_force_restart` を削除。
+  `src/main.py`: Windows では終了時に `os._exit` で後始末の詰まりを避ける。
+- `voicekey.spec`: `silero_vad` は ONNX ファイルだけ、torch 系を除外、`collect_all('PySide6')` をやめて `PySide6.QtSvg` だけ明示。
+  `src/core/vad.py` は `sys._MEIPASS` からモデルを探す。`build_windows_dist.ps1` がモデルの有無と torch の混入を検査する。
+- `.github/workflows/windows-update-e2e.yml`: 本物の Windows でインストール → 更新（旧プロセスが終わる場合・終わらない場合）→ 再起動を通しで確かめる。
+
 ### Added（Mac）
 - **ライブ字幕と Meet ボットの録音で、文字起こしエンジンを選べるようにした**（これまでは Apple の端末内認識だけ。ライブ字幕は翻訳に Soniox を選んだときだけ Soniox）。
   録音キーと同じ一覧（Apple / Soniox / OpenAI ライブ / OpenAI / ElevenLabs / Microsoft MAI / Groq・提供元 · モデル）から選ぶ。**既定は今までどおり Apple**。

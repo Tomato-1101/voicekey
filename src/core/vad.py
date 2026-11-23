@@ -14,6 +14,7 @@ silero_vad.onnx を import せずにパス解決して利用する
 
 import importlib.util
 import os
+import sys
 import threading
 from typing import Optional, Tuple
 
@@ -44,6 +45,12 @@ _MIN_SEGMENT_SEC = 2.0    # これ未満のセグメントは直前に結合す�
 
 def _find_model_path() -> Optional[str]:
     """silero-vad パッケージ同梱の ONNX モデルパスを import せずに解決する。"""
+    # 配布版（PyInstaller）はパッケージ本体を入れずモデルのファイルだけを同じ相対位置に置く
+    bundle_dir = getattr(sys, "_MEIPASS", None)
+    if bundle_dir:
+        path = os.path.join(bundle_dir, "silero_vad", "data", "silero_vad.onnx")
+        if os.path.exists(path):
+            return path
     spec = importlib.util.find_spec("silero_vad")
     if spec is None or not spec.origin:
         return None

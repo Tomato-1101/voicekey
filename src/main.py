@@ -5,6 +5,8 @@
 環境変数の読み込み、ロギング設定、Qtアプリケーションの初期化を行う。
 """
 
+import logging
+import os
 import sys
 import traceback
 
@@ -57,7 +59,14 @@ def main() -> int:
         controller = VoicekeyApp()
 
         # イベントループを実行
-        return app.exec()
+        code = app.exec()
+        if sys.platform == "win32":
+            # 後片付けは _quit_app で済んでいる。Python の終了処理（atexit で PortAudio の
+            # 後始末など）が Windows で止まるとプロセスが残り、更新のインストーラが
+            # ファイルを置き換えられず新版も起動しない。ログだけ書き切ってすぐ終わる
+            logging.shutdown()
+            os._exit(code)
+        return code
         
     except Exception as e:
         _handle_critical_error(e)

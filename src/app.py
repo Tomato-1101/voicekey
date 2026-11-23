@@ -25,7 +25,6 @@
 import ntpath
 import os
 import queue
-import subprocess
 import sys
 import threading
 import time
@@ -78,6 +77,10 @@ logger = get_logger(__name__)
 
 # 録音の最大継続時間（秒）。release 取りこぼし等による永久録音を防ぐ保険
 _MAX_RECORDING_SEC: float = 300.0
+# 更新のための終了で、後片付けがこの秒数を超えたら強制終了する（インストーラは
+# 旧プロセスの終了を 20 秒まで待つので、それより短くする）
+_UPDATE_EXIT_DEADLINE_SEC: float = 12.0
+
 # PortAudio 操作がこの秒数を超えてブロックしたらハングとみなし recover する
 _AUDIO_HANG_SEC: float = 5.0
 # ダブルタップ（auto_enter）の判定ウィンドウ（秒）
@@ -504,14 +507,15 @@ class VoicekeyApp(QObject):
             lambda: bool(self._config.get("translate_input_enabled", False)),
             self._set_translate_always,
         )
-        self._tray.force_reset.connect(self._force_restart)
         self._tray.quit_app.connect(self._quit_app)
         self.status_changed.connect(self._tray.set_status)
 
         # 自動アップデート通知・インストールはトレイ経由（設定タブは settings_window 側で配線済み）
         self._updater.update_available.connect(self._tray.show_update_available)
         self._updater.update_failed.connect(self._tray.show_update_failed)
-        self._updater.quit_requested.connect(self._quit_app)
+        self._updater.download_progress.connect(self._tray.show_update_progress)
+        self._updater.installing.connect(self._tray.show_update_installing)
+        self._updater.quit_requested.connect(self._quit_for_update)
         self._tray.install_update.connect(self._updater.download_and_install)
         self._updater.start()
 
@@ -2107,32 +2111,18 @@ class VoicekeyApp(QObject):
         self._settings_window.select("meeting", animate=False)
         self._open_settings()
 
-    def _force_restart(self) -> None:
-        """強制リセット: 新プロセスを起動して自分は即終了する（トレイメニュー用）。
+    def _quit_for_update(self) -> None:
+        """更新のインストーラを起動した後に、確実にプロセスを終わらせる。
 
-        recover() による自動復旧で通常は不要だが、leak したストリームが
-        OS のマイクインジケーターを掴み続けた場合などの最終脱出口として残す。
-        プロセス終了で OS が確実にマイクハンドルを回収する。
+        インストーラは旧プロセスが終わるまでファイルを置き換えられない（終わらないと
+        更新が中止され、新版も起動しない）。後片付け（会議ボットの退出など）がどこかで
+        止まっても終われるよう、時間切れで強制終了する保険を先に掛けてから通常の終了処理に入る。
         """
-        logger.warning("強制リセット: 新プロセスを起動して終了します")
-        listener = self._listener
-        if listener is not None:
-            try:
-                listener.stop()
-            except Exception as e:
-                logger.warning(f"リスナー停止失敗（無視して再起動）: {e}")
-        try:
-            sys.stdout.flush()
-            sys.stderr.flush()
-        except Exception:
-            pass
-        try:
-            # 新セッションで独立起動し、自分の終了に巻き込まない
-            subprocess.Popen([sys.executable] + sys.argv, start_new_session=True, cwd=os.getcwd())
-        except Exception as e:
-            logger.error(f"新プロセス起動失敗、再起動を中止: {e}")
-            return
-        os._exit(0)
+        logger.info("更新のため終了します")
+        timer = threading.Timer(_UPDATE_EXIT_DEADLINE_SEC, lambda: os._exit(0))
+        timer.daemon = True
+        timer.start()
+        self._quit_app()
 
     def _quit_app(self) -> None:
         """アプリケーションを終了する（最大 1 秒でマイクを解放）。"""

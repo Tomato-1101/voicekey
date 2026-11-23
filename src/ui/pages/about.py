@@ -71,6 +71,8 @@ class AboutPage(SettingsPage):
         self._updater.update_available.connect(self._on_available)
         self._updater.up_to_date.connect(self._on_up_to_date)
         self._updater.update_failed.connect(self._on_failed)
+        self._updater.download_progress.connect(self._on_progress)
+        self._updater.installing.connect(self._on_installing)
 
     def _on_check(self) -> None:
         self.status.show_message("確認中…")
@@ -90,6 +92,17 @@ class AboutPage(SettingsPage):
         self.status.show_message(message or "更新に失敗しました", "warn")
         # 失敗したらもう一度押せるようにする（新しい版を見つけていた場合だけ意味がある）
         self.update_button.setEnabled(self._found)
+
+    def _on_progress(self, percent: int) -> None:
+        # トレイから始めた更新でも、この画面に進み具合を出す
+        self.update_button.setEnabled(False)
+        if percent < 0:
+            self.status.show_message("更新をダウンロード中…")
+        else:
+            self.status.show_message(f"更新をダウンロード中… {percent}%")
+
+    def _on_installing(self) -> None:
+        self.status.show_message("更新をインストール中… 自動で再起動します")
 
     def _on_update_now(self) -> None:
         self.update_button.setEnabled(False)

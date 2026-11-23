@@ -258,6 +258,16 @@ class TestUpdaterInstall(unittest.TestCase):
         self.assertEqual(self.quit_requests, [True])
         self.assertEqual(self.failed, [])
 
+    def test_install_reports_progress_and_installing(self):
+        """ダウンロード中は % を知らせ、インストーラ起動の直前に installing を出す。"""
+        progress = []
+        installing = []
+        self.updater.download_progress.connect(progress.append)
+        self.updater.installing.connect(lambda: installing.append(True))
+        self._run_install(self._info(), self.pub_b64)
+        self.assertEqual(progress[-1], 100)
+        self.assertEqual(installing, [True])
+
     def test_missing_signature_fails_without_launch(self):
         """公開鍵が設定されているのに署名ファイルが無ければ起動せず失敗にする。"""
         popen = self._run_install(self._info(signature_url=None), self.pub_b64)
@@ -323,6 +333,31 @@ class TestUpdaterInstall(unittest.TestCase):
         with mock.patch("threading.Thread") as thread:
             self.updater.download_and_install()
         thread.assert_not_called()
+
+
+class TestDownloadProgress(unittest.TestCase):
+    """ダウンロード中の進み具合（%）の知らせ方。"""
+
+    def test_reports_each_percent_once_up_to_100(self):
+        import io
+        from src.utils.updater import _copy_with_progress
+        data = b"x" * 1000
+        got = []
+        out = io.BytesIO()
+        _copy_with_progress(io.BytesIO(data), out, len(data), got.append, chunk_size=7)
+        self.assertEqual(out.getvalue(), data)
+        # 同じ % を 2 回知らせず、最後は 100
+        self.assertEqual(len(got), len(set(got)))
+        self.assertEqual(got[-1], 100)
+
+    def test_unknown_size_reports_minus_one(self):
+        import io
+        from src.utils.updater import _copy_with_progress
+        got = []
+        out = io.BytesIO()
+        _copy_with_progress(io.BytesIO(b"abc"), out, None, got.append)
+        self.assertEqual(got, [-1])
+        self.assertEqual(out.getvalue(), b"abc")
 
 
 if __name__ == "__main__":

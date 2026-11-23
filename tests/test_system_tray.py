@@ -49,7 +49,7 @@ class TestSystemTrayMenu(unittest.TestCase):
         self.assertEqual(
             self._visible_titles(),
             ["待機中", "-", "ホーム", "設定…", "フィードバックを送る…", "-",
-             "強制リセット（フリーズ復帰）", "voicekey を終了"],
+             "voicekey を終了"],
         )
 
     def test_meet_submenu(self) -> None:
@@ -139,6 +139,20 @@ class TestSystemTrayMenu(unittest.TestCase):
         actions["ホーム"].trigger()
         actions["設定…"].trigger()
         self.assertEqual(got, ["home", "settings"])
+
+
+    def test_update_progress_then_failure_restores_item(self) -> None:
+        """ダウンロード中は押せない進み具合の表示にし、失敗したら押せる元の文言に戻す。"""
+        self.tray.show_update_available("2.4.0")
+        self.tray.show_update_progress(42)
+        action = self.tray._update_action
+        self.assertEqual(action.text(), "更新をダウンロード中… 42%")
+        self.assertFalse(action.isEnabled())
+        self.tray.show_update_installing()
+        self.assertIn("インストール中", action.text())
+        self.tray.show_update_failed("失敗")
+        self.assertEqual(action.text(), "v2.4.0 に更新して再起動")
+        self.assertTrue(action.isEnabled())
 
 
 if __name__ == "__main__":

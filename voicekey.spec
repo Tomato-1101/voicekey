@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 import sys
 
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
 # src/ は同梱しない（Python ソース平文同梱の防止）。コードは PYZ アーカイブに入る。
 # 実行時に読むデータファイルはロゴ画像だけ（src/ui/brand.py が自分の隣の assets/ から読む）
@@ -44,14 +44,11 @@ datas += tmp_ret[0]
 binaries += tmp_ret[1]
 hiddenimports += tmp_ret[2]
 
-# Collect silero_vad with all its data files
-tmp_ret = collect_all('silero_vad')
-datas += tmp_ret[0]
-binaries += tmp_ret[1]
-hiddenimports += tmp_ret[2]
-
-# Also collect silero_vad submodules explicitly
-hiddenimports += collect_submodules('silero_vad')
+# Silero VAD は ONNX モデル（silero_vad/data/silero_vad.onnx）だけを同梱する。
+# パッケージ本体は torch を import するので入れない（vad.py は import せずにファイルの場所だけ
+# 探し、onnxruntime で動かす）。以前はパッケージごと集めていたため torch 一式が入り、
+# インストーラが 300MB を超えて自動更新のダウンロードが数分かかっていた
+datas += collect_data_files('silero_vad', includes=['data/silero_vad.onnx'])
 
 # onnxruntime（Silero VAD の ONNX を CPU 実行する本体）。これを同梱しないと
 # vad.py の遅延 import onnxruntime が配布版で失敗し、analyze() が安全側の
@@ -62,11 +59,10 @@ datas += tmp_ret[0]
 binaries += tmp_ret[1]
 hiddenimports += tmp_ret[2]
 
-# Collect PySide6 (only core modules needed)
-tmp_ret = collect_all('PySide6')
-datas += tmp_ret[0]
-binaries += tmp_ret[1]
-hiddenimports += tmp_ret[2]
+# PySide6 は使っているモジュール（QtCore / QtGui / QtWidgets / QtNetwork）を PyInstaller の
+# フックに任せて集める（以前の collect_all('PySide6') は WebEngine・QML・3D など使わない物まで
+# 全部入れていた）。QtSvg は設定画面の QSS が SVG のアイコンを読むので明示的に入れる
+hiddenimports += ['PySide6.QtSvg']
 
 a = Analysis(
     ['run.py'],
@@ -77,7 +73,8 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['PySide6.scripts.deploy_lib'],
+    # torch 系は silero-vad の依存として入っているだけで実行時に使わない（vad.py は onnxruntime だけ）
+    excludes=['PySide6.scripts.deploy_lib', 'torch', 'torchaudio', 'torchvision', 'silero_vad'],
     # noarchive=True だと各モジュールが .pyc ファイルとして dist に並び
     # 逆コンパイルが容易になるため、配布前提で PYZ アーカイブに固める
     noarchive=False,

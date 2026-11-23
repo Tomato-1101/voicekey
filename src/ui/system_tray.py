@@ -25,12 +25,11 @@ class SystemTray(QSystemTrayIcon):
     設定画面や終了へのアクセスをコンテキストメニューで提供する。
     
     メニューの並びは Mac 版のメニューバーと同じ（更新／状態／今日の API 代／ホーム／設定…／
-    フィードバック／終了）。強制リセットだけは Windows 固有の脱出口として終了の上に置く。
+    フィードバック／終了）。
 
     Signals:
         open_home: ホーム（ダッシュボード）を開く要求
         open_settings: 設定を開く要求（最後に開いていたページ）
-        force_reset: 録音状態の強制リセット要求（フリーズ復帰用）
         quit_app: アプリケーション終了要求
         install_update: 新バージョンのインストール要求（自動アップデート）
     """
@@ -39,7 +38,6 @@ class SystemTray(QSystemTrayIcon):
     open_home = Signal()
     open_settings = Signal()
     open_meeting = Signal()
-    force_reset = Signal()
     quit_app = Signal()
     install_update = Signal()
     
@@ -121,10 +119,6 @@ class SystemTray(QSystemTrayIcon):
         feedback_action.triggered.connect(self._send_feedback)
 
         self._menu.addSeparator()
-
-        # 録音/マイクが詰まったときに再起動なしで内部状態を作り直す脱出口（Windows 固有）
-        reset_action = self._menu.addAction("強制リセット（フリーズ復帰）")
-        reset_action.triggered.connect(self.force_reset.emit)
 
         quit_action = self._menu.addAction("voicekey を終了")
         quit_action.triggered.connect(self.quit_app.emit)
@@ -261,7 +255,9 @@ class SystemTray(QSystemTrayIcon):
         Args:
             version: 検知した新バージョン文字列
         """
-        self._update_action.setText(f"v{version.lstrip('vV')} に更新して再起動")
+        self._update_version = version.lstrip('vV')
+        self._update_action.setText(f"v{self._update_version} に更新して再起動")
+        self._update_action.setEnabled(True)
         self._update_action.setVisible(True)
         self._update_separator.setVisible(True)
         self.showMessage(
@@ -271,8 +267,39 @@ class SystemTray(QSystemTrayIcon):
             10000,
         )
 
+    def show_update_progress(self, percent: int) -> None:
+        """更新のダウンロード中は、メニューの更新項目を押せない進み具合の表示にする。
+
+        配布物は数百 MB あり、黙ってダウンロードすると「押しても何も起きない」に見えるため。
+
+        Args:
+            percent: 0〜100。大きさが分からなければ -1
+        """
+        if percent == 0 or percent < 0:
+            # 押した直後に 1 回だけ通知も出す（メニューを閉じた後でも分かるように）
+            self.showMessage(
+                "voicekey アップデート",
+                "更新をダウンロードしています。終わると自動で再起動します。",
+                QSystemTrayIcon.MessageIcon.Information,
+                5000,
+            )
+        label = "更新をダウンロード中…" if percent < 0 else f"更新をダウンロード中… {percent}%"
+        self._update_action.setText(label)
+        self._update_action.setEnabled(False)
+        self._update_action.setVisible(True)
+        self._update_separator.setVisible(True)
+
+    def show_update_installing(self) -> None:
+        """検証を終えてインストーラを起動するところ（このあとアプリが一度終わる）。"""
+        self._update_action.setText("更新をインストール中…（自動で再起動します）")
+        self._update_action.setEnabled(False)
+
     def show_update_failed(self, message: str) -> None:
-        """アップデート失敗をトレイ通知で知らせる。"""
+        """アップデート失敗をトレイ通知で知らせ、もう一度押せるように戻す。"""
+        version = getattr(self, "_update_version", "")
+        if version:
+            self._update_action.setText(f"v{version} に更新して再起動")
+            self._update_action.setEnabled(True)
         self.showMessage(
             "voicekey アップデート失敗",
             f"{message}\n次回のチェックで再試行されます。",

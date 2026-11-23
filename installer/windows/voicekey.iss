@@ -8,7 +8,10 @@
 ; - PrivilegesRequired=lowest + {localappdata} 配下インストールで UAC 昇格なし
 ;   （自動アップデートのサイレント実行が管理者権限なしで完結する）
 ; - AppId は固定 GUID。変更すると更新時に別アプリ扱いになるので絶対に変えない
-; - CloseApplications=yes で更新時に実行中の旧プロセスを閉じる
+; - 自動更新ではアプリがインストーラを起動してから自分で終了する。インストーラは PrepareToInstall で
+;   旧プロセス（voicekey.exe）が終わるのを最大 30 秒待ってからファイルを置き換え、[Run] で新版を起動する。
+;   待たずに進むと、終了途中の旧プロセスがファイルを掴んだまま「使用中」で中止され（/SUPPRESSMSGBOXES は
+;   中止を選ぶ）、新版も起動しなかった。待っても残っていれば CloseApplications=force で閉じる
 ; - ログイン時起動は **アプリの設定 UI（HKCU\...\Run）に一元化** する（item 14）。
 ;   インストーラーは Startup ショートカットを作らない。常設すると UI の OFF を無視して
 ;   必ず起動し、UI で ON にすると Run キーと二重起動し得るため。旧版が作った
@@ -39,7 +42,9 @@ OutputDir=..\..\dist\installer
 OutputBaseFilename=voicekey-{#AppVersion}-windows-setup
 Compression=lzma2
 SolidCompression=yes
-CloseApplications=yes
+; 旧プロセスが自分で終わるのを PrepareToInstall で待ち、それでも残っていれば強制で閉じる
+; （yes だと閉じられなかった時にサイレント更新が中止され、新版も起動しなかった）
+CloseApplications=force
 RestartApplications=no
 ; PyInstaller の onedir 出力をそのまま取り込む
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -68,3 +73,37 @@ Type: files; Name: "{autostartup}\voicekey.lnk"
 [Run]
 ; インストール/サイレント更新の完了後に新版を自動起動する（skipifsilent は付けない）
 Filename: "{app}\voicekey.exe"; Flags: nowait postinstall
+
+[Code]
+{ 実行中の voicekey.exe の数を数える（WMI。自分のユーザーのプロセスが見えれば足りる）。
+  数えられなかった時は 0 を返し、待たずに CloseApplications に任せる }
+function CountRunningVoicekey(): Integer;
+var
+  Locator, Service, Procs: Variant;
+begin
+  Result := 0;
+  try
+    Locator := CreateOleObject('WbemScripting.SWbemLocator');
+    Service := Locator.ConnectServer('.', 'root\CIMV2');
+    Procs := Service.ExecQuery('SELECT ProcessId FROM Win32_Process WHERE Name = ''voicekey.exe''');
+    Result := Procs.Count;
+  except
+    Result := 0;
+  end;
+end;
+
+{ ファイルを置き換える前に、旧プロセスが自分で終わるのを待つ（最大 30 秒）。
+  アプリ側は更新のための終了を 12 秒で打ち切るので、通常はその前に終わる }
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  I: Integer;
+begin
+  Result := '';
+  for I := 1 to 120 do
+  begin
+    if CountRunningVoicekey() = 0 then
+      Exit;
+    Sleep(250);
+  end;
+  Log('voicekey.exe が 30 秒で終わらなかったため、CloseApplications で閉じます');
+end;
