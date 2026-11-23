@@ -69,7 +69,9 @@
 - 現状: voicekey-site a0e1eca を push・`vercel deploy --prod` 済み。本番の / ・/ja 200、/login 200、/admin 401、appcast 307 を確認。
   中身は app/components/landing/（文言は copy.ts だけ・見た目は landing.css）。詳細は voicekey-site/CLAUDE.md。
   遅延の表記は実測（ストリーミング時 0.1〜0.3 秒）に合わせた。製品の挙動・数値が変わったら copy.ts の en/ja も直す。
-- 次にやること（任意）: 英語用の OG 画像（今は日本語の 1 枚を共用）。html lang は ja 固定のまま（LP 側は要素の lang で上書き）。
+- 英語用の OG 画像は済（11-23・voicekey-site fdb3f70 を本番反映）。/ は app/opengraph-image.png（英語）、/ja は app/ja/opengraph-image.png（日本語）。
+  元は design/brand/svg/og-light-en.svg（gen_og_en.py が og-light.svg のタグラインだけ差し替える）。
+- 次にやること（任意）: html lang は ja 固定のまま（LP 側は要素の lang で上書き）。
 
 ## 全機能見直し・v2.3.0（10-12 01:40 更新）
 - 目的: Mac 版の全機能を見直して不具合を潰す（字幕は速さ優先・議事録/Meet を分かりやすく・1 回翻訳キー・全エンジンのモデル選択）。
